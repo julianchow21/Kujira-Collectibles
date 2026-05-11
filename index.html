@@ -137,6 +137,7 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast{position:fixed;bottom:24px;right:24px;background:var(--bg4);border:1px solid var(--border2);color:var(--text);padding:11px 18px;border-radius:var(--radius);font-size:13px;z-index:999;opacity:0;transition:opacity 0.2s;pointer-events:none;max-width:320px}
 #toast.show{opacity:1}
 #toast.toast-error{background:#3a1212;border-color:#a32d2d;color:#ffaaaa}
+@keyframes spin { from { display:inline-block; transform:rotate(0deg); } to { transform:rotate(360deg); } }
 
 /* SECTION TITLE */
 .section-title{font-size:20px;font-weight:700;letter-spacing:-0.3px;margin-bottom:4px}
@@ -352,6 +353,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
       <span>Collectibles</span>
     </div>
   </a>
+  <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
   <nav class="nav">
     <button class="nav-btn active" onclick="showPage('dashboard')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -643,43 +645,134 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 
 <!-- DASHBOARD PAGE -->
 <div id="page-dashboard" class="page active">
-  <div class="section-title">Dashboard</div>
-  <div class="section-sub">Portfolio overview & analytics</div>
-  <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px">Overview</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div>
+      <div class="section-title">Dashboard</div>
+      <div class="section-sub">Portfolio overview & live analytics</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="dash-range" onchange="renderDashboard()" class="filter-sel" style="font-size:12px">
+        <option value="3">Last 3 months</option>
+        <option value="6">Last 6 months</option>
+        <option value="12" selected>Last 12 months</option>
+        <option value="all">All time</option>
+      </select>
+      <button class="btn btn-sm" onclick="renderDashboard()" title="Refresh charts">⟳ Refresh</button>
+    </div>
+  </div>
+
+  <!-- KPI row -->
   <div class="metrics" id="dash-metrics-primary" style="margin-bottom:8px"></div>
   <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px;margin-top:16px">Inventory Breakdown</div>
   <div class="metrics" id="dash-metrics-secondary" style="margin-bottom:20px"></div>
+
+  <!-- Row 1: Revenue & Profit -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="card">
-      <div class="card-head"><h3>Monthly Revenue</h3></div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="revenueChart" role="img" aria-label="Monthly revenue bar chart"></canvas></div></div>
+      <div class="card-head">
+        <h3>Monthly Revenue</h3>
+        <select class="filter-sel" style="font-size:11px;padding:2px 6px" onchange="updateChartType('rev',this.value)">
+          <option value="bar">Bar</option><option value="line">Line</option>
+        </select>
+      </div>
+      <div class="card-body"><div class="chart-wrap"><canvas id="revenueChart"></canvas></div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Monthly Profit</h3></div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="profitChart" role="img" aria-label="Monthly profit line chart"></canvas></div></div>
+      <div class="card-head">
+        <h3>Monthly Profit</h3>
+        <select class="filter-sel" style="font-size:11px;padding:2px 6px" onchange="updateChartType('profit',this.value)">
+          <option value="line">Line</option><option value="bar">Bar</option>
+        </select>
+      </div>
+      <div class="card-body"><div class="chart-wrap"><canvas id="profitChart"></canvas></div></div>
     </div>
   </div>
+
+  <!-- Row 2: Capital charts -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="card">
-      <div class="card-head"><h3>Top 10 Capital Tied Up</h3><span style="font-size:11px;color:var(--text3)">by cost price</span></div>
-      <div class="card-body" style="padding:12px 18px"><div class="chart-wrap" style="height:280px"><canvas id="capitalChart" role="img" aria-label="Top items by capital tied up"></canvas></div></div>
+      <div class="card-head">
+        <h3>Top 10 Capital Tied Up</h3>
+        <span style="font-size:11px;color:var(--text3)">by cost price</span>
+      </div>
+      <div class="card-body" style="padding:12px 18px"><div class="chart-wrap" style="height:280px"><canvas id="capitalChart"></canvas></div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Cost Exposure</h3><span style="font-size:11px;color:var(--text3)">singles vs slabs</span></div>
+      <div class="card-head">
+        <h3>Cost Exposure</h3>
+        <span style="font-size:11px;color:var(--text3)">singles vs slabs</span>
+      </div>
       <div class="card-body">
-        <div class="chart-wrap" style="height:180px"><canvas id="exposureChart" role="img" aria-label="Cost exposure donut chart"></canvas></div>
+        <div class="chart-wrap" style="height:180px"><canvas id="exposureChart"></canvas></div>
         <div id="exposure-legend" style="margin-top:12px;font-size:12px;display:flex;flex-direction:column;gap:6px"></div>
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+  <!-- Row 3: Investment per Pokémon + Grader -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <div class="card">
+      <div class="card-head">
+        <h3>💰 Money Invested per Pokémon</h3>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select class="filter-sel" style="font-size:11px;padding:2px 6px" id="invest-mode" onchange="renderInvestChart()">
+            <option value="cost">Cost Price</option>
+            <option value="market">Market Value</option>
+          </select>
+          <select class="filter-sel" style="font-size:11px;padding:2px 6px" id="invest-top" onchange="renderInvestChart()">
+            <option value="10">Top 10</option>
+            <option value="20">Top 20</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+      </div>
+      <div class="card-body" style="padding:12px 18px"><div class="chart-wrap" style="height:320px"><canvas id="investChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Inventory by Grader</h3></div>
+      <div class="card-body"><div class="chart-wrap"><canvas id="graderChart"></canvas></div></div>
+    </div>
+  </div>
+
+  <!-- Row 4: Top sales + Profit margin scatter -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="card">
       <div class="card-head"><h3>Top 10 Sales by Profit</h3></div>
       <div class="card-body" id="top-sales"></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Inventory by Grader</h3></div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="graderChart" role="img" aria-label="Inventory by grader donut chart"></canvas></div></div>
+      <div class="card-head">
+        <h3>Cumulative Profit Over Time</h3>
+      </div>
+      <div class="card-body"><div class="chart-wrap"><canvas id="cumulativeChart"></canvas></div></div>
+    </div>
+  </div>
+
+  <!-- AI Analyst Panel -->
+  <div class="card" id="ai-analyst-card" style="margin-bottom:16px">
+    <div class="card-head" style="cursor:pointer;user-select:none" onclick="toggleAiPanel()">
+      <h3>🤖 AI Portfolio Analyst</h3>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:11px;color:var(--text3)">Ask anything about your inventory & sales</span>
+        <span id="ai-panel-toggle-icon" style="font-size:14px;color:var(--text3)">▲</span>
+      </div>
+    </div>
+    <div id="ai-analyst-body">
+      <!-- Quick prompt chips -->
+      <div style="padding:12px 18px 0;display:flex;flex-wrap:wrap;gap:8px" id="ai-quick-chips"></div>
+      <!-- Chat history -->
+      <div id="ai-chat-history" style="max-height:400px;overflow-y:auto;padding:12px 18px;display:flex;flex-direction:column;gap:12px;min-height:60px"></div>
+      <!-- Visualisation output -->
+      <div id="ai-viz-area" style="padding:0 18px 0;display:none">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.6px">Data Visualisation</div>
+        <div id="ai-viz-content"></div>
+      </div>
+      <!-- Input -->
+      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px">
+        <input id="ai-chat-input" class="fi" placeholder="e.g. What's my exposure by Pokémon type? Which cards have risen most?" style="flex:1;font-size:13px" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiAnalyst();}">
+        <button class="btn btn-primary btn-sm" onclick="sendAiAnalyst()" id="ai-send-btn">Ask →</button>
+        <button class="btn btn-sm" onclick="clearAiChat()" title="Clear chat">✕</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1043,9 +1136,102 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 
 <script>
 // =========== DATA ===========
-const STORAGE_KEY = 'pokeinventory_v3';
+const STORAGE_KEY = 'pokeinventory_v3'; // kept for migration of old local data
 
-function loadData() {
+// =========== SUPABASE CONFIG ===========
+const SB_URL  = 'https://eywncywatxtlqtrvxjsi.supabase.co';
+const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5d25jeXdhdHh0bHF0cnZ4anNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjE0NjEsImV4cCI6MjA5Mzk5NzQ2MX0.3fB6T38Ra22nFu7tNaWoYVgi0JtGxw9_fVwM1rQMYLc';
+const SB_HDR  = { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+
+// Sync status indicator
+let _syncStatus = 'idle'; // idle | saving | error
+function setSyncStatus(s, msg) {
+  _syncStatus = s;
+  const el = document.getElementById('sync-indicator');
+  if (!el) return;
+  if (s === 'saving') { el.textContent = '⟳ Syncing...'; el.style.color = 'var(--text3)'; }
+  else if (s === 'ok')  { el.textContent = '✓ Synced';    el.style.color = 'var(--green)'; setTimeout(()=>{ if(_syncStatus==='ok') el.textContent=''; }, 3000); }
+  else if (s === 'error'){ el.textContent = '⚠ Sync failed'; el.style.color = 'var(--red)'; if(msg) console.error('Sync error:', msg); }
+}
+
+// ── Supabase helpers ─────────────────────────────────────────
+async function sbUpsert(table, id, data) {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ id, data, updated_at: new Date().toISOString() })
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { setSyncStatus('error', e.message); throw e; }
+}
+
+async function sbDelete(table, id) {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
+      method: 'DELETE', headers: SB_HDR
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { setSyncStatus('error', e.message); }
+}
+
+async function sbFetchAll(table) {
+  const r = await fetch(SB_URL + '/rest/v1/' + table + '?select=id,data&limit=10000', { headers: SB_HDR });
+  if (!r.ok) throw new Error(await r.text());
+  const rows = await r.json();
+  return rows.map(row => ({ id: row.id, ...row.data }));
+}
+
+// ── saveData: write changed items to Supabase ──────────────
+// We track a dirty set to avoid re-uploading everything on every save
+const _dirty = { singles: new Set(), slabs: new Set(), sales: new Set(), changelog: new Set() };
+let _saveTimer = null;
+
+function markDirty(table, id) { if (_dirty[table]) _dirty[table].add(id); }
+
+function saveData(skipDirty) {
+  // Also write to localStorage as a fast local cache / offline fallback
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })); } catch(e) {}
+
+  // Debounce cloud writes by 800ms
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => _flushToSupabase(skipDirty), 800);
+}
+
+async function _flushToSupabase(skipDirty) {
+  setSyncStatus('saving');
+  try {
+    const tables = ['singles','slabs','sales'];
+    for (const tbl of tables) {
+      const items = DB[tbl];
+      for (const item of items) {
+        if (skipDirty || _dirty[tbl].has(item.id)) {
+          const { id, ...data } = item;
+          await sbUpsert(tbl, id, data);
+        }
+      }
+      _dirty[tbl].clear();
+    }
+    setSyncStatus('ok');
+  } catch(e) { setSyncStatus('error', e.message); }
+}
+
+// ── loadData: pull from Supabase, fallback to localStorage ──
+async function loadData() {
+  try {
+    const [singles, slabs, sales] = await Promise.all([
+      sbFetchAll('singles'),
+      sbFetchAll('slabs'),
+      sbFetchAll('sales')
+    ]);
+    if (singles.length || slabs.length || sales.length) {
+      return { singles, slabs, sales };
+    }
+  } catch(e) {
+    console.warn('Supabase load failed, falling back to localStorage:', e.message);
+    setSyncStatus('error', e.message);
+  }
+  // Fallback to localStorage
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
@@ -1053,24 +1239,62 @@ function loadData() {
   return null;
 }
 
-function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({singles: DB.singles, slabs: DB.slabs, sales: DB.sales}));
+// ── Override deleteItem to also delete from Supabase ────────
+const _origDeleteItem = typeof deleteItem !== 'undefined' ? deleteItem : null;
+
+// ── Full save (used after bulk imports) ─────────────────────
+async function saveAllToSupabase() {
+  setSyncStatus('saving');
+  try {
+    for (const tbl of ['singles','slabs','sales']) {
+      for (const item of DB[tbl]) {
+        const { id, ...data } = item;
+        await sbUpsert(tbl, id, data);
+      }
+    }
+    setSyncStatus('ok');
+    toast('All data synced to cloud ✓');
+  } catch(e) { setSyncStatus('error', e.message); toastError('Sync failed: ' + e.message); }
 }
 
 const SEED_SINGLES = [{"id": "s_1", "name": "11 energy cards holo", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 4.0, "costPrice": "", "marketPrice": "4.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 4.0}], "notes": ""}, {"id": "s_2", "name": "14 Chinese 30th anniversary Pokemon", "set": "", "language": "CN", "type": "raw", "qty": 1, "listPrice": 102.0, "costPrice": "", "marketPrice": "102.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Apr", "price": 102.0}], "notes": ""}, {"id": "s_3", "name": "25th anniversary stuff from 1 collectibles (55 cards)", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 27.0, "costPrice": "", "marketPrice": "27.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "7 Sep", "price": 27.0}], "notes": ""}, {"id": "s_4", "name": "5 Energy cards (Classic Collection)", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 18.0, "costPrice": "", "marketPrice": "18.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 18.0}], "notes": ""}, {"id": "s_5", "name": "Abra 43", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 2.0}], "notes": ""}, {"id": "s_6", "name": "Abra 49", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 2.0}], "notes": ""}, {"id": "s_7", "name": "Absol 191", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 5.0, "costPrice": "", "marketPrice": "5.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Apr", "price": 5.0}], "notes": ""}, {"id": "s_8", "name": "Acerola's Mischief 84", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 20.0, "costPrice": "", "marketPrice": "20.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "24 Sep", "price": 20.0}], "notes": ""}, {"id": "s_9", "name": "Alakazam 71", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 6.25, "costPrice": "", "marketPrice": "6.25", "condition": "NM", "status": "Available", "priceHistory": [{"date": "31 Aug", "price": 6.25}], "notes": ""}, {"id": "s_10", "name": "Alakazam ex 201", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 55.5, "costPrice": "", "marketPrice": "55.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 55.5}, {"date": "1 Aug", "price": 46.0}], "notes": ""}, {"id": "s_11", "name": "Alakazam Ex 201", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 41.0, "costPrice": "", "marketPrice": "41.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jul", "price": 41.0}], "notes": ""}, {"id": "s_12", "name": "Alakazam ex 203", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 40.0, "costPrice": "", "marketPrice": "40.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 40.0}], "notes": ""}, {"id": "s_13", "name": "Ancient Mew", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 90.0, "costPrice": "", "marketPrice": "90.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Apr", "price": 90.0}], "notes": ""}, {"id": "s_14", "name": "Arcanine 15", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 6.0, "costPrice": "", "marketPrice": "6.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "16 Jul", "price": 6.0}], "notes": ""}, {"id": "s_15", "name": "Arcanine 59", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 5.0, "costPrice": "", "marketPrice": "5.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "28 Jun", "price": 5.0}], "notes": ""}, {"id": "s_16", "name": "Arcanine 59 Holo", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 13.0, "costPrice": "", "marketPrice": "13.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "28 Jun", "price": 13.0}], "notes": ""}, {"id": "s_17", "name": "Arceus V 267", "set": "Promo", "language": "JP", "type": "raw", "qty": 1, "listPrice": 13.5, "costPrice": "", "marketPrice": "13.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "5 May", "price": 13.5}], "notes": ""}, {"id": "s_18", "name": "Arceus Vstar 262", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 80.0, "costPrice": "", "marketPrice": "80.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "19 Jul", "price": 80.0}], "notes": ""}, {"id": "s_19", "name": "Arceus Vstar 127", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 0, "costPrice": "", "marketPrice": "0", "condition": "NM", "status": "Available", "priceHistory": [], "notes": ""}, {"id": "s_20", "name": "Blastoise ex 200", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 100.0}], "notes": ""}, {"id": "s_21", "name": "Blastoise ex xy122", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 87.0, "costPrice": "", "marketPrice": "87.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 87.0}], "notes": ""}, {"id": "s_22", "name": "Blaziken 101", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 6.0, "costPrice": "", "marketPrice": "6.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "24 May", "price": 6.0}], "notes": ""}, {"id": "s_23", "name": "Blaziken Vmax TG15", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 5.88, "costPrice": "", "marketPrice": "5.88", "condition": "NM", "status": "Available", "priceHistory": [{"date": "19 Sep", "price": 5.88}], "notes": ""}, {"id": "s_24", "name": "Bulbasaur 143", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 60.0, "costPrice": "", "marketPrice": "60.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Sep", "price": 60.0}], "notes": ""}, {"id": "s_25", "name": "Bulbasaur 166", "set": "sv2a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 10.0, "costPrice": "", "marketPrice": "10.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "20 Apr", "price": 10.0}], "notes": ""}, {"id": "s_26", "name": "Bulbasaur 44", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "16 Jul", "price": 2.0}], "notes": ""}, {"id": "s_27", "name": "Charizard ex 125", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 15.5, "costPrice": "", "marketPrice": "15.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "17 May", "price": 15.5}], "notes": ""}, {"id": "s_28", "name": "Charizard ex 223", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 108.0, "costPrice": "", "marketPrice": "108.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 108.0}], "notes": ""}, {"id": "s_29", "name": "Charizard ex 234", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 255.0, "costPrice": "", "marketPrice": "255.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 255.0}], "notes": ""}, {"id": "s_30", "name": "Charizard ex XY121", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 64.0, "costPrice": "", "marketPrice": "64.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "27 Oct", "price": 64.0}], "notes": ""}, {"id": "s_31", "name": "Charizard Vstar SWSH262", "set": "", "language": "EN", "type": "raw", "qty": 6, "listPrice": 50.0, "costPrice": "", "marketPrice": "50.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Sep", "price": 50.0}, {"date": "9 Sep", "price": 50.0}, {"date": "23 Sep", "price": 48.0}, {"date": "4 Sep", "price": 47.0}, {"date": "28 Aug", "price": 36.0}, {"date": "1 Oct", "price": 35.0}], "notes": ""}, {"id": "s_32", "name": "Charmander 168", "set": "sv2a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 16.0, "costPrice": "", "marketPrice": "16.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "20 Apr", "price": 16.0}], "notes": ""}, {"id": "s_33", "name": "Charmander 44", "set": "", "language": "EN", "type": "raw", "qty": 5, "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Sep", "price": 30.0}, {"date": "9 Sep", "price": 29.0}, {"date": "23 Sep", "price": 27.0}, {"date": "23 Sep", "price": 26.0}, {"date": "6 Oct", "price": 24.0}], "notes": ""}, {"id": "s_34", "name": "Dragonite 5", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 49.0, "costPrice": "", "marketPrice": "49.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Mar", "price": 49.0}, {"date": "1 Apr", "price": 41.0}, {"date": "3 Nov", "price": 21.0}, {"date": "15 Apr", "price": 15.0}], "notes": ""}, {"id": "s_35", "name": "Eevee 173", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 15.0, "costPrice": "", "marketPrice": "15.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Nov", "price": 15.0}, {"date": "25 Oct", "price": 13.7}, {"date": "22 Jul", "price": 9.0}], "notes": ""}, {"id": "s_36", "name": "Eevee 173 (Pokemon Centre)", "set": "s12a", "language": "EN", "type": "raw", "qty": 1, "listPrice": 68.0, "costPrice": "", "marketPrice": "68.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 68.0}], "notes": ""}, {"id": "s_37", "name": "Espeon ex 211", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "30 Jun", "price": 45.0}], "notes": ""}, {"id": "s_38", "name": "Flareon ex RC28", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 83.0, "costPrice": "", "marketPrice": "83.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "3 Nov", "price": 83.0}, {"date": "3 Nov", "price": 69.0}], "notes": ""}, {"id": "s_39", "name": "Glaceon Vstar 217", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 33.0}], "notes": ""}, {"id": "s_40", "name": "Greninja ex 132", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 88.0, "costPrice": "", "marketPrice": "88.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "17 Apr", "price": 88.0}, {"date": "25 Apr", "price": 80.0}, {"date": "3 Nov", "price": 70.0}, {"date": "3 Nov", "price": 64.0}], "notes": ""}, {"id": "s_41", "name": "Ivysaur 167", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 27.0, "costPrice": "", "marketPrice": "27.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jul", "price": 27.0}], "notes": ""}, {"id": "s_42", "name": "Jirachi XY67a", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 106.0, "costPrice": "", "marketPrice": "106.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Oct", "price": 106.0}], "notes": ""}, {"id": "s_43", "name": "Jolteon 135", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 21.0, "costPrice": "", "marketPrice": "21.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "2 Aug", "price": 21.0}], "notes": ""}, {"id": "s_44", "name": "Kingdra ex 131", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 77.0, "costPrice": "", "marketPrice": "77.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "6 Oct", "price": 77.0}, {"date": "6 Oct", "price": 70.0}, {"date": "9 Sep", "price": 47.0}], "notes": ""}, {"id": "s_45", "name": "Leafeon Vstar 210", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 33.0}], "notes": ""}, {"id": "s_46", "name": "Magikarp 80", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 55.0, "costPrice": "", "marketPrice": "55.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "11 Jul", "price": 55.0}], "notes": ""}, {"id": "s_47", "name": "Mew ex 53", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 89.0, "costPrice": "", "marketPrice": "89.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "6 Oct", "price": 89.0}, {"date": "26 Aug", "price": 51.0}, {"date": "28 Aug", "price": 43.0}], "notes": ""}, {"id": "s_48", "name": "Mew V 251", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 77.0, "costPrice": "", "marketPrice": "77.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Feb", "price": 77.0}, {"date": "1 Sep", "price": 71.0}], "notes": ""}, {"id": "s_49", "name": "Mimikyu 75", "set": "", "language": "EN", "type": "sealed", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Oct", "price": 33.0}], "notes": ""}, {"id": "s_50", "name": "Moltres & Zapdos & Articuno GX SM210", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 82.5, "costPrice": "", "marketPrice": "82.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jun", "price": 82.5}, {"date": "27 Oct", "price": 80.0}], "notes": ""}, {"id": "s_51", "name": "N's Reshiram 167", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 23.19, "costPrice": "", "marketPrice": "23.19", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 23.19}], "notes": ""}, {"id": "s_52", "name": "Snorlax 51", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 14.0, "costPrice": "", "marketPrice": "14.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Oct", "price": 14.0}], "notes": ""}, {"id": "s_53", "name": "Squirtle 148", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 74.0, "costPrice": "", "marketPrice": "74.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 74.0}, {"date": "23 Sep", "price": 73.0}, {"date": "9 Sep", "price": 66.0}, {"date": "23 Sep", "price": 53.0}], "notes": ""}, {"id": "s_54", "name": "Venusaur ex 198", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 97.0, "costPrice": "", "marketPrice": "97.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 97.0}, {"date": "27 Oct", "price": 81.0}], "notes": ""}, {"id": "s_55", "name": "Venusaur ex XY123", "set": "s12a", "language": "EN", "type": "raw", "qty": 1, "listPrice": 86.0, "costPrice": "", "marketPrice": "86.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 86.0}], "notes": ""}, {"id": "s_56", "name": "Zapdos ex 202", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 86.0, "costPrice": "", "marketPrice": "86.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "27 Oct", "price": 86.0}, {"date": "4 Oct", "price": 84.0}], "notes": ""}];
 const SEED_SLABS = [{"id": "sl_1", "name": "Alakazam ex 203", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Z7583128", "rank": "3rd", "listPrice": 99.0, "costPrice": "", "marketPrice": "99.0", "status": "Available", "dateListed": "26 Aug", "priceHistory": [{"date": "26 Aug", "price": 99.0}], "notes": ""}, {"id": "sl_2", "name": "Ancient Mew (Swirl)", "type": "slab", "grader": "PSA", "grade": "8", "certNo": "137348572", "rank": "", "listPrice": 148.0, "costPrice": "", "marketPrice": "148.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 148.0}], "notes": ""}, {"id": "sl_3", "name": "Ancient Mew (Swirl)", "type": "slab", "grader": "PSA", "grade": "8", "certNo": "139597346", "rank": "", "listPrice": 145.0, "costPrice": "", "marketPrice": "145.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 145.0}], "notes": ""}, {"id": "sl_4", "name": "Ancient Mew (Swirl)", "type": "slab", "grader": "PSA", "grade": "6", "certNo": "120900687", "rank": "", "listPrice": 115.0, "costPrice": "", "marketPrice": "115.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 115.0}], "notes": ""}, {"id": "sl_5", "name": "Arceus V SWSH267", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "M7096581", "rank": "3rd", "listPrice": 115.0, "costPrice": "", "marketPrice": "115.0", "status": "Available", "dateListed": "1 Oct", "priceHistory": [{"date": "1 Oct", "price": 115.0}], "notes": ""}, {"id": "sl_6", "name": "Arceus V SWSH267", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Y8343649", "rank": "3rd", "listPrice": 88.0, "costPrice": "", "marketPrice": "88.0", "status": "Available", "dateListed": "15 Sep", "priceHistory": [{"date": "15 Sep", "price": 88.0}], "notes": ""}, {"id": "sl_7", "name": "Arceus Vstar GG70", "type": "slab", "grader": "PSA", "grade": "9", "certNo": "100703714", "rank": "", "listPrice": 132.0, "costPrice": "", "marketPrice": "132.0", "status": "Available", "dateListed": "25 Oct", "priceHistory": [{"date": "25 Oct", "price": 132.0}], "notes": ""}, {"id": "sl_8", "name": "Articuno 9 Classic Collection", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "S7049735", "rank": "1st", "listPrice": 35.0, "costPrice": "", "marketPrice": "35.0", "status": "Available", "dateListed": "1 Oct", "priceHistory": [{"date": "1 Oct", "price": 35.0}], "notes": ""}, {"id": "sl_9", "name": "Blastoise 3 CLK", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007042", "rank": "", "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 100.0}], "notes": ""}, {"id": "sl_10", "name": "Bulbasaur 1 CLF", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007034", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 45.0}], "notes": ""}, {"id": "sl_11", "name": "Bulbasaur 143", "type": "slab", "grader": "TAG", "grade": "9", "certNo": "R2796848", "rank": "", "listPrice": 84.0, "costPrice": "", "marketPrice": "84.0", "status": "Available", "dateListed": "9 Nov", "priceHistory": [{"date": "9 Nov", "price": 84.0}], "notes": ""}, {"id": "sl_12", "name": "Bulbasaur 143", "type": "slab", "grader": "TAG", "grade": "9", "certNo": "P6884835", "rank": "", "listPrice": 84.0, "costPrice": "", "marketPrice": "84.0", "status": "Available", "dateListed": "9 Nov", "priceHistory": [{"date": "9 Nov", "price": 84.0}], "notes": ""}, {"id": "sl_13", "name": "Bulbasaur 143", "type": "slab", "grader": "PSA", "grade": "9", "certNo": "119569490", "rank": "", "listPrice": 77.0, "costPrice": "", "marketPrice": "77.0", "status": "Available", "dateListed": "25 Oct", "priceHistory": [{"date": "25 Oct", "price": 77.0}], "notes": ""}, {"id": "sl_14", "name": "Bulbasaur 166", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "J3912707", "rank": "6th", "listPrice": 59.0, "costPrice": "", "marketPrice": "59.0", "status": "Available", "dateListed": "15 Mar", "priceHistory": [{"date": "15 Mar", "price": 59.0}], "notes": ""}, {"id": "sl_15", "name": "Bulbasaur 166 (JP)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "U8296326", "rank": "6th", "listPrice": 56.0, "costPrice": "", "marketPrice": "56.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 56.0}], "notes": ""}, {"id": "sl_16", "name": "Charizard 3 CLL", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007039", "rank": "", "listPrice": 365.0, "costPrice": "", "marketPrice": "365.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 365.0}], "notes": ""}, {"id": "sl_17", "name": "Charizard ex 56", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "J5966586", "rank": "5th", "listPrice": 107.0, "costPrice": "", "marketPrice": "107.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 107.0}], "notes": ""}, {"id": "sl_18", "name": "Charizard Vstar 212 (JP)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "G2364608", "rank": "2nd", "listPrice": 90.0, "costPrice": "", "marketPrice": "90.0", "status": "Available", "dateListed": "10 Sep", "priceHistory": [{"date": "10 Sep", "price": 90.0}], "notes": ""}, {"id": "sl_19", "name": "Charmander 1 CLL", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007037", "rank": "", "listPrice": 60.0, "costPrice": "", "marketPrice": "60.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 60.0}], "notes": ""}, {"id": "sl_20", "name": "Charmander 1 CLL", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "X4910386", "rank": "1st", "listPrice": 47.0, "costPrice": "", "marketPrice": "47.0", "status": "Available", "dateListed": "23 Sep", "priceHistory": [{"date": "23 Sep", "price": 47.0}], "notes": ""}, {"id": "sl_21", "name": "Charmeleon 2 CLL", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007038", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 45.0}], "notes": ""}, {"id": "sl_22", "name": "Deoxys Vstar 223", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "V9902030", "rank": "1st", "listPrice": 57.0, "costPrice": "", "marketPrice": "57.0", "status": "Available", "dateListed": "15 Mar", "priceHistory": [{"date": "15 Mar", "price": 57.0}], "notes": ""}, {"id": "sl_23", "name": "Dragapult ex 221", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "H1028200", "rank": "2nd", "listPrice": 46.0, "costPrice": "", "marketPrice": "46.0", "status": "Available", "dateListed": "15 Sep", "priceHistory": [{"date": "15 Sep", "price": 46.0}], "notes": ""}, {"id": "sl_24", "name": "Duskull 68", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "K2467742", "rank": "2nd", "listPrice": 93.0, "costPrice": "", "marketPrice": "93.0", "status": "Available", "dateListed": "9 Oct", "priceHistory": [{"date": "9 Oct", "price": 93.0}], "notes": ""}, {"id": "sl_25", "name": "Eevee 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "E6868981", "rank": "10th", "listPrice": 126.0, "costPrice": "", "marketPrice": "126.0", "status": "Available", "dateListed": "9 Nov", "priceHistory": [{"date": "9 Nov", "price": 126.0}], "notes": ""}, {"id": "sl_26", "name": "Eevee 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "X1876058", "rank": "10th", "listPrice": 120.0, "costPrice": "", "marketPrice": "120.0", "status": "Available", "dateListed": "27 Oct", "priceHistory": [{"date": "27 Oct", "price": 120.0}], "notes": ""}, {"id": "sl_27", "name": "Eevee 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "C3174440", "rank": "10th", "listPrice": 79.0, "costPrice": "", "marketPrice": "79.0", "status": "Available", "dateListed": "13 Aug", "priceHistory": [{"date": "13 Aug", "price": 79.0}], "notes": ""}, {"id": "sl_28", "name": "Eevee 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "F6163312", "rank": "10th", "listPrice": 67.0, "costPrice": "", "marketPrice": "67.0", "status": "Available", "dateListed": "21 Aug", "priceHistory": [{"date": "21 Aug", "price": 67.0}], "notes": ""}, {"id": "sl_29", "name": "Eevee 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L4497444", "rank": "13th", "listPrice": 64.0, "costPrice": "", "marketPrice": "64.0", "status": "Available", "dateListed": "31 Dec", "priceHistory": [{"date": "31 Dec", "price": 64.0}], "notes": ""}, {"id": "sl_30", "name": "Eevee 173", "type": "slab", "grader": "CGC", "grade": "10", "certNo": "6043935022", "rank": "", "listPrice": 38.0, "costPrice": "", "marketPrice": "38.0", "status": "Available", "dateListed": "31 Dec", "priceHistory": [{"date": "31 Dec", "price": 38.0}], "notes": ""}, {"id": "sl_31", "name": "Eevee 173", "type": "slab", "grader": "CGC", "grade": "10", "certNo": "6043935025", "rank": "", "listPrice": 38.0, "costPrice": "", "marketPrice": "38.0", "status": "Available", "dateListed": "31 Dec", "priceHistory": [{"date": "31 Dec", "price": 38.0}], "notes": ""}, {"id": "sl_32", "name": "Eevee 173 (Pokemon Centre)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "X5977945", "rank": "21st", "listPrice": 500.0, "costPrice": "", "marketPrice": "500.0", "status": "Available", "dateListed": "15 Apr", "priceHistory": [{"date": "15 Apr", "price": 500.0}], "notes": ""}, {"id": "sl_33", "name": "Eevee 78", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "T6698276", "rank": "3rd", "listPrice": 74.0, "costPrice": "", "marketPrice": "74.0", "status": "Available", "dateListed": "13 Aug", "priceHistory": [{"date": "13 Aug", "price": 74.0}], "notes": ""}, {"id": "sl_34", "name": "Eevee 78", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "R3019441", "rank": "3rd", "listPrice": 61.0, "costPrice": "", "marketPrice": "61.0", "status": "Available", "dateListed": "11 Jun", "priceHistory": [{"date": "11 Jun", "price": 61.0}], "notes": ""}, {"id": "sl_35", "name": "Eevee 78", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "H7314586", "rank": "3rd", "listPrice": 58.0, "costPrice": "", "marketPrice": "58.0", "status": "Available", "dateListed": "13 Aug", "priceHistory": [{"date": "13 Aug", "price": 58.0}], "notes": ""}, {"id": "sl_36", "name": "Eevee 78 (Sequential)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L4683592", "rank": "3rd", "listPrice": 67.0, "costPrice": "", "marketPrice": "67.0", "status": "Available", "dateListed": "21 Aug", "priceHistory": [{"date": "21 Aug", "price": 67.0}], "notes": ""}, {"id": "sl_37", "name": "Eevee 78 (Sequential)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "F3320809", "rank": "3rd", "listPrice": 67.0, "costPrice": "", "marketPrice": "67.0", "status": "Available", "dateListed": "21 Aug", "priceHistory": [{"date": "21 Aug", "price": 67.0}], "notes": ""}, {"id": "sl_38", "name": "Ethan's Adventure 236 (EN)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "R5714326", "rank": "7th", "listPrice": 152.0, "costPrice": "", "marketPrice": "152.0", "status": "Available", "dateListed": "15 Mar", "priceHistory": [{"date": "15 Mar", "price": 152.0}], "notes": ""}, {"id": "sl_39", "name": "Feraligatr 213 (Illustration Contest 2024)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "H1747517", "rank": "1st", "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 30.0}], "notes": ""}, {"id": "sl_40", "name": "Feraligatr 213 (Illustration Contest 2024)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "J7319675", "rank": "1st", "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 30.0}], "notes": ""}, {"id": "sl_41", "name": "Feraligatr 213 (Illustration Contest 2024)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "N5430168", "rank": "1st", "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 30.0}], "notes": ""}, {"id": "sl_42", "name": "Feraligatr 213 (Illustration Contest 2024)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "M2303417", "rank": "1st", "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 30.0}], "notes": ""}, {"id": "sl_43", "name": "Galarian Moltres 190", "type": "slab", "grader": "CGC", "grade": "10", "certNo": "6039421053", "rank": "", "listPrice": 49.0, "costPrice": "", "marketPrice": "49.0", "status": "Available", "dateListed": "12 Jul", "priceHistory": [{"date": "12 Jul", "price": 49.0}], "notes": "PRISTINE"}, {"id": "sl_44", "name": "Gallade 57", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "D4212802", "rank": "", "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "status": "Available", "dateListed": "25 Apr", "priceHistory": [{"date": "25 Apr", "price": 33.0}], "notes": ""}, {"id": "sl_45", "name": "Gardevoir 196", "type": "slab", "grader": "CGC", "grade": "10", "certNo": "6039423056", "rank": "", "listPrice": 42.0, "costPrice": "", "marketPrice": "42.0", "status": "Available", "dateListed": "12 Jul", "priceHistory": [{"date": "12 Jul", "price": 42.0}], "notes": "PRISTINE"}, {"id": "sl_46", "name": "Gardevoir ex 245", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "C7615262", "rank": "4th", "listPrice": 169.0, "costPrice": "", "marketPrice": "169.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 169.0}], "notes": ""}, {"id": "sl_47", "name": "Gengar Mega ex 230 (JP)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "V3604476", "rank": "44th", "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 100.0}], "notes": ""}, {"id": "sl_48", "name": "Giratina Vstar #GG69", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Z2490352", "rank": "14th", "listPrice": 600.0, "costPrice": "", "marketPrice": "600.0", "status": "Available", "dateListed": "3 Nov", "priceHistory": [{"date": "3 Nov", "price": 600.0}], "notes": ""}, {"id": "sl_49", "name": "Iron Valiant 213", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "S6928476", "rank": "4th", "listPrice": 60.0, "costPrice": "", "marketPrice": "60.0", "status": "Available", "dateListed": "15 Apr", "priceHistory": [{"date": "15 Apr", "price": 60.0}], "notes": ""}, {"id": "sl_50", "name": "Iron Valiant 213", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "J7900946", "rank": "2nd", "listPrice": 48.0, "costPrice": "", "marketPrice": "48.0", "status": "Available", "dateListed": "11 Jun", "priceHistory": [{"date": "11 Jun", "price": 48.0}], "notes": ""}, {"id": "sl_51", "name": "Ivysaur 2 CLF", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007035", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 45.0}], "notes": ""}, {"id": "sl_52", "name": "Kingdra ex 131", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "C2898173", "rank": "33rd", "listPrice": 328.0, "costPrice": "", "marketPrice": "328.0", "status": "Available", "dateListed": "15 Apr", "priceHistory": [{"date": "15 Apr", "price": 328.0}], "notes": ""}, {"id": "sl_53", "name": "Lairon 111", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "U7854315", "rank": "", "listPrice": 27.0, "costPrice": "", "marketPrice": "27.0", "status": "Available", "dateListed": "25 Apr", "priceHistory": [{"date": "25 Apr", "price": 27.0}], "notes": ""}, {"id": "sl_54", "name": "Leafeon ex 200", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "K2397338", "rank": "28th", "listPrice": 136.0, "costPrice": "", "marketPrice": "136.0", "status": "Available", "dateListed": "9 Nov", "priceHistory": [{"date": "9 Nov", "price": 136.0}], "notes": ""}, {"id": "sl_55", "name": "Lucario Vstar 226 (JP)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "W5742353", "rank": "1st", "listPrice": 44.0, "costPrice": "", "marketPrice": "44.0", "status": "Available", "dateListed": "10 Sep", "priceHistory": [{"date": "10 Sep", "price": 44.0}], "notes": ""}, {"id": "sl_56", "name": "Lucario Vstar SWSH292", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "M5561364", "rank": "2nd", "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "status": "Available", "dateListed": "9 Sep", "priceHistory": [{"date": "9 Sep", "price": 100.0}], "notes": ""}, {"id": "sl_57", "name": "Magmar 6 CLL", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L6588013", "rank": "1st", "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "status": "Available", "dateListed": "23 Sep", "priceHistory": [{"date": "23 Sep", "price": 30.0}], "notes": ""}, {"id": "sl_58", "name": "Mesprit 114", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "T4868436", "rank": "1st", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "8 Sep", "priceHistory": [{"date": "8 Sep", "price": 45.0}], "notes": ""}, {"id": "sl_59", "name": "Mew 183", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Z4390771", "rank": "3rd", "listPrice": 65.0, "costPrice": "", "marketPrice": "65.0", "status": "Available", "dateListed": "19 Jun", "priceHistory": [{"date": "19 Jun", "price": 65.0}], "notes": ""}, {"id": "sl_60", "name": "Mew 183", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "112561731", "rank": "", "listPrice": 64.0, "costPrice": "", "marketPrice": "64.0", "status": "Available", "dateListed": "9 Sep", "priceHistory": [{"date": "9 Sep", "price": 64.0}], "notes": ""}, {"id": "sl_61", "name": "Mew ex 53", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L6786028", "rank": "13th", "listPrice": 636.0, "costPrice": "", "marketPrice": "636.0", "status": "Available", "dateListed": "23 Oct", "priceHistory": [{"date": "23 Oct", "price": 636.0}], "notes": ""}, {"id": "sl_62", "name": "Mewtwo 14 Classic Collection English", "type": "slab", "grader": "TAG", "grade": "9", "certNo": "Y8995038", "rank": "", "listPrice": 24.0, "costPrice": "", "marketPrice": "24.0", "status": "Available", "dateListed": "27 Oct", "priceHistory": [{"date": "27 Oct", "price": 24.0}], "notes": ""}, {"id": "sl_63", "name": "Mewtwo Vstar 221 (JP)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "P8790464", "rank": "3rd", "listPrice": 90.0, "costPrice": "", "marketPrice": "90.0", "status": "Available", "dateListed": "10 Sep", "priceHistory": [{"date": "10 Sep", "price": 90.0}], "notes": ""}, {"id": "sl_64", "name": "Milotic 70", "type": "slab", "grader": "CGC", "grade": "10", "certNo": "6039421037", "rank": "", "listPrice": 37.0, "costPrice": "", "marketPrice": "37.0", "status": "Available", "dateListed": "12 Jul", "priceHistory": [{"date": "12 Jul", "price": 37.0}], "notes": "PRISTINE"}, {"id": "sl_65", "name": "Mimikyu 75 (Pokemon Centre)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "P7413673", "rank": "9th", "listPrice": 328.0, "costPrice": "", "marketPrice": "328.0", "status": "Available", "dateListed": "23 Oct", "priceHistory": [{"date": "23 Oct", "price": 328.0}], "notes": ""}, {"id": "sl_66", "name": "Moltres & Zapdos & Articuno SM210", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "V1995744", "rank": "33rd", "listPrice": 400.0, "costPrice": "", "marketPrice": "400.0", "status": "Available", "dateListed": "6 Oct", "priceHistory": [{"date": "6 Oct", "price": 400.0}], "notes": ""}, {"id": "sl_67", "name": "Moltres ex 112", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "117221397", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "25 Oct", "priceHistory": [{"date": "25 Oct", "price": 45.0}], "notes": ""}, {"id": "sl_68", "name": "Oricorio ex 24", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "X3522928", "rank": "", "listPrice": 130.0, "costPrice": "", "marketPrice": "130.0", "status": "Available", "dateListed": "25 Apr", "priceHistory": [{"date": "25 Apr", "price": 130.0}], "notes": ""}, {"id": "sl_69", "name": "Pikachu 1", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "74333171", "rank": "", "listPrice": 50.0, "costPrice": "", "marketPrice": "50.0", "status": "Available", "dateListed": "14 Apr", "priceHistory": [{"date": "14 Apr", "price": 50.0}], "notes": ""}, {"id": "sl_70", "name": "Pikachu 1 JP", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L4197090", "rank": "1st", "listPrice": 74.0, "costPrice": "", "marketPrice": "74.0", "status": "Available", "dateListed": "4 Sep", "priceHistory": [{"date": "4 Sep", "price": 74.0}], "notes": ""}, {"id": "sl_71", "name": "Pikachu 1 JP 25th Anniversary", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "F8445667", "rank": "3rd", "listPrice": 84.0, "costPrice": "", "marketPrice": "84.0", "status": "Available", "dateListed": "3 Nov", "priceHistory": [{"date": "3 Nov", "price": 84.0}], "notes": ""}, {"id": "sl_72", "name": "Pikachu 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "P8871621", "rank": "13th", "listPrice": 81.0, "costPrice": "", "marketPrice": "81.0", "status": "Available", "dateListed": "15 Mar", "priceHistory": [{"date": "15 Mar", "price": 81.0}], "notes": ""}, {"id": "sl_73", "name": "Pikachu 173", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "F9858143", "rank": "2nd", "listPrice": 67.0, "costPrice": "", "marketPrice": "67.0", "status": "Available", "dateListed": "26 Aug", "priceHistory": [{"date": "26 Aug", "price": 67.0}], "notes": ""}, {"id": "sl_74", "name": "Pikachu 27", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "G2205323", "rank": "1st", "listPrice": 102.0, "costPrice": "", "marketPrice": "102.0", "status": "Available", "dateListed": "9 Sep", "priceHistory": [{"date": "9 Sep", "price": 102.0}], "notes": ""}, {"id": "sl_75", "name": "Pikachu 73", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "E1195521", "rank": "1st", "listPrice": 79.0, "costPrice": "", "marketPrice": "79.0", "status": "Available", "dateListed": "21 Aug", "priceHistory": [{"date": "21 Aug", "price": 79.0}], "notes": ""}, {"id": "sl_76", "name": "Pikachu 8 Classic Collection JP", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "H5273175", "rank": "1st", "listPrice": 99.0, "costPrice": "", "marketPrice": "99.0", "status": "Available", "dateListed": "9 Oct", "priceHistory": [{"date": "9 Oct", "price": 99.0}], "notes": ""}, {"id": "sl_77", "name": "Pikachu 88", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "W9591753", "rank": "2nd", "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "status": "Available", "dateListed": "9 Sep", "priceHistory": [{"date": "9 Sep", "price": 100.0}], "notes": ""}, {"id": "sl_78", "name": "Raichu 74 (Cracked)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Q2764377", "rank": "2nd", "listPrice": 37.0, "costPrice": "", "marketPrice": "37.0", "status": "Available", "dateListed": "8 Sep", "priceHistory": [{"date": "8 Sep", "price": 37.0}], "notes": ""}, {"id": "sl_79", "name": "Rapidash 69", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "M1378015", "rank": "1st", "listPrice": 46.0, "costPrice": "", "marketPrice": "46.0", "status": "Available", "dateListed": "11 Jun", "priceHistory": [{"date": "11 Jun", "price": 46.0}], "notes": ""}, {"id": "sl_80", "name": "Rayquaza Vmax 108", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "F7062366", "rank": "1st", "listPrice": 83.0, "costPrice": "", "marketPrice": "83.0", "status": "Available", "dateListed": "1 Oct", "priceHistory": [{"date": "1 Oct", "price": 83.0}], "notes": "PRISTINE"}, {"id": "sl_81", "name": "Reshiram & Zekrom GX 36", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "K2056690", "rank": "1st", "listPrice": 150.0, "costPrice": "", "marketPrice": "150.0", "status": "Available", "dateListed": "1 Sep", "priceHistory": [{"date": "1 Sep", "price": 150.0}], "notes": ""}, {"id": "sl_82", "name": "Reshiram & Zekrom GX 36", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "U9213377", "rank": "1st", "listPrice": 146.0, "costPrice": "", "marketPrice": "146.0", "status": "Available", "dateListed": "15 Sep", "priceHistory": [{"date": "15 Sep", "price": 146.0}], "notes": ""}, {"id": "sl_83", "name": "Riolu 10", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Q3944205", "rank": "12th", "listPrice": 74.0, "costPrice": "", "marketPrice": "74.0", "status": "Available", "dateListed": "1 Apr", "priceHistory": [{"date": "1 Apr", "price": 74.0}], "notes": ""}, {"id": "sl_84", "name": "Riolu 86", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "V8389416", "rank": "1st", "listPrice": 53.0, "costPrice": "", "marketPrice": "53.0", "status": "Available", "dateListed": "21 Jun", "priceHistory": [{"date": "21 Jun", "price": 53.0}], "notes": ""}, {"id": "sl_85", "name": "Salamence ex 129", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "H7070130", "rank": "", "listPrice": 70.0, "costPrice": "", "marketPrice": "70.0", "status": "Available", "dateListed": "25 Apr", "priceHistory": [{"date": "25 Apr", "price": 70.0}], "notes": ""}, {"id": "sl_86", "name": "Snivy 87", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "Z4096926", "rank": "2nd", "listPrice": 62.0, "costPrice": "", "marketPrice": "62.0", "status": "Available", "dateListed": "23 Sep", "priceHistory": [{"date": "23 Sep", "price": 62.0}], "notes": ""}, {"id": "sl_87", "name": "Squirtle 1 CLK", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "99410109", "rank": "", "listPrice": 54.0, "costPrice": "", "marketPrice": "54.0", "status": "Available", "dateListed": "23 Sep", "priceHistory": [{"date": "23 Sep", "price": 54.0}], "notes": ""}, {"id": "sl_88", "name": "Squirtle 1 CLK", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "N7875440", "rank": "1st", "listPrice": 51.0, "costPrice": "", "marketPrice": "51.0", "status": "Available", "dateListed": "23 Sep", "priceHistory": [{"date": "23 Sep", "price": 51.0}], "notes": ""}, {"id": "sl_89", "name": "Squirtle 1 CLK", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007040", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 45.0}], "notes": ""}, {"id": "sl_90", "name": "Tangela 178", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "P2189735", "rank": "1st", "listPrice": 50.0, "costPrice": "", "marketPrice": "50.0", "status": "Available", "dateListed": "17 Apr", "priceHistory": [{"date": "17 Apr", "price": 50.0}], "notes": ""}, {"id": "sl_91", "name": "Venusaur 3 Classic Collection JP", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "V4294519", "rank": "2nd", "listPrice": 90.0, "costPrice": "", "marketPrice": "90.0", "status": "Available", "dateListed": "15 Apr", "priceHistory": [{"date": "15 Apr", "price": 90.0}], "notes": ""}, {"id": "sl_92", "name": "Venusaur 3 CLF", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007036", "rank": "", "listPrice": 75.0, "costPrice": "", "marketPrice": "75.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 75.0}], "notes": ""}, {"id": "sl_93", "name": "Venusaur ex 198", "type": "slab", "grader": "PSA", "grade": "8", "certNo": "107163435", "rank": "", "listPrice": 80.0, "costPrice": "", "marketPrice": "80.0", "status": "Available", "dateListed": "27 Oct", "priceHistory": [{"date": "27 Oct", "price": 80.0}], "notes": ""}, {"id": "sl_94", "name": "Wailord 103", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "L4990495", "rank": "2nd", "listPrice": 39.0, "costPrice": "", "marketPrice": "39.0", "status": "Available", "dateListed": "4 Sep", "priceHistory": [{"date": "4 Sep", "price": 39.0}], "notes": ""}, {"id": "sl_95", "name": "Wailord 103 (Scratched back)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "J3043621", "rank": "2nd", "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "status": "Available", "dateListed": "8 Sep", "priceHistory": [{"date": "8 Sep", "price": 33.0}], "notes": ""}, {"id": "sl_96", "name": "Wartortle 2", "type": "slab", "grader": "TAG", "grade": "9", "certNo": "K7123340", "rank": "", "listPrice": 23.0, "costPrice": "", "marketPrice": "23.0", "status": "Available", "dateListed": "4 Jul", "priceHistory": [{"date": "4 Jul", "price": 23.0}], "notes": ""}, {"id": "sl_97", "name": "Wartortle 2 CLK", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "116007041", "rank": "", "listPrice": 40.0, "costPrice": "", "marketPrice": "40.0", "status": "Available", "dateListed": "26 Sep", "priceHistory": [{"date": "26 Sep", "price": 40.0}], "notes": ""}, {"id": "sl_98", "name": "Zapdos 40 (20th Anniversary)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "N6403025", "rank": "1st", "listPrice": 57.0, "costPrice": "", "marketPrice": "57.0", "status": "Available", "dateListed": "4 Sep", "priceHistory": [{"date": "4 Sep", "price": 57.0}], "notes": ""}, {"id": "sl_99", "name": "Zapdos 8 (25th Anniversary) JP", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "D5221949", "rank": "1st", "listPrice": 85.0, "costPrice": "", "marketPrice": "85.0", "status": "Available", "dateListed": "3 Oct", "priceHistory": [{"date": "3 Oct", "price": 85.0}], "notes": ""}, {"id": "sl_100", "name": "Zapdos 8 (25th Anniversary) JP", "type": "slab", "grader": "PSA", "grade": "10", "certNo": "113721810", "rank": "", "listPrice": 64.0, "costPrice": "", "marketPrice": "64.0", "status": "Available", "dateListed": "31 Dec", "priceHistory": [{"date": "31 Dec", "price": 64.0}], "notes": ""}, {"id": "sl_101", "name": "Zapdos ex 202", "type": "slab", "grader": "PSA", "grade": "7", "certNo": "117221390", "rank": "", "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "status": "Available", "dateListed": "25 Oct", "priceHistory": [{"date": "25 Oct", "price": 45.0}], "notes": ""}, {"id": "sl_102", "name": "Zapdos ex 202 (EN)", "type": "slab", "grader": "TAG", "grade": "10", "certNo": "K6737911", "rank": "6th", "listPrice": 218.0, "costPrice": "", "marketPrice": "218.0", "status": "Available", "dateListed": "13 Aug", "priceHistory": [{"date": "13 Aug", "price": 218.0}], "notes": ""}];
 const SEED_SALES = [{"id": "sale_1", "dateSold": "8 May 2026", "product": "eevee 173 raw", "buyer": "", "costPrice": 15.0, "totalCollected": 30.0, "shippingCost": 1.7, "profit": 13.3, "margin": "89%"}, {"id": "sale_2", "dateSold": "6 May 2026", "product": "1x eevee 173 sealed", "buyer": "", "costPrice": 16.3, "totalCollected": 38.0, "shippingCost": 1.7, "profit": 20.0, "margin": "123%"}, {"id": "sale_3", "dateSold": "7 May 2026", "product": "Dragonite 5", "buyer": "", "costPrice": 24.0, "totalCollected": 38.5, "shippingCost": 1.7, "profit": 12.8, "margin": "53%"}, {"id": "sale_4", "dateSold": "4 May 2026", "product": "Bundle: Zacian+Riolu+Scream Tail+Teal Mask", "buyer": "muffincake", "costPrice": 31.0, "totalCollected": 77.0, "shippingCost": 1.7, "profit": 44.3, "margin": "143%"}, {"id": "sale_5", "dateSold": "26 Apr 2026", "product": "Pikachu 25th anni tag 10 M9901557", "buyer": "md2510", "costPrice": 76.0, "totalCollected": 235.0, "shippingCost": 0.0, "profit": 159.0, "margin": "209%"}, {"id": "sale_6", "dateSold": "20 Apr 2026", "product": "2x Mew 183 PSA 10", "buyer": "pikapika_chooper", "costPrice": 130.0, "totalCollected": 480.0, "shippingCost": 0.0, "profit": 350.0, "margin": "269%"}, {"id": "sale_7", "dateSold": "20 Apr 2026", "product": "2x Mew 183 PSA 10 (Sequential)", "buyer": "Pikaciuuuu", "costPrice": 128.0, "totalCollected": 475.0, "shippingCost": 0.0, "profit": 347.0, "margin": "271%"}, {"id": "sale_8", "dateSold": "14 Apr 2026", "product": "Eevee 173 tag 10 D8832792", "buyer": "", "costPrice": 64.0, "totalCollected": 160.0, "shippingCost": 0.0, "profit": 96.0, "margin": "150%"}, {"id": "sale_9", "dateSold": "14 Apr 2026", "product": "3x Eevee 173 sealed", "buyer": "", "costPrice": 49.6, "totalCollected": 99.0, "shippingCost": 0.0, "profit": 49.4, "margin": "100%"}, {"id": "sale_10", "dateSold": "10 Apr 2026", "product": "Charmander 44 raw", "buyer": "jsjy04", "costPrice": 44.0, "totalCollected": 123.0, "shippingCost": 1.7, "profit": 77.3, "margin": "176%"}, {"id": "sale_11", "dateSold": "1 Apr 2026", "product": "Charmander 44 Sealed x2", "buyer": "riskyfeibong", "costPrice": 80.0, "totalCollected": 240.0, "shippingCost": 1.7, "profit": 158.3, "margin": "198%"}, {"id": "sale_12", "dateSold": "31 Mar 2026", "product": "Charizard ex 223", "buyer": "allthingsbundle", "costPrice": 114.0, "totalCollected": 170.0, "shippingCost": 1.7, "profit": 54.3, "margin": "48%"}, {"id": "sale_13", "dateSold": "19 Mar 2026", "product": "Charmander 44 sealed", "buyer": "jason", "costPrice": 40.0, "totalCollected": 115.0, "shippingCost": 1.8, "profit": 73.2, "margin": "183%"}, {"id": "sale_14", "dateSold": "13 Mar 2026", "product": "Ancient Mew psa 8", "buyer": "US money", "costPrice": 113.0, "totalCollected": 190.0, "shippingCost": 1.7, "profit": 75.3, "margin": "67%"}, {"id": "sale_15", "dateSold": "5 Mar 2026", "product": "Leafeon vstar 210 Tag 10", "buyer": "huang", "costPrice": 72.0, "totalCollected": 136.5, "shippingCost": 1.7, "profit": 62.8, "margin": "87%"}, {"id": "sale_16", "dateSold": "27 Jan 2026", "product": "Kingdra ex 131", "buyer": "Steven", "costPrice": 95.34, "totalCollected": 100.0, "shippingCost": 0.0, "profit": 4.66, "margin": "5%"}, {"id": "sale_17", "dateSold": "22 Jan 2026", "product": "SM210 + Ancient Mew bundle", "buyer": "vinh", "costPrice": 190.0, "totalCollected": 300.0, "shippingCost": 1.7, "profit": 108.3, "margin": "57%"}, {"id": "sale_18", "dateSold": "21 Jan 2026", "product": "Charmander 44 (Sealed)", "buyer": "angelvil", "costPrice": 41.0, "totalCollected": 97.0, "shippingCost": 0.0, "profit": 56.0, "margin": "137%"}, {"id": "sale_19", "dateSold": "6 Jan 2026", "product": "Charmander sealed + sunset mew", "buyer": "Maisie", "costPrice": 147.0, "totalCollected": 275.0, "shippingCost": 0.0, "profit": 128.0, "margin": "87%"}, {"id": "sale_20", "dateSold": "1 Jan 2026", "product": "11 pc smartpac", "buyer": "-", "costPrice": 19.25, "totalCollected": 23.1, "shippingCost": 0.0, "profit": 3.85, "margin": "20%"}, {"id": "sale_21", "dateSold": "1 Jan 2026", "product": "Brilliant Stars ETB + Lost Origin ETB", "buyer": "eus12", "costPrice": 270.0, "totalCollected": 444.0, "shippingCost": 0.0, "profit": 174.0, "margin": "64%"}, {"id": "sale_22", "dateSold": "23 Dec 2025", "product": "Smartpac 22 pcs", "buyer": "-", "costPrice": 40.25, "totalCollected": 46.6, "shippingCost": 0.0, "profit": 6.35, "margin": "16%"}, {"id": "sale_23", "dateSold": "16 Dec 2025", "product": "Eevee 173", "buyer": "Thirtyyearsago", "costPrice": 9.0, "totalCollected": 27.0, "shippingCost": 0.0, "profit": 18.0, "margin": "200%"}, {"id": "sale_24", "dateSold": "10 Dec 2025", "product": "Celebrations 25th ETB", "buyer": "Kelvin", "costPrice": 170.0, "totalCollected": 375.0, "shippingCost": 0.0, "profit": 205.0, "margin": "121%"}, {"id": "sale_25", "dateSold": "8 Dec 2025", "product": "Paldea evolved ETB", "buyer": "Kelvin", "costPrice": 125.0, "totalCollected": 185.0, "shippingCost": 0.0, "profit": 60.0, "margin": "48%"}, {"id": "sale_26", "dateSold": "4 Dec 2025", "product": "3x eevee 173 sealed", "buyer": "Danial Rose", "costPrice": 51.0, "totalCollected": 84.0, "shippingCost": 1.7, "profit": 31.3, "margin": "61%"}, {"id": "sale_27", "dateSold": "4 Dec 2025", "product": "Drowzee and brute bonnet tag 10", "buyer": "Kenshin", "costPrice": 82.0, "totalCollected": 145.0, "shippingCost": 0.0, "profit": 63.0, "margin": "77%"}, {"id": "sale_28", "dateSold": "1 Dec 2025", "product": "Lucario Vstar + Rayquaza Vmax", "buyer": "eugene chan", "costPrice": 6.0, "totalCollected": 47.0, "shippingCost": 0.0, "profit": 41.0, "margin": "683%"}, {"id": "sale_29", "dateSold": "1 Dec 2025", "product": "Dragonite 5", "buyer": "Moumoon", "costPrice": 23.0, "totalCollected": 62.0, "shippingCost": 1.7, "profit": 37.3, "margin": "162%"}, {"id": "sale_30", "dateSold": "27 Nov 2025", "product": "Ancient Mew", "buyer": "kunaldoshi", "costPrice": 58.0, "totalCollected": 145.0, "shippingCost": 1.7, "profit": 85.3, "margin": "147%"}, {"id": "sale_31", "dateSold": "23 Nov 2025", "product": "Pinsir psa 10", "buyer": "Aaron teo", "costPrice": 45.0, "totalCollected": 48.0, "shippingCost": 1.7, "profit": 1.3, "margin": "3%"}, {"id": "sale_32", "dateSold": "23 Nov 2025", "product": "Squirtle 148", "buyer": "Yong Sheng", "costPrice": 91.0, "totalCollected": 93.5, "shippingCost": 1.7, "profit": 0.8, "margin": "1%"}, {"id": "sale_33", "dateSold": "10 Nov 2025", "product": "2x Blastoise xy122", "buyer": "Cayden", "costPrice": 152.0, "totalCollected": 270.0, "shippingCost": 1.7, "profit": 116.3, "margin": "77%"}, {"id": "sale_34", "dateSold": "7 Nov 2025", "product": "Ancient Mew", "buyer": "gamercy", "costPrice": 68.0, "totalCollected": 163.5, "shippingCost": 1.7, "profit": 93.8, "margin": "138%"}, {"id": "sale_35", "dateSold": "7 Nov 2025", "product": "Arcanine 6 Promo", "buyer": "mdfazsyu", "costPrice": 9.0, "totalCollected": 23.0, "shippingCost": 1.7, "profit": 12.3, "margin": "137%"}, {"id": "sale_36", "dateSold": "6 Nov 2025", "product": "Koraidon sealed", "buyer": "chihuahua12345", "costPrice": 1.3, "totalCollected": 15.0, "shippingCost": 0.0, "profit": 13.7, "margin": "1054%"}, {"id": "sale_37", "dateSold": "3 Nov 2025", "product": "Koraidon + Miraidon sealed", "buyer": "joycechanc42891", "costPrice": 3.3, "totalCollected": 34.0, "shippingCost": 0.0, "profit": 30.7, "margin": "930%"}, {"id": "sale_38", "dateSold": "3 Nov 2025", "product": "Koraidon + Miraidon + Switch bundle", "buyer": "Mantalk637", "costPrice": 14.5, "totalCollected": 37.0, "shippingCost": 1.7, "profit": 20.8, "margin": "143%"}, {"id": "sale_39", "dateSold": "2 Nov 2025", "product": "Poke ball Swsh146", "buyer": "Alvsi", "costPrice": 21.0, "totalCollected": 51.0, "shippingCost": 1.7, "profit": 28.3, "margin": "135%"}, {"id": "sale_40", "dateSold": "30 Oct 2025", "product": "Mimikyu 75", "buyer": "whoops3", "costPrice": 1.0, "totalCollected": 18.5, "shippingCost": 1.7, "profit": 15.8, "margin": "1580%"}, {"id": "sale_41", "dateSold": "28 Oct 2025", "product": "Magneton 159", "buyer": "Khartmart", "costPrice": 9.5, "totalCollected": 16.0, "shippingCost": 1.6, "profit": 4.9, "margin": "52%"}, {"id": "sale_42", "dateSold": "27 Oct 2025", "product": "Dragonite 5", "buyer": "actofkindness", "costPrice": 1.0, "totalCollected": 51.5, "shippingCost": 1.6, "profit": 48.9, "margin": "4890%"}, {"id": "sale_43", "dateSold": "27 Oct 2025", "product": "Magneton promo", "buyer": "better_tomorrow", "costPrice": 2.0, "totalCollected": 20.0, "shippingCost": 1.6, "profit": 16.4, "margin": "820%"}, {"id": "sale_44", "dateSold": "26 Oct 2025", "product": "Flareon ex rc28 + Pikachu 241", "buyer": "Tefuda", "costPrice": 115.0, "totalCollected": 320.0, "shippingCost": 0.0, "profit": 205.0, "margin": "178%"}, {"id": "sale_45", "dateSold": "26 Oct 2025", "product": "Charizard ex 223", "buyer": "Tefuda", "costPrice": 132.0, "totalCollected": 135.0, "shippingCost": 0.0, "profit": 3.0, "margin": "2%"}, {"id": "sale_46", "dateSold": "26 Oct 2025", "product": "Dragonite 5 + Kingdra ex 131", "buyer": "Tefuda", "costPrice": 111.0, "totalCollected": 170.0, "shippingCost": 0.0, "profit": 59.0, "margin": "53%"}, {"id": "sale_47", "dateSold": "26 Oct 2025", "product": "Mew 183", "buyer": "Tefuda", "costPrice": 18.0, "totalCollected": 35.0, "shippingCost": 0.0, "profit": 17.0, "margin": "94%"}, {"id": "sale_48", "dateSold": "22 Oct 2025", "product": "Eevee 173", "buyer": "dash", "costPrice": 9.0, "totalCollected": 25.0, "shippingCost": 0.0, "profit": 16.0, "margin": "178%"}, {"id": "sale_49", "dateSold": "15 Oct 2025", "product": "PSA 9 Sequential Squirtle 148 + Bulbasaur 143", "buyer": "co0okie", "costPrice": 131.0, "totalCollected": 260.0, "shippingCost": 0.0, "profit": 129.0, "margin": "98%"}, {"id": "sale_50", "dateSold": "12 Oct 2025", "product": "Eevee 173", "buyer": "enzzz0", "costPrice": 15.0, "totalCollected": 28.5, "shippingCost": 1.7, "profit": 11.8, "margin": "79%"}, {"id": "sale_51", "dateSold": "10 Oct 2025", "product": "TAG 10 Eevee 78 + Charmander 44 + Snorlax 51", "buyer": "Valopika", "costPrice": 120.5, "totalCollected": 250.0, "shippingCost": 0.0, "profit": 129.5, "margin": "107%"}, {"id": "sale_52", "dateSold": "8 Oct 2025", "product": "Charizard ex 223", "buyer": "Ernie", "costPrice": 142.0, "totalCollected": 160.0, "shippingCost": 1.6, "profit": 16.4, "margin": "12%"}, {"id": "sale_53", "dateSold": "6 Oct 2025", "product": "Flareon ex rc28 + Mew ex 53 Sealed", "buyer": "Giggs Yeow", "costPrice": 185.0, "totalCollected": 295.0, "shippingCost": 1.6, "profit": 108.4, "margin": "59%"}, {"id": "sale_54", "dateSold": "6 Oct 2025", "product": "Charizard vstar SWSH", "buyer": "FarrelRayan", "costPrice": 62.0, "totalCollected": 91.5, "shippingCost": 1.6, "profit": 27.9, "margin": "45%"}, {"id": "sale_55", "dateSold": "6 Oct 2025", "product": "Lucario Vstar bundle", "buyer": "Timothy", "costPrice": 26.0, "totalCollected": 68.5, "shippingCost": 1.6, "profit": 40.9, "margin": "157%"}, {"id": "sale_56", "dateSold": "6 Oct 2025", "product": "3x eevee 173 Sealed", "buyer": "Danial Rose", "costPrice": 37.65, "totalCollected": 93.5, "shippingCost": 1.6, "profit": 54.25, "margin": "144%"}, {"id": "sale_57", "dateSold": "5 Oct 2025", "product": "Gengar ex 88", "buyer": "Dharma928", "costPrice": 5.88, "totalCollected": 33.0, "shippingCost": 0.0, "profit": 27.12, "margin": "461%"}, {"id": "sale_58", "dateSold": "2 Oct 2025", "product": "Kingdra ex 131", "buyer": "Don", "costPrice": 47.0, "totalCollected": 128.5, "shippingCost": 1.6, "profit": 79.9, "margin": "170%"}, {"id": "sale_59", "dateSold": "29 Sep 2025", "product": "2x Eevee 173 Sealed", "buyer": "techluv93", "costPrice": 25.1, "totalCollected": 70.0, "shippingCost": 2.2, "profit": 42.7, "margin": "170%"}, {"id": "sale_60", "dateSold": "28 Sep 2025", "product": "Cleffa 20", "buyer": "joseph.kwj", "costPrice": 1.5, "totalCollected": 9.5, "shippingCost": 1.6, "profit": 6.4, "margin": "427%"}, {"id": "sale_61", "dateSold": "26 Sep 2025", "product": "Charmander 44", "buyer": "Oliver", "costPrice": 27.3, "totalCollected": 87.0, "shippingCost": 0.0, "profit": 59.7, "margin": "219%"}, {"id": "sale_62", "dateSold": "25 Sep 2025", "product": "Eevee 173 sealed + Mimikyu 75 sealed", "buyer": "kukumo", "costPrice": 36.6, "totalCollected": 102.0, "shippingCost": 2.2, "profit": 63.2, "margin": "173%"}, {"id": "sale_63", "dateSold": "25 Sep 2025", "product": "Kingdra ex 131", "buyer": "jaceleeys", "costPrice": 47.0, "totalCollected": 135.0, "shippingCost": 0.0, "profit": 88.0, "margin": "187%"}, {"id": "sale_64", "dateSold": "23 Sep 2025", "product": "Flareon Ex RC28", "buyer": "Taden", "costPrice": 67.0, "totalCollected": 175.0, "shippingCost": 0.0, "profit": 108.0, "margin": "161%"}, {"id": "sale_65", "dateSold": "20 Sep 2025", "product": "Charmander 44", "buyer": "Lykari", "costPrice": 33.0, "totalCollected": 85.0, "shippingCost": 0.0, "profit": 52.0, "margin": "158%"}, {"id": "sale_66", "dateSold": "19 Sep 2025", "product": "Lucario Vstar SWSH291", "buyer": "Takumi", "costPrice": 11.5, "totalCollected": 15.0, "shippingCost": 0.0, "profit": 3.5, "margin": "30%"}, {"id": "sale_67", "dateSold": "19 Sep 2025", "product": "TAG 10 Pikachu 73", "buyer": "Takumi", "costPrice": 87.0, "totalCollected": 135.0, "shippingCost": 0.0, "profit": 48.0, "margin": "55%"}, {"id": "sale_68", "dateSold": "16 Sep 2025", "product": "Kingdra ex 131", "buyer": "jclobang", "costPrice": 47.0, "totalCollected": 140.0, "shippingCost": 0.0, "profit": 93.0, "margin": "198%"}, {"id": "sale_69", "dateSold": "16 Sep 2025", "product": "Kingdra ex 131", "buyer": "thehypepalace", "costPrice": 47.0, "totalCollected": 143.5, "shippingCost": 2.2, "profit": 94.3, "margin": "201%"}, {"id": "sale_70", "dateSold": "14 Sep 2025", "product": "3x Eevee 173 (Sealed)", "buyer": "mcchicken23", "costPrice": 35.4, "totalCollected": 81.0, "shippingCost": 2.2, "profit": 43.4, "margin": "123%"}, {"id": "sale_71", "dateSold": "13 Sep 2025", "product": "N's Reshiram 167 (Sealed Stamped)", "buyer": "Joelyu", "costPrice": 37.4, "totalCollected": 44.0, "shippingCost": 2.2, "profit": 4.4, "margin": "12%"}, {"id": "sale_72", "dateSold": "11 Sep 2025", "product": "3x eevee 173 sealed", "buyer": "Pokefrank daorui", "costPrice": 35.5, "totalCollected": 80.0, "shippingCost": 2.2, "profit": 42.3, "margin": "119%"}, {"id": "sale_73", "dateSold": "10 Sep 2025", "product": "Eevee 173 PC Tag 10", "buyer": "self", "costPrice": 428.0, "totalCollected": 1000.0, "shippingCost": 2.2, "profit": 569.8, "margin": "133%"}, {"id": "sale_74", "dateSold": "8 Sep 2025", "product": "Glaceon ex 150", "buyer": "Eugene", "costPrice": 117.0, "totalCollected": 220.0, "shippingCost": 2.2, "profit": 100.8, "margin": "86%"}, {"id": "sale_75", "dateSold": "7 Sep 2025", "product": "Eevee 173 Tag 10", "buyer": "Firdhouse Yeoh", "costPrice": 81.0, "totalCollected": 143.5, "shippingCost": 2.2, "profit": 60.3, "margin": "74%"}, {"id": "sale_76", "dateSold": "31 Aug 2025", "product": "Mew 183 PSA 10", "buyer": "self", "costPrice": 66.0, "totalCollected": 88.0, "shippingCost": 0.0, "profit": 22.0, "margin": "33%"}, {"id": "sale_77", "dateSold": "31 Aug 2025", "product": "Charmander 44", "buyer": "self", "costPrice": 30.0, "totalCollected": 53.0, "shippingCost": 0.0, "profit": 23.0, "margin": "77%"}, {"id": "sale_78", "dateSold": "30 Aug 2025", "product": "Charmander 44 sealed", "buyer": "self", "costPrice": 30.3, "totalCollected": 70.0, "shippingCost": 2.2, "profit": 37.5, "margin": "124%"}, {"id": "sale_79", "dateSold": "29 Aug 2025", "product": "Mew 183 PSA 10", "buyer": "self", "costPrice": 66.0, "totalCollected": 88.8, "shippingCost": 0.0, "profit": 22.8, "margin": "35%"}, {"id": "sale_80", "dateSold": "20 Jul 2025", "product": "Team Rocket's Mewtwo ex 231", "buyer": "Deekay Enwai", "costPrice": 390.0, "totalCollected": 425.0, "shippingCost": 0.0, "profit": 35.0, "margin": "9%"}, {"id": "sale_81", "dateSold": "15 Jul 2025", "product": "Eevee 173 TAG 10", "buyer": "Amos Hong", "costPrice": 120.0, "totalCollected": 130.0, "shippingCost": 2.2, "profit": 7.8, "margin": "7%"}, {"id": "sale_82", "dateSold": "15 Jul 2025", "product": "Eevee 173 TAG 10", "buyer": "Cher Wei", "costPrice": 77.0, "totalCollected": 116.5, "shippingCost": 0.0, "profit": 39.5, "margin": "51%"}, {"id": "sale_83", "dateSold": "2 Jul 2025", "product": "Eevee 173 Sealed bundle", "buyer": "self", "costPrice": 55.0, "totalCollected": 60.8, "shippingCost": 2.2, "profit": 3.6, "margin": "7%"}, {"id": "sale_84", "dateSold": "2 Jul 2025", "product": "Eevee 173 TAG 10", "buyer": "self", "costPrice": 67.0, "totalCollected": 130.0, "shippingCost": 2.2, "profit": 60.8, "margin": "91%"}, {"id": "sale_85", "dateSold": "2 Jul 2025", "product": "Mew 183 PSA 10", "buyer": "self", "costPrice": 60.0, "totalCollected": 79.3, "shippingCost": 2.2, "profit": 17.1, "margin": "29%"}, {"id": "sale_86", "dateSold": "29 Jun 2025", "product": "Mew 183 PSA 10", "buyer": "self", "costPrice": 63.5, "totalCollected": 80.0, "shippingCost": 2.2, "profit": 14.3, "margin": "23%"}, {"id": "sale_87", "dateSold": "29 Jun 2025", "product": "Reshiram & Zekrom GX 36", "buyer": "self", "costPrice": 36.0, "totalCollected": 35.0, "shippingCost": 2.2, "profit": -3.2, "margin": "-9%"}, {"id": "sale_88", "dateSold": "16 Jun 2025", "product": "Moltres & Zapdos & Articuno GX SM210 (PSA 9)", "buyer": "self", "costPrice": 90.0, "totalCollected": 125.0, "shippingCost": 2.2, "profit": 32.8, "margin": "36%"}, {"id": "sale_89", "dateSold": "16 Jun 2025", "product": "ETB: Crown Zenith", "buyer": "self", "costPrice": 156.0, "totalCollected": 190.0, "shippingCost": 0.0, "profit": 34.0, "margin": "22%"}, {"id": "sale_90", "dateSold": "6 Jun 2025", "product": "Booster Bundle: 151 English (2 boxes)", "buyer": "self", "costPrice": 82.8, "totalCollected": 180.0, "shippingCost": 0.0, "profit": 97.2, "margin": "117%"}, {"id": "sale_91", "dateSold": "19 May 2025", "product": "ETB: Brilliant Stars", "buyer": "self", "costPrice": 115.0, "totalCollected": 130.0, "shippingCost": 0.0, "profit": 15.0, "margin": "13%"}, {"id": "sale_92", "dateSold": "19 May 2025", "product": "ETB: Astral Radiance", "buyer": "self", "costPrice": 85.0, "totalCollected": 100.0, "shippingCost": 0.0, "profit": 15.0, "margin": "18%"}, {"id": "sale_93", "dateSold": "10 May 2025", "product": "Shrouded Fable", "buyer": "self", "costPrice": 69.0, "totalCollected": 102.5, "shippingCost": 0.0, "profit": 33.5, "margin": "49%"}];
 
-const saved = loadData();
-const DB = {
-  singles: saved ? saved.singles : SEED_SINGLES,
-  slabs: saved ? saved.slabs : SEED_SLABS,
-  sales: saved ? saved.sales : SEED_SALES
-};
-
-if (!saved) saveData();
+// DB is populated async by initDB() called at bottom of page
+let DB = { singles: [], slabs: [], sales: [] };
 
 function genId(prefix) { return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
+
+// ── Async DB init ────────────────────────────────────────────
+async function initDB() {
+  const main = document.getElementById('main-content');
+  if (main) main.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:var(--text3)"><div style="font-size:40px;animation:spin 1s linear infinite">⟳</div><div style="font-size:14px">Loading inventory from cloud…</div></div>';
+
+  try {
+    const saved = await loadData();
+    if (saved && (saved.singles?.length || saved.slabs?.length || saved.sales?.length)) {
+      DB.singles = saved.singles || [];
+      DB.slabs   = saved.slabs   || [];
+      DB.sales   = saved.sales   || [];
+    } else {
+      // First run — push seed data to Supabase
+      DB.singles = SEED_SINGLES.map(i => ({...i}));
+      DB.slabs   = SEED_SLABS.map(i => ({...i}));
+      DB.sales   = SEED_SALES.map(i => ({...i}));
+      await saveAllToSupabase();
+    }
+  } catch(e) {
+    // Network failure — fall back to localStorage seed
+    DB.singles = SEED_SINGLES.map(i => ({...i}));
+    DB.slabs   = SEED_SLABS.map(i => ({...i}));
+    DB.sales   = SEED_SALES.map(i => ({...i}));
+    toastError('Could not reach cloud — showing local data');
+  }
+
+  showPage('dashboard');
+}
+
 
 // =========== BULK SELECT ===========
 const selectedIds = { singles: new Set(), slabs: new Set(), sales: new Set() };
@@ -2429,12 +2653,13 @@ function updateField(table, id, field, val) {
   saveData();
 }
 
-function deleteItem(id, table) {
+async function deleteItem(id, table) {
   if (!confirm('Delete this item?')) return;
   const item = DB[table].find(i => i.id === id);
   snapshotForUndo();
   DB[table] = DB[table].filter(i => i.id !== id);
   saveData();
+  await sbDelete(table, id);
   clLog('delete', table, item ? item.name || item.product || id : id);
   toast('Deleted');
   if (table === 'singles') renderSingles();
@@ -2784,181 +3009,56 @@ function saveSale() {
 
 // =========== DASHBOARD ===========
 let dashCharts = {};
+let aiChatHistory = [];
 
-function renderDashboard() {
-  // ── Inventory cost (what you paid for current stock) ──
-  const invCostSingles = DB.singles
-    .filter(i => (i.status||'Available') === 'Available')
-    .reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const invCostSlabs = DB.slabs
-    .filter(i => (i.status||'Available') === 'Available')
-    .reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const totalInvCost = invCostSingles + invCostSlabs;
+function getDateRange() {
+  const sel = document.getElementById('dash-range');
+  const val = sel ? sel.value : '12';
+  if (val === 'all') return null;
+  const months = parseInt(val);
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+  return cutoff;
+}
 
-  // ── Market value (market price of current stock) ──
-  const mktSingles = DB.singles
-    .filter(i => (i.status||'Available') === 'Available')
-    .reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
-  const mktSlabs = DB.slabs
-    .filter(i => (i.status||'Available') === 'Available')
-    .reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
-  const totalMktValue = mktSingles + mktSlabs;
+function updateChartType(key, type) {
+  if (!dashCharts[key]) return;
+  dashCharts[key].config.type = type;
+  dashCharts[key].update();
+}
 
-  // ── Sales stats ──
-  const totalRevenue = DB.sales.reduce((s,i) => s + (i.totalCollected||0), 0);
-  const totalProfit  = DB.sales.reduce((s,i) => s + (i.profit||0), 0);
-  const totalCost    = DB.sales.reduce((s,i) => s + (i.costPrice||0), 0);
-  const avgProfitPerTx = DB.sales.length > 0 ? (totalProfit / DB.sales.length) : 0;
+function renderInvestChart() {
+  if (dashCharts.invest) { dashCharts.invest.destroy(); delete dashCharts.invest; }
+  const mode = document.getElementById('invest-mode')?.value || 'cost';
+  const topN = document.getElementById('invest-top')?.value || '10';
 
-  // ── Inventory counts ──
-  const singlesAvail = DB.singles.filter(i => (i.status||'Available') === 'Available').length;
-  const singlesSold  = DB.singles.filter(i => (i.status||'Available') === 'Sold').length;
-  const slabsAvail   = DB.slabs.filter(i => (i.status||'Available') === 'Available').length;
-  const slabsSold    = DB.slabs.filter(i => (i.status||'Available') === 'Sold').length;
-  const totalItems   = singlesAvail + slabsAvail;
-
-  function dashMetric(label, value, sub, tooltip, cls) {
-    return '<div class="metric">' +
-      '<button class="metric-info">i<span class="inv-stat-tooltip">' + tooltip + '</span></button>' +
-      '<div class="metric-label">' + label + '</div>' +
-      '<div class="metric-value' + (cls ? ' ' + cls : '') + '">' + value + '</div>' +
-      (sub ? '<div class="metric-sub">' + sub + '</div>' : '') +
-    '</div>';
-  }
-
-  // Row 1 — primary KPIs
-  document.getElementById('dash-metrics-primary').innerHTML =
-    dashMetric('Total Inventory Cost', 'S$' + totalInvCost.toFixed(0),
-      totalItems + ' items held',
-      'Sum of Cost Price for all available (unsold) singles and slabs. This is what you have tied up in current stock.') +
-    dashMetric('Total Market Value', totalMktValue > 0 ? 'S$' + totalMktValue.toFixed(0) : '—',
-      totalMktValue > 0 ? (totalMktValue - totalInvCost >= 0 ? '+' : '') + 'S$' + (totalMktValue - totalInvCost).toFixed(0) + ' unrealised' : 'No market prices set',
-      'Sum of Market Price for all available singles and slabs. Update market prices in each tab to see this figure.') +
-    dashMetric('All-time Revenue', 'S$' + totalRevenue.toFixed(0),
-      DB.sales.length + ' transactions',
-      'Sum of Total Collected across all sales records.') +
-    dashMetric('All-time Profit', 'S$' + totalProfit.toFixed(0),
-      totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(0) + '% avg margin' : '',
-      'Sum of Profit across all sales. Profit = Total Collected − Cost Price − Shipping.', totalProfit >= 0 ? 'pos' : 'neg') +
-    dashMetric('Avg Profit / Sale', 'S$' + avgProfitPerTx.toFixed(0),
-      DB.sales.length + ' sales averaged',
-      'Total all-time profit divided by number of sales transactions.', avgProfitPerTx >= 0 ? 'pos' : 'neg');
-
-  // Row 2 — inventory breakdown with exposure %
-  const singlesExposurePct = totalInvCost > 0 ? ((invCostSingles / totalInvCost) * 100).toFixed(0) : 0;
-  const slabsExposurePct   = totalInvCost > 0 ? ((invCostSlabs   / totalInvCost) * 100).toFixed(0) : 0;
-
-  document.getElementById('dash-metrics-secondary').innerHTML =
-    dashMetric('Singles', singlesAvail,
-      singlesSold + ' sold · ' + singlesExposurePct + '% of cost',
-      'Available singles. "% of cost" = singles cost ÷ total inventory cost — shows how much of your capital is in singles.') +
-    dashMetric('Slabs', slabsAvail,
-      slabsSold + ' sold · ' + slabsExposurePct + '% of cost',
-      'Available slabs. "% of cost" = slabs cost ÷ total inventory cost — shows how much of your capital is in slabs.') +
-    dashMetric('Total Sold', singlesSold + slabsSold,
-      'singles + slabs',
-      'Total items marked as Sold across both Singles and Slabs tabs.') +
-    dashMetric('Sales This Month', (function() {
-      const now = new Date();
-      const mo = now.toLocaleString('en-GB', {month:'short'}), yr = now.getFullYear();
-      return DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).length;
-    })(),
-      (function() {
-        const now = new Date();
-        const mo = now.toLocaleString('en-GB', {month:'short'}), yr = now.getFullYear();
-        const p = DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).reduce((s,i)=>s+(i.profit||0),0);
-        return (p >= 0 ? '+' : '') + 'S$' + p.toFixed(0) + ' profit';
-      })(),
-      'Number of sales recorded in the current calendar month.');
-
-  // Monthly data — normalise all date formats to "Mon YYYY" before grouping
-  function normaliseToMonthYear(raw) {
-    if (!raw || !raw.trim()) return null;
-    const s = raw.trim();
-    // Already "Month YYYY" e.g. "Nov 2025"
-    const m1 = s.match(/^(\w{3,9})\s+(\d{4})$/i);
-    if (m1) return m1[1].slice(0,3) + ' ' + m1[2];
-    // "D Month YYYY" e.g. "9 Nov 2025" or "09 Nov 2025"
-    const m2 = s.match(/\d{1,2}\s+(\w{3,9})\s+(\d{4})/i);
-    if (m2) return m2[1].slice(0,3) + ' ' + m2[2];
-    // ISO "YYYY-MM-DD"
-    const m3 = s.match(/^(\d{4})-(\d{2})-\d{2}/);
-    if (m3) { const d = new Date(s + 'T00:00:00'); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'}) + ' ' + d.getFullYear(); }
-    // DD/MM/YYYY or DD-MM-YYYY
-    const m4 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (m4) { const d = new Date(m4[3] + '-' + m4[2].padStart(2,'0') + '-' + m4[1].padStart(2,'0')); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'}) + ' ' + d.getFullYear(); }
-    // MM/DD/YYYY
-    const m5 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (m5) { const d = new Date(m5[3] + '-' + m5[1].padStart(2,'0') + '-' + m5[2].padStart(2,'0')); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'}) + ' ' + d.getFullYear(); }
-    return null;
-  }
-
-  const months = {};
-  DB.sales.forEach(s => {
-    const key = normaliseToMonthYear(s.dateSold);
-    if (!key) return;
-    if (!months[key]) months[key] = { revenue: 0, profit: 0 };
-    months[key].revenue += s.totalCollected || 0;
-    months[key].profit += s.profit || 0;
-  });
-  
-  const sortedMonths = Object.keys(months).sort((a,b) => {
-    // "Mon YYYY" e.g. "Nov 2025" — parse reliably
-    const da = new Date('1 ' + a), db = new Date('1 ' + b);
-    return da - db;
-  }).slice(-12);
-  const labels = sortedMonths;
-  const revenues = sortedMonths.map(m => parseFloat(months[m].revenue.toFixed(0)));
-  const profits = sortedMonths.map(m => parseFloat(months[m].profit.toFixed(0)));
-
-  Object.values(dashCharts).forEach(c => c.destroy && c.destroy());
-  dashCharts = {};
-
-  const rCtx = document.getElementById('revenueChart').getContext('2d');
-  dashCharts.rev = new Chart(rCtx, {
-    type: 'bar',
-    data: { labels, datasets: [{ label: 'Revenue', data: revenues, backgroundColor: '#4a9eff44', borderColor: '#4a9eff', borderWidth: 1.5, borderRadius: 4 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#666', font: { size: 11 } }, grid: { display: false } }, y: { ticks: { color: '#666', font: { size: 11 }, callback: v => 'S$' + v }, grid: { color: '#2a2a2a' } } } }
+  // Group available items by first word of name (Pokémon name)
+  const grouped = {};
+  const allItems = [
+    ...DB.singles.filter(i => (i.status||'Available') === 'Available'),
+    ...DB.slabs.filter(i => (i.status||'Available') === 'Available')
+  ];
+  allItems.forEach(i => {
+    const poke = (i.name||'Unknown').split(' ')[0];
+    const val = parseFloat(mode === 'market' ? (i.marketPrice||i.costPrice||0) : (i.costPrice||0));
+    if (!val) return;
+    grouped[poke] = (grouped[poke]||0) + val;
   });
 
-  const pCtx = document.getElementById('profitChart').getContext('2d');
-  dashCharts.profit = new Chart(pCtx, {
-    type: 'line',
-    data: { labels, datasets: [{ label: 'Profit', data: profits, borderColor: '#4CAF50', backgroundColor: '#4CAF5022', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#4CAF50' }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#666', font: { size: 11 } }, grid: { display: false } }, y: { ticks: { color: '#666', font: { size: 11 }, callback: v => 'S$' + v }, grid: { color: '#2a2a2a' } } } }
-  });
+  let entries = Object.entries(grouped).sort((a,b) => b[1]-a[1]);
+  if (topN !== 'all') entries = entries.slice(0, parseInt(topN));
 
-  // Grader breakdown
-  const graderCount = {};
-  DB.slabs.forEach(s => { const g = s.grader||'Other'; graderCount[g] = (graderCount[g]||0) + 1; });
-  const gCtx = document.getElementById('graderChart').getContext('2d');
-  dashCharts.grader = new Chart(gCtx, {
-    type: 'doughnut',
-    data: {
-      labels: Object.keys(graderCount),
-      datasets: [{ data: Object.values(graderCount), backgroundColor: ['#22c55e','#3b82f6','#f59e0b','#a78bfa'], borderWidth: 2, borderColor: '#161616' }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#999', font: { size: 12 }, padding: 12, usePointStyle: true } } } }
-  });
-
-  // Top 10 capital tied up — horizontal bar chart
-  const allHeld = [
-    ...DB.singles.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0)
-      .map(i => ({ name: i.name, cost: parseFloat(i.costPrice), type: 'single' })),
-    ...DB.slabs.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0)
-      .map(i => ({ name: i.name + (i.grader ? ' ' + i.grader + ' ' + i.grade : ''), cost: parseFloat(i.costPrice), type: 'slab' }))
-  ].sort((a,b) => b.cost - a.cost).slice(0, 10);
-
-  const capCtx = document.getElementById('capitalChart').getContext('2d');
-  dashCharts.capital = new Chart(capCtx, {
+  const ctx = document.getElementById('investChart').getContext('2d');
+  const palette = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80','#facc15','#e879f9','#94a3b8','#f472b6','#a3e635','#22d3ee'];
+  dashCharts.invest = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: allHeld.map(i => i.name.length > 22 ? i.name.slice(0,22) + '…' : i.name),
+      labels: entries.map(([k]) => k),
       datasets: [{
-        label: 'Cost (S$)',
-        data: allHeld.map(i => i.cost),
-        backgroundColor: allHeld.map(i => i.type === 'slab' ? '#2dd4bf44' : '#a78bfa44'),
-        borderColor:     allHeld.map(i => i.type === 'slab' ? '#2dd4bf' : '#a78bfa'),
+        label: mode === 'market' ? 'Market Value (S$)' : 'Cost Invested (S$)',
+        data: entries.map(([,v]) => parseFloat(v.toFixed(0))),
+        backgroundColor: entries.map((_,i) => palette[i % palette.length] + '55'),
+        borderColor:     entries.map((_,i) => palette[i % palette.length]),
         borderWidth: 1.5, borderRadius: 4
       }]
     },
@@ -2975,46 +3075,347 @@ function renderDashboard() {
       }
     }
   });
+}
 
-  // Cost exposure donut — singles vs slabs
+function renderDashboard() {
+  // ── Inventory cost ──
+  const invCostSingles = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
+  const invCostSlabs   = DB.slabs.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
+  const totalInvCost   = invCostSingles + invCostSlabs;
+
+  // ── Market value ──
+  const mktSingles   = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
+  const mktSlabs     = DB.slabs.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
+  const totalMktValue = mktSingles + mktSlabs;
+
+  // ── Sales stats (filtered by date range) ──
+  const cutoff = getDateRange();
+  const filteredSales = cutoff
+    ? DB.sales.filter(s => { const k = normaliseToMonthYear(s.dateSold); if (!k) return false; return new Date('1 ' + k) >= cutoff; })
+    : DB.sales;
+
+  const totalRevenue   = filteredSales.reduce((s,i) => s + (i.totalCollected||0), 0);
+  const totalProfit    = filteredSales.reduce((s,i) => s + (i.profit||0), 0);
+  const avgProfitPerTx = filteredSales.length > 0 ? (totalProfit / filteredSales.length) : 0;
+
+  // ── Counts ──
+  const singlesAvail = DB.singles.filter(i => (i.status||'Available') === 'Available').length;
+  const singlesSold  = DB.singles.filter(i => (i.status||'Available') === 'Sold').length;
+  const slabsAvail   = DB.slabs.filter(i => (i.status||'Available') === 'Available').length;
+  const slabsSold    = DB.slabs.filter(i => (i.status||'Available') === 'Sold').length;
+  const totalItems   = singlesAvail + slabsAvail;
+
+  function dashMetric(label, value, sub, tooltip, cls) {
+    return '<div class="metric">' +
+      '<button class="metric-info">i<span class="inv-stat-tooltip">' + tooltip + '</span></button>' +
+      '<div class="metric-label">' + label + '</div>' +
+      '<div class="metric-value' + (cls ? ' ' + cls : '') + '">' + value + '</div>' +
+      (sub ? '<div class="metric-sub">' + sub + '</div>' : '') +
+    '</div>';
+  }
+
+  const rangeLabel = (document.getElementById('dash-range')?.options[document.getElementById('dash-range')?.selectedIndex]?.text || '');
+
+  // Row 1 — KPIs (removed All-time Revenue card, kept Profit & Avg)
+  document.getElementById('dash-metrics-primary').innerHTML =
+    dashMetric('Total Inventory Cost', 'S$' + totalInvCost.toFixed(0),
+      totalItems + ' items held',
+      'Sum of Cost Price for all available (unsold) singles and slabs.') +
+    dashMetric('Total Market Value', totalMktValue > 0 ? 'S$' + totalMktValue.toFixed(0) : '—',
+      totalMktValue > 0 ? (totalMktValue - totalInvCost >= 0 ? '+' : '') + 'S$' + (totalMktValue - totalInvCost).toFixed(0) + ' unrealised' : 'No market prices set',
+      'Sum of Market Price for all available singles and slabs.') +
+    dashMetric('Profit (' + rangeLabel + ')', 'S$' + totalProfit.toFixed(0),
+      totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(0) + '% avg margin' : filteredSales.length + ' sales',
+      'Total profit from sales in the selected period.', totalProfit >= 0 ? 'pos' : 'neg') +
+    dashMetric('Avg Profit / Sale', 'S$' + avgProfitPerTx.toFixed(0),
+      filteredSales.length + ' sales averaged',
+      'Total profit ÷ number of sales in selected period.', avgProfitPerTx >= 0 ? 'pos' : 'neg');
+
+  // Row 2 — inventory breakdown (removed Total Sold for singles/slabs separately)
+  const singlesExposurePct = totalInvCost > 0 ? ((invCostSingles / totalInvCost) * 100).toFixed(0) : 0;
+  const slabsExposurePct   = totalInvCost > 0 ? ((invCostSlabs   / totalInvCost) * 100).toFixed(0) : 0;
+  document.getElementById('dash-metrics-secondary').innerHTML =
+    dashMetric('Singles Available', singlesAvail, singlesSold + ' sold · ' + singlesExposurePct + '% of capital', 'Available singles and how much of your capital they represent.') +
+    dashMetric('Slabs Available', slabsAvail, slabsSold + ' sold · ' + slabsExposurePct + '% of capital', 'Available slabs and how much of your capital they represent.') +
+    dashMetric('Sales This Month', (function() {
+      const now = new Date(), mo = now.toLocaleString('en-GB',{month:'short'}), yr = now.getFullYear();
+      return DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).length;
+    })(), (function() {
+      const now = new Date(), mo = now.toLocaleString('en-GB',{month:'short'}), yr = now.getFullYear();
+      const p = DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).reduce((s,i)=>s+(i.profit||0),0);
+      return (p >= 0 ? '+' : '') + 'S$' + p.toFixed(0) + ' profit';
+    })(), 'Sales this calendar month.');
+
+  // ── Monthly chart data ──
+  const months = {};
+  filteredSales.forEach(s => {
+    const key = normaliseToMonthYear(s.dateSold);
+    if (!key) return;
+    if (!months[key]) months[key] = { revenue: 0, profit: 0 };
+    months[key].revenue += s.totalCollected || 0;
+    months[key].profit  += s.profit || 0;
+  });
+  const sortedMonths = Object.keys(months).sort((a,b) => new Date('1 '+a) - new Date('1 '+b));
+  const labels    = sortedMonths;
+  const revenues  = sortedMonths.map(m => parseFloat(months[m].revenue.toFixed(0)));
+  const profits   = sortedMonths.map(m => parseFloat(months[m].profit.toFixed(0)));
+
+  // ── Destroy old charts ──
+  Object.values(dashCharts).forEach(c => { try { c.destroy && c.destroy(); } catch(e) {} });
+  dashCharts = {};
+
+  const chartDefaults = {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 600, easing: 'easeInOutQuart' },
+    plugins: { legend: { display: false } }
+  };
+  const gridColor = '#2a2a2a';
+  const axisColor = '#666';
+
+  // Revenue chart
+  const rCtx = document.getElementById('revenueChart').getContext('2d');
+  dashCharts.rev = new Chart(rCtx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Revenue (S$)', data: revenues, backgroundColor: '#4a9eff44', borderColor: '#4a9eff', borderWidth: 1.5, borderRadius: 4 }] },
+    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
+  });
+
+  // Profit chart
+  const pCtx = document.getElementById('profitChart').getContext('2d');
+  dashCharts.profit = new Chart(pCtx, {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Profit (S$)', data: profits, borderColor: '#4CAF50', backgroundColor: '#4CAF5022', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#4CAF50' }] },
+    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
+  });
+
+  // Cumulative profit chart
+  const cumProfits = profits.reduce((acc, v, i) => { acc.push((acc[i-1]||0) + v); return acc; }, []);
+  const cpCtx = document.getElementById('cumulativeChart').getContext('2d');
+  dashCharts.cumulative = new Chart(cpCtx, {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Cumulative Profit', data: cumProfits, borderColor: '#f59e0b', backgroundColor: '#f59e0b22', fill: true, tension: 0.3, borderWidth: 2, pointRadius: 3 }] },
+    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
+  });
+
+  // Grader chart
+  const graderCount = {};
+  DB.slabs.forEach(s => { const g = s.grader||'Other'; graderCount[g] = (graderCount[g]||0) + 1; });
+  const gCtx = document.getElementById('graderChart').getContext('2d');
+  dashCharts.grader = new Chart(gCtx, {
+    type: 'doughnut',
+    data: { labels: Object.keys(graderCount), datasets: [{ data: Object.values(graderCount), backgroundColor: ['#22c55e','#3b82f6','#f59e0b','#a78bfa'], borderWidth: 2, borderColor: '#161616' }] },
+    options: { ...chartDefaults, plugins: { legend: { display: true, position: 'bottom', labels: { color: '#999', font: {size:12}, padding: 12, usePointStyle: true } } } }
+  });
+
+  // Capital chart
+  const allHeld = [
+    ...DB.singles.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0).map(i => ({ name: i.name, cost: parseFloat(i.costPrice), type: 'single' })),
+    ...DB.slabs.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0).map(i => ({ name: i.name + (i.grader ? ' ' + i.grader + ' ' + i.grade : ''), cost: parseFloat(i.costPrice), type: 'slab' }))
+  ].sort((a,b) => b.cost - a.cost).slice(0,10);
+  const capCtx = document.getElementById('capitalChart').getContext('2d');
+  dashCharts.capital = new Chart(capCtx, {
+    type: 'bar',
+    data: {
+      labels: allHeld.map(i => i.name.length > 22 ? i.name.slice(0,22)+'…' : i.name),
+      datasets: [{ label: 'Cost (S$)', data: allHeld.map(i => i.cost), backgroundColor: allHeld.map(i => i.type === 'slab' ? '#2dd4bf44' : '#a78bfa44'), borderColor: allHeld.map(i => i.type === 'slab' ? '#2dd4bf' : '#a78bfa'), borderWidth: 1.5, borderRadius: 4 }]
+    },
+    options: { ...chartDefaults, indexAxis: 'y', plugins: { legend: {display:false}, tooltip: { callbacks: { label: ctx => ' S$' + ctx.parsed.x.toFixed(0) } } }, scales: { x: { ticks: { color: axisColor, font: {size:10}, callback: v=>'S$'+v }, grid: {color:gridColor} }, y: { ticks: { color: '#ccc', font: {size:11} }, grid: {display:false} } } }
+  });
+
+  // Exposure donut
   const expCtx = document.getElementById('exposureChart').getContext('2d');
   dashCharts.exposure = new Chart(expCtx, {
     type: 'doughnut',
-    data: {
-      labels: ['Singles', 'Slabs'],
-      datasets: [{ data: [invCostSingles, invCostSlabs], backgroundColor: ['#a78bfa', '#2dd4bf'], borderWidth: 2, borderColor: '#161616' }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      cutout: '68%'
-    }
+    data: { labels: ['Singles','Slabs'], datasets: [{ data: [invCostSingles, invCostSlabs], backgroundColor: ['#a78bfa','#2dd4bf'], borderWidth: 2, borderColor: '#161616' }] },
+    options: { ...chartDefaults, plugins: { legend: {display:false} }, cutout: '68%' }
   });
-
-  // Exposure legend with % bars
   const expTotal = invCostSingles + invCostSlabs || 1;
   document.getElementById('exposure-legend').innerHTML = [
-    { label: 'Singles', cost: invCostSingles, color: '#a78bfa' },
-    { label: 'Slabs',   cost: invCostSlabs,   color: '#2dd4bf' }
+    { label:'Singles', cost:invCostSingles, color:'#a78bfa' },
+    { label:'Slabs',   cost:invCostSlabs,   color:'#2dd4bf' }
   ].map(e => {
-    const pct = ((e.cost / expTotal) * 100).toFixed(0);
-    return '<div>' +
-      '<div style="display:flex;justify-content:space-between;margin-bottom:3px">' +
-        '<span style="color:var(--text2);display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:' + e.color + ';display:inline-block"></span>' + e.label + '</span>' +
-        '<span style="color:var(--text);font-weight:600">S$' + e.cost.toFixed(0) + ' <span style="color:var(--text3);font-weight:400">(' + pct + '%)</span></span>' +
-      '</div>' +
-      '<div style="height:4px;background:var(--bg3);border-radius:2px"><div style="height:4px;width:' + pct + '%;background:' + e.color + ';border-radius:2px"></div></div>' +
-    '</div>';
+    const pct = ((e.cost/expTotal)*100).toFixed(0);
+    return '<div><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--text2);display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:' + e.color + ';display:inline-block"></span>' + e.label + '</span><span style="color:var(--text);font-weight:600">S$' + e.cost.toFixed(0) + ' <span style="color:var(--text3);font-weight:400">(' + pct + '%)</span></span></div><div style="height:4px;background:var(--bg3);border-radius:2px"><div style="height:4px;width:' + pct + '%;background:' + e.color + ';border-radius:2px"></div></div></div>';
   }).join('');
+
+  // Investment per Pokémon
+  renderInvestChart();
 
   // Top sales
   const topSales = [...DB.sales].sort((a,b) => (b.profit||0)-(a.profit||0)).slice(0,10);
-  document.getElementById('top-sales').innerHTML = topSales.map(s =>
+  document.getElementById('top-sales').innerHTML = topSales.length ? topSales.map(s =>
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">' +
     '<div style="font-size:13px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + s.product + '">' + s.product + '</div>' +
     '<div style="font-size:13px;font-weight:600;color:var(--green);font-family:monospace;white-space:nowrap">+S$' + (s.profit||0).toFixed(0) + '</div>' +
-    '</div>'
+    '</div>').join('') : '<div style="color:var(--text3);font-size:13px;padding:20px 0;text-align:center">No sales yet</div>';
+
+  // Init AI analyst quick chips
+  initAiAnalyst();
+}
+
+// =========== AI ANALYST ===========
+const AI_QUICK_PROMPTS = [
+  'What is my total exposure by Pokémon type?',
+  'Which cards have the highest unrealised gain?',
+  'What is my best performing sale?',
+  'Show me my top 5 most valuable singles',
+  'How much capital do I have in Japanese cards?',
+  'Which Pokémon have I invested the most in?',
+  'What is my average profit margin across all sales?',
+  'Show me cards with no market price set',
+];
+
+function initAiAnalyst() {
+  const chips = document.getElementById('ai-quick-chips');
+  if (!chips || chips.dataset.init) return;
+  chips.dataset.init = '1';
+  chips.innerHTML = AI_QUICK_PROMPTS.map(p =>
+    '<button class="btn btn-sm" style="font-size:11px;border-radius:20px;padding:4px 10px;background:var(--bg3)" onclick="sendAiPrompt(' + JSON.stringify(p) + ')">' + p + '</button>'
   ).join('');
+}
+
+function toggleAiPanel() {
+  const body = document.getElementById('ai-analyst-body');
+  const icon = document.getElementById('ai-panel-toggle-icon');
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  icon.textContent = hidden ? '▲' : '▼';
+}
+
+function clearAiChat() {
+  aiChatHistory = [];
+  document.getElementById('ai-chat-history').innerHTML = '';
+  document.getElementById('ai-viz-area').style.display = 'none';
+  document.getElementById('ai-viz-content').innerHTML = '';
+}
+
+function sendAiPrompt(prompt) {
+  document.getElementById('ai-chat-input').value = prompt;
+  sendAiAnalyst();
+}
+
+function appendAiMessage(role, html) {
+  const el = document.getElementById('ai-chat-history');
+  const isUser = role === 'user';
+  const div = document.createElement('div');
+  div.style.cssText = 'display:flex;gap:8px;align-items:flex-start;' + (isUser ? 'flex-direction:row-reverse' : '');
+  div.innerHTML =
+    '<div style="width:28px;height:28px;border-radius:50%;background:' + (isUser ? 'var(--accent)' : 'var(--bg3)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">' + (isUser ? '👤' : '🤖') + '</div>' +
+    '<div style="background:' + (isUser ? 'var(--accent)22' : 'var(--bg2)') + ';border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.6;max-width:85%;word-break:break-word">' + html + '</div>';
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function sendAiAnalyst() {
+  const input = document.getElementById('ai-chat-input');
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = '';
+
+  const btn = document.getElementById('ai-send-btn');
+  btn.disabled = true;
+  btn.textContent = '…';
+
+  appendAiMessage('user', question);
+
+  // Build a rich data snapshot for the AI
+  const snapshot = {
+    singles_available: DB.singles.filter(i => (i.status||'Available') === 'Available').map(i => ({ name: i.name, language: i.language, type: i.type, set: i.set, costPrice: parseFloat(i.costPrice)||0, marketPrice: parseFloat(i.marketPrice)||0, condition: i.condition })),
+    slabs_available: DB.slabs.filter(i => (i.status||'Available') === 'Available').map(i => ({ name: i.name, grader: i.grader, grade: i.grade, costPrice: parseFloat(i.costPrice)||0, marketPrice: parseFloat(i.marketPrice)||0 })),
+    sales: DB.sales.map(s => ({ product: s.product, dateSold: s.dateSold, costPrice: parseFloat(s.costPrice)||0, totalCollected: parseFloat(s.totalCollected)||0, profit: parseFloat(s.profit)||0, margin: s.margin })),
+    summary: {
+      total_singles_available: DB.singles.filter(i => (i.status||'Available') === 'Available').length,
+      total_slabs_available: DB.slabs.filter(i => (i.status||'Available') === 'Available').length,
+      total_sales: DB.sales.length,
+    }
+  };
+
+  // Push to conversation history for multi-turn
+  aiChatHistory.push({ role: 'user', content: question });
+
+  const systemPrompt = `You are a smart Pokémon card portfolio analyst for Kujira Collectibles, a Singapore-based reseller.
+You have access to the user's full live inventory and sales data below. Answer questions analytically and concisely.
+Always use Singapore Dollars (S$). When the user asks for data visualisations or charts, include a JSON block at the end of your response in this exact format:
+<CHART>{"type":"bar|line|doughnut|pie","title":"Chart Title","labels":["A","B"],"data":[1,2],"colors":["#hex1","#hex2"]}</CHART>
+Only include the CHART block when a visual would genuinely help. For text answers, just answer directly.
+Current portfolio data: ${JSON.stringify(snapshot)}`;
+
+  const messages = [
+    { role: 'user', content: systemPrompt + '\n\nUser question: ' + question }
+  ];
+  if (aiChatHistory.length > 2) {
+    // Include recent context (last 4 exchanges)
+    const recent = aiChatHistory.slice(-5, -1);
+    messages[0].content = systemPrompt;
+    recent.forEach(m => messages.push(m));
+    messages.push({ role: 'user', content: question });
+  }
+
+  try {
+    const result = await callAI(messages[0].content, false);
+
+    // Extract optional chart JSON
+    const chartMatch = result.match(/<CHART>([\s\S]*?)<\/CHART>/);
+    const textReply = result.replace(/<CHART>[\s\S]*?<\/CHART>/g, '').trim();
+
+    aiChatHistory.push({ role: 'assistant', content: textReply });
+    appendAiMessage('assistant', textReply.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'));
+
+    if (chartMatch) {
+      try {
+        const chartData = JSON.parse(chartMatch[1].trim());
+        renderAiChart(chartData);
+      } catch(e) {}
+    }
+  } catch(e) {
+    appendAiMessage('assistant', '⚠ Error: ' + e.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Ask →';
+}
+
+function renderAiChart(cd) {
+  const area = document.getElementById('ai-viz-area');
+  const content = document.getElementById('ai-viz-content');
+  area.style.display = '';
+  content.innerHTML = '<canvas id="ai-chart" style="max-height:280px"></canvas>';
+  if (dashCharts.aiChart) { try { dashCharts.aiChart.destroy(); } catch(e) {} }
+  const palette = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80'];
+  const colors = cd.colors?.length ? cd.colors : cd.labels.map((_,i) => palette[i%palette.length]);
+  const ctx = document.getElementById('ai-chart').getContext('2d');
+  dashCharts.aiChart = new Chart(ctx, {
+    type: cd.type || 'bar',
+    data: {
+      labels: cd.labels,
+      datasets: [{ label: cd.title, data: cd.data, backgroundColor: colors.map(c => c + '55'), borderColor: colors, borderWidth: 1.5, borderRadius: cd.type === 'bar' ? 4 : 0, fill: cd.type === 'line' }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 500 },
+      plugins: {
+        legend: { display: cd.type === 'doughnut' || cd.type === 'pie', position: 'bottom', labels: { color: '#999', font: {size:11}, padding:10, usePointStyle:true } },
+        title: { display: !!cd.title, text: cd.title, color: '#ccc', font: {size:13} }
+      },
+      scales: cd.type === 'doughnut' || cd.type === 'pie' ? {} : {
+        x: { ticks: { color: '#666', font:{size:11} }, grid: {display:false} },
+        y: { ticks: { color: '#666', font:{size:11}, callback: v => typeof v === 'number' ? 'S$'+v : v }, grid: {color:'#2a2a2a'} }
+      }
+    }
+  });
+  area.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// expose normaliseToMonthYear globally (used by dashboard)
+function normaliseToMonthYear(raw) {
+  if (!raw || !raw.trim()) return null;
+  const s = raw.trim();
+  const m1 = s.match(/^(\w{3,9})\s+(\d{4})$/i); if (m1) return m1[1].slice(0,3) + ' ' + m1[2];
+  const m2 = s.match(/\d{1,2}\s+(\w{3,9})\s+(\d{4})/i); if (m2) return m2[1].slice(0,3) + ' ' + m2[2];
+  const m3 = s.match(/^(\d{4})-(\d{2})-\d{2}/); if (m3) { const d = new Date(s+'T00:00:00'); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'})+' '+d.getFullYear(); }
+  const m4 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/); if (m4) { const d = new Date(m4[3]+'-'+m4[2].padStart(2,'0')+'-'+m4[1].padStart(2,'0')); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'})+' '+d.getFullYear(); }
+  const m5 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m5) { const d = new Date(m5[3]+'-'+m5[1].padStart(2,'0')+'-'+m5[2].padStart(2,'0')); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'})+' '+d.getFullYear(); }
+  return null;
 }
 
 // =========== LISTING GENERATOR ===========
@@ -3431,6 +3832,8 @@ function importData() {
   }
   el.innerHTML = resultHtml + (dupCount > 0 ? ' · <span style="color:var(--text3)">' + dupCount + ' duplicates skipped</span>' : '');
   toast('Imported ' + count + ' records!');
+  // Push all data to Supabase after import
+  saveAllToSupabase();
   clLog('import', type, count + ' records imported' + (skipped ? ', ' + skipped + ' skipped' : ''));
 }
 
@@ -3576,10 +3979,8 @@ function resetCurrentView() {
 })();
 
 buildColMenus();
-renderDashboard();
-applyColOrder('singles');
-applyColVisibility('singles');
-attachHeaderDrag('singles');
+// Kick off async DB load from Supabase, then render
+initDB();
 </script>
 </body>
 </html>

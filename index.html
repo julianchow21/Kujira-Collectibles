@@ -136,8 +136,79 @@ textarea.fi{resize:vertical;min-height:70px}
 /* TOAST */
 #toast{position:fixed;bottom:24px;right:24px;background:var(--bg4);border:1px solid var(--border2);color:var(--text);padding:11px 18px;border-radius:var(--radius);font-size:13px;z-index:999;opacity:0;transition:opacity 0.2s;pointer-events:none;max-width:320px}
 #toast.show{opacity:1}
-#toast.toast-error{background:#3a1212;border-color:#a32d2d;color:#ffaaaa}
-@keyframes spin { from { display:inline-block; transform:rotate(0deg); } to { transform:rotate(360deg); } }
+/* ── HIG additions ── */
+.hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:14px;color:var(--text3)}
+.hig-spinner{width:28px;height:28px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:hig-spin 0.75s linear infinite}
+@keyframes hig-spin{to{transform:rotate(360deg)}}
+.hig-loading-text{font-size:13px;color:var(--text3)}
+.hig-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:56px 24px;gap:10px;text-align:center}
+.hig-empty-icon{font-size:40px;opacity:0.25;line-height:1}
+.hig-empty-title{font-size:15px;font-weight:600;color:var(--text);margin-top:4px}
+.hig-empty-sub{font-size:13px;color:var(--text3);max-width:280px;line-height:1.6}
+.hig-empty-action{margin-top:8px}
+.live-indicator{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:live-pulse 2s ease-in-out infinite}
+@keyframes live-pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.last-updated{font-size:11px;color:var(--text3);margin-left:4px}
+th[data-tip]{position:relative;cursor:help}
+th[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:5px 9px;font-size:11px;color:var(--text2);white-space:nowrap;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.4);font-weight:400;text-transform:none;letter-spacing:0}
+th[data-tip]:hover::before{content:'';position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:var(--border2);z-index:201}
+/* Bottom tab bar (mobile) */
+.bottom-tab-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);z-index:150;padding:0;padding-bottom:env(safe-area-inset-bottom)}
+.bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:56px}
+.btb-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:transparent;cursor:pointer;color:var(--text3);font-size:10px;font-family:inherit;padding:6px 2px;transition:color 0.15s;line-height:1}
+.btb-item svg{width:20px;height:20px;flex-shrink:0}
+.btb-item.active{color:var(--accent)}
+.btb-item:hover{color:var(--text)}
+@media(max-width:768px){
+  .bottom-tab-bar{display:block}
+  .nav{display:none}
+  body{padding-bottom:72px}
+}
+/* AI chips */
+.ai-chip{padding:6px 12px;border-radius:999px;border:1px solid var(--border2);background:var(--bg3);cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all 0.15s;white-space:nowrap}
+.ai-chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+/* Import auto-detect */
+.import-detect-banner{display:none;padding:8px 12px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius);font-size:12px;color:var(--accent);margin-bottom:10px;align-items:center;gap:8px}
+.import-detect-banner.show{display:flex}
+
+/* ── Custom Chart Builder ── */
+.cb-drop-zone{border:1.5px dashed var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:12px;color:var(--text3);transition:all 0.15s;cursor:default;min-height:42px;display:flex;align-items:flex-start;gap:4px;background:var(--bg2);flex-wrap:wrap}
+.cb-multi-zone{min-height:52px;align-items:flex-start;flex-direction:column;gap:6px}
+.cb-multi-zone .cb-chips-row{display:flex;flex-wrap:wrap;gap:4px;width:100%}
+.cb-drop-zone.drag-over{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.cb-drop-zone.has-value{border-style:solid;border-color:var(--accent);background:var(--accent-soft)}
+.cb-drop-label{font-size:12px}
+.cb-field-pill{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text2);cursor:grab;transition:all 0.15s;user-select:none}
+.cb-field-pill:hover{border-color:var(--accent);color:var(--text);background:var(--bg4)}
+.cb-field-pill:active{cursor:grabbing;opacity:0.7}
+.cb-field-pill .pill-icon{font-size:13px}
+.cb-field-pill .pill-type{font-size:10px;color:var(--text3);margin-left:auto}
+.cb-axis-chip{display:inline-flex;align-items:center;gap:6px;background:var(--accent);color:#fff;border-radius:20px;padding:3px 10px 3px 8px;font-size:12px;font-weight:500}
+.cb-axis-chip button{background:none;border:none;color:#fff;cursor:pointer;font-size:14px;line-height:1;padding:0 0 0 2px;opacity:0.7}
+.cb-axis-chip button:hover{opacity:1}
+.saved-chart-card{position:relative;margin-bottom:16px}
+.saved-chart-card .sc-delete{
+  display:block;width:100%;text-align:center;
+  background:transparent;border:none;border-top:1px solid var(--border);
+  color:var(--text3);font-size:11px;padding:6px;cursor:pointer;
+  opacity:0;transition:opacity 0.15s;pointer-events:none;
+  border-radius:0 0 var(--radius) var(--radius);
+  margin-top:-1px;
+}
+.saved-chart-card:hover>.sc-delete{opacity:1;pointer-events:auto}
+.saved-chart-card .sc-delete:hover{color:var(--red);background:rgba(255,0,0,0.05)}
+
+/* ── Draggable Dashboard Grid ── */
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.dash-card-wrap{position:relative}
+.dash-card-wrap .drag-handle{position:absolute;top:10px;right:10px;cursor:grab;color:var(--text3);font-size:14px;z-index:10;opacity:0;transition:opacity 0.15s;padding:2px 4px;border-radius:4px;line-height:1}
+.dash-card-wrap:hover .drag-handle{opacity:1}
+.dash-card-wrap .drag-handle:hover{color:var(--text);background:var(--bg3)}
+.dash-card-wrap .drag-handle:active{cursor:grabbing}
+.dash-card-wrap.dragging{opacity:0.35;outline:2px dashed var(--accent);border-radius:var(--radius)}
+.dash-card-wrap.drag-target{outline:2px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft)}
+.dash-card-wrap.full-width{grid-column:span 2}
 
 /* SECTION TITLE */
 .section-title{font-size:20px;font-weight:700;letter-spacing:-0.3px;margin-bottom:4px}
@@ -386,11 +457,18 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       <span>Changelog</span>
     </button>
+    <button class="nav-btn" onclick="showPage('trash')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      <span>Trash</span>
+    </button>
   </nav>
   <div class="topbar-actions">
     <button class="btn btn-primary btn-sm" onclick="openCmdBar()" title="Quick add / log sale (⌘K)" style="gap:6px;padding:6px 12px">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:13px;height:13px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Quick Entry <span style="font-size:10px;opacity:0.7;font-weight:400">⌘K</span>
+    </button>
+    <button class="icon-btn" onclick="openApiSettings()" title="Price API settings (PokemonPriceTracker + PokeTrace)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
     </button>
     <button class="icon-btn" onclick="openVerModal()" title="Version history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
@@ -464,7 +542,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
             <th data-col-key="datePurchased" class="sortable" onclick="sortTable('singles','datePurchased')">Date</th>
             <th data-col-key="costPrice" class="sortable" onclick="sortTable('singles','costPrice')">Cost Price</th>
             <th data-col-key="marketPrice" class="sortable" onclick="sortTable('singles','marketPrice')">Market</th>
-            <th data-col-key="pnl">P&amp;L</th>
+            
             <th data-col-key="actions">Actions</th>
           </tr>
           <tr class="filter-row">
@@ -473,7 +551,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
             <th data-col-key="language"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-lang"></th>
             <th data-col-key="type"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-type"></th>
             <th data-col-key="datePurchased"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-date"></th>
-            <th data-col-key="costPrice"></th><th data-col-key="marketPrice"></th><th data-col-key="pnl"></th>
+            <th data-col-key="costPrice"></th><th data-col-key="marketPrice"></th>
             <th data-col-key="actions"></th>
           </tr>
         </thead>
@@ -550,7 +628,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
             <th data-col-key="dateListed" class="sortable" onclick="sortTable('slabs','dateListed')">Date</th>
             <th data-col-key="costPrice" class="sortable" onclick="sortTable('slabs','costPrice')">Cost Price</th>
             <th data-col-key="marketPrice" class="sortable" onclick="sortTable('slabs','marketPrice')">Market</th>
-            <th data-col-key="pnl">P&amp;L</th>
+            
             <th data-col-key="notes">Notes</th>
             <th data-col-key="actions">Actions</th>
           </tr>
@@ -563,7 +641,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
             <th data-col-key="dateListed"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-date"></th>
             <th data-col-key="costPrice"></th>
             <th data-col-key="marketPrice"></th>
-            <th data-col-key="pnl"></th>
+            
             <th data-col-key="notes"></th>
             <th data-col-key="actions"></th>
           </tr>
@@ -648,7 +726,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
     <div>
       <div class="section-title">Dashboard</div>
-      <div class="section-sub">Portfolio overview & live analytics</div>
+      <div class="section-sub" style="display:flex;align-items:center;gap:10px">Portfolio overview &amp; live analytics <span class="live-indicator"><span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updating...</span></span></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <select id="dash-range" onchange="renderDashboard()" class="filter-sel" style="font-size:12px">
@@ -666,87 +744,114 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
   <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px;margin-top:16px">Inventory Breakdown</div>
   <div class="metrics" id="dash-metrics-secondary" style="margin-bottom:20px"></div>
 
-  <!-- Row 1: Revenue & Profit -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-    <div class="card">
-      <div class="card-head">
-        <h3>Monthly Revenue</h3>
-        <select class="filter-sel" style="font-size:11px;padding:2px 6px" onchange="updateChartType('rev',this.value)">
-          <option value="bar">Bar</option><option value="line">Line</option>
+  <!-- DRAG & DROP CHART BUILDER -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-head">
+      <h3>📊 Custom Chart Builder</h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select class="filter-sel" style="font-size:11px" id="cb-chart-type" onchange="renderCustomChart()">
+          <option value="bar">Bar</option>
+          <option value="line">Line</option>
+          <option value="doughnut">Doughnut</option>
+          <option value="scatter">Scatter</option>
         </select>
+        <button class="btn btn-sm" onclick="renderCustomChart()" style="font-size:11px">↺ Rebuild</button>
+        <button class="btn btn-sm btn-primary" onclick="saveChartToDashboard()" style="font-size:11px" id="cb-save-btn" disabled title="Configure a chart first">+ Add to Dashboard</button>
+        <button class="btn btn-sm" onclick="deleteAllSavedCharts()" style="font-size:11px;color:var(--red)" title="Delete all unpinned saved charts">🗑 Clear All</button>
+        <button class="btn btn-sm" onclick="resetCustomChart()" style="font-size:11px;color:var(--text3)">Reset</button>
       </div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="revenueChart"></canvas></div></div>
     </div>
-    <div class="card">
-      <div class="card-head">
-        <h3>Monthly Profit</h3>
-        <select class="filter-sel" style="font-size:11px;padding:2px 6px" onchange="updateChartType('profit',this.value)">
-          <option value="line">Line</option><option value="bar">Bar</option>
-        </select>
-      </div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="profitChart"></canvas></div></div>
-    </div>
-  </div>
+    <div style="display:grid;grid-template-columns:220px 1fr;gap:0;min-height:400px">
 
-  <!-- Row 2: Capital charts -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-    <div class="card">
-      <div class="card-head">
-        <h3>Top 10 Capital Tied Up</h3>
-        <span style="font-size:11px;color:var(--text3)">by cost price</span>
+      <!-- Left: field palette -->
+      <div style="border-right:1px solid var(--border);padding:14px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:560px">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600">Available Fields</div>
+        <input id="cb-palette-search" class="fi" placeholder="Search fields..." style="font-size:11px;padding:5px 8px" oninput="cbFilterPalette(this.value)">
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">Drag onto any axis · Drop multiple</div>
+        <div id="cb-field-palette" style="display:flex;flex-direction:column;gap:5px"></div>
       </div>
-      <div class="card-body" style="padding:12px 18px"><div class="chart-wrap" style="height:280px"><canvas id="capitalChart"></canvas></div></div>
-    </div>
-    <div class="card">
-      <div class="card-head">
-        <h3>Cost Exposure</h3>
-        <span style="font-size:11px;color:var(--text3)">singles vs slabs</span>
-      </div>
-      <div class="card-body">
-        <div class="chart-wrap" style="height:180px"><canvas id="exposureChart"></canvas></div>
-        <div id="exposure-legend" style="margin-top:12px;font-size:12px;display:flex;flex-direction:column;gap:6px"></div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Row 3: Investment per Pokémon + Grader -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-    <div class="card">
-      <div class="card-head">
-        <h3>💰 Money Invested per Pokémon</h3>
-        <div style="display:flex;gap:6px;align-items:center">
-          <select class="filter-sel" style="font-size:11px;padding:2px 6px" id="invest-mode" onchange="renderInvestChart()">
-            <option value="cost">Cost Price</option>
-            <option value="market">Market Value</option>
-          </select>
-          <select class="filter-sel" style="font-size:11px;padding:2px 6px" id="invest-top" onchange="renderInvestChart()">
-            <option value="10">Top 10</option>
-            <option value="20">Top 20</option>
-            <option value="all">All</option>
-          </select>
+      <!-- Right: axes + filter + chart -->
+      <div style="display:flex;flex-direction:column">
+
+        <!-- Axes row -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:14px;border-bottom:1px solid var(--border)">
+          <!-- X axis — multi-dim -->
+          <div>
+            <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:5px">
+              X Axis <span style="font-weight:400">(group by · drop multiple)</span>
+            </div>
+            <div id="cb-drop-x" class="cb-drop-zone cb-multi-zone" ondragover="cbDragOver(event)" ondragleave="cbDragLeave(event)" ondrop="cbDrop(event,'x')">
+              <div id="cb-x-chips" style="display:flex;flex-wrap:wrap;gap:4px;width:100%"></div>
+              <span id="cb-x-placeholder" class="cb-drop-label" style="font-size:11px">Drop dimension fields</span>
+            </div>
+          </div>
+          <!-- Y axis — multi-measure -->
+          <div>
+            <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:5px">
+              Y Axis <span style="font-weight:400">(measure · drop multiple)</span>
+            </div>
+            <div id="cb-drop-y" class="cb-drop-zone cb-multi-zone" ondragover="cbDragOver(event)" ondragleave="cbDragLeave(event)" ondrop="cbDrop(event,'y')">
+              <div id="cb-y-chips" style="display:flex;flex-wrap:wrap;gap:4px;width:100%"></div>
+              <span id="cb-y-placeholder" class="cb-drop-label" style="font-size:11px">Drop measure fields</span>
+            </div>
+          </div>
+          <!-- Filter axis -->
+          <div>
+            <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:5px">
+              Filter <span style="font-weight:400">(keyword search)</span>
+            </div>
+            <input id="cb-kw-filter" class="fi" placeholder='e.g. "eevee" or "JP"' style="font-size:12px;margin-bottom:6px;width:100%" oninput="renderCustomChart()">
+            <div style="font-size:10px;color:var(--text3)">Filters item names before charting</div>
+          </div>
         </div>
+
+        <!-- Controls row -->
+        <div style="display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+          <div style="font-size:11px;color:var(--text3)">Source:</div>
+          <select class="filter-sel" id="cb-source" onchange="cbSourceChanged()" style="font-size:11px">
+            <option value="singles">Singles (available)</option>
+            <option value="slabs">Slabs (available)</option>
+            <option value="sales">Sales</option>
+            <option value="all_inventory">All inventory</option>
+          </select>
+          <div style="font-size:11px;color:var(--text3)">Top N:</div>
+          <select class="filter-sel" id="cb-topn" onchange="renderCustomChart()" style="font-size:11px">
+            <option value="10">10</option><option value="20">20</option>
+            <option value="50">50</option><option value="all">All</option>
+          </select>
+          <div style="font-size:11px;color:var(--text3)">Sort:</div>
+          <select class="filter-sel" id="cb-sort" onchange="renderCustomChart()" style="font-size:11px">
+            <option value="desc">Highest first</option>
+            <option value="asc">Lowest first</option>
+            <option value="alpha">A → Z</option>
+          </select>
+          <div style="font-size:11px;color:var(--text3)">Y2 scale:</div>
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer">
+            <input type="checkbox" id="cb-dual-axis" onchange="renderCustomChart()"> Dual axis
+          </label>
+        </div>
+
+        <!-- Chart area -->
+        <div style="padding:14px;flex:1;min-height:280px;position:relative">
+          <div id="cb-empty-state" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:260px;color:var(--text3);gap:8px">
+            <div style="font-size:40px;opacity:0.2">📊</div>
+            <div style="font-size:13px">Drop fields onto X and Y axes to build your chart</div>
+            <div style="font-size:11px;opacity:0.7">Example: X = Full Card Name + Language · Y = Cost Price + Market Price · Filter = eevee</div>
+          </div>
+          <div id="cb-chart-wrap" style="display:none;height:280px"><canvas id="customChart"></canvas></div>
+          <div id="cb-summary" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:16px;flex-wrap:wrap"></div>
+        </div>
+
       </div>
-      <div class="card-body" style="padding:12px 18px"><div class="chart-wrap" style="height:320px"><canvas id="investChart"></canvas></div></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>Inventory by Grader</h3></div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="graderChart"></canvas></div></div>
     </div>
   </div>
 
-  <!-- Row 4: Top sales + Profit margin scatter -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-    <div class="card">
-      <div class="card-head"><h3>Top 10 Sales by Profit</h3></div>
-      <div class="card-body" id="top-sales"></div>
-    </div>
-    <div class="card">
-      <div class="card-head">
-        <h3>Cumulative Profit Over Time</h3>
-      </div>
-      <div class="card-body"><div class="chart-wrap"><canvas id="cumulativeChart"></canvas></div></div>
-    </div>
-  </div>
+  <!-- SAVED CUSTOM CHARTS (persisted) -->
+  <div id="saved-charts-container"></div>
+
+  <!-- DRAGGABLE DASHBOARD GRID -->
+  <div id="dash-grid-container"></div>
 
   <!-- AI Analyst Panel -->
   <div class="card" id="ai-analyst-card" style="margin-bottom:16px">
@@ -864,7 +969,12 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
           </select>
         </div>
       </div>
-      <textarea class="fi" id="import-data" rows="8" placeholder="Paste your Google Sheets / CSV data here..." style="margin-bottom:12px;font-family:monospace;font-size:12px"></textarea>
+      <div class="import-detect-banner" id="import-detect-banner">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="import-detect-text">Detected type: —</span>
+        <button class="btn btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="applyDetectedType()">Apply</button>
+      </div>
+      <textarea class="fi" id="import-data" rows="8" placeholder="Paste your Google Sheets / CSV data here..." style="margin-bottom:12px;font-family:monospace;font-size:12px" oninput="autoDetectImportType()"></textarea>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary" onclick="importData()">Import</button>
         <button class="btn" onclick="importWithAI()">🤖 AI Smart Import</button>
@@ -911,6 +1021,31 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
   </div>
 </div>
 
+<!-- TRASH PAGE -->
+<div id="page-trash" class="page">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div>
+      <div class="section-title">🗑 Trash</div>
+      <div class="section-sub">Deleted items — restore within 30 days or empty manually</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select class="filter-sel" id="trash-filter-type" onchange="renderTrash()" style="font-size:12px">
+        <option value="">All Types</option>
+        <option value="singles">Singles</option>
+        <option value="slabs">Slabs</option>
+        <option value="sales">Sales</option>
+        <option value="savedChart">Saved Charts</option>
+      </select>
+      <button class="btn btn-sm" onclick="renderTrash()" title="Refresh trash list">⟳ Refresh</button>
+      <button class="btn btn-sm" style="color:var(--red)" onclick="emptyTrash()">Empty Trash</button>
+    </div>
+  </div>
+  <div id="trash-stats" style="font-size:12px;color:var(--text3);margin-bottom:12px"></div>
+  <div class="card">
+    <div id="trash-list" style="font-size:13px"></div>
+  </div>
+</div>
+
 </div><!-- /main -->
 
 <!-- VERSION HISTORY MODAL -->
@@ -918,9 +1053,10 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
   <div class="ver-modal">
     <div class="ver-head">
       <h3>🕓 Version History</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeVerModal()">✕</button>
+      <span style="font-size:11px;color:var(--text3);margin-left:6px;font-weight:400">☁ Synced to cloud</span>
+      <button class="btn btn-ghost btn-sm" onclick="closeVerModal()" style="margin-left:auto">✕</button>
     </div>
-    <div class="ver-list" id="ver-list"></div>
+    <div class="ver-list" id="ver-list"><div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">Loading versions from cloud…</div></div>
     <div class="ver-foot">
       <input type="text" id="ver-name-input" placeholder="Version name (e.g. Before bulk delete)">
       <button class="btn btn-primary btn-sm" onclick="saveVersion()">Save Version</button>
@@ -1136,25 +1272,59 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 
 <script>
 // =========== DATA ===========
-const STORAGE_KEY = 'pokeinventory_v3'; // kept for migration of old local data
+const STORAGE_KEY = 'pokeinventory_v3';
+const LS_VERSION_KEY = 'pokeinventory_version'; // monotonic write counter
 
 // =========== SUPABASE CONFIG ===========
-const SB_URL  = 'https://eywncywatxtlqtrvxjsi.supabase.co';
-const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5d25jeXdhdHh0bHF0cnZ4anNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjE0NjEsImV4cCI6MjA5Mzk5NzQ2MX0.3fB6T38Ra22nFu7tNaWoYVgi0JtGxw9_fVwM1rQMYLc';
-const SB_HDR  = { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+const SB_URL = 'https://eywncywatxtlqtrvxjsi.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5d25jeXdhdHh0bHF0cnZ4anNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjE0NjEsImV4cCI6MjA5Mzk5NzQ2MX0.3fB6T38Ra22nFu7tNaWoYVgi0JtGxw9_fVwM1rQMYLc';
+const SB_HDR = { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
 
-// Sync status indicator
-let _syncStatus = 'idle'; // idle | saving | error
+// ── Sync status indicator ─────────────────────────────────────
+let _syncStatus = 'idle';
 function setSyncStatus(s, msg) {
   _syncStatus = s;
   const el = document.getElementById('sync-indicator');
   if (!el) return;
   if (s === 'saving') { el.textContent = '⟳ Syncing...'; el.style.color = 'var(--text3)'; }
-  else if (s === 'ok')  { el.textContent = '✓ Synced';    el.style.color = 'var(--green)'; setTimeout(()=>{ if(_syncStatus==='ok') el.textContent=''; }, 3000); }
-  else if (s === 'error'){ el.textContent = '⚠ Sync failed'; el.style.color = 'var(--red)'; if(msg) console.error('Sync error:', msg); }
+  else if (s === 'ok') { el.textContent = '✓ Synced'; el.style.color = 'var(--green)'; setTimeout(() => { if (_syncStatus === 'ok') el.textContent = ''; }, 3000); }
+  else if (s === 'error') { el.textContent = '⚠ Sync failed — check connection'; el.style.color = 'var(--red)'; if (msg) console.error('Sync error:', msg); }
 }
 
-// ── Supabase helpers ─────────────────────────────────────────
+// ── Import progress bar ───────────────────────────────────────
+function showSyncProgress(current, total, label) {
+  let bar = document.getElementById('sync-progress-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'sync-progress-bar';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text2)';
+    document.body.appendChild(bar);
+  }
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  bar.innerHTML = '<div style="display:flex;justify-content:space-between"><span>' + (label || 'Syncing to cloud…') + '</span><span style="color:var(--text3)">' + current + ' / ' + total + ' (' + pct + '%)</span></div>' +
+    '<div style="height:4px;background:var(--bg3);border-radius:2px"><div style="height:4px;width:' + pct + '%;background:var(--accent);border-radius:2px;transition:width 0.2s"></div></div>';
+}
+function hideSyncProgress() {
+  const bar = document.getElementById('sync-progress-bar');
+  if (bar) { bar.style.opacity = '0'; bar.style.transition = 'opacity 0.4s'; setTimeout(() => bar.remove(), 400); }
+}
+
+// ── Supabase: BATCH upsert (single request for all records) ──
+async function sbBatchUpsert(table, items) {
+  if (!items.length) return;
+  const rows = items.map(item => {
+    const { id, ...data } = item;
+    return { id, data, updated_at: new Date().toISOString() };
+  });
+  const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
+    method: 'POST',
+    headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+    body: JSON.stringify(rows)
+  });
+  if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
+}
+
+// ── Supabase: single upsert (for individual edits/adds) ──────
 async function sbUpsert(table, id, data) {
   try {
     const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
@@ -1176,48 +1346,110 @@ async function sbDelete(table, id) {
 }
 
 async function sbFetchAll(table) {
-  const r = await fetch(SB_URL + '/rest/v1/' + table + '?select=id,data&limit=10000', { headers: SB_HDR });
+  const r = await fetch(SB_URL + '/rest/v1/' + table + '?select=id,data,updated_at&limit=10000&order=updated_at.desc', { headers: SB_HDR });
   if (!r.ok) throw new Error(await r.text());
   const rows = await r.json();
-  return rows.map(row => ({ id: row.id, ...row.data }));
+  return rows.map(row => ({ id: row.id, ...row.data, _updatedAt: row.updated_at }));
 }
 
-// ── saveData: write changed items to Supabase ──────────────
-// We track a dirty set to avoid re-uploading everything on every save
-const _dirty = { singles: new Set(), slabs: new Set(), sales: new Set(), changelog: new Set() };
-let _saveTimer = null;
+// ── Write version counter to localStorage ────────────────────
+function bumpLocalVersion() {
+  const v = (parseInt(localStorage.getItem(LS_VERSION_KEY) || '0')) + 1;
+  localStorage.setItem(LS_VERSION_KEY, String(v));
+  localStorage.setItem(LS_VERSION_KEY + '_time', new Date().toISOString());
+  return v;
+}
+function getLocalVersion() { return parseInt(localStorage.getItem(LS_VERSION_KEY) || '0'); }
 
+// ── saveData: localStorage FIRST (instant), then cloud async ─
+let _saveTimer = null;
+const _dirty = { singles: new Set(), slabs: new Set(), sales: new Set() };
 function markDirty(table, id) { if (_dirty[table]) _dirty[table].add(id); }
 
-function saveData(skipDirty) {
-  // Also write to localStorage as a fast local cache / offline fallback
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })); } catch(e) {}
-
-  // Debounce cloud writes by 800ms
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => _flushToSupabase(skipDirty), 800);
-}
-
-async function _flushToSupabase(skipDirty) {
-  setSyncStatus('saving');
+function saveData() {
+  // 1. Write to localStorage immediately — this is the source of truth
   try {
-    const tables = ['singles','slabs','sales'];
-    for (const tbl of tables) {
-      const items = DB[tbl];
-      for (const item of items) {
-        if (skipDirty || _dirty[tbl].has(item.id)) {
-          const { id, ...data } = item;
-          await sbUpsert(tbl, id, data);
-        }
-      }
-      _dirty[tbl].clear();
-    }
-    setSyncStatus('ok');
-  } catch(e) { setSyncStatus('error', e.message); }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales }));
+    bumpLocalVersion();
+  } catch(e) { console.warn('localStorage write failed:', e); }
+
+  // 2. Debounce cloud write by 1s
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(_flushDirtyToSupabase, 1000);
 }
 
-// ── loadData: pull from Supabase, fallback to localStorage ──
+async function _flushDirtyToSupabase() {
+  const tables = ['singles', 'slabs', 'sales'];
+  // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
+  const toSync = [];
+  for (const tbl of tables) {
+    const dirtyIds = new Set(_dirty[tbl]); // snapshot
+    const dirtyItems = DB[tbl].filter(i => dirtyIds.has(i.id));
+    if (dirtyItems.length) toSync.push({ tbl, items: dirtyItems, dirtyIds });
+  }
+  if (!toSync.length) return;
+  setSyncStatus('saving');
+  let anyError = false;
+  for (const { tbl, items, dirtyIds } of toSync) {
+    try {
+      await sbBatchUpsert(tbl, items);
+      // Only clear the IDs we successfully uploaded — new mutations since snapshot stay dirty
+      dirtyIds.forEach(id => _dirty[tbl].delete(id));
+    } catch(e) {
+      anyError = true;
+      setSyncStatus('error', e.message);
+      console.error('Flush failed for ' + tbl + ':', e);
+      // IDs remain in _dirty so next saveData() will retry them
+    }
+  }
+  if (!anyError) setSyncStatus('ok');
+}
+
+// ── saveAllToSupabase: batch upload everything (used after import) ──
+async function saveAllToSupabase() {
+  setSyncStatus('saving');
+  const tables = ['singles', 'slabs', 'sales'];
+  const total = tables.reduce((s, t) => s + DB[t].length, 0);
+  let done = 0;
+  showSyncProgress(0, total, 'Uploading to cloud…');
+  try {
+    for (const tbl of tables) {
+      if (!DB[tbl].length) continue;
+      // Chunk into batches of 200 to stay under Supabase body size limits
+      const chunks = [];
+      for (let i = 0; i < DB[tbl].length; i += 200) chunks.push(DB[tbl].slice(i, i + 200));
+      for (const chunk of chunks) {
+        await sbBatchUpsert(tbl, chunk);
+        done += chunk.length;
+        showSyncProgress(done, total, 'Uploading ' + tbl + ' to cloud…');
+      }
+    }
+    hideSyncProgress();
+    setSyncStatus('ok');
+    toast('All data synced to cloud ✓');
+  } catch(e) {
+    hideSyncProgress();
+    setSyncStatus('error', e.message);
+    toastError('Cloud sync failed — data saved locally. Try again when online.');
+  }
+}
+
+// ── loadData: localStorage FIRST, then validate against Supabase ──
+// This ensures you always see your latest data instantly.
+// Supabase is used to: (a) seed a new device, (b) detect if cloud is newer.
 async function loadData() {
+  // Step 1: Read localStorage immediately
+  let local = null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) local = JSON.parse(raw);
+  } catch(e) {}
+
+  const localVersion = getLocalVersion();
+  const localTime = localStorage.getItem(LS_VERSION_KEY + '_time');
+
+  // Step 2: Try fetching cloud data
+  let cloud = null;
   try {
     const [singles, slabs, sales] = await Promise.all([
       sbFetchAll('singles'),
@@ -1225,36 +1457,63 @@ async function loadData() {
       sbFetchAll('sales')
     ]);
     if (singles.length || slabs.length || sales.length) {
-      return { singles, slabs, sales };
+      cloud = { singles, slabs, sales };
     }
   } catch(e) {
-    console.warn('Supabase load failed, falling back to localStorage:', e.message);
-    setSyncStatus('error', e.message);
+    console.warn('Supabase unreachable, using localStorage:', e.message);
+    setSyncStatus('error', 'Cloud unreachable — showing local data');
   }
-  // Fallback to localStorage
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch(e) {}
-  return null;
-}
 
-// ── Override deleteItem to also delete from Supabase ────────
-const _origDeleteItem = typeof deleteItem !== 'undefined' ? deleteItem : null;
+  // Step 3: Decide which to use using TIMESTAMPS, not record counts.
+  // This prevents deletions from being silently reverted by stale localStorage.
+  if (local && local.singles) {
+    const localAge = localTime ? (Date.now() - new Date(localTime).getTime()) : Infinity;
 
-// ── Full save (used after bulk imports) ─────────────────────
-async function saveAllToSupabase() {
-  setSyncStatus('saving');
-  try {
-    for (const tbl of ['singles','slabs','sales']) {
-      for (const item of DB[tbl]) {
-        const { id, ...data } = item;
-        await sbUpsert(tbl, id, data);
-      }
+    if (!cloud) {
+      // Cloud unreachable — always use local
+      console.log('Cloud unreachable — using localStorage');
+      return local;
     }
-    setSyncStatus('ok');
-    toast('All data synced to cloud ✓');
-  } catch(e) { setSyncStatus('error', e.message); toastError('Sync failed: ' + e.message); }
+
+    // Find the most recent updated_at across all cloud records
+    let cloudNewestMs = 0;
+    ['singles','slabs','sales'].forEach(tbl => {
+      (cloud[tbl] || []).forEach(item => {
+        if (item._updatedAt) {
+          const ms = new Date(item._updatedAt).getTime();
+          if (ms > cloudNewestMs) cloudNewestMs = ms;
+        }
+      });
+    });
+
+    const localWriteMs = localTime ? new Date(localTime).getTime() : 0;
+
+    // If local was written AFTER the newest cloud record, local is authoritative
+    if (localWriteMs >= cloudNewestMs) {
+      console.log('Using localStorage (local write newer than cloud, age ' + Math.round(localAge/1000) + 's)');
+      // If local is authoritative but cloud is missing items (e.g. partial upload), re-push
+      const localCount = (local.singles?.length || 0) + (local.slabs?.length || 0) + (local.sales?.length || 0);
+      const cloudCount = (cloud.singles?.length || 0) + (cloud.slabs?.length || 0) + (cloud.sales?.length || 0);
+      if (localCount > cloudCount) {
+        console.log('Local has more records (' + localCount + ' vs cloud ' + cloudCount + ') — re-uploading in background');
+        setTimeout(() => saveAllToSupabase(), 2000);
+      }
+      return local;
+    }
+
+    // Cloud is newer — use it and update localStorage
+    console.log('Cloud is newer (cloud: ' + new Date(cloudNewestMs).toISOString() + ' vs local: ' + new Date(localWriteMs).toISOString() + ') — using cloud');
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud)); bumpLocalVersion(); } catch(e) {}
+    return cloud;
+  }
+
+  // No local data — use cloud
+  if (cloud) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud)); bumpLocalVersion(); } catch(e) {}
+    return cloud;
+  }
+
+  return null; // truly first run
 }
 
 const SEED_SINGLES = [{"id": "s_1", "name": "11 energy cards holo", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 4.0, "costPrice": "", "marketPrice": "4.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 4.0}], "notes": ""}, {"id": "s_2", "name": "14 Chinese 30th anniversary Pokemon", "set": "", "language": "CN", "type": "raw", "qty": 1, "listPrice": 102.0, "costPrice": "", "marketPrice": "102.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Apr", "price": 102.0}], "notes": ""}, {"id": "s_3", "name": "25th anniversary stuff from 1 collectibles (55 cards)", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 27.0, "costPrice": "", "marketPrice": "27.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "7 Sep", "price": 27.0}], "notes": ""}, {"id": "s_4", "name": "5 Energy cards (Classic Collection)", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 18.0, "costPrice": "", "marketPrice": "18.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 18.0}], "notes": ""}, {"id": "s_5", "name": "Abra 43", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 2.0}], "notes": ""}, {"id": "s_6", "name": "Abra 49", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 2.0}], "notes": ""}, {"id": "s_7", "name": "Absol 191", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 5.0, "costPrice": "", "marketPrice": "5.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Apr", "price": 5.0}], "notes": ""}, {"id": "s_8", "name": "Acerola's Mischief 84", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 20.0, "costPrice": "", "marketPrice": "20.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "24 Sep", "price": 20.0}], "notes": ""}, {"id": "s_9", "name": "Alakazam 71", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 6.25, "costPrice": "", "marketPrice": "6.25", "condition": "NM", "status": "Available", "priceHistory": [{"date": "31 Aug", "price": 6.25}], "notes": ""}, {"id": "s_10", "name": "Alakazam ex 201", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 55.5, "costPrice": "", "marketPrice": "55.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Oct", "price": 55.5}, {"date": "1 Aug", "price": 46.0}], "notes": ""}, {"id": "s_11", "name": "Alakazam Ex 201", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 41.0, "costPrice": "", "marketPrice": "41.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jul", "price": 41.0}], "notes": ""}, {"id": "s_12", "name": "Alakazam ex 203", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 40.0, "costPrice": "", "marketPrice": "40.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 40.0}], "notes": ""}, {"id": "s_13", "name": "Ancient Mew", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 90.0, "costPrice": "", "marketPrice": "90.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Apr", "price": 90.0}], "notes": ""}, {"id": "s_14", "name": "Arcanine 15", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 6.0, "costPrice": "", "marketPrice": "6.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "16 Jul", "price": 6.0}], "notes": ""}, {"id": "s_15", "name": "Arcanine 59", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 5.0, "costPrice": "", "marketPrice": "5.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "28 Jun", "price": 5.0}], "notes": ""}, {"id": "s_16", "name": "Arcanine 59 Holo", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 13.0, "costPrice": "", "marketPrice": "13.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "28 Jun", "price": 13.0}], "notes": ""}, {"id": "s_17", "name": "Arceus V 267", "set": "Promo", "language": "JP", "type": "raw", "qty": 1, "listPrice": 13.5, "costPrice": "", "marketPrice": "13.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "5 May", "price": 13.5}], "notes": ""}, {"id": "s_18", "name": "Arceus Vstar 262", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 80.0, "costPrice": "", "marketPrice": "80.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "19 Jul", "price": 80.0}], "notes": ""}, {"id": "s_19", "name": "Arceus Vstar 127", "set": "s12a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 0, "costPrice": "", "marketPrice": "0", "condition": "NM", "status": "Available", "priceHistory": [], "notes": ""}, {"id": "s_20", "name": "Blastoise ex 200", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 100.0, "costPrice": "", "marketPrice": "100.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 100.0}], "notes": ""}, {"id": "s_21", "name": "Blastoise ex xy122", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 87.0, "costPrice": "", "marketPrice": "87.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 87.0}], "notes": ""}, {"id": "s_22", "name": "Blaziken 101", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 6.0, "costPrice": "", "marketPrice": "6.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "24 May", "price": 6.0}], "notes": ""}, {"id": "s_23", "name": "Blaziken Vmax TG15", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 5.88, "costPrice": "", "marketPrice": "5.88", "condition": "NM", "status": "Available", "priceHistory": [{"date": "19 Sep", "price": 5.88}], "notes": ""}, {"id": "s_24", "name": "Bulbasaur 143", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 60.0, "costPrice": "", "marketPrice": "60.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Sep", "price": 60.0}], "notes": ""}, {"id": "s_25", "name": "Bulbasaur 166", "set": "sv2a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 10.0, "costPrice": "", "marketPrice": "10.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "20 Apr", "price": 10.0}], "notes": ""}, {"id": "s_26", "name": "Bulbasaur 44", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 2.0, "costPrice": "", "marketPrice": "2.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "16 Jul", "price": 2.0}], "notes": ""}, {"id": "s_27", "name": "Charizard ex 125", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 15.5, "costPrice": "", "marketPrice": "15.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "17 May", "price": 15.5}], "notes": ""}, {"id": "s_28", "name": "Charizard ex 223", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 108.0, "costPrice": "", "marketPrice": "108.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 108.0}], "notes": ""}, {"id": "s_29", "name": "Charizard ex 234", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 255.0, "costPrice": "", "marketPrice": "255.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 255.0}], "notes": ""}, {"id": "s_30", "name": "Charizard ex XY121", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 64.0, "costPrice": "", "marketPrice": "64.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "27 Oct", "price": 64.0}], "notes": ""}, {"id": "s_31", "name": "Charizard Vstar SWSH262", "set": "", "language": "EN", "type": "raw", "qty": 6, "listPrice": 50.0, "costPrice": "", "marketPrice": "50.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Sep", "price": 50.0}, {"date": "9 Sep", "price": 50.0}, {"date": "23 Sep", "price": 48.0}, {"date": "4 Sep", "price": 47.0}, {"date": "28 Aug", "price": 36.0}, {"date": "1 Oct", "price": 35.0}], "notes": ""}, {"id": "s_32", "name": "Charmander 168", "set": "sv2a", "language": "JP", "type": "raw", "qty": 1, "listPrice": 16.0, "costPrice": "", "marketPrice": "16.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "20 Apr", "price": 16.0}], "notes": ""}, {"id": "s_33", "name": "Charmander 44", "set": "", "language": "EN", "type": "raw", "qty": 5, "listPrice": 30.0, "costPrice": "", "marketPrice": "30.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Sep", "price": 30.0}, {"date": "9 Sep", "price": 29.0}, {"date": "23 Sep", "price": 27.0}, {"date": "23 Sep", "price": 26.0}, {"date": "6 Oct", "price": 24.0}], "notes": ""}, {"id": "s_34", "name": "Dragonite 5", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 49.0, "costPrice": "", "marketPrice": "49.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Mar", "price": 49.0}, {"date": "1 Apr", "price": 41.0}, {"date": "3 Nov", "price": 21.0}, {"date": "15 Apr", "price": 15.0}], "notes": ""}, {"id": "s_35", "name": "Eevee 173", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 15.0, "costPrice": "", "marketPrice": "15.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Nov", "price": 15.0}, {"date": "25 Oct", "price": 13.7}, {"date": "22 Jul", "price": 9.0}], "notes": ""}, {"id": "s_36", "name": "Eevee 173 (Pokemon Centre)", "set": "s12a", "language": "EN", "type": "raw", "qty": 1, "listPrice": 68.0, "costPrice": "", "marketPrice": "68.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 68.0}], "notes": ""}, {"id": "s_37", "name": "Espeon ex 211", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 45.0, "costPrice": "", "marketPrice": "45.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "30 Jun", "price": 45.0}], "notes": ""}, {"id": "s_38", "name": "Flareon ex RC28", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 83.0, "costPrice": "", "marketPrice": "83.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "3 Nov", "price": 83.0}, {"date": "3 Nov", "price": 69.0}], "notes": ""}, {"id": "s_39", "name": "Glaceon Vstar 217", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 33.0}], "notes": ""}, {"id": "s_40", "name": "Greninja ex 132", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 88.0, "costPrice": "", "marketPrice": "88.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "17 Apr", "price": 88.0}, {"date": "25 Apr", "price": 80.0}, {"date": "3 Nov", "price": 70.0}, {"date": "3 Nov", "price": 64.0}], "notes": ""}, {"id": "s_41", "name": "Ivysaur 167", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 27.0, "costPrice": "", "marketPrice": "27.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jul", "price": 27.0}], "notes": ""}, {"id": "s_42", "name": "Jirachi XY67a", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 106.0, "costPrice": "", "marketPrice": "106.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Oct", "price": 106.0}], "notes": ""}, {"id": "s_43", "name": "Jolteon 135", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 21.0, "costPrice": "", "marketPrice": "21.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "2 Aug", "price": 21.0}], "notes": ""}, {"id": "s_44", "name": "Kingdra ex 131", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 77.0, "costPrice": "", "marketPrice": "77.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "6 Oct", "price": 77.0}, {"date": "6 Oct", "price": 70.0}, {"date": "9 Sep", "price": 47.0}], "notes": ""}, {"id": "s_45", "name": "Leafeon Vstar 210", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 May", "price": 33.0}], "notes": ""}, {"id": "s_46", "name": "Magikarp 80", "set": "", "language": "JP", "type": "raw", "qty": 1, "listPrice": 55.0, "costPrice": "", "marketPrice": "55.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "11 Jul", "price": 55.0}], "notes": ""}, {"id": "s_47", "name": "Mew ex 53", "set": "", "language": "EN", "type": "raw", "qty": 3, "listPrice": 89.0, "costPrice": "", "marketPrice": "89.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "6 Oct", "price": 89.0}, {"date": "26 Aug", "price": 51.0}, {"date": "28 Aug", "price": 43.0}], "notes": ""}, {"id": "s_48", "name": "Mew V 251", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 77.0, "costPrice": "", "marketPrice": "77.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Feb", "price": 77.0}, {"date": "1 Sep", "price": 71.0}], "notes": ""}, {"id": "s_49", "name": "Mimikyu 75", "set": "", "language": "EN", "type": "sealed", "qty": 1, "listPrice": 33.0, "costPrice": "", "marketPrice": "33.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "9 Oct", "price": 33.0}], "notes": ""}, {"id": "s_50", "name": "Moltres & Zapdos & Articuno GX SM210", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 82.5, "costPrice": "", "marketPrice": "82.5", "condition": "NM", "status": "Available", "priceHistory": [{"date": "4 Jun", "price": 82.5}, {"date": "27 Oct", "price": 80.0}], "notes": ""}, {"id": "s_51", "name": "N's Reshiram 167", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 23.19, "costPrice": "", "marketPrice": "23.19", "condition": "NM", "status": "Available", "priceHistory": [{"date": "25 Oct", "price": 23.19}], "notes": ""}, {"id": "s_52", "name": "Snorlax 51", "set": "", "language": "EN", "type": "raw", "qty": 1, "listPrice": 14.0, "costPrice": "", "marketPrice": "14.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "1 Oct", "price": 14.0}], "notes": ""}, {"id": "s_53", "name": "Squirtle 148", "set": "", "language": "EN", "type": "raw", "qty": 4, "listPrice": 74.0, "costPrice": "", "marketPrice": "74.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 74.0}, {"date": "23 Sep", "price": 73.0}, {"date": "9 Sep", "price": 66.0}, {"date": "23 Sep", "price": 53.0}], "notes": ""}, {"id": "s_54", "name": "Venusaur ex 198", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 97.0, "costPrice": "", "marketPrice": "97.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "23 Sep", "price": 97.0}, {"date": "27 Oct", "price": 81.0}], "notes": ""}, {"id": "s_55", "name": "Venusaur ex XY123", "set": "s12a", "language": "EN", "type": "raw", "qty": 1, "listPrice": 86.0, "costPrice": "", "marketPrice": "86.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "15 Sep", "price": 86.0}], "notes": ""}, {"id": "s_56", "name": "Zapdos ex 202", "set": "", "language": "EN", "type": "raw", "qty": 2, "listPrice": 86.0, "costPrice": "", "marketPrice": "86.0", "condition": "NM", "status": "Available", "priceHistory": [{"date": "27 Oct", "price": 86.0}, {"date": "4 Oct", "price": 84.0}], "notes": ""}];
@@ -1269,30 +1528,82 @@ function genId(prefix) { return prefix + '_' + Date.now() + '_' + Math.random().
 // ── Async DB init ────────────────────────────────────────────
 async function initDB() {
   const main = document.getElementById('main-content');
-  if (main) main.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:var(--text3)"><div style="font-size:40px;animation:spin 1s linear infinite">⟳</div><div style="font-size:14px">Loading inventory from cloud…</div></div>';
 
+  // Try to load from localStorage immediately for instant display
+  let hasLocalData = false;
   try {
-    const saved = await loadData();
-    if (saved && (saved.singles?.length || saved.slabs?.length || saved.sales?.length)) {
-      DB.singles = saved.singles || [];
-      DB.slabs   = saved.slabs   || [];
-      DB.sales   = saved.sales   || [];
-    } else {
-      // First run — push seed data to Supabase
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const local = JSON.parse(raw);
+      if (local.singles?.length || local.slabs?.length || local.sales?.length) {
+        DB.singles = local.singles || [];
+        DB.slabs   = local.slabs   || [];
+        DB.sales   = local.sales   || [];
+        hasLocalData = true;
+      }
+    }
+  } catch(e) {}
+
+  if (hasLocalData) {
+    // Show the app immediately with local data, sync cloud in background
+    showPage('dashboard');
+    setSyncStatus('saving');
+    // Background cloud sync — validate and update silently
+    setTimeout(async () => {
+      try {
+        const localCount = DB.singles.length + DB.slabs.length + DB.sales.length;
+        const [sbSingles, sbSlabs, sbSales] = await Promise.all([
+          sbFetchAll('singles'), sbFetchAll('slabs'), sbFetchAll('sales')
+        ]);
+        const cloudCount = sbSingles.length + sbSlabs.length + sbSales.length;
+
+        if (cloudCount === 0) {
+          // Cloud is empty — push local data up
+          await saveAllToSupabase();
+        } else if (cloudCount > localCount) {
+          // Cloud has more data (added from another device) — update local
+          DB.singles = sbSingles;
+          DB.slabs   = sbSlabs;
+          DB.sales   = sbSales;
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })); bumpLocalVersion(); } catch(e) {}
+          setSyncStatus('ok');
+          renderDashboard();
+          toast('↓ Updated from cloud (' + cloudCount + ' records)');
+        } else {
+          setSyncStatus('ok');
+        }
+      } catch(e) {
+        setSyncStatus('error', 'Background sync failed — showing local data');
+      }
+    }, 500);
+  } else {
+    // No local data — show loading spinner and fetch from cloud
+    if (main) main.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading inventory from cloud…</div></div>';
+    try {
+      const [sbSingles, sbSlabs, sbSales] = await Promise.all([
+        sbFetchAll('singles'), sbFetchAll('slabs'), sbFetchAll('sales')
+      ]);
+      if (sbSingles.length || sbSlabs.length || sbSales.length) {
+        DB.singles = sbSingles;
+        DB.slabs   = sbSlabs;
+        DB.sales   = sbSales;
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })); bumpLocalVersion(); } catch(e) {}
+      } else {
+        // Truly first run — seed with bundled data
+        DB.singles = SEED_SINGLES.map(i => ({...i}));
+        DB.slabs   = SEED_SLABS.map(i => ({...i}));
+        DB.sales   = SEED_SALES.map(i => ({...i}));
+        await saveAllToSupabase();
+      }
+    } catch(e) {
+      // Cloud unreachable on first load — seed locally
       DB.singles = SEED_SINGLES.map(i => ({...i}));
       DB.slabs   = SEED_SLABS.map(i => ({...i}));
       DB.sales   = SEED_SALES.map(i => ({...i}));
-      await saveAllToSupabase();
+      toastError('Could not reach cloud — showing built-in data. Check your connection.');
     }
-  } catch(e) {
-    // Network failure — fall back to localStorage seed
-    DB.singles = SEED_SINGLES.map(i => ({...i}));
-    DB.slabs   = SEED_SLABS.map(i => ({...i}));
-    DB.sales   = SEED_SALES.map(i => ({...i}));
-    toastError('Could not reach cloud — showing local data');
+    showPage('dashboard');
   }
-
-  showPage('dashboard');
 }
 
 
@@ -1356,12 +1667,16 @@ function updateBulkBar(table) {
   }
 }
 
-function deleteSelected(table) {
+async function deleteSelected(table) {
   const ids = selectedIds[table];
   if (ids.size === 0) return;
   const count = ids.size;
-  if (!confirm('Delete ' + count + ' item' + (count !== 1 ? 's' : '') + '? This cannot be undone.')) return;
+  if (!confirm('Move ' + count + ' item' + (count !== 1 ? 's' : '') + ' to trash? Restore within 30 days from the Trash tab.')) return;
   snapshotForUndo();
+  const itemsToTrash = DB[table].filter(i => ids.has(i.id));
+  // Batch trash + per-item Supabase delete
+  await sendBatchToTrash(table, itemsToTrash, 'bulk');
+  for (const item of itemsToTrash) await sbDelete(table, item.id);
   DB[table] = DB[table].filter(i => !ids.has(i.id));
   ids.clear();
   saveData();
@@ -1369,7 +1684,7 @@ function deleteSelected(table) {
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (table === 'sales') renderSales();
-  toast('Deleted');
+  toast(count + ' moved to trash · view in 🗑 tab');
   clLog('delete', table, count + ' items deleted (bulk)');
 }
 
@@ -1383,7 +1698,6 @@ const COL_DEFS = {
     { key: 'datePurchased', label: 'Date' },
     { key: 'costPrice',     label: 'Cost Price' },
     { key: 'marketPrice',   label: 'Market' },
-    { key: 'pnl',           label: 'P&L' },
     { key: 'actions',       label: 'Actions',    locked: true }
   ],
   slabs: [
@@ -1395,7 +1709,6 @@ const COL_DEFS = {
     { key: 'dateListed',  label: 'Date' },
     { key: 'costPrice',   label: 'Cost Price' },
     { key: 'marketPrice', label: 'Market' },
-    { key: 'pnl',         label: 'P&L' },
     { key: 'notes',       label: 'Notes' },
     { key: 'actions',     label: 'Actions',    locked: true }
   ],
@@ -2205,48 +2518,104 @@ function redoLast() {
   toast('Redone ↪');
 }
 
-// =========== VERSION HISTORY ===========
+// =========== VERSION HISTORY (Supabase-backed) ===========
+// Versions are stored in Supabase 'versions' table so they persist across devices.
+// localStorage is used only as a fast cache; Supabase is the source of truth.
 const VER_KEY = 'pokeinv_versions';
+let _versionsCache = null; // in-memory cache for this session
+
+async function sbFetchVersions() {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,data,updated_at&order=updated_at.desc&limit=50', { headers: SB_HDR });
+    if (!r.ok) throw new Error(await r.text());
+    const rows = await r.json();
+    return rows.map(row => ({ id: row.id, ...row.data, _ts: new Date(row.updated_at).getTime() }));
+  } catch(e) {
+    console.warn('Could not fetch versions from Supabase:', e.message);
+    // Fall back to localStorage cache
+    try { return JSON.parse(localStorage.getItem(VER_KEY) || '[]'); } catch(e2) { return []; }
+  }
+}
+
+async function sbSaveVersion(ver) {
+  // ver = { id, name, ts, data (stringified snapshot) }
+  const payload = { id: ver.id, data: { name: ver.name, ts: ver.ts, data: ver.data }, updated_at: new Date(ver.ts).toISOString() };
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/versions?on_conflict=id', {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) {
+    console.warn('Could not save version to Supabase:', e.message);
+    // Still persisted in localStorage below
+  }
+}
+
+async function sbDeleteVersion(id) {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/versions?id=eq.' + encodeURIComponent(id), {
+      method: 'DELETE', headers: SB_HDR
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { console.warn('Could not delete version from Supabase:', e.message); }
+}
 
 function loadVersions() {
+  if (_versionsCache) return _versionsCache;
   try { return JSON.parse(localStorage.getItem(VER_KEY) || '[]'); } catch(e) { return []; }
 }
 
-function saveVersions(versions) {
-  localStorage.setItem(VER_KEY, JSON.stringify(versions));
+function _cacheVersions(versions) {
+  _versionsCache = versions;
+  try { localStorage.setItem(VER_KEY, JSON.stringify(versions)); } catch(e) {}
 }
 
-function saveVersion() {
-  const name = document.getElementById('ver-name-input').value.trim() ||
+async function saveVersion() {
+  const nameInput = document.getElementById('ver-name-input');
+  const name = (nameInput ? nameInput.value.trim() : '') ||
     'Version ' + new Date().toLocaleString('en-GB', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
-  const versions = loadVersions();
-  versions.unshift({
+  const ver = {
     id: 'v_' + Date.now(),
     name,
     ts: Date.now(),
     data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })
-  });
-  // Keep max 50 versions
+  };
+  // Optimistically update UI
+  const versions = loadVersions();
+  versions.unshift(ver);
   if (versions.length > 50) versions.splice(50);
-  saveVersions(versions);
-  document.getElementById('ver-name-input').value = '';
+  _cacheVersions(versions);
+  if (nameInput) nameInput.value = '';
   renderVerList();
-  toast('Version saved: ' + name);
+  toast('Saving version...');
+  await sbSaveVersion(ver);
+  toast('Version saved: ' + name + ' ✓');
 }
 
-function restoreVersion(id) {
-  const versions = loadVersions();
-  const ver = versions.find(v => v.id === id);
-  if (!ver) return;
+async function restoreVersion(id) {
+  let versions = loadVersions();
+  let ver = versions.find(v => v.id === id);
+  if (!ver) {
+    // Try fetching fresh from Supabase in case cache is stale
+    versions = await sbFetchVersions();
+    _cacheVersions(versions);
+    ver = versions.find(v => v.id === id);
+  }
+  if (!ver) { toast('Version not found'); return; }
   if (!confirm('Restore "' + ver.name + '"? Current data will be overwritten (a backup version will be saved first).')) return;
   // Auto-save current state before restoring
-  versions.unshift({
+  const backup = {
     id: 'v_' + Date.now(),
     name: 'Auto-backup before restore',
     ts: Date.now(),
     data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales })
-  });
-  saveVersions(versions);
+  };
+  versions.unshift(backup);
+  _cacheVersions(versions);
+  await sbSaveVersion(backup);
+  // Apply the restored snapshot
   const restored = JSON.parse(ver.data);
   DB.singles = restored.singles;
   DB.slabs   = restored.slabs;
@@ -2257,31 +2626,44 @@ function restoreVersion(id) {
   toast('Restored: ' + ver.name);
 }
 
-function deleteVersion(id) {
+async function deleteVersion(id) {
   const versions = loadVersions().filter(v => v.id !== id);
-  saveVersions(versions);
+  _cacheVersions(versions);
   renderVerList();
+  await sbDeleteVersion(id);
   toast('Version deleted');
 }
 
-function renderVerList() {
-  const versions = loadVersions();
+async function renderVerList() {
   const el = document.getElementById('ver-list');
+  if (!el) return;
+  // Show cached immediately, then refresh from Supabase
+  const cached = loadVersions();
+  _renderVerItems(el, cached);
+  // Async refresh
+  const fresh = await sbFetchVersions();
+  if (fresh.length > 0 || cached.length === 0) {
+    _cacheVersions(fresh);
+    _renderVerItems(el, fresh);
+  }
+}
+
+function _renderVerItems(el, versions) {
   if (versions.length === 0) {
     el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">No saved versions yet.<br>Save a version before making big changes.</div>';
     return;
   }
   el.innerHTML = versions.map(v => {
-    const d = new Date(v.ts);
+    const d = new Date(v.ts || v._ts || 0);
     const dateStr = d.toLocaleString('en-GB', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
     let counts = '';
     try {
-      const data = JSON.parse(v.data);
-      counts = data.singles.length + ' singles · ' + data.slabs.length + ' slabs · ' + data.sales.length + ' sales';
+      const parsed = JSON.parse(v.data);
+      counts = parsed.singles.length + ' singles · ' + parsed.slabs.length + ' slabs · ' + parsed.sales.length + ' sales';
     } catch(e) {}
     return '<div class="ver-item">' +
       '<div class="ver-item-info">' +
-        '<div class="ver-item-name">' + v.name.replace(/</g,'&lt;') + '</div>' +
+        '<div class="ver-item-name">' + (v.name||'').replace(/</g,'&lt;') + '</div>' +
         '<div class="ver-item-meta">' + dateStr + (counts ? ' · ' + counts : '') + '</div>' +
       '</div>' +
       '<div class="ver-item-actions">' +
@@ -2292,9 +2674,9 @@ function renderVerList() {
   }).join('');
 }
 
-function openVerModal() {
-  renderVerList();
+async function openVerModal() {
   document.getElementById('ver-overlay').classList.add('open');
+  await renderVerList();
 }
 
 function closeVerModal() {
@@ -2450,14 +2832,15 @@ function showPage(name) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   const btns = document.querySelectorAll('.nav-btn');
-  const names = ['dashboard','inventory','slabs','sales','listing','import','changelog'];
+  const names = ['dashboard','inventory','slabs','sales','listing','import','changelog','trash'];
   btns[names.indexOf(name)]?.classList.add('active');
   if (name === 'inventory') { renderSingles(); applyColOrder('singles'); applyColVisibility('singles'); attachHeaderDrag('singles'); }
   if (name === 'slabs') { renderSlabs(); applyColOrder('slabs'); applyColVisibility('slabs'); attachHeaderDrag('slabs'); }
   if (name === 'sales') { renderSales(); applyColOrder('sales'); applyColVisibility('sales'); attachHeaderDrag('sales'); }
-  if (name === 'dashboard') renderDashboard();
+  if (name === 'dashboard') { renderDashboard(); setTimeout(() => { initCustomChartBuilder(); renderAllSavedCharts(); }, 150); }
   if (name === 'listing') populateListingSelect();
   if (name === 'changelog') renderChangelog();
+  if (name === 'trash') renderTrash();
 }
 
 // =========== TOAST ===========
@@ -2546,7 +2929,7 @@ function renderSingles() {
   const altItems      = showSoldMain ? available : sold;
 
   const totalCost   = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0)*(parseInt(i.qty)||1), 0);
-  const totalValue  = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||parseFloat(i.listPrice)||0)*(parseInt(i.qty)||1), 0);
+  const totalValue  = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||0)*(parseInt(i.qty)||1), 0);
   const totalQty    = available.reduce((s,i) => s + (parseInt(i.qty)||1), 0);
   const unrealised  = totalValue - totalCost;
 
@@ -2561,15 +2944,13 @@ function renderSingles() {
   document.getElementById('singles-stats').innerHTML =
     statCard('Available', available.length, 'Cards with status = Available (excluding Sold)') +
     statCard('Sold', sold.length, 'Cards marked as Sold in this view') +
-    statCard('Total Qty', totalQty, 'Sum of Qty field across all available singles') +
-    statCard('Est. Value', 'S$' + totalValue.toFixed(0), 'Sum of Market Price × Qty for all available singles. Falls back to List Price if Market Price is empty.') +
-    statCard('Total Cost', 'S$' + totalCost.toFixed(0), 'Sum of Cost Price × Qty for all available singles') +
-    statCard('Unrealised P&L', (unrealised >= 0 ? '+' : '') + 'S$' + unrealised.toFixed(0), 'Est. Value minus Total Cost. Positive = paper gain, negative = paper loss.', unrealised >= 0 ? 'pos' : 'neg');
+    statCard('Market Price', totalValue > 0 ? 'S$' + totalValue.toFixed(0) : '—', 'Sum of Market Price for all available singles. Only counts cards with a market price explicitly set.') +
+    statCard('Total Cost', 'S$' + totalCost.toFixed(0), 'Sum of Cost Price for all available singles');
 
   applySortHeaders('singles-table', 'singles');
 
   function buildRow(i, isSold) {
-    const mp = parseFloat(i.marketPrice)||parseFloat(i.listPrice)||0;
+    const mp = parseFloat(i.marketPrice)||0;
     const typeBadge = i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>';
     const chk = selectedIds.singles.has(i.id);
     const soldBtn = isSold
@@ -2590,7 +2971,7 @@ function renderSingles() {
       '<td data-col-key="datePurchased" style="font-size:12px;color:var(--text2);white-space:nowrap">' + (i.datePurchased||'—') + '</td>' +
       '<td data-col-key="costPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + (i.costPrice ? '$' + i.costPrice : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + i.id + '\',\'costPrice\',this.value.replace(/^\\$+/,\'\'))"></td>' +
       '<td data-col-key="marketPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + (i.marketPrice||mp||'') + '" placeholder="—" onchange="updateField(\'singles\',\'' + i.id + '\',\'marketPrice\',this.value)"></td>' +
-      '<td data-col-key="pnl">' + pnlHtml(i.costPrice, i.marketPrice||mp) + '</td>' +
+      
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
         soldBtn +
@@ -2650,18 +3031,203 @@ function updateField(table, id, field, val) {
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: parseFloat(val), source: 'manual' });
   }
+  markDirty(table, id);
   saveData();
 }
 
+// =========== TRASH BIN ===========
+// Items are soft-deleted: moved to Supabase 'trash' table with deleted_at timestamp.
+// Auto-purge after 30 days; manual restore brings them back to original table.
+
+async function sendToTrash(table, item, reason) {
+  const trashEntry = {
+    id: 'trash_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+    data: {
+      originalTable: table,
+      originalId: item.id,
+      item: item, // full snapshot
+      reason: reason || 'manual',
+      deletedAt: new Date().toISOString()
+    },
+    updated_at: new Date().toISOString()
+  };
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/trash', {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify(trashEntry)
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { console.warn('Trash write failed:', e); }
+}
+
+async function sendBatchToTrash(table, items, reason) {
+  const rows = items.map(item => ({
+    id: 'trash_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) + '_' + item.id.slice(-4),
+    data: { originalTable: table, originalId: item.id, item, reason: reason || 'bulk', deletedAt: new Date().toISOString() },
+    updated_at: new Date().toISOString()
+  }));
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/trash', {
+      method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify(rows)
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { console.warn('Batch trash failed:', e); }
+}
+
+async function fetchTrash() {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/trash?select=id,data,updated_at&order=updated_at.desc&limit=2000', { headers: SB_HDR });
+    if (!r.ok) throw new Error(await r.text());
+    return await r.json();
+  } catch(e) {
+    console.warn('Fetch trash failed:', e);
+    return [];
+  }
+}
+
+async function hardDeleteTrashEntry(trashId) {
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/trash?id=eq.' + encodeURIComponent(trashId), {
+      method: 'DELETE', headers: SB_HDR
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch(e) { console.warn('Hard delete failed:', e); }
+}
+
+async function restoreFromTrash(trashId) {
+  const entries = await fetchTrash();
+  const entry   = entries.find(e => e.id === trashId);
+  if (!entry) { toastError('Trash entry not found'); return; }
+  const { originalTable, item } = entry.data;
+  // Saved-chart restoration is special — re-add to localStorage
+  if (originalTable === 'savedChart') {
+    const charts = loadSavedCharts();
+    charts.push(item);
+    persistSavedCharts(charts);
+    if (typeof renderAllSavedCharts === 'function') renderAllSavedCharts();
+  } else {
+    // Inventory/sales — re-insert into DB and push to Supabase
+    if (!DB[originalTable]) { toastError('Unknown table: ' + originalTable); return; }
+    DB[originalTable].push(item);
+    markDirty(originalTable, item.id);
+    saveData();
+    await sbUpsert(originalTable, item.id, (() => { const { id, ...d } = item; return d; })());
+    if (originalTable === 'singles') renderSingles();
+    if (originalTable === 'slabs')   renderSlabs();
+    if (originalTable === 'sales')   renderSales();
+  }
+  await hardDeleteTrashEntry(trashId);
+  clLog('restore', originalTable, item.name || item.product || item.title || item.id);
+  toast('Restored ✓');
+  renderTrash();
+}
+
+async function emptyTrash() {
+  const entries = await fetchTrash();
+  if (!entries.length) { toast('Trash is already empty'); return; }
+  if (!confirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.')) return;
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/trash?id=neq.IMPOSSIBLE_PLACEHOLDER_ID', {
+      method: 'DELETE', headers: SB_HDR
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Trash emptied');
+    renderTrash();
+  } catch(e) { toastError('Empty failed: ' + e.message); }
+}
+
+async function purgeExpiredTrash() {
+  const entries = await fetchTrash();
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  for (const e of entries) {
+    const deletedAt = new Date(e.data?.deletedAt || e.updated_at).getTime();
+    if (deletedAt < thirtyDaysAgo) await hardDeleteTrashEntry(e.id);
+  }
+}
+
+function renderTrash() {
+  const list = document.getElementById('trash-list');
+  const stats = document.getElementById('trash-stats');
+  if (!list) return;
+  list.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading trash…</div></div>';
+
+  fetchTrash().then(entries => {
+    const filter = document.getElementById('trash-filter-type')?.value || '';
+    const filtered = filter ? entries.filter(e => e.data?.originalTable === filter) : entries;
+    if (stats) stats.textContent = filtered.length + ' deleted item' + (filtered.length !== 1 ? 's' : '') + ' · auto-purged after 30 days';
+
+    if (!filtered.length) {
+      list.innerHTML = '<div class="hig-empty"><div class="hig-empty-icon">🗑</div><div class="hig-empty-title">Trash is empty</div><div class="hig-empty-sub">Deleted items appear here for 30 days before being permanently removed.</div></div>';
+      return;
+    }
+
+    list.innerHTML = filtered.map(e => {
+      const d = e.data || {};
+      const item = d.item || {};
+      const name = item.name || item.product || item.title || '(unnamed)';
+      const sub = (() => {
+        if (d.originalTable === 'singles' || d.originalTable === 'slabs') {
+          const parts = [];
+          if (item.language) parts.push(item.language);
+          if (item.grader)   parts.push(item.grader + ' ' + item.grade);
+          if (item.costPrice) parts.push('Cost S$' + item.costPrice);
+          return parts.join(' · ');
+        }
+        if (d.originalTable === 'sales') return 'Sold S$' + (item.totalCollected||0) + ' · profit S$' + (item.profit||0);
+        if (d.originalTable === 'savedChart') return (item.xFields||[]).length + ' X fields · ' + (item.yFields||[]).length + ' Y fields';
+        return '';
+      })();
+      const deletedAt = new Date(d.deletedAt || e.updated_at);
+      const ago = (() => {
+        const ms = Date.now() - deletedAt.getTime();
+        const days = Math.floor(ms / 86400000);
+        if (days === 0) return 'Today';
+        if (days === 1) return 'Yesterday';
+        if (days < 30) return days + 'd ago';
+        return deletedAt.toLocaleDateString();
+      })();
+      const daysLeft = Math.max(0, 30 - Math.floor((Date.now() - deletedAt.getTime()) / 86400000));
+      const tableLabels = { singles: 'Single', slabs: 'Slab', sales: 'Sale', savedChart: 'Saved Chart' };
+      const tableBadge = tableLabels[d.originalTable] || d.originalTable || 'Item';
+
+      return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+            <span style="background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 6px;font-size:10px;color:var(--text2);font-weight:500">${tableBadge}</span>
+            <span style="font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+          </div>
+          <div style="font-size:11px;color:var(--text3)">${sub}</div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:var(--text3);min-width:90px">
+          <div>${ago}</div>
+          <div style="opacity:0.7">${daysLeft}d left</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash('${e.id}')">↻ Restore</button>
+          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(confirm('Permanently delete this item? Cannot be undone.')) { await hardDeleteTrashEntry('${e.id}'); toast('Permanently deleted'); renderTrash(); } })()">✕ Delete forever</button>
+        </div>
+      </div>`;
+    }).join('');
+  });
+}
+
+// ── Hook deletions to send to trash ──
+
 async function deleteItem(id, table) {
-  if (!confirm('Delete this item?')) return;
   const item = DB[table].find(i => i.id === id);
+  if (!item) return;
+  if (!confirm('Move this item to trash? You can restore it within 30 days from the Trash tab.')) return;
   snapshotForUndo();
+  // Send to trash first (best-effort)
+  await sendToTrash(table, item, 'single');
+  // Remove from local DB and Supabase
   DB[table] = DB[table].filter(i => i.id !== id);
   saveData();
   await sbDelete(table, id);
-  clLog('delete', table, item ? item.name || item.product || id : id);
-  toast('Deleted');
+  clLog('delete', table, item.name || item.product || id);
+  toast('Moved to trash · view in 🗑 tab');
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (table === 'sales') renderSales();
@@ -2762,7 +3328,7 @@ function renderSlabs() {
   const sold      = sortItems(DB.slabs.filter(i => (i.status||'Available') === 'Sold' && passesFilters(i)), 'slabs');
 
   const totalCostSlabs  = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const totalValueSlabs = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||parseFloat(i.listPrice)||0), 0);
+  const totalValueSlabs = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
   const unrealisedSlabs = totalValueSlabs - totalCostSlabs;
 
   function statCard(label, value, tooltip, cls) {
@@ -2773,17 +3339,16 @@ function renderSlabs() {
     '</div>';
   }
 
+  const q_slabs = (document.getElementById('slabs-search')?.value || '').toLowerCase().trim();
   document.getElementById('slabs-stats').innerHTML =
     statCard('Available', available.length, 'Slabs with status = Available (excluding Sold)') +
     statCard('Sold', sold.length, 'Slabs marked as Sold in this view') +
-    statCard('Est. Value', 'S$' + totalValueSlabs.toFixed(0), 'Sum of Market Price for all available slabs. Falls back to List Price if Market Price is empty.') +
-    statCard('Total Cost', 'S$' + totalCostSlabs.toFixed(0), 'Sum of Cost Price for all available slabs') +
-    statCard('Unrealised P&L', (unrealisedSlabs >= 0 ? '+' : '') + 'S$' + unrealisedSlabs.toFixed(0), 'Est. Value minus Total Cost. Positive = paper gain, negative = paper loss.', unrealisedSlabs >= 0 ? 'pos' : 'neg');
+    statCard('Market Price', totalValueSlabs > 0 ? 'S$' + totalValueSlabs.toFixed(0) : '—', 'Sum of Market Price for all available slabs. Only counts slabs with a market price explicitly set.') +
+    statCard('Total Cost', 'S$' + totalCostSlabs.toFixed(0), 'Sum of Cost Price for all available slabs');
 
   applySortHeaders('slabs-table', 'slabs');
 
   function buildRow(i, isSold) {
-    const mp = parseFloat(i.marketPrice)||parseFloat(i.listPrice)||0;
     const tagUrl = (i.certNo && i.grader === 'TAG') ? 'https://my.taggrading.com/card/' + i.certNo : null;
     const chk = selectedIds.slabs.has(i.id);
     const certHtml = tagUrl
@@ -2799,16 +3364,17 @@ function renderSlabs() {
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
     const urlIcon = i.ebayUrl || i.carousellUrl
       ? '<span title="Listed on ' + (i.ebayUrl ? 'eBay ' : '') + (i.carousellUrl ? 'Carousell' : '') + '">🔗</span>' : '';
+    const mp = parseFloat(i.marketPrice)||0;
+    const mpDisplay = (i.marketPrice !== '' && i.marketPrice !== null && i.marketPrice !== undefined) ? i.marketPrice : '';
     return '<tr data-id="' + i.id + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' onchange="toggleRowSelect(\'slabs\',\'' + i.id + '\',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:200px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (i.name||'') + '">' + (i.name||'—') + '</div></td>' +
       '<td data-col-key="grade">' + graderGradeBadge(i.grader, i.grade, i.notes) + '</td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:200px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (i.name||'') + '">' + (i.name||'—') + '</div></td>' +
       '<td data-col-key="certNo">' + certHtml + '</td>' +
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + (i.rank||'—') + '</td>' +
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + (i.dateListed||'—') + '</td>' +
       '<td data-col-key="costPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + (i.costPrice ? '$' + i.costPrice : '') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + i.id + '\',\'costPrice\',this.value.replace(/^\\$+/,\'\'))"></td>' +
-      '<td data-col-key="marketPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + (i.marketPrice||mp||'') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + i.id + '\',\'marketPrice\',this.value)"></td>' +
-      '<td data-col-key="pnl">' + pnlHtml(i.costPrice, i.marketPrice||mp) + '</td>' +
+      '<td data-col-key="marketPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + mpDisplay + '" placeholder="—" onchange="updateField(\'slabs\',\'' + i.id + '\',\'marketPrice\',this.value)"></td>' +
       '<td data-col-key="notes" style="font-size:11px;color:var(--text3);max-width:120px;overflow:hidden;text-overflow:ellipsis">' + (i.notes||'—') + '</td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
@@ -3021,62 +3587,6 @@ function getDateRange() {
   return cutoff;
 }
 
-function updateChartType(key, type) {
-  if (!dashCharts[key]) return;
-  dashCharts[key].config.type = type;
-  dashCharts[key].update();
-}
-
-function renderInvestChart() {
-  if (dashCharts.invest) { dashCharts.invest.destroy(); delete dashCharts.invest; }
-  const mode = document.getElementById('invest-mode')?.value || 'cost';
-  const topN = document.getElementById('invest-top')?.value || '10';
-
-  // Group available items by first word of name (Pokémon name)
-  const grouped = {};
-  const allItems = [
-    ...DB.singles.filter(i => (i.status||'Available') === 'Available'),
-    ...DB.slabs.filter(i => (i.status||'Available') === 'Available')
-  ];
-  allItems.forEach(i => {
-    const poke = (i.name||'Unknown').split(' ')[0];
-    const val = parseFloat(mode === 'market' ? (i.marketPrice||i.costPrice||0) : (i.costPrice||0));
-    if (!val) return;
-    grouped[poke] = (grouped[poke]||0) + val;
-  });
-
-  let entries = Object.entries(grouped).sort((a,b) => b[1]-a[1]);
-  if (topN !== 'all') entries = entries.slice(0, parseInt(topN));
-
-  const ctx = document.getElementById('investChart').getContext('2d');
-  const palette = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80','#facc15','#e879f9','#94a3b8','#f472b6','#a3e635','#22d3ee'];
-  dashCharts.invest = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: entries.map(([k]) => k),
-      datasets: [{
-        label: mode === 'market' ? 'Market Value (S$)' : 'Cost Invested (S$)',
-        data: entries.map(([,v]) => parseFloat(v.toFixed(0))),
-        backgroundColor: entries.map((_,i) => palette[i % palette.length] + '55'),
-        borderColor:     entries.map((_,i) => palette[i % palette.length]),
-        borderWidth: 1.5, borderRadius: 4
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: ctx => ' S$' + ctx.parsed.x.toFixed(0) } }
-      },
-      scales: {
-        x: { ticks: { color: '#666', font: { size: 10 }, callback: v => 'S$' + v }, grid: { color: '#2a2a2a' } },
-        y: { ticks: { color: '#ccc', font: { size: 11 } }, grid: { display: false } }
-      }
-    }
-  });
-}
-
 function renderDashboard() {
   // ── Inventory cost ──
   const invCostSingles = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
@@ -3116,7 +3626,7 @@ function renderDashboard() {
 
   const rangeLabel = (document.getElementById('dash-range')?.options[document.getElementById('dash-range')?.selectedIndex]?.text || '');
 
-  // Row 1 — KPIs (removed All-time Revenue card, kept Profit & Avg)
+  // Row 1 — KPIs
   document.getElementById('dash-metrics-primary').innerHTML =
     dashMetric('Total Inventory Cost', 'S$' + totalInvCost.toFixed(0),
       totalItems + ' items held',
@@ -3131,123 +3641,16 @@ function renderDashboard() {
       filteredSales.length + ' sales averaged',
       'Total profit ÷ number of sales in selected period.', avgProfitPerTx >= 0 ? 'pos' : 'neg');
 
-  // Row 2 — inventory breakdown (removed Total Sold for singles/slabs separately)
+  // Row 2 — inventory breakdown
   const singlesExposurePct = totalInvCost > 0 ? ((invCostSingles / totalInvCost) * 100).toFixed(0) : 0;
   const slabsExposurePct   = totalInvCost > 0 ? ((invCostSlabs   / totalInvCost) * 100).toFixed(0) : 0;
   document.getElementById('dash-metrics-secondary').innerHTML =
-    dashMetric('Singles Available', singlesAvail, singlesSold + ' sold · ' + singlesExposurePct + '% of capital', 'Available singles and how much of your capital they represent.') +
-    dashMetric('Slabs Available', slabsAvail, slabsSold + ' sold · ' + slabsExposurePct + '% of capital', 'Available slabs and how much of your capital they represent.') +
-    dashMetric('Sales This Month', (function() {
-      const now = new Date(), mo = now.toLocaleString('en-GB',{month:'short'}), yr = now.getFullYear();
-      return DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).length;
-    })(), (function() {
-      const now = new Date(), mo = now.toLocaleString('en-GB',{month:'short'}), yr = now.getFullYear();
-      const p = DB.sales.filter(s => (s.dateSold||'').includes(mo) && (s.dateSold||'').includes(String(yr))).reduce((s,i)=>s+(i.profit||0),0);
-      return (p >= 0 ? '+' : '') + 'S$' + p.toFixed(0) + ' profit';
-    })(), 'Sales this calendar month.');
+    dashMetric('Singles Available', singlesAvail, '', 'Total available singles in your inventory.') +
+    dashMetric('Slabs Available', slabsAvail, '', 'Total available slabs in your inventory.');
 
-  // ── Monthly chart data ──
-  const months = {};
-  filteredSales.forEach(s => {
-    const key = normaliseToMonthYear(s.dateSold);
-    if (!key) return;
-    if (!months[key]) months[key] = { revenue: 0, profit: 0 };
-    months[key].revenue += s.totalCollected || 0;
-    months[key].profit  += s.profit || 0;
-  });
-  const sortedMonths = Object.keys(months).sort((a,b) => new Date('1 '+a) - new Date('1 '+b));
-  const labels    = sortedMonths;
-  const revenues  = sortedMonths.map(m => parseFloat(months[m].revenue.toFixed(0)));
-  const profits   = sortedMonths.map(m => parseFloat(months[m].profit.toFixed(0)));
-
-  // ── Destroy old charts ──
+  // Destroy any leftover chart instances
   Object.values(dashCharts).forEach(c => { try { c.destroy && c.destroy(); } catch(e) {} });
   dashCharts = {};
-
-  const chartDefaults = {
-    responsive: true, maintainAspectRatio: false,
-    animation: { duration: 600, easing: 'easeInOutQuart' },
-    plugins: { legend: { display: false } }
-  };
-  const gridColor = '#2a2a2a';
-  const axisColor = '#666';
-
-  // Revenue chart
-  const rCtx = document.getElementById('revenueChart').getContext('2d');
-  dashCharts.rev = new Chart(rCtx, {
-    type: 'bar',
-    data: { labels, datasets: [{ label: 'Revenue (S$)', data: revenues, backgroundColor: '#4a9eff44', borderColor: '#4a9eff', borderWidth: 1.5, borderRadius: 4 }] },
-    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
-  });
-
-  // Profit chart
-  const pCtx = document.getElementById('profitChart').getContext('2d');
-  dashCharts.profit = new Chart(pCtx, {
-    type: 'line',
-    data: { labels, datasets: [{ label: 'Profit (S$)', data: profits, borderColor: '#4CAF50', backgroundColor: '#4CAF5022', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#4CAF50' }] },
-    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
-  });
-
-  // Cumulative profit chart
-  const cumProfits = profits.reduce((acc, v, i) => { acc.push((acc[i-1]||0) + v); return acc; }, []);
-  const cpCtx = document.getElementById('cumulativeChart').getContext('2d');
-  dashCharts.cumulative = new Chart(cpCtx, {
-    type: 'line',
-    data: { labels, datasets: [{ label: 'Cumulative Profit', data: cumProfits, borderColor: '#f59e0b', backgroundColor: '#f59e0b22', fill: true, tension: 0.3, borderWidth: 2, pointRadius: 3 }] },
-    options: { ...chartDefaults, scales: { x: { ticks: { color: axisColor, font: {size:11} }, grid: {display:false} }, y: { ticks: { color: axisColor, font: {size:11}, callback: v=>'S$'+v }, grid: {color:gridColor} } } }
-  });
-
-  // Grader chart
-  const graderCount = {};
-  DB.slabs.forEach(s => { const g = s.grader||'Other'; graderCount[g] = (graderCount[g]||0) + 1; });
-  const gCtx = document.getElementById('graderChart').getContext('2d');
-  dashCharts.grader = new Chart(gCtx, {
-    type: 'doughnut',
-    data: { labels: Object.keys(graderCount), datasets: [{ data: Object.values(graderCount), backgroundColor: ['#22c55e','#3b82f6','#f59e0b','#a78bfa'], borderWidth: 2, borderColor: '#161616' }] },
-    options: { ...chartDefaults, plugins: { legend: { display: true, position: 'bottom', labels: { color: '#999', font: {size:12}, padding: 12, usePointStyle: true } } } }
-  });
-
-  // Capital chart
-  const allHeld = [
-    ...DB.singles.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0).map(i => ({ name: i.name, cost: parseFloat(i.costPrice), type: 'single' })),
-    ...DB.slabs.filter(i => (i.status||'Available') === 'Available' && parseFloat(i.costPrice) > 0).map(i => ({ name: i.name + (i.grader ? ' ' + i.grader + ' ' + i.grade : ''), cost: parseFloat(i.costPrice), type: 'slab' }))
-  ].sort((a,b) => b.cost - a.cost).slice(0,10);
-  const capCtx = document.getElementById('capitalChart').getContext('2d');
-  dashCharts.capital = new Chart(capCtx, {
-    type: 'bar',
-    data: {
-      labels: allHeld.map(i => i.name.length > 22 ? i.name.slice(0,22)+'…' : i.name),
-      datasets: [{ label: 'Cost (S$)', data: allHeld.map(i => i.cost), backgroundColor: allHeld.map(i => i.type === 'slab' ? '#2dd4bf44' : '#a78bfa44'), borderColor: allHeld.map(i => i.type === 'slab' ? '#2dd4bf' : '#a78bfa'), borderWidth: 1.5, borderRadius: 4 }]
-    },
-    options: { ...chartDefaults, indexAxis: 'y', plugins: { legend: {display:false}, tooltip: { callbacks: { label: ctx => ' S$' + ctx.parsed.x.toFixed(0) } } }, scales: { x: { ticks: { color: axisColor, font: {size:10}, callback: v=>'S$'+v }, grid: {color:gridColor} }, y: { ticks: { color: '#ccc', font: {size:11} }, grid: {display:false} } } }
-  });
-
-  // Exposure donut
-  const expCtx = document.getElementById('exposureChart').getContext('2d');
-  dashCharts.exposure = new Chart(expCtx, {
-    type: 'doughnut',
-    data: { labels: ['Singles','Slabs'], datasets: [{ data: [invCostSingles, invCostSlabs], backgroundColor: ['#a78bfa','#2dd4bf'], borderWidth: 2, borderColor: '#161616' }] },
-    options: { ...chartDefaults, plugins: { legend: {display:false} }, cutout: '68%' }
-  });
-  const expTotal = invCostSingles + invCostSlabs || 1;
-  document.getElementById('exposure-legend').innerHTML = [
-    { label:'Singles', cost:invCostSingles, color:'#a78bfa' },
-    { label:'Slabs',   cost:invCostSlabs,   color:'#2dd4bf' }
-  ].map(e => {
-    const pct = ((e.cost/expTotal)*100).toFixed(0);
-    return '<div><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--text2);display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:' + e.color + ';display:inline-block"></span>' + e.label + '</span><span style="color:var(--text);font-weight:600">S$' + e.cost.toFixed(0) + ' <span style="color:var(--text3);font-weight:400">(' + pct + '%)</span></span></div><div style="height:4px;background:var(--bg3);border-radius:2px"><div style="height:4px;width:' + pct + '%;background:' + e.color + ';border-radius:2px"></div></div></div>';
-  }).join('');
-
-  // Investment per Pokémon
-  renderInvestChart();
-
-  // Top sales
-  const topSales = [...DB.sales].sort((a,b) => (b.profit||0)-(a.profit||0)).slice(0,10);
-  document.getElementById('top-sales').innerHTML = topSales.length ? topSales.map(s =>
-    '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">' +
-    '<div style="font-size:13px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + s.product + '">' + s.product + '</div>' +
-    '<div style="font-size:13px;font-weight:600;color:var(--green);font-family:monospace;white-space:nowrap">+S$' + (s.profit||0).toFixed(0) + '</div>' +
-    '</div>').join('') : '<div style="color:var(--text3);font-size:13px;padding:20px 0;text-align:center">No sales yet</div>';
 
   // Init AI analyst quick chips
   initAiAnalyst();
@@ -3437,51 +3840,510 @@ function openListingFor(table, id) {
   toast('Item pre-loaded — adjust price and generate!');
 }
 
-// ── Bulk price refresh ──
+// =========== EXTERNAL PRICE APIS ===========
+// PokemonPriceTracker — https://www.pokemonpricetracker.com/api
+// PokeTrace — https://poketrace.com/developers
+// Both return USD; we convert to SGD via Frankfurter rate.
+// We take the MAX of the two as the market price ceiling (US market reference).
+
+const PPT_KEY_STORAGE  = 'pokeinv_ppt_apikey';
+const POKETRACE_KEY_STORAGE = 'pokeinv_poketrace_apikey';
+
+// Pre-inject provided API keys if not already stored
+(function() {
+  if (!localStorage.getItem(PPT_KEY_STORAGE))  localStorage.setItem(PPT_KEY_STORAGE,  'pokeprice_free_120a9fd64a47b2b584e508483a6d7301113ad64b5da7c48f');
+  if (!localStorage.getItem(POKETRACE_KEY_STORAGE)) localStorage.setItem(POKETRACE_KEY_STORAGE, 'pc_6e25a4e288325b6bb1c6b07b8d7d578d99d245ae9b5042fd');
+})();
+
+function getApiKey(which) {
+  return localStorage.getItem(which === 'ppt' ? PPT_KEY_STORAGE : POKETRACE_KEY_STORAGE) || '';
+}
+function setApiKey(which, val) {
+  localStorage.setItem(which === 'ppt' ? PPT_KEY_STORAGE : POKETRACE_KEY_STORAGE, val.trim());
+}
+
+function openApiSettings() {
+  const ppt = getApiKey('ppt');
+  const pkt = getApiKey('poketrace');
+  // Remove any existing instance first
+  document.getElementById('api-key-modal')?.remove();
+  const html = `
+    <div id="api-key-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg,12px);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,0.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--border)">
+          <h3 style="font-size:15px;font-weight:600;margin:0">🔑 Price API Settings</h3>
+          <button onclick="document.getElementById('api-key-modal').remove()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px">&times;</button>
+        </div>
+        <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
+
+          <div style="font-size:12px;color:var(--text3);line-height:1.6;padding:10px;background:var(--bg3);border-radius:8px">
+            Fetches real eBay sold data from <strong style="color:var(--text)">PokemonPriceTracker</strong> + <strong style="color:var(--text)">PokeTrace</strong>. Takes the <strong style="color:var(--text)">max</strong> of both sources, converts USD → SGD automatically.
+          </div>
+
+          <div>
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokemonPriceTracker API Key</div>
+            <input type="text" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">
+              <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> — 100 free lookups/day
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokeTrace API Key</div>
+            <input type="text" id="poketrace-key-input" class="fi" placeholder="pc_..." value="${pkt}" style="font-family:monospace;font-size:12px">
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">
+              <a href="https://poketrace.com/developers" target="_blank" style="color:var(--accent)">poketrace.com/developers</a>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="saveApiKeys()">Save Keys</button>
+            <button class="btn btn-sm" onclick="testApiKeys()">Test Keys</button>
+          </div>
+          <div id="api-key-status" style="font-size:12px;min-height:16px"></div>
+
+          <!-- Queue panel -->
+          <div style="border-top:1px solid var(--border);padding-top:16px">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">📅 Scheduled Refresh Queue</div>
+            <div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg3);border-radius:8px">
+              <strong style="color:var(--text)">Priority:</strong> Slabs first (high cost → low) → Singles (high cost → low)<br>
+              <strong style="color:var(--text)">Deduplication:</strong> Same card name = fetch once, copy to all duplicates<br>
+              <strong style="color:var(--text)">Daily limit:</strong> ${DAILY_LIMIT} lookups/day · Auto-runs when you open the app
+            </div>
+            <div id="queue-status-panel" style="margin-bottom:12px"></div>
+            <button class="btn btn-sm" onclick="startFreshQueue()" style="width:100%;justify-content:center">
+              🔄 Build / Rebuild Refresh Queue
+            </button>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;border-top:1px solid var(--border);padding-top:14px">
+            <button class="btn btn-sm" onclick="document.getElementById('api-key-modal').remove()">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  setTimeout(_renderQueueStatus, 50);
+  // Close on backdrop click
+  document.getElementById('api-key-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.remove();
+  });
+}
+
+function saveApiKeys() {
+  setApiKey('ppt', document.getElementById('ppt-key-input').value);
+  setApiKey('poketrace', document.getElementById('poketrace-key-input').value);
+  document.getElementById('api-key-status').innerHTML = '<span style="color:var(--green)">✓ Saved</span>';
+  toast('API keys saved');
+}
+
+async function testApiKeys() {
+  const status = document.getElementById('api-key-status');
+  status.innerHTML = '<span style="color:var(--text3)">Testing...</span>';
+  // Save first so test uses what's in the inputs
+  setApiKey('ppt', document.getElementById('ppt-key-input').value);
+  setApiKey('poketrace', document.getElementById('poketrace-key-input').value);
+  // Test with Charizard Base Set
+  const result = await fetchMarketPrice('Charizard', null, null);
+  let html = '';
+  if (result.ppt)       html += '<div>✓ <strong>PokemonPriceTracker:</strong> US$' + result.ppt.toFixed(2) + ' → S$' + (result.ppt * (_sgdRate||1.35)).toFixed(0) + '</div>';
+  else                  html += '<div style="color:var(--red)">✗ PokemonPriceTracker: ' + (result.pptError || 'no result') + '</div>';
+  if (result.poketrace) html += '<div>✓ <strong>PokeTrace:</strong> US$' + result.poketrace.toFixed(2) + ' → S$' + (result.poketrace * (_sgdRate||1.35)).toFixed(0) + '</div>';
+  else                  html += '<div style="color:var(--red)">✗ PokeTrace: ' + (result.poketraceError || 'no result') + '</div>';
+  status.innerHTML = html;
+}
+
+// ── PokemonPriceTracker: fetch single card USD price ──
+async function fetchPriceFromPPT(name, grader, grade) {
+  const key = getApiKey('ppt');
+  if (!key) return { error: 'no API key' };
+  try {
+    // PPT supports name search via /api/v2/cards
+    const url = 'https://www.pokemonpricetracker.com/api/v2/cards?search=' + encodeURIComponent(name) + '&limit=3';
+    const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + key } });
+    if (!r.ok) return { error: 'HTTP ' + r.status };
+    const data = await r.json();
+    if (!data.data || !data.data.length) return { error: 'no match' };
+    // Take first result's price
+    const card = data.data[0];
+    let priceUsd = null;
+    if (grader && grade) {
+      // Look for graded price first
+      const gradeKey = grader.toLowerCase() + grade.replace('.','');  // e.g. psa10
+      priceUsd = card.ebay?.[gradeKey]?.avg || card.ebay?.['psa' + grade.replace('.','')]?.avg;
+    }
+    if (!priceUsd) {
+      // Fall back to NM market price
+      priceUsd = card.prices?.market || card.prices?.NEAR_MINT?.avg || card.tcgplayer?.NEAR_MINT?.avg || card.ebay?.NEAR_MINT?.avg;
+    }
+    if (!priceUsd) return { error: 'no price data' };
+    return { priceUsd, source: 'PPT', cardName: card.name };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ── PokeTrace: fetch single card USD price ──
+async function fetchPriceFromPokeTrace(name, grader, grade) {
+  const key = getApiKey('poketrace');
+  if (!key) return { error: 'no API key' };
+  try {
+    const url = 'https://poketrace.com/api/v1/cards?search=' + encodeURIComponent(name) + '&limit=3';
+    const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + key } });
+    if (!r.ok) return { error: 'HTTP ' + r.status };
+    const data = await r.json();
+    if (!data.data || !data.data.length) return { error: 'no match' };
+    const card = data.data[0];
+    let priceUsd = null;
+    if (grader && grade) {
+      const gradeKey = grader.toLowerCase() + grade.replace('.','');
+      priceUsd = card.prices?.ebay?.[gradeKey]?.avg;
+    }
+    if (!priceUsd) {
+      priceUsd = card.prices?.ebay?.NEAR_MINT?.avg || card.prices?.tcgplayer?.NEAR_MINT?.avg;
+    }
+    if (!priceUsd) return { error: 'no price data' };
+    return { priceUsd, source: 'PokeTrace', cardName: card.name };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ── Combined: fetch both, return max + source breakdown ──
+async function fetchMarketPrice(name, grader, grade) {
+  const [pptRes, pktRes] = await Promise.all([
+    fetchPriceFromPPT(name, grader, grade),
+    fetchPriceFromPokeTrace(name, grader, grade)
+  ]);
+  const rate = await getSgdRate();
+  const result = {
+    ppt: pptRes.priceUsd || null,
+    poketrace: pktRes.priceUsd || null,
+    pptError: pptRes.error,
+    poketraceError: pktRes.error,
+    sgdRate: rate
+  };
+  const valid = [result.ppt, result.poketrace].filter(v => typeof v === 'number');
+  if (!valid.length) {
+    result.maxUsd = null;
+    result.maxSgd = null;
+    result.confidence = 'none';
+  } else {
+    result.maxUsd = Math.max(...valid);
+    result.maxSgd = result.maxUsd * rate;
+    if (valid.length === 2) {
+      const diffPct = Math.abs(result.ppt - result.poketrace) / Math.min(result.ppt, result.poketrace) * 100;
+      result.confidence = diffPct > 30 ? 'low' : 'high';
+      result.divergencePct = diffPct;
+    } else {
+      result.confidence = 'medium'; // only one source
+    }
+  }
+  return result;
+}
+
+// ── Refresh single price using real APIs (fallback to AI if no keys) ──
+async function refreshPrice(id, table) {
+  const item = DB[table].find(i => i.id === id);
+  if (!item) return;
+  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+  if (!hasKeys) {
+    toast('Add API keys first — click 🔑 in top bar');
+    return;
+  }
+  toast('Fetching market price...');
+  const grader = item.type === 'slab' ? (item.grader||null) : null;
+  const grade  = item.type === 'slab' ? (item.grade||null) : null;
+  const r = await fetchMarketPrice(item.name, grader, grade);
+  if (r.maxSgd) {
+    item.marketPrice = r.maxSgd.toFixed(0);
+    if (!item.priceHistory) item.priceHistory = [];
+    item.priceHistory.push({
+      date: new Date().toISOString().slice(0,10),
+      price: r.maxSgd,
+      source: r.ppt && r.poketrace ? 'max(PPT,PokeTrace)' : (r.ppt ? 'PPT' : 'PokeTrace'),
+      ppt: r.ppt,
+      poketrace: r.poketrace
+    });
+    markDirty(table, id);
+    saveData();
+    if (table === 'singles') renderSingles();
+    if (table === 'slabs') renderSlabs();
+    const detail = (r.ppt ? 'PPT US$' + r.ppt.toFixed(0) : '—') + ' / ' + (r.poketrace ? 'PokeTrace US$' + r.poketrace.toFixed(0) : '—');
+    toast('Updated S$' + r.maxSgd.toFixed(0) + ' (' + detail + ')');
+  } else {
+    toastError('No price found · PPT: ' + (r.pptError||'?') + ' · PokeTrace: ' + (r.poketraceError||'?'));
+  }
+}
+
+// =========== SMART REFRESH QUEUE ===========
+// Priority order:
+//   1. All slabs (by costPrice desc)
+//   2. All singles (by costPrice desc, top 100 first each day)
+// Deduplication: fetch once per unique card name+grader+grade combo,
+//   copy the result to all other rows with the same name.
+// Daily limit: 100 lookups max (each unique fetch = 1 credit).
+// Queue state persists in localStorage — resumes automatically next day.
+
+const QUEUE_KEY       = 'pokeinv_refresh_queue';
+const QUEUE_DATE_KEY  = 'pokeinv_refresh_queue_date';
+const DAILY_LIMIT     = 100;
+
+function loadQueue()  { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); } catch(e) { return null; } }
+function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) {} }
+function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY); }
+
+// Build a fresh queue from current DB state
+function buildRefreshQueue() {
+  // Slabs: sorted by costPrice desc
+  const slabs = DB.slabs
+    .filter(i => (i.status||'Available') === 'Available')
+    .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
+    .map(i => ({ id: i.id, table: 'slabs', name: i.name, grader: i.grader||null, grade: i.grade||null, costPrice: parseFloat(i.costPrice)||0 }));
+
+  // Singles: sorted by costPrice desc
+  const singles = DB.singles
+    .filter(i => (i.status||'Available') === 'Available')
+    .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
+    .map(i => ({ id: i.id, table: 'singles', name: i.name, grader: null, grade: null, costPrice: parseFloat(i.costPrice)||0 }));
+
+  // Combine: slabs first, then singles
+  const all = [...slabs, ...singles];
+
+  // Deduplicate: build a map of uniqueKey → list of item IDs that share the same name
+  // Only the FIRST occurrence in the list gets fetched; rest are "copy targets"
+  const seen = new Map(); // uniqueKey → id of the primary (first) item
+  const queue = [];
+  for (const item of all) {
+    const key = item.name.trim().toLowerCase() +
+      (item.grader ? '|' + item.grader.toLowerCase() : '') +
+      (item.grade  ? '|' + item.grade  : '');
+    if (!seen.has(key)) {
+      seen.set(key, item.id);
+      queue.push({ ...item, isPrimary: true, copyTargets: [], uniqueKey: key });
+    } else {
+      // Find the primary entry and add this as a copy target
+      const primary = queue.find(q => q.id === seen.get(key));
+      if (primary) primary.copyTargets.push({ id: item.id, table: item.table });
+    }
+  }
+
+  return {
+    items: queue,          // only primaries, each with copyTargets[]
+    cursor: 0,             // index of next item to fetch
+    totalItems: queue.length,
+    totalRows: all.length, // including duplicates
+    createdAt: new Date().toISOString(),
+    doneToday: 0,
+    dayCreditsUsed: {},    // { 'YYYY-MM-DD': N }
+    completed: false
+  };
+}
+
+function getQueueStatus() {
+  const q = loadQueue();
+  if (!q) return null;
+  const today = new Date().toISOString().slice(0,10);
+  const usedToday = q.dayCreditsUsed?.[today] || 0;
+  const remaining = q.items.length - q.cursor;
+  const daysLeft  = Math.ceil(remaining / DAILY_LIMIT);
+  return { q, usedToday, remaining, daysLeft, today };
+}
+
+// Apply a fetched price to a primary item and all its copy targets
+function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, ppt, poketrace) {
+  const today = new Date().toISOString().slice(0,10);
+  const histEntry = {
+    date: today,
+    price: priceSgd,
+    source: ppt && poketrace ? 'max(PPT,PokeTrace)' : (ppt ? 'PPT' : 'PokeTrace'),
+    ppt, poketrace
+  };
+
+  const applyToItem = (id, table) => {
+    const item = DB[table]?.find(i => i.id === id);
+    if (!item) return;
+    item.marketPrice = priceSgd.toFixed(0);
+    if (!item.priceHistory) item.priceHistory = [];
+    item.priceHistory.push(histEntry);
+    markDirty(table, id);
+    if (item.priceAlert && priceSgd >= parseFloat(item.priceAlert) && Notification.permission === 'granted') {
+      new Notification('🔔 ' + item.name, { body: 'S$' + priceSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+    }
+  };
+
+  applyToItem(primaryId, primaryTable);
+  (copyTargets || []).forEach(t => applyToItem(t.id, t.table));
+}
+
+// Run today's batch — called on page load and manually from settings
+let _queueRunning = false;
+async function runRefreshQueue(manual = false) {
+  if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
+  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+  if (!hasKeys) { if (manual) { toast('Add API keys first'); openApiSettings(); } return; }
+
+  let q = loadQueue();
+  if (!q) { if (manual) toast('No queue — start one from 🔑 Settings'); return; }
+  if (q.completed) { if (manual) toast('Queue complete — reset to start a new cycle'); return; }
+
+  const today = new Date().toISOString().slice(0,10);
+  const usedToday = q.dayCreditsUsed?.[today] || 0;
+  const creditsLeft = DAILY_LIMIT - usedToday;
+
+  if (creditsLeft <= 0) {
+    if (manual) toast('Daily limit reached (' + DAILY_LIMIT + ' lookups). Resumes tomorrow automatically.');
+    return;
+  }
+
+  _queueRunning = true;
+  const batch = q.items.slice(q.cursor, q.cursor + creditsLeft);
+  if (!batch.length) {
+    q.completed = true;
+    saveQueue(q);
+    _queueRunning = false;
+    if (manual) toast('All cards refreshed! Reset queue to start a new cycle.');
+    return;
+  }
+
+  let done = 0, failed = 0, copied = 0;
+  const total = batch.length;
+
+  for (const item of batch) {
+    showSyncProgress(done + failed, total,
+      'Queue: ' + (q.cursor + done + failed + 1) + '/' + q.totalItems +
+      ' · Day credit ' + (usedToday + done + failed + 1) + '/' + DAILY_LIMIT);
+
+    const r = await fetchMarketPrice(item.name, item.grader, item.grade);
+    if (r.maxSgd) {
+      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.ppt, r.poketrace);
+      copied += item.copyTargets?.length || 0;
+      done++;
+    } else {
+      failed++;
+    }
+    saveData();
+    await new Promise(res => setTimeout(res, 1100)); // respect rate limits
+  }
+
+  // Update queue state
+  q.cursor += batch.length;
+  if (!q.dayCreditsUsed) q.dayCreditsUsed = {};
+  q.dayCreditsUsed[today] = (q.dayCreditsUsed[today] || 0) + done + failed;
+  if (q.cursor >= q.items.length) q.completed = true;
+  saveQueue(q);
+
+  hideSyncProgress();
+  _queueRunning = false;
+
+  // Re-render affected tables
+  renderSingles();
+  renderSlabs();
+
+  const msg = 'Queue: ' + done + ' fetched' +
+    (copied ? ', ' + copied + ' copies updated' : '') +
+    (failed ? ', ' + failed + ' failed' : '') +
+    (q.completed ? ' · ✅ Complete!' : ' · ' + (q.items.length - q.cursor) + ' remaining');
+  toast(msg, 5000);
+
+  // Refresh settings panel if open
+  if (document.getElementById('api-key-modal')) _renderQueueStatus();
+  if (Notification.permission === 'default') Notification.requestPermission();
+}
+
+function _renderQueueStatus() {
+  const el = document.getElementById('queue-status-panel');
+  if (!el) return;
+  const s = getQueueStatus();
+  if (!s) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px">No queue built yet.</div>';
+    return;
+  }
+  const { q, usedToday, remaining, daysLeft, today } = s;
+  const pct = Math.round((q.cursor / q.totalItems) * 100);
+  const slabsDone   = q.items.slice(0, q.cursor).filter(i => i.table === 'slabs').length;
+  const slabsTotal  = q.items.filter(i => i.table === 'slabs').length;
+  const singlesDone = q.items.slice(0, q.cursor).filter(i => i.table === 'singles').length;
+  const singlesTotal= q.items.filter(i => i.table === 'singles').length;
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
+      <span style="font-weight:600">${q.completed ? '✅ Complete' : 'In progress'}</span>
+      <span style="color:var(--text3)">${q.cursor}/${q.totalItems} unique · ${q.totalRows} total rows</span>
+    </div>
+    <div style="height:6px;background:var(--bg3);border-radius:3px;margin-bottom:10px">
+      <div style="height:6px;width:${pct}%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:10px">
+      <div style="padding:8px;background:var(--bg3);border-radius:6px">
+        <div style="color:var(--text3);margin-bottom:2px">Slabs</div>
+        <div style="font-weight:600">${slabsDone}/${slabsTotal} done</div>
+      </div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px">
+        <div style="color:var(--text3);margin-bottom:2px">Singles</div>
+        <div style="font-weight:600">${singlesDone}/${singlesTotal} done</div>
+      </div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px">
+        <div style="color:var(--text3);margin-bottom:2px">Used today (${today})</div>
+        <div style="font-weight:600">${usedToday}/${DAILY_LIMIT} credits</div>
+      </div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px">
+        <div style="color:var(--text3);margin-bottom:2px">Est. days remaining</div>
+        <div style="font-weight:600">${q.completed ? '0' : daysLeft}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
+      Queue built ${new Date(q.createdAt).toLocaleDateString()} · 
+      ${q.items.filter(i=>i.copyTargets?.length).length} cards will copy price to duplicates
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" onclick="runRefreshQueue(true)" ${q.completed||usedToday>=DAILY_LIMIT?'disabled':''}>
+        ▶ Run Today's Batch
+      </button>
+      <button class="btn btn-sm" onclick="startFreshQueue()">↺ Rebuild Queue</button>
+      <button class="btn btn-sm" style="color:var(--red)" onclick="if(confirm('Clear queue?')){clearQueue();_renderQueueStatus();}">✕ Clear</button>
+    </div>
+    ${usedToday >= DAILY_LIMIT ? '<div style="font-size:11px;color:#f59e0b;margin-top:8px">⏰ Daily limit reached — queue resumes tomorrow</div>' : ''}
+    ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ All cards have been refreshed. Rebuild queue to start next cycle.</div>' : ''}
+  `;
+}
+
+function startFreshQueue() {
+  if (!confirm('Build a new refresh queue from your current inventory? This resets all progress.')) return;
+  const q = buildRefreshQueue();
+  saveQueue(q);
+  _renderQueueStatus();
+  toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Slabs: ' + q.items.filter(i=>i.table==='slabs').length + ' · Singles: ' + q.items.filter(i=>i.table==='singles').length);
+}
+
+// Old bulkRefreshPrices kept for per-table manual use (bypasses queue)
 let _bulkRefreshRunning = false;
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
+  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+  if (!hasKeys) { toast('Add API keys first — click 🔑 in top bar'); openApiSettings(); return; }
   const items = DB[table].filter(i => (i.status||'Available') === 'Available');
   if (!items.length) { toast('No available items to refresh'); return; }
-  if (!confirm('Refresh market prices for all ' + items.length + ' available ' + table + '? This will make ' + items.length + ' AI requests and may take a few minutes.')) return;
+  if (!confirm('Manually refresh all ' + items.length + ' ' + table + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.')) return;
   _bulkRefreshRunning = true;
-  const rate = await getSgdRate();
   let done = 0, failed = 0;
-  toast('Refreshing 1/' + items.length + '...');
   for (const item of items) {
-    let q = item.name;
-    if (item.type === 'slab') q += ' ' + (item.grader||'TAG') + ' ' + (item.grade||'10');
-    if (item.language) q += ' ' + item.language;
-    try {
-      const result = await callAI(
-        'Search eBay sold listings for: "' + q + '". Use live rate US$1 = S$' + rate.toFixed(4) + '. Return ONLY valid JSON: {"avg_sgd": number, "date": "YYYY-MM-DD"}. No other text.',
-        true
-      );
-      const data = JSON.parse(result.replace(/```json|```/g,'').trim());
-      if (data.avg_sgd) {
-        item.marketPrice = data.avg_sgd.toFixed(0);
-        if (!item.priceHistory) item.priceHistory = [];
-        item.priceHistory.push({ date: data.date || new Date().toISOString().slice(0,10), price: data.avg_sgd });
-        // Check price alert
-        if (item.priceAlert && data.avg_sgd >= parseFloat(item.priceAlert)) {
-          if (Notification.permission === 'granted') {
-            new Notification('🔔 Price Alert: ' + item.name, { body: 'Market price S$' + data.avg_sgd.toFixed(0) + ' has reached your target of S$' + item.priceAlert });
-          }
-        }
-        done++;
-      } else { failed++; }
-    } catch(e) { failed++; }
+    showSyncProgress(done + failed, items.length, 'Refreshing ' + table + '…');
+    const r = await fetchMarketPrice(item.name, item.grader||null, item.grade||null);
+    if (r.maxSgd) {
+      item.marketPrice = r.maxSgd.toFixed(0);
+      if (!item.priceHistory) item.priceHistory = [];
+      item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, source: r.ppt && r.poketrace ? 'max(PPT,PokeTrace)' : (r.ppt ? 'PPT' : 'PokeTrace'), ppt: r.ppt, poketrace: r.poketrace });
+      if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && Notification.permission === 'granted') {
+        new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+      }
+      markDirty(table, item.id);
+      done++;
+    } else { failed++; }
     saveData();
-    // Rate-limit: 1 per 1.2s to avoid hammering the API
-    await new Promise(r => setTimeout(r, 1200));
-    const remaining = items.length - done - failed;
-    if (remaining > 0) toast('Refreshing... ' + (done + failed) + '/' + items.length);
+    await new Promise(r => setTimeout(r, 1100));
   }
+  hideSyncProgress();
   _bulkRefreshRunning = false;
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
-  toast('Bulk refresh done: ' + done + ' updated' + (failed ? ', ' + failed + ' failed' : '') + '.');
-  // Request notification permission for future alerts
+  toast('Done: ' + done + ' updated, ' + failed + ' failed');
   if (Notification.permission === 'default') Notification.requestPermission();
 }
 
@@ -3561,7 +4423,43 @@ async function searchEbay() {
   if (!q) { toast('Enter a search query'); return; }
   const outEl = document.getElementById('ebay-out');
   outEl.style.display = 'block';
-  outEl.innerHTML = '<span class="ai-status">Fetching live exchange rate & searching eBay sold listings...</span>';
+
+  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+  if (hasKeys) {
+    // Use real APIs
+    outEl.innerHTML = '<span class="ai-status">Fetching from PokemonPriceTracker + PokeTrace...</span>';
+    const r = await fetchMarketPrice(q, null, null);
+    if (r.maxUsd) {
+      const rateNote = 'Rate: US$1 = S$' + r.sgdRate.toFixed(4);
+      outEl.innerHTML = `
+        <div style="font-size:11px;color:var(--text3);margin-bottom:10px">📈 ${rateNote} (live)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+          <div style="padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">PokemonPriceTracker</div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px">${r.ppt ? 'US$' + r.ppt.toFixed(2) : '—'}</div>
+            <div style="font-size:12px;color:var(--text2)">${r.ppt ? 'S$' + (r.ppt * r.sgdRate).toFixed(0) : (r.pptError || '')}</div>
+          </div>
+          <div style="padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">PokeTrace</div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px">${r.poketrace ? 'US$' + r.poketrace.toFixed(2) : '—'}</div>
+            <div style="font-size:12px;color:var(--text2)">${r.poketrace ? 'S$' + (r.poketrace * r.sgdRate).toFixed(0) : (r.poketraceError || '')}</div>
+          </div>
+        </div>
+        <div style="padding:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:6px">
+          <div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px">Market Price (max of both, US market reference)</div>
+          <div style="font-size:24px;font-weight:600;margin-top:4px">S$${r.maxSgd.toFixed(0)}</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">US$${r.maxUsd.toFixed(2)} · Confidence: ${r.confidence}${r.divergencePct !== undefined ? ' · Sources differ by ' + r.divergencePct.toFixed(0) + '%' : ''}</div>
+          ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Sources disagree significantly — manually verify</div>' : ''}
+          <div style="font-size:11px;color:var(--text3);margin-top:8px">⚠ This is the US market ceiling. Singapore (Carousell/eBay-SG) typically sells 10–25% below for raw cards.</div>
+        </div>`;
+    } else {
+      outEl.innerHTML = '<div style="color:var(--red)">No price found · PPT: ' + (r.pptError||'?') + ' · PokeTrace: ' + (r.poketraceError||'?') + '</div>';
+    }
+    return;
+  }
+
+  // Fallback to AI if no API keys configured
+  outEl.innerHTML = '<span class="ai-status">No API keys configured — using AI fallback (less accurate). Click 🔑 in top bar to add keys.</span>';
   const rate = await getSgdRate();
   const rateNote = 'Live rate: US$1 = S$' + rate.toFixed(4) + ' (fetched today)';
   const result = await callAI(
@@ -3569,32 +4467,6 @@ async function searchEbay() {
     true
   );
   outEl.innerHTML = '<div style="font-size:11px;color:var(--text3);margin-bottom:8px">📈 ' + rateNote + '</div>' + result.replace(/\n/g, '<br>');
-}
-
-async function refreshPrice(id, table) {
-  const item = DB[table].find(i => i.id === id);
-  if (!item) return;
-  let q = item.name;
-  if (item.type === 'slab') q += ' ' + (item.grader||'TAG') + ' ' + (item.grade||'10');
-  if (item.language) q += ' ' + item.language;
-  toast('Fetching eBay price...');
-  const rate = await getSgdRate();
-  const result = await callAI(
-    'Search eBay sold listings for: "' + q + '". Use live rate US$1 = S$' + rate.toFixed(4) + ' for any USD→SGD conversion. Return ONLY valid JSON: {"price_sgd": number, "avg_sgd": number, "date": "YYYY-MM-DD"}. No other text.',
-    true
-  );
-  try {
-    const data = JSON.parse(result.replace(/```json|```/g,'').trim());
-    if (data.avg_sgd) {
-      item.marketPrice = data.avg_sgd.toFixed(0);
-      if (!item.priceHistory) item.priceHistory = [];
-      item.priceHistory.push({ date: data.date || new Date().toISOString().slice(0,10), price: data.avg_sgd });
-      saveData();
-      if (table === 'singles') renderSingles();
-      if (table === 'slabs') renderSlabs();
-      toast('Updated to S$' + data.avg_sgd.toFixed(0));
-    } else { toastError('Could not parse eBay price — try searching manually in Listings tab'); }
-  } catch(e) { toastError('Price update failed: ' + e.message); }
 }
 
 // =========== SGD/USD EXCHANGE RATE (dynamic, cached daily) ===========
@@ -3978,9 +4850,746 @@ function resetCurrentView() {
   } catch(e) {}
 })();
 
+// =========== CUSTOM CHART BUILDER (multi-axis) ===========
+const CB_FIELDS = {
+  // Dimensions — group by
+  pokeName:     { label: 'Pokémon Name',      icon: '🃏', type: 'dim',  tables: ['singles','slabs','all_inventory'], get: i => (i.name||'?').split(' ')[0] },
+  fullName:     { label: 'Full Card Name',     icon: '🃏', type: 'dim',  tables: ['singles','slabs','all_inventory'], get: i => i.name||'?' },
+  language:     { label: 'Language',           icon: '🌐', type: 'dim',  tables: ['singles','slabs','all_inventory'], get: i => i.language||'?' },
+  cardType:     { label: 'Card Type',          icon: '📦', type: 'dim',  tables: ['singles','all_inventory'],         get: i => i.type||'raw' },
+  condition:    { label: 'Condition',          icon: '⭐', type: 'dim',  tables: ['singles','all_inventory'],         get: i => i.condition||'?' },
+  set:          { label: 'Set',                icon: '📋', type: 'dim',  tables: ['singles','slabs','all_inventory'], get: i => i.set||'?' },
+  grader:       { label: 'Grader',             icon: '🏷', type: 'dim',  tables: ['slabs','all_inventory'],           get: i => i.grader||'?' },
+  grade:        { label: 'Grade',              icon: '🔢', type: 'dim',  tables: ['slabs','all_inventory'],           get: i => i.grade||'?' },
+  status:       { label: 'Status',             icon: '📌', type: 'dim',  tables: ['singles','slabs','all_inventory'], get: i => i.status||'Available' },
+  dateSold:     { label: 'Month Sold',         icon: '📅', type: 'dim',  tables: ['sales'],                          get: s => normaliseToMonthYear(s.dateSold)||'?' },
+  buyer:        { label: 'Buyer',              icon: '👤', type: 'dim',  tables: ['sales'],                          get: s => s.buyer||'?' },
+  saleProduct:  { label: 'Product (Pokémon)',  icon: '🃏', type: 'dim',  tables: ['sales'],                          get: s => (s.product||'?').split(' ')[0] },
+  // Measures — aggregate
+  costPrice:    { label: 'Cost Price (S$)',    icon: '💵', type: 'meas', tables: ['singles','slabs','all_inventory'], get: i => parseFloat(i.costPrice)||0 },
+  marketPrice:  { label: 'Market Price (S$)', icon: '📈', type: 'meas', tables: ['singles','slabs','all_inventory'], get: i => parseFloat(i.marketPrice)||0 },
+  pnl:          { label: 'Unrealised P&L',    icon: '💹', type: 'meas', tables: ['singles','slabs','all_inventory'], get: i => (parseFloat(i.marketPrice)||0)-(parseFloat(i.costPrice)||0) },
+  itemCount:    { label: 'Item Count',         icon: '🔢', type: 'meas', tables: ['singles','slabs','all_inventory'], get: () => 1 },
+  revenue:      { label: 'Revenue (S$)',       icon: '💰', type: 'meas', tables: ['sales'],                          get: s => parseFloat(s.totalCollected)||0 },
+  profit:       { label: 'Profit (S$)',        icon: '📊', type: 'meas', tables: ['sales'],                          get: s => parseFloat(s.profit)||0 },
+  marginPct:    { label: 'Margin %',           icon: '📉', type: 'meas', tables: ['sales'],                          get: s => parseFloat(s.margin)||0 },
+  costSold:     { label: 'Cost of Sale (S$)',  icon: '💵', type: 'meas', tables: ['sales'],                          get: s => parseFloat(s.costPrice)||0 },
+  saleCount:    { label: 'Sale Count',         icon: '🔢', type: 'meas', tables: ['sales'],                          get: () => 1 },
+};
+
+// State: arrays of field keys (multi-axis)
+let cbState = { x: [], y: [] };
+let _cbChart = null;
+const CB_PALETTE = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80','#facc15','#e879f9'];
+
+function cbFilterPalette(q) {
+  document.querySelectorAll('#cb-field-palette .cb-field-pill').forEach(el => {
+    el.style.display = q && !el.dataset.label.toLowerCase().includes(q.toLowerCase()) ? 'none' : '';
+  });
+}
+
+function cbSourceChanged() {
+  cbState = { x: [], y: [] };
+  renderCbChips('x'); renderCbChips('y');
+  initCustomChartBuilder();
+  renderCustomChart();
+}
+
+function initCustomChartBuilder() {
+  const palette = document.getElementById('cb-field-palette');
+  if (!palette) return;
+  const src = document.getElementById('cb-source')?.value || 'singles';
+  palette.innerHTML = '';
+
+  // Group by type
+  const dims  = Object.entries(CB_FIELDS).filter(([,f]) => f.type === 'dim'  && (f.tables.includes(src) || (src !== 'sales' && f.tables.includes('all_inventory'))));
+  const meass = Object.entries(CB_FIELDS).filter(([,f]) => f.type === 'meas' && (f.tables.includes(src) || (src !== 'sales' && f.tables.includes('all_inventory'))));
+  // exclude sales-only dims from non-sales sources and vice versa
+  function relevant([,f]) {
+    if (src === 'sales') return f.tables.includes('sales');
+    return f.tables.some(t => ['singles','slabs','all_inventory'].includes(t));
+  }
+
+  [['Dimensions (Group by)', dims.filter(relevant)], ['Measures (Values)', meass.filter(relevant)]].forEach(([heading, fields]) => {
+    if (!fields.length) return;
+    const hd = document.createElement('div');
+    hd.style.cssText = 'font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-top:6px;margin-bottom:2px';
+    hd.textContent = heading;
+    palette.appendChild(hd);
+    fields.forEach(([key, f]) => {
+      const pill = document.createElement('div');
+      pill.className = 'cb-field-pill';
+      pill.draggable = true;
+      pill.dataset.field = key;
+      pill.dataset.label = f.label;
+      pill.innerHTML = `<span class="pill-icon">${f.icon}</span><span>${f.label}</span><span class="pill-type">${f.type === 'dim' ? 'Group' : 'Value'}</span>`;
+      pill.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', key);
+        e.dataTransfer.effectAllowed = 'copy';
+      });
+      palette.appendChild(pill);
+    });
+  });
+}
+
+function cbDragOver(e)  { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }
+function cbDragLeave(e) { e.currentTarget.classList.remove('drag-over'); }
+
+function cbDrop(e, axis) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const key = e.dataTransfer.getData('text/plain');
+  if (!CB_FIELDS[key]) return;
+  const f = CB_FIELDS[key];
+  // X only accepts dims; Y only accepts measures — but allow either as a soft guide
+  if (!cbState[axis].includes(key)) {
+    cbState[axis].push(key);
+    renderCbChips(axis);
+    renderCustomChart();
+  }
+}
+
+function cbRemove(axis, key) {
+  cbState[axis] = cbState[axis].filter(k => k !== key);
+  renderCbChips(axis);
+  renderCustomChart();
+}
+
+function renderCbChips(axis) {
+  const chipsEl      = document.getElementById('cb-' + axis + '-chips');
+  const placeholder  = document.getElementById('cb-' + axis + '-placeholder');
+  if (!chipsEl) return;
+  chipsEl.innerHTML = cbState[axis].map(key => {
+    const f = CB_FIELDS[key];
+    return `<span class="cb-axis-chip">${f.icon} ${f.label}<button onclick="cbRemove('${axis}','${key}')" title="Remove">×</button></span>`;
+  }).join('');
+  if (placeholder) placeholder.style.display = cbState[axis].length ? 'none' : '';
+}
+
+function resetCustomChart() {
+  cbState = { x: [], y: [] };
+  renderCbChips('x'); renderCbChips('y');
+  document.getElementById('cb-kw-filter').value = '';
+  if (_cbChart) { _cbChart.destroy(); _cbChart = null; }
+  document.getElementById('cb-chart-wrap').style.display = 'none';
+  document.getElementById('cb-empty-state').style.display = 'flex';
+  document.getElementById('cb-summary').innerHTML = '';
+}
+
+function getChartBuilderData() {
+  const src = document.getElementById('cb-source')?.value || 'singles';
+  const kw  = (document.getElementById('cb-kw-filter')?.value || '').toLowerCase().trim();
+  let items;
+  if (src === 'singles')      items = DB.singles.filter(i => (i.status||'Available') === 'Available');
+  else if (src === 'slabs')   items = DB.slabs.filter(i => (i.status||'Available') === 'Available');
+  else if (src === 'sales')   items = DB.sales;
+  else                         items = [...DB.singles, ...DB.slabs].filter(i => (i.status||'Available') === 'Available');
+  // keyword filter — match against name or product
+  if (kw) items = items.filter(i => (i.name||i.product||'').toLowerCase().includes(kw));
+  return items;
+}
+
+function renderCustomChart() {
+  if (!cbState.x.length || !cbState.y.length) {
+    document.getElementById('cb-chart-wrap').style.display = 'none';
+    document.getElementById('cb-empty-state').style.display = 'flex';
+    return;
+  }
+
+  const items  = getChartBuilderData();
+  const topN   = document.getElementById('cb-topn')?.value || '10';
+  const sort   = document.getElementById('cb-sort')?.value || 'desc';
+  const ctype  = document.getElementById('cb-chart-type')?.value || 'bar';
+  const dual   = document.getElementById('cb-dual-axis')?.checked || false;
+
+  // Build composite X key from all X fields joined with ' · '
+  const getXKey = item => cbState.x.map(k => String(CB_FIELDS[k].get(item) ?? '?')).join(' · ');
+
+  // Group by composite X key, aggregate each Y field separately
+  const grouped = {};
+  items.forEach(item => {
+    const xKey = getXKey(item);
+    if (!grouped[xKey]) {
+      grouped[xKey] = {};
+      cbState.y.forEach(k => grouped[xKey][k] = 0);
+    }
+    cbState.y.forEach(k => grouped[xKey][k] += parseFloat(CB_FIELDS[k].get(item)) || 0);
+  });
+
+  // Sort by first Y measure
+  const firstY = cbState.y[0];
+  let entries = Object.entries(grouped);
+  if (sort === 'desc')  entries.sort((a,b) => b[1][firstY] - a[1][firstY]);
+  else if (sort === 'asc') entries.sort((a,b) => a[1][firstY] - b[1][firstY]);
+  else entries.sort((a,b) => a[0].localeCompare(b[0]));
+  if (topN !== 'all') entries = entries.slice(0, parseInt(topN));
+
+  const labels = entries.map(([k]) => k.length > 28 ? k.slice(0,28)+'…' : k);
+  const isRound = ctype === 'doughnut' || ctype === 'pie';
+
+  // One dataset per Y field
+  const datasets = cbState.y.map((yKey, yi) => {
+    const f      = CB_FIELDS[yKey];
+    const color  = CB_PALETTE[yi % CB_PALETTE.length];
+    const values = entries.map(([,v]) => parseFloat((v[yKey]||0).toFixed(2)));
+    const ds = {
+      label: f.label,
+      data: values,
+      backgroundColor: isRound ? entries.map((_,i) => CB_PALETTE[i % CB_PALETTE.length]) : color + '55',
+      borderColor: isRound ? '#161616' : color,
+      borderWidth: isRound ? 2 : 1.5,
+      borderRadius: ctype === 'bar' ? 4 : 0,
+      fill: ctype === 'line',
+      tension: 0.3,
+      pointRadius: ctype === 'line' ? 4 : 0,
+    };
+    // Dual axis: second dataset uses yAxisID: 'y2'
+    if (dual && yi === 1) ds.yAxisID = 'y2';
+    return ds;
+  });
+
+  document.getElementById('cb-empty-state').style.display = 'none';
+  document.getElementById('cb-chart-wrap').style.display = 'block';
+  if (_cbChart) { _cbChart.destroy(); _cbChart = null; }
+
+  const ctx = document.getElementById('customChart').getContext('2d');
+  const axisColor = '#666'; const gridColor = '#2a2a2a';
+
+  const scales = isRound ? {} : {
+    x: { ticks: { color: axisColor, font:{size:10}, maxRotation:40 }, grid:{display:false} },
+    y: { ticks: { color: axisColor, font:{size:10}, callback: v => 'S$'+v }, grid:{color:gridColor}, title:{display:true,text:CB_FIELDS[cbState.y[0]]?.label||'',color:axisColor,font:{size:10}} }
+  };
+  if (dual && cbState.y.length > 1) {
+    scales.y2 = {
+      position: 'right', grid:{display:false},
+      ticks: { color: CB_PALETTE[1], font:{size:10}, callback: v => 'S$'+v },
+      title: { display:true, text:CB_FIELDS[cbState.y[1]]?.label||'', color:CB_PALETTE[1], font:{size:10} }
+    };
+  }
+
+  _cbChart = new Chart(ctx, {
+    type: isRound ? ctype : ctype,
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 350 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: datasets.length > 1 || isRound,
+          position: isRound ? 'bottom' : 'top',
+          labels: { color:'#999', font:{size:11}, padding:12, usePointStyle:true }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => ' ' + ctx.dataset.label + ': S$' + (ctx.parsed.y ?? ctx.parsed).toFixed(0)
+          }
+        }
+      },
+      scales
+    }
+  });
+
+  // Summary stats per Y measure
+  const summaryParts = cbState.y.map(yKey => {
+    const f      = CB_FIELDS[yKey];
+    const vals   = entries.map(([,v]) => v[yKey]||0);
+    const total  = vals.reduce((s,v) => s+v, 0);
+    const avg    = vals.length ? total/vals.length : 0;
+    const max    = Math.max(...vals);
+    return `<span><strong style="color:${CB_PALETTE[cbState.y.indexOf(yKey)]}">${f.label}</strong> · Total: S$${total.toFixed(0)} · Avg: S$${avg.toFixed(0)} · Max: S$${max.toFixed(0)}</span>`;
+  });
+  document.getElementById('cb-summary').innerHTML =
+    `<span style="color:var(--text3)">${entries.length} groups · ${items.length} items</span>` + summaryParts.join('');
+
+  // Enable the save button once a chart is rendered
+  const saveBtn = document.getElementById('cb-save-btn');
+  if (saveBtn) saveBtn.disabled = false;
+}
+
+// =========== SAVED CUSTOM CHARTS ===========
+const SAVED_CHARTS_KEY = 'pokeinv_saved_charts';
+
+function loadSavedCharts() {
+  try { return JSON.parse(localStorage.getItem(SAVED_CHARTS_KEY) || '[]'); } catch(e) { return []; }
+}
+function persistSavedCharts(charts) {
+  try { localStorage.setItem(SAVED_CHARTS_KEY, JSON.stringify(charts)); } catch(e) {}
+}
+
+function saveChartToDashboard() {
+  if (!cbState.x.length || !cbState.y.length) { toast('Build a chart first'); return; }
+
+  const title = prompt('Name this chart:', cbState.x.map(k => CB_FIELDS[k]?.label).join(' + ') + ' vs ' + cbState.y.map(k => CB_FIELDS[k]?.label).join(' + '));
+  if (title === null) return; // cancelled
+
+  const config = {
+    id: 'sc_' + Date.now(),
+    title: title || 'Custom Chart',
+    xFields:   [...cbState.x],
+    yFields:   [...cbState.y],
+    source:    document.getElementById('cb-source')?.value || 'singles',
+    topN:      document.getElementById('cb-topn')?.value || '10',
+    sort:      document.getElementById('cb-sort')?.value || 'desc',
+    chartType: document.getElementById('cb-chart-type')?.value || 'bar',
+    dualAxis:  document.getElementById('cb-dual-axis')?.checked || false,
+    kwFilter:  document.getElementById('cb-kw-filter')?.value || '',
+    savedAt:   new Date().toISOString()
+  };
+
+  const charts = loadSavedCharts();
+  charts.push(config);
+  persistSavedCharts(charts);
+  renderAllSavedCharts();
+  toast('Chart added to dashboard ✓');
+}
+
+async function deleteSavedChart(id) {
+  const charts = loadSavedCharts();
+  const config = charts.find(c => c.id === id);
+  if (!config) return;
+
+  // Guard: pinned charts can't be deleted
+  if (config.pinned) { toast('📌 This chart is pinned — unpin it first to delete'); return; }
+
+  // Send to trash for 30-day recovery
+  await sendToTrash('savedChart', config, 'manual');
+
+  // Remove from DOM and storage immediately
+  const remaining = charts.filter(c => c.id !== id);
+  persistSavedCharts(remaining);
+  if (window._savedChartInstances?.[id]) {
+    try { window._savedChartInstances[id].destroy(); } catch(e) {}
+    delete window._savedChartInstances[id];
+  }
+  document.getElementById('sc-wrap-' + id)?.remove();
+
+  // Show undo toast for 5 seconds (immediate undo)
+  let undone = false;
+  let undoTimer = null;
+  const t = document.getElementById('toast');
+  t.innerHTML = `"${config.title}" moved to trash &nbsp;<button onclick="(function(){window._undoDeleteChart && window._undoDeleteChart();})()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;margin-left:4px">Undo</button>`;
+  t.classList.add('show');
+  clearTimeout(window._toastTimer);
+
+  window._undoDeleteChart = function() {
+    if (undone) return;
+    undone = true;
+    clearTimeout(undoTimer);
+    const current = loadSavedCharts();
+    const idx = charts.findIndex(c => c.id === id);
+    current.splice(idx, 0, config);
+    persistSavedCharts(current);
+    _renderOneSavedChart(config);
+    const container = document.getElementById('saved-charts-container');
+    const saved = loadSavedCharts();
+    saved.forEach(c => {
+      const el = document.getElementById('sc-wrap-' + c.id);
+      if (el) container.appendChild(el);
+    });
+    _drawSavedChart(config);
+    t.innerHTML = 'Chart restored ✓';
+    setTimeout(() => t.classList.remove('show'), 2000);
+  };
+
+  undoTimer = setTimeout(() => {
+    if (!undone) {
+      window._undoDeleteChart = null;
+      t.classList.remove('show');
+      t.innerHTML = '';
+    }
+  }, 5000);
+}
+
+function renderAllSavedCharts() {
+  const charts = loadSavedCharts();
+  const container = document.getElementById('saved-charts-container');
+  if (!container) return;
+
+  // Remove any cards no longer in saved list
+  const existingIds = new Set(charts.map(c => c.id));
+  container.querySelectorAll('.saved-chart-card').forEach(el => {
+    if (!existingIds.has(el.dataset.id)) el.remove();
+  });
+
+  charts.forEach(config => {
+    // Skip if card already rendered
+    if (document.getElementById('sc-wrap-' + config.id)) return;
+    _renderOneSavedChart(config);
+  });
+}
+
+function togglePinChart(id) {
+  const charts = loadSavedCharts();
+  const config = charts.find(c => c.id === id);
+  if (!config) return;
+  config.pinned = !config.pinned;
+  persistSavedCharts(charts);
+  // Re-render just this card in place
+  document.getElementById('sc-wrap-' + id)?.remove();
+  _renderOneSavedChart(config);
+  // Re-sort DOM order to match saved order
+  const container = document.getElementById('saved-charts-container');
+  loadSavedCharts().forEach(c => {
+    const el = document.getElementById('sc-wrap-' + c.id);
+    if (el) container.appendChild(el);
+  });
+  toast(config.pinned ? '📌 Chart pinned — protected from delete' : 'Chart unpinned');
+}
+
+async function deleteAllSavedCharts() {
+  const charts = loadSavedCharts();
+  const deletable = charts.filter(c => !c.pinned);
+  const pinned    = charts.filter(c => c.pinned);
+  if (!deletable.length) {
+    if (pinned.length) toast('Nothing to delete — all ' + pinned.length + ' charts are pinned');
+    else toast('No saved charts to delete');
+    return;
+  }
+  const msg = pinned.length
+    ? `Move ${deletable.length} unpinned chart${deletable.length!==1?'s':''} to trash? ${pinned.length} pinned chart${pinned.length!==1?'s':''} will be kept.`
+    : `Move all ${deletable.length} saved chart${deletable.length!==1?'s':''} to trash? Restore within 30 days from the Trash tab.`;
+  if (!confirm(msg)) return;
+
+  // Batch send to trash
+  for (const c of deletable) {
+    await sendToTrash('savedChart', c, 'bulk');
+  }
+  // Keep only pinned in localStorage
+  persistSavedCharts(pinned);
+  // Destroy instances and remove DOM nodes for deletable charts
+  for (const c of deletable) {
+    if (window._savedChartInstances?.[c.id]) {
+      try { window._savedChartInstances[c.id].destroy(); } catch(e) {}
+      delete window._savedChartInstances[c.id];
+    }
+    document.getElementById('sc-wrap-' + c.id)?.remove();
+  }
+  toast(deletable.length + ' chart' + (deletable.length!==1?'s':'') + ' moved to trash' + (pinned.length ? ' · ' + pinned.length + ' pinned kept' : ''));
+}
+
+function _renderOneSavedChart(config) {
+  const container = document.getElementById('saved-charts-container');
+  if (!container) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'saved-chart-card';
+  wrap.dataset.id = config.id;
+  wrap.id = 'sc-wrap-' + config.id;
+
+  // Build description tags
+  const xLabels = config.xFields.map(k => CB_FIELDS[k]?.label || k).join(' · ');
+  const yLabels = config.yFields.map(k => CB_FIELDS[k]?.label || k).join(' · ');
+  const sourceLabelMap = { singles:'Singles', slabs:'Slabs', sales:'Sales', all_inventory:'All Inventory' };
+  const meta = [
+    sourceLabelMap[config.source] || config.source,
+    config.kwFilter ? `Filter: "${config.kwFilter}"` : null,
+    'Top ' + config.topN,
+    config.chartType.charAt(0).toUpperCase() + config.chartType.slice(1)
+  ].filter(Boolean).join('  ·  ');
+
+  wrap.innerHTML = `
+    <div class="card">
+      <div class="card-head" style="flex-direction:column;align-items:flex-start;gap:4px">
+        <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+          <h3 style="font-size:14px;display:flex;align-items:center;gap:6px">
+            ${config.pinned ? '<span title="Pinned — protected from delete" style="color:#f59e0b;font-size:13px">📌</span>' : ''}
+            ${config.title}
+          </h3>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-sm" style="font-size:10px" onclick="togglePinChart('${config.id}')" title="${config.pinned ? 'Unpin (allow deletion)' : 'Pin (protect from delete)'}">${config.pinned ? '📌 Pinned' : '📍 Pin'}</button>
+            <button class="btn btn-sm" style="font-size:10px" onclick="_refreshSavedChart('${config.id}')">⟳ Refresh data</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text3)">X: ${xLabels} &nbsp;·&nbsp; Y: ${yLabels}</div>
+        <div style="font-size:10px;color:var(--text3);opacity:0.7">${meta}</div>
+      </div>
+      <div class="card-body" style="padding:12px 18px">
+        <div style="height:260px"><canvas id="sc-canvas-${config.id}"></canvas></div>
+        <div id="sc-summary-${config.id}" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+    ${config.pinned
+      ? '<div style="text-align:center;font-size:10px;color:var(--text3);padding:6px;border-top:1px solid var(--border);opacity:0.6">📌 Pinned · unpin to delete</div>'
+      : `<button class="sc-delete" onclick="deleteSavedChart('${config.id}')">✕ Remove this chart</button>`}`;
+
+  container.appendChild(wrap);
+  _drawSavedChart(config);
+}
+
+function _drawSavedChart(config) {
+  if (!window._savedChartInstances) window._savedChartInstances = {};
+
+  // Destroy old instance
+  if (window._savedChartInstances[config.id]) {
+    try { window._savedChartInstances[config.id].destroy(); } catch(e) {}
+    delete window._savedChartInstances[config.id];
+  }
+
+  const canvas = document.getElementById('sc-canvas-' + config.id);
+  if (!canvas) return;
+
+  // Get data using same logic as renderCustomChart but from config
+  const kw = (config.kwFilter || '').toLowerCase();
+  let items;
+  const src = config.source;
+  if (src === 'singles')     items = DB.singles.filter(i => (i.status||'Available') === 'Available');
+  else if (src === 'slabs')  items = DB.slabs.filter(i => (i.status||'Available') === 'Available');
+  else if (src === 'sales')  items = DB.sales;
+  else                        items = [...DB.singles, ...DB.slabs].filter(i => (i.status||'Available') === 'Available');
+  if (kw) items = items.filter(i => (i.name||i.product||'').toLowerCase().includes(kw));
+
+  const getXKey = item => config.xFields.map(k => String(CB_FIELDS[k]?.get(item) ?? '?')).join(' · ');
+  const grouped = {};
+  items.forEach(item => {
+    const xKey = getXKey(item);
+    if (!grouped[xKey]) { grouped[xKey] = {}; config.yFields.forEach(k => grouped[xKey][k] = 0); }
+    config.yFields.forEach(k => grouped[xKey][k] += parseFloat(CB_FIELDS[k]?.get(item)) || 0);
+  });
+
+  const firstY = config.yFields[0];
+  let entries = Object.entries(grouped);
+  if (config.sort === 'desc') entries.sort((a,b) => b[1][firstY] - a[1][firstY]);
+  else if (config.sort === 'asc') entries.sort((a,b) => a[1][firstY] - b[1][firstY]);
+  else entries.sort((a,b) => a[0].localeCompare(b[0]));
+  if (config.topN !== 'all') entries = entries.slice(0, parseInt(config.topN));
+
+  const labels  = entries.map(([k]) => k.length > 28 ? k.slice(0,28)+'…' : k);
+  const isRound = config.chartType === 'doughnut' || config.chartType === 'pie';
+  const pal     = CB_PALETTE;
+
+  const datasets = config.yFields.map((yKey, yi) => {
+    const f     = CB_FIELDS[yKey];
+    const color = pal[yi % pal.length];
+    const vals  = entries.map(([,v]) => parseFloat((v[yKey]||0).toFixed(2)));
+    const ds = {
+      label: f?.label || yKey,
+      data: vals,
+      backgroundColor: isRound ? entries.map((_,i) => pal[i%pal.length]) : color+'55',
+      borderColor: isRound ? '#161616' : color,
+      borderWidth: isRound ? 2 : 1.5,
+      borderRadius: config.chartType === 'bar' ? 4 : 0,
+      fill: config.chartType === 'line',
+      tension: 0.3,
+      pointRadius: config.chartType === 'line' ? 4 : 0,
+    };
+    if (config.dualAxis && yi === 1) ds.yAxisID = 'y2';
+    return ds;
+  });
+
+  const axisColor = '#666'; const gridColor = '#2a2a2a';
+  const scales = isRound ? {} : {
+    x: { ticks:{color:axisColor,font:{size:10},maxRotation:40}, grid:{display:false} },
+    y: { ticks:{color:axisColor,font:{size:10},callback:v=>'S$'+v}, grid:{color:gridColor} }
+  };
+  if (config.dualAxis && config.yFields.length > 1) {
+    scales.y2 = { position:'right', grid:{display:false}, ticks:{color:pal[1],font:{size:10},callback:v=>'S$'+v} };
+  }
+
+  window._savedChartInstances[config.id] = new Chart(canvas.getContext('2d'), {
+    type: config.chartType,
+    data: { labels, datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false, animation:{duration:350},
+      interaction:{mode:'index',intersect:false},
+      plugins: {
+        legend:{display:datasets.length>1||isRound,position:isRound?'bottom':'top',labels:{color:'#999',font:{size:11},padding:12,usePointStyle:true}},
+        tooltip:{callbacks:{label:ctx=>' '+ctx.dataset.label+': S$'+(ctx.parsed.y??ctx.parsed).toFixed(0)}}
+      },
+      scales
+    }
+  });
+
+  // Summary
+  const summaryEl = document.getElementById('sc-summary-' + config.id);
+  if (summaryEl) {
+    const parts = config.yFields.map((yKey,yi) => {
+      const f    = CB_FIELDS[yKey];
+      const vals = entries.map(([,v]) => v[yKey]||0);
+      const tot  = vals.reduce((s,v)=>s+v,0);
+      const avg  = vals.length ? tot/vals.length : 0;
+      const max  = vals.length ? Math.max(...vals) : 0;
+      return `<span><strong style="color:${pal[yi%pal.length]}">${f?.label||yKey}</strong> · Total: S$${tot.toFixed(0)} · Avg: S$${avg.toFixed(0)} · Max: S$${max.toFixed(0)}</span>`;
+    });
+    summaryEl.innerHTML = `<span style="color:var(--text3)">${entries.length} groups</span>` + parts.join('');
+  }
+}
+
+function _refreshSavedChart(id) {
+  const config = loadSavedCharts().find(c => c.id === id);
+  if (config) { _drawSavedChart(config); toast('Chart refreshed with latest data'); }
+}
+
+// =========== DASHBOARD DRAG-TO-REORDER ===========
+const DASH_ORDER_KEY = 'pokeinv_dash_order';
+let _dashDragSrc = null;
+
+function saveDashOrder() {
+  const order = Array.from(document.querySelectorAll('.dash-card-wrap')).map(el => el.id);
+  try { localStorage.setItem(DASH_ORDER_KEY, JSON.stringify(order)); } catch(e) {}
+}
+
+function restoreDashOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DASH_ORDER_KEY) || 'null');
+    if (!saved || !saved.length) return;
+    // Rebuild grid by moving cards into their saved order
+    // Find all rows and flatten all cards in order
+    const container = document.getElementById('dash-grid-container');
+    if (!container) return;
+    const allRows   = Array.from(container.querySelectorAll('.dash-grid'));
+    const allCards  = Array.from(container.querySelectorAll('.dash-card-wrap'));
+    const cardMap   = {};
+    allCards.forEach(c => cardMap[c.id] = c);
+
+    // Re-insert cards in saved order across rows (2 per row)
+    let ri = 0;
+    for (let i = 0; i < saved.length; i += 2) {
+      const row = allRows[ri++];
+      if (!row) break;
+      row.innerHTML = '';
+      [saved[i], saved[i+1]].forEach(id => { if (id && cardMap[id]) row.appendChild(cardMap[id]); });
+    }
+  } catch(e) {}
+}
+
+function initDashboardDrag() {
+  document.querySelectorAll('.dash-card-wrap').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      _dashDragSrc = card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.id);
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      document.querySelectorAll('.dash-card-wrap').forEach(c => c.classList.remove('drag-target'));
+      saveDashOrder();
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      if (card !== _dashDragSrc) {
+        document.querySelectorAll('.dash-card-wrap').forEach(c => c.classList.remove('drag-target'));
+        card.classList.add('drag-target');
+      }
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-target'));
+    card.addEventListener('drop', e => {
+      e.preventDefault();
+      card.classList.remove('drag-target');
+      if (!_dashDragSrc || _dashDragSrc === card) return;
+      // Swap the two cards in the DOM
+      const srcParent  = _dashDragSrc.parentNode;
+      const tgtParent  = card.parentNode;
+      const srcNext    = _dashDragSrc.nextSibling;
+      const tgtNext    = card.nextSibling;
+      if (srcNext === card) {
+        srcParent.insertBefore(card, _dashDragSrc);
+      } else if (tgtNext === _dashDragSrc) {
+        tgtParent.insertBefore(_dashDragSrc, card);
+      } else {
+        srcParent.insertBefore(card, srcNext);
+        tgtParent.insertBefore(_dashDragSrc, tgtNext);
+      }
+      saveDashOrder();
+    });
+  });
+}
+(function() {
+  const _orig = window.showPage;
+  window.showPage = function(id) {
+    if (_orig) _orig(id);
+    document.querySelectorAll('.btb-item').forEach(b => b.classList.remove('active'));
+    const btb = document.getElementById('btb-' + id);
+    if (btb) btb.classList.add('active');
+  };
+})();
+
+// ── HIG: Update "Last updated" timestamp when dashboard renders ──
+(function() {
+  const _orig = window.renderDashboard;
+  window.renderDashboard = function() {
+    if (_orig) _orig();
+    const el = document.getElementById('dash-last-updated');
+    if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  };
+})();
+
+// ── HIG: Auto-detect import type from pasted content ──
+let _detectedImportType = null;
+function autoDetectImportType() {
+  const raw = (document.getElementById('import-data').value || '').toLowerCase();
+  const banner = document.getElementById('import-detect-banner');
+  const label  = document.getElementById('import-detect-text');
+  if (!raw.trim()) { banner.classList.remove('show'); return; }
+  let detected = null;
+  if (/cert|certno|psa|cgc|tag grade|grader|grade/.test(raw)) detected = 'slabs';
+  else if (/buyer|revenue|sold for|profit|margin|shipping/.test(raw)) detected = 'sales';
+  else if (/name|card|set|language|condition|qty/.test(raw)) detected = 'singles';
+  if (detected) {
+    _detectedImportType = detected;
+    const labels = { singles: 'Singles / Raw', slabs: 'Slabs / Graded', sales: 'Sales History' };
+    label.textContent = 'Detected type: ' + labels[detected];
+    banner.classList.add('show');
+  } else { banner.classList.remove('show'); }
+}
+function applyDetectedType() {
+  if (_detectedImportType) {
+    document.getElementById('import-type').value = _detectedImportType;
+    document.getElementById('import-detect-banner').classList.remove('show');
+    toast('Import type set to: ' + _detectedImportType);
+  }
+}
+
+// ── HIG: Sales sub loading spinner on page switch ──
+(function() {
+  const _orig = window.showPage;
+  window.showPage = function(id) {
+    if (_orig) _orig(id);
+    if (id === 'sales') {
+      const sub = document.getElementById('sales-sub');
+      if (sub) {
+        sub.innerHTML = '<span style="display:inline-flex;align-items:center;gap:8px"><span class="hig-spinner" style="width:14px;height:14px;border-width:2px"></span> Loading…</span>';
+        setTimeout(() => { if (sub) sub.textContent = 'Track your sold items and profit margins'; }, 600);
+      }
+    }
+  };
+})();
+
 buildColMenus();
+// Restore saved dashboard card order
+restoreDashOrder();
 // Kick off async DB load from Supabase, then render
 initDB();
+// Auto-purge trash items older than 30 days (runs in background)
+setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
+// Auto-run refresh queue (if today's credits not exhausted)
+setTimeout(() => { runRefreshQueue(false); }, 8000); // wait 8s for DB to fully load
 </script>
+<!-- BOTTOM TAB BAR (mobile) -->
+<div class="bottom-tab-bar" id="bottom-tab-bar">
+  <div class="btb-inner">
+    <button class="btb-item active" id="btb-dashboard" onclick="showPage('dashboard')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </button>
+    <button class="btb-item" id="btb-inventory" onclick="showPage('inventory')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="16" y2="11"/><line x1="8" y1="15" x2="12" y2="15"/></svg>
+      Singles
+    </button>
+    <button class="btb-item" id="btb-slabs" onclick="showPage('slabs')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="1" width="20" height="22" rx="2" stroke-width="2.5"/><rect x="5" y="4" width="14" height="16" rx="1" stroke-width="1.5"/></svg>
+      Slabs
+    </button>
+    <button class="btb-item" id="btb-sales" onclick="showPage('sales')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      Sales
+    </button>
+    <button class="btb-item" id="btb-import" onclick="showPage('import')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Import
+    </button>
+  </div>
+</div>
 </body>
 </html>

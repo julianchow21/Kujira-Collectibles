@@ -4823,21 +4823,14 @@ function importData() {
     const existing = type === 'sales' ? DB.sales : DB[type];
     newItems = newItems.filter(item => {
       if (type === 'slabs' && item.certNo) {
-        // Slabs: cert number is globally unique
+        // Slabs: cert number is globally unique — skip exact cert matches only
         const isDup = existing.some(e => e.certNo && e.certNo.trim().toLowerCase() === item.certNo.trim().toLowerCase());
         if (isDup) { dupCount++; return false; }
-      } else if (type === 'singles') {
-        // Singles: name + language + type combo
-        const key = ((item.name||'') + (item.language||'') + (item.type||'')).toLowerCase().trim();
-        const isDup = existing.some(e => ((e.name||'') + (e.language||'') + (e.type||'')).toLowerCase().trim() === key);
-        if (isDup) { dupCount++; return false; }
       }
+      // Singles and sales: allow duplicates (same card can appear multiple times)
       return true;
     });
-    if (dupCount > 0 && !confirm(dupCount + ' duplicate record(s) detected and skipped. Import the remaining ' + newItems.length + ' unique records?')) {
-      toast('Import cancelled');
-      return;
-    }
+    // No confirm dialog — just proceed silently
   }
 
   if (mode === 'replace') {

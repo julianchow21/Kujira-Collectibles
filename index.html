@@ -883,7 +883,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
-        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 10:46 AM</span>
+        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 10:54 AM</span>
       </span>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -903,10 +903,10 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 • 0% of those refreshed in the last 7 days
 • Most recent batch: never
 
-Auto-refresh queue: 369 cards left · 0/100 fetched today (limit resets at midnight).
+Auto-refresh queue: 269 cards left · 100/100 fetched today (limit resets at midnight).
 
 Sealed inventory (ETBs / Booster Boxes / Packs) is priced manually — not counted here.">
-        <span class="freshness-dot" style="background:var(--amber)"></span>1% priced (9/747) · queue 0/100 today
+        <span class="freshness-dot" style="background:var(--amber)"></span>1% priced (9/747) · queue 100/100 today
        </span></div></div><div class="metric"><button class="metric-info">i<span class="inv-stat-tooltip">Sum of profit across every sale logged in the selected range.</span></button><div class="metric-label">All-time Profit</div><div class="metric-value pos">S$6696</div><div class="metric-sub">138 sales</div></div><div class="metric"><button class="metric-info">i<span class="inv-stat-tooltip">Realised ROI = Profit ÷ Cost basis of sold items × 100. Tells you the multiplier on the money you actually put in. If you bought S$56 of cards and sold them for S$100, profit is S$44 and ROI is 78%.</span></button><div class="metric-label">Realised ROI</div><div class="metric-value pos">79%</div><div class="metric-sub">Return on capital deployed</div></div></div>
 
   <!-- Capital exposure + inventory counts (merged into one card) -->
@@ -6687,8 +6687,26 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, ppt, 
 let _queueRunning = false;
 async function runRefreshQueue(manual = false) {
   if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
-  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
-  if (!hasKeys) { if (manual) { toast('Add API keys first'); openApiSettings(); } return; }
+  // When the Cloudflare Worker proxy is configured it holds the keys
+  // server-side, so the local localStorage key check is unnecessary (and
+  // misleading — could fail even when the Worker has valid keys). Only
+  // require a local key when proxy is disabled.
+  if (!PRICE_PROXY_BASE) {
+    const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+    if (!hasKeys) { if (manual) { toast('Add API keys first'); openApiSettings(); } return; }
+  }
+  // Clear yesterday's "paused" sticky state on every manual run so the
+  // user can re-trigger after a config change (e.g. wiring up the Worker)
+  // without waiting until tomorrow. Without this, the dashboard chip would
+  // still read "paused: Failed to fetch — retrying tomorrow" even after a
+  // successful run.
+  if (manual) {
+    const existing = loadQueue();
+    if (existing && existing.lastPausedReason) {
+      existing.lastPausedReason = null;
+      saveQueue(existing);
+    }
+  }
 
   let q = loadQueue();
   // First-load auto-bootstrap: if the user has never clicked "Build Queue"

@@ -883,7 +883,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
-        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 10:54 AM</span>
+        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 11:08 AM</span>
       </span>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -4187,8 +4187,36 @@ function sortItems(items, table) {
   // Numbers/words containing leading digits should land at the BOTTOM when
   // sorting alphabetically (so "Charizard" comes before "100-card lot").
   const startsWithDigit = v => /^[\s$]*-?\d/.test(String(v||''));
+  // Helper: effective market value. For Singles/Slabs the visible cell may
+  // be a cached price from window._priceLookup even when item.marketPrice is
+  // blank. Sorting must use the same effective number the user sees in the
+  // cell, or "—" rows (with cached fallback) get incorrectly pushed to the
+  // bottom and the column appears not to sort.
+  const effectiveMarket = (i) => {
+    const m = parseFloat(i.marketPrice);
+    if (!isNaN(m) && m > 0) return m;
+    if ((table === 'singles' || table === 'slabs') && typeof _cachedPriceSgd === 'function') {
+      const c = _cachedPriceSgd(table, i.id);
+      if (!isNaN(c) && c > 0) return c;
+    }
+    return NaN;
+  };
   return [...items].sort((a, b) => {
-    const av = a[col], bv = b[col];
+    // Special-case marketPrice: use the effective value (manual override OR
+    // cached lookup). All other columns read directly from the row.
+    let av, bv;
+    if (col === 'marketPrice') {
+      av = effectiveMarket(a); bv = effectiveMarket(b);
+      // For marketPrice, "empty" means truly no value anywhere — neither
+      // a manual price nor a cached one. NaN here = no signal.
+      const aEmpty = isNaN(av);
+      const bEmpty = isNaN(bv);
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+      return (av - bv) * dir;
+    }
+    av = a[col]; bv = b[col];
     // Null/empty values sort to the end regardless of direction so a click
     // doesn't bury real data under blanks.
     const aEmpty = (av == null || av === '');

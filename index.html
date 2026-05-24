@@ -45,6 +45,8 @@
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- marked.js — markdown → HTML for the in-app Guide tab -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -548,6 +550,53 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
   .metrics{grid-template-columns:1fr 1fr}
 }
 
+/* ── GUIDE PAGE (in-app user guide rendered from markdown) ── */
+.guide-wrap{display:grid;grid-template-columns:240px 1fr;gap:24px;align-items:flex-start;max-width:1200px;margin:0 auto}
+.guide-toc{position:sticky;top:80px;max-height:calc(100vh - 100px);overflow-y:auto;padding:14px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px}
+.guide-toc-title{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px;padding:0 4px}
+.guide-toc a{display:block;padding:5px 8px;color:var(--text2);text-decoration:none;border-radius:4px;line-height:1.4;transition:background 0.1s,color 0.1s;border-left:2px solid transparent}
+.guide-toc a:hover{background:var(--bg3);color:var(--text)}
+.guide-toc a.toc-h2{font-weight:500}
+.guide-toc a.toc-h3{padding-left:18px;font-size:11.5px;color:var(--text3)}
+.guide-toc a.active{background:var(--bg3);color:var(--accent);border-left-color:var(--accent)}
+.guide-content{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px 40px;line-height:1.65;color:var(--text);font-size:14px;min-height:60vh;min-width:0;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h1{font-size:26px;font-weight:700;margin:0 0 18px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:14px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h2{font-size:20px;font-weight:600;margin:36px 0 14px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h3{font-size:16px;font-weight:600;margin:24px 0 10px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h4{font-size:14px;font-weight:600;margin:18px 0 8px;color:var(--text2)}
+.guide-content p{margin:0 0 12px;color:var(--text2)}
+.guide-content strong{color:var(--text);font-weight:600}
+.guide-content em{font-style:italic;color:var(--text)}
+.guide-content code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:monospace;font-size:12.5px;color:var(--text)}
+.guide-content pre{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:12.5px;line-height:1.55}
+.guide-content pre code{background:none;border:none;padding:0;font-size:12.5px}
+.guide-content ul,.guide-content ol{margin:0 0 14px;padding-left:24px;color:var(--text2)}
+.guide-content li{margin-bottom:4px}
+.guide-content li>strong{color:var(--text)}
+.guide-content table{width:100%;border-collapse:collapse;margin:0 0 18px;font-size:13px}
+.guide-content thead th{background:var(--bg3);text-align:left;font-weight:600;color:var(--text);padding:9px 12px;border-bottom:1px solid var(--border2);font-size:12px}
+.guide-content tbody td{padding:8px 12px;border-bottom:1px solid var(--border);color:var(--text2);vertical-align:top}
+.guide-content tbody tr:last-child td{border-bottom:none}
+.guide-content tbody tr:hover td{background:var(--bg3)}
+.guide-content a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;transition:border-color 0.15s}
+.guide-content a:hover{border-bottom-color:var(--accent)}
+.guide-content hr{border:none;border-top:1px solid var(--border);margin:32px 0}
+.guide-content blockquote{border-left:3px solid var(--accent);padding:8px 14px;margin:0 0 14px;background:var(--bg3);border-radius:4px;color:var(--text2)}
+.guide-content blockquote p:last-child{margin-bottom:0}
+.guide-search{width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:10px}
+.guide-search:focus{outline:none;border-color:var(--accent)}
+.guide-empty{padding:60px 20px;text-align:center;color:var(--text3)}
+.guide-toc-toggle-btn{display:none}
+@media(max-width:900px){
+  .guide-wrap{grid-template-columns:1fr;gap:12px}
+  .guide-toc{position:static;max-height:none;display:none}
+  .guide-toc.mobile-open{display:block}
+  .guide-toc-toggle-btn{display:inline-flex}
+  .guide-content{padding:20px}
+  .guide-content h1{font-size:22px}
+  .guide-content h2{font-size:18px}
+}
+
 /* ── SENTRY PANEL ── */
 #sentry-drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:100vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:8000;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);box-shadow:-8px 0 32px rgba(0,0,0,0.4)}
 #sentry-drawer.open{transform:translateX(0)}
@@ -652,6 +701,10 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path></svg>
           Trash
         </button>
+        <button class="nav-dd-item" onclick="showPage('guide');closeNavDD()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+          Guide
+        </button>
       </div>
     </div>
   </nav>
@@ -671,6 +724,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     </button>
     <button class="icon-btn" id="health-btn" onclick="runHealthCheck()" title="Run data health check — validates accounting invariants, sync state, dashboard sums">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+    </button>
+    <button class="icon-btn" onclick="showPage('guide')" title="User guide — how to use this app">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
     </button>
     <button class="icon-btn" onclick="openSentryPanel()" title="Sentry — view JS errors" id="sentry-btn" style="position:relative">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"></path><circle cx="12" cy="12" r="7" stroke-dasharray="2 2"></circle></svg>
@@ -962,7 +1018,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
-        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 03:06 AM</span>
+        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 06:05 PM</span>
       </span>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -982,7 +1038,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 • 68% of those refreshed in the last 7 days
 • Most recent batch: 3d ago
 
-Auto-refresh queue: 149 cards left · 30/30 fetched today (limit resets at midnight).
+Auto-refresh queue: 149 cards left · 0/30 fetched today (limit resets at midnight).
 
 Sealed inventory (ETBs / Booster Boxes / Packs) is priced manually — not counted here.">
         <span class="freshness-dot" style="background:var(--red)"></span>4% priced (28/747) · refreshed 3d ago
@@ -1321,6 +1377,1541 @@ Sealed inventory (ETBs / Booster Boxes / Packs) is priced manually — not count
 </div>
 
 <!-- TRASH PAGE -->
+<!-- GUIDE PAGE (renders user guide markdown in-app) -->
+<div id="page-guide" class="page">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;max-width:1200px;margin-left:auto;margin-right:auto">
+    <div>
+      <div class="section-title" style="display:flex;align-items:center;gap:8px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;color:var(--accent)"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        User Guide
+      </div>
+      <div class="section-sub">How to use Kujira Collectibles · last updated 24/05/2026</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-sm guide-toc-toggle-btn" onclick="document.querySelector('.guide-toc').classList.toggle('mobile-open')" id="guide-toc-toggle">📑 Contents</button>
+    </div>
+  </div>
+  <div class="guide-wrap">
+    <aside class="guide-toc">
+      <div class="guide-toc-title">Contents</div>
+      <input type="text" class="guide-search" id="guide-search" placeholder="Search guide..." oninput="kjrGuideSearch(this.value)">
+      <div id="guide-toc-list"><a href="#table-of-contents" class="toc-h2" onclick="kjrGuideJump('table-of-contents');return false">Table of contents</a><a href="#1-introduction" class="toc-h2" onclick="kjrGuideJump('1-introduction');return false">1. Introduction</a><a href="#what-this-app-is" class="toc-h3" onclick="kjrGuideJump('what-this-app-is');return false">What this app is</a><a href="#mental-model" class="toc-h3" onclick="kjrGuideJump('mental-model');return false">Mental model</a><a href="#where-your-data-lives" class="toc-h3" onclick="kjrGuideJump('where-your-data-lives');return false">Where your data lives</a><a href="#who-this-is-for" class="toc-h3" onclick="kjrGuideJump('who-this-is-for');return false">Who this is for</a><a href="#2-the-interface" class="toc-h2" onclick="kjrGuideJump('2-the-interface');return false">2. The interface</a><a href="#top-bar-desktop" class="toc-h3" onclick="kjrGuideJump('top-bar-desktop');return false">Top bar (desktop)</a><a href="#bottom-tab-bar-mobile" class="toc-h3" onclick="kjrGuideJump('bottom-tab-bar-mobile');return false">Bottom tab bar (mobile)</a><a href="#where-things-live" class="toc-h3" onclick="kjrGuideJump('where-things-live');return false">Where things live</a><a href="#3-each-tab-in-detail" class="toc-h2" onclick="kjrGuideJump('3-each-tab-in-detail');return false">3. Each tab in detail</a><a href="#31-dashboard" class="toc-h3" onclick="kjrGuideJump('31-dashboard');return false">3.1 Dashboard</a><a href="#32-singles" class="toc-h3" onclick="kjrGuideJump('32-singles');return false">3.2 Singles</a><a href="#33-slabs" class="toc-h3" onclick="kjrGuideJump('33-slabs');return false">3.3 Slabs</a><a href="#34-etbs-elite-trainer-boxes" class="toc-h3" onclick="kjrGuideJump('34-etbs-elite-trainer-boxes');return false">3.4 ETBs (Elite Trainer Boxes)</a><a href="#35-booster-boxes" class="toc-h3" onclick="kjrGuideJump('35-booster-boxes');return false">3.5 Booster Boxes</a><a href="#36-booster-packs" class="toc-h3" onclick="kjrGuideJump('36-booster-packs');return false">3.6 Booster Packs</a><a href="#37-ebay-purchases" class="toc-h3" onclick="kjrGuideJump('37-ebay-purchases');return false">3.7 eBay Purchases</a><a href="#38-sales" class="toc-h3" onclick="kjrGuideJump('38-sales');return false">3.8 Sales</a><a href="#39-listings" class="toc-h3" onclick="kjrGuideJump('39-listings');return false">3.9 Listings</a><a href="#310-chart-builder" class="toc-h3" onclick="kjrGuideJump('310-chart-builder');return false">3.10 Chart Builder</a><a href="#311-trash" class="toc-h3" onclick="kjrGuideJump('311-trash');return false">3.11 Trash</a><a href="#312-import" class="toc-h3" onclick="kjrGuideJump('312-import');return false">3.12 Import</a><a href="#313-versions" class="toc-h3" onclick="kjrGuideJump('313-versions');return false">3.13 Versions</a><a href="#314-health-check-lightning-bolt-icon" class="toc-h3" onclick="kjrGuideJump('314-health-check-lightning-bolt-icon');return false">3.14 Health Check (lightning bolt icon)</a><a href="#315-changelog-more-menu" class="toc-h3" onclick="kjrGuideJump('315-changelog-more-menu');return false">3.15 Changelog (More menu)</a><a href="#316-sentry-errors-panel-new-2405" class="toc-h3" onclick="kjrGuideJump('316-sentry-errors-panel-new-2405');return false">3.16 Sentry errors panel (new, 24/05)</a><a href="#4-cross-cutting-features" class="toc-h2" onclick="kjrGuideJump('4-cross-cutting-features');return false">4. Cross-cutting features</a><a href="#41-quick-entry-k" class="toc-h3" onclick="kjrGuideJump('41-quick-entry-k');return false">4.1 Quick Entry (⌘K)</a><a href="#42-smart-add" class="toc-h3" onclick="kjrGuideJump('42-smart-add');return false">4.2 Smart Add</a><a href="#43-sort-and-filter" class="toc-h3" onclick="kjrGuideJump('43-sort-and-filter');return false">4.3 Sort and filter</a><a href="#44-column-toggle-and-reorder" class="toc-h3" onclick="kjrGuideJump('44-column-toggle-and-reorder');return false">4.4 Column toggle and reorder</a><a href="#45-bulk-select" class="toc-h3" onclick="kjrGuideJump('45-bulk-select');return false">4.5 Bulk select</a><a href="#46-undo-redo" class="toc-h3" onclick="kjrGuideJump('46-undo-redo');return false">4.6 Undo / Redo</a><a href="#47-inline-price-edit" class="toc-h3" onclick="kjrGuideJump('47-inline-price-edit');return false">4.7 Inline price edit</a><a href="#48-price-alerts" class="toc-h3" onclick="kjrGuideJump('48-price-alerts');return false">4.8 Price alerts</a><a href="#49-light-dark-theme" class="toc-h3" onclick="kjrGuideJump('49-light-dark-theme');return false">4.9 Light / dark theme</a><a href="#410-toast-notifications" class="toc-h3" onclick="kjrGuideJump('410-toast-notifications');return false">4.10 Toast notifications</a><a href="#411-sentry-error-panel" class="toc-h3" onclick="kjrGuideJump('411-sentry-error-panel');return false">4.11 Sentry error panel</a><a href="#5-external-tools-and-links" class="toc-h2" onclick="kjrGuideJump('5-external-tools-and-links');return false">5. External tools and links</a><a href="#51-supabase-cloud-database" class="toc-h3" onclick="kjrGuideJump('51-supabase-cloud-database');return false">5.1 Supabase (cloud database)</a><a href="#52-cloudflare-worker-price-proxy" class="toc-h3" onclick="kjrGuideJump('52-cloudflare-worker-price-proxy');return false">5.2 Cloudflare Worker (price proxy)</a><a href="#53-pokemonpricetracker-ppt" class="toc-h3" onclick="kjrGuideJump('53-pokemonpricetracker-ppt');return false">5.3 PokemonPriceTracker (PPT)</a><a href="#54-poketrace" class="toc-h3" onclick="kjrGuideJump('54-poketrace');return false">5.4 PokeTrace</a><a href="#55-sgd-exchange-rate" class="toc-h3" onclick="kjrGuideJump('55-sgd-exchange-rate');return false">5.5 SGD exchange rate</a><a href="#56-chartjs" class="toc-h3" onclick="kjrGuideJump('56-chartjs');return false">5.6 Chart.js</a><a href="#57-claude-api-anthropic" class="toc-h3" onclick="kjrGuideJump('57-claude-api-anthropic');return false">5.7 Claude API (Anthropic)</a><a href="#58-sentry-error-monitoring-added-2405" class="toc-h3" onclick="kjrGuideJump('58-sentry-error-monitoring-added-2405');return false">5.8 Sentry (error monitoring) — added 24/05</a><a href="#59-uptimerobot-uptime-monitoring-added-2405" class="toc-h3" onclick="kjrGuideJump('59-uptimerobot-uptime-monitoring-added-2405');return false">5.9 UptimeRobot (uptime monitoring) — added 24/05</a><a href="#510-github-pages-hosting" class="toc-h3" onclick="kjrGuideJump('510-github-pages-hosting');return false">5.10 GitHub Pages (hosting)</a><a href="#6-data-and-persistence" class="toc-h2" onclick="kjrGuideJump('6-data-and-persistence');return false">6. Data and persistence</a><a href="#61-the-sync-model" class="toc-h3" onclick="kjrGuideJump('61-the-sync-model');return false">6.1 The sync model</a><a href="#62-the-load-model-start-of-session" class="toc-h3" onclick="kjrGuideJump('62-the-load-model-start-of-session');return false">6.2 The load model (start of session)</a><a href="#63-what-offline-means" class="toc-h3" onclick="kjrGuideJump('63-what-offline-means');return false">6.3 What "offline" means</a><a href="#64-recovery-options-ranked-by-reversibility" class="toc-h3" onclick="kjrGuideJump('64-recovery-options-ranked-by-reversibility');return false">6.4 Recovery options, ranked by reversibility</a><a href="#65-daily-snapshot" class="toc-h3" onclick="kjrGuideJump('65-daily-snapshot');return false">6.5 Daily snapshot</a><a href="#7-keyboard-shortcuts" class="toc-h2" onclick="kjrGuideJump('7-keyboard-shortcuts');return false">7. Keyboard shortcuts</a><a href="#appendix-a-how-do-i-playbook" class="toc-h2" onclick="kjrGuideJump('appendix-a-how-do-i-playbook');return false">Appendix A — How do I... playbook</a><a href="#a1-add-a-new-card" class="toc-h3" onclick="kjrGuideJump('a1-add-a-new-card');return false">A.1 Add a new card</a><a href="#a2-log-a-sale" class="toc-h3" onclick="kjrGuideJump('a2-log-a-sale');return false">A.2 Log a sale</a><a href="#a3-refresh-prices" class="toc-h3" onclick="kjrGuideJump('a3-refresh-prices');return false">A.3 Refresh prices</a><a href="#a4-import-from-a-spreadsheet" class="toc-h3" onclick="kjrGuideJump('a4-import-from-a-spreadsheet');return false">A.4 Import from a spreadsheet</a><a href="#a5-handle-an-ebay-purchase-end-to-end" class="toc-h3" onclick="kjrGuideJump('a5-handle-an-ebay-purchase-end-to-end');return false">A.5 Handle an eBay purchase end-to-end</a><a href="#a6-build-a-chart-on-the-dashboard" class="toc-h3" onclick="kjrGuideJump('a6-build-a-chart-on-the-dashboard');return false">A.6 Build a chart on the dashboard</a><a href="#a7-recover-a-deleted-item" class="toc-h3" onclick="kjrGuideJump('a7-recover-a-deleted-item');return false">A.7 Recover a deleted item</a><a href="#a8-roll-back-to-a-previous-version" class="toc-h3" onclick="kjrGuideJump('a8-roll-back-to-a-previous-version');return false">A.8 Roll back to a previous version</a><a href="#a9-export-data" class="toc-h3" onclick="kjrGuideJump('a9-export-data');return false">A.9 Export data</a><a href="#a10-run-a-health-check" class="toc-h3" onclick="kjrGuideJump('a10-run-a-health-check');return false">A.10 Run a health check</a><a href="#a11-generate-a-carousell-listing" class="toc-h3" onclick="kjrGuideJump('a11-generate-a-carousell-listing');return false">A.11 Generate a Carousell listing</a><a href="#a12-view-sentry-errors" class="toc-h3" onclick="kjrGuideJump('a12-view-sentry-errors');return false">A.12 View Sentry errors</a><a href="#a13-push-updates-to-github-pages" class="toc-h3" onclick="kjrGuideJump('a13-push-updates-to-github-pages');return false">A.13 Push updates to GitHub Pages</a><a href="#a14-connect-a-fresh-device" class="toc-h3" onclick="kjrGuideJump('a14-connect-a-fresh-device');return false">A.14 Connect a fresh device</a><a href="#appendix-b-data-model-reference" class="toc-h2" onclick="kjrGuideJump('appendix-b-data-model-reference');return false">Appendix B — Data model reference</a><a href="#b1-singles" class="toc-h3" onclick="kjrGuideJump('b1-singles');return false">B.1 Singles</a><a href="#b2-slabs" class="toc-h3" onclick="kjrGuideJump('b2-slabs');return false">B.2 Slabs</a><a href="#b3-sales" class="toc-h3" onclick="kjrGuideJump('b3-sales');return false">B.3 Sales</a><a href="#b4-ebay-purchases" class="toc-h3" onclick="kjrGuideJump('b4-ebay-purchases');return false">B.4 eBay Purchases</a><a href="#b5-sealed-products-etbs-booster-boxes-booster-packs" class="toc-h3" onclick="kjrGuideJump('b5-sealed-products-etbs-booster-boxes-booster-packs');return false">B.5 Sealed products (ETBs, Booster Boxes, Booster Packs)</a><a href="#appendix-c-security-and-naming" class="toc-h2" onclick="kjrGuideJump('appendix-c-security-and-naming');return false">Appendix C — Security and naming</a><a href="#c1-security-model-current-state" class="toc-h3" onclick="kjrGuideJump('c1-security-model-current-state');return false">C.1 Security model (current state)</a><a href="#c2-naming-conventions" class="toc-h3" onclick="kjrGuideJump('c2-naming-conventions');return false">C.2 Naming conventions</a><a href="#c3-file-reference" class="toc-h3" onclick="kjrGuideJump('c3-file-reference');return false">C.3 File reference</a><a href="#appendix-d-scale-up-notes" class="toc-h2" onclick="kjrGuideJump('appendix-d-scale-up-notes');return false">Appendix D — Scale-up notes</a></div>
+    </aside>
+    <article class="guide-content" id="guide-content"><h1>Kujira Collectibles — User &amp; Reference Guide</h1>
+<p><strong>Version:</strong> 24/05/2026
+<strong>Author:</strong> Julian Chow
+<strong>Status:</strong> Internal document
+<strong>Supersedes:</strong> 2026-05-20-kujira-business-overview.md</p>
+<hr>
+<h2 id="table-of-contents">Table of contents</h2>
+<ol>
+<li><a href="#1-introduction">Introduction</a></li>
+<li><a href="#2-the-interface">The interface</a></li>
+<li><a href="#3-each-tab-in-detail">Each tab in detail</a></li>
+<li><a href="#4-cross-cutting-features">Cross-cutting features</a></li>
+<li><a href="#5-external-tools-and-links">External tools and links</a></li>
+<li><a href="#6-data-and-persistence">Data and persistence</a></li>
+<li><a href="#7-keyboard-shortcuts">Keyboard shortcuts</a></li>
+<li><a href="#appendix-a--how-do-i-playbook">Appendix A — How do I... playbook</a></li>
+<li><a href="#appendix-b--data-model-reference">Appendix B — Data model reference</a></li>
+<li><a href="#appendix-c--security-and-naming">Appendix C — Security and naming</a></li>
+<li><a href="#appendix-d--scale-up-notes">Appendix D — Scale-up notes</a></li>
+</ol>
+<hr>
+<h2 id="1-introduction">1. Introduction</h2>
+<h3 id="what-this-app-is">What this app is</h3>
+<p>Kujira Collectibles is a single-user inventory tracker for a Pokemon card trading business. It records raw cards, graded slabs, and sealed products across the full purchase-to-sale lifecycle, with live price lookups, sale logging, and a dashboard that reports on profit, ROI, and capital exposure.</p>
+<p>It runs as a single HTML file at <code>https://julianchow21.github.io/Kujira-Collectibles/</code>. No login. No build system. Open it and it works.</p>
+<h3 id="mental-model">Mental model</h3>
+<p>Three layers of memory:</p>
+<ol>
+<li><strong>The DB object in memory.</strong> Everything you see on screen lives in a JavaScript object called <code>DB</code>, keyed by table name (singles, slabs, sales, etbs, boosterBoxes, boosterPacks, ebayPurchases, trash, changelog).</li>
+<li><strong>localStorage on your browser.</strong> Every edit writes immediately to localStorage so a refresh never loses work.</li>
+<li><strong>Supabase as the cloud source of truth.</strong> On a 1-second debounce, dirty rows flush to Supabase. On the next session, the app reconciles local against cloud (dirty local always wins).</li>
+</ol>
+<p>This means: the app works fully offline. The sync indicator at the top tells you the cloud state. If it's red, the cloud is behind — but your work is safe in localStorage and will retry on next session.</p>
+<h3 id="where-your-data-lives">Where your data lives</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Location</th>
+<th>When written</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>In-memory</td>
+<td><code>DB</code> object</td>
+<td>Every interaction</td>
+</tr>
+<tr>
+<td>Browser cache</td>
+<td><code>localStorage</code> key <code>pokeinv_*</code></td>
+<td>Every interaction (immediate)</td>
+</tr>
+<tr>
+<td>Cloud database</td>
+<td>Supabase project <code>eywncywatxtlqtrvxjsi</code></td>
+<td>1-second debounce after each change</td>
+</tr>
+<tr>
+<td>Snapshots</td>
+<td>Supabase <code>versions</code> table</td>
+<td>Manual save or daily auto-snapshot</td>
+</tr>
+<tr>
+<td>Soft-deleted items</td>
+<td><code>DB.trash</code> (synced to cloud)</td>
+<td>When you delete anything</td>
+</tr>
+</tbody></table>
+<h3 id="who-this-is-for">Who this is for</h3>
+<ul>
+<li><strong>You (the operator)</strong> — primary user. The app is designed around a single person managing roughly 1,000 inventory rows.</li>
+<li><strong>Future helpers</strong> — anyone you hand the app to should be able to read Part 3 of this doc and start using it within an hour.</li>
+</ul>
+<hr>
+<h2 id="2-the-interface">2. The interface</h2>
+<h3 id="top-bar-desktop">Top bar (desktop)</h3>
+<p>Reading left to right.</p>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>What it does</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Logo (KUJIRA Collectibles)</strong></td>
+<td>Clicks home to the dashboard</td>
+<td>Standard convention; quick anchor back to overview</td>
+</tr>
+<tr>
+<td><strong>Sync indicator</strong></td>
+<td>Shows current cloud state: ✓ Synced, Saving..., Error</td>
+<td>Gives you confidence that local edits made it to cloud. Red means investigate.</td>
+</tr>
+<tr>
+<td><strong>Nav tabs</strong> (Dashboard, Singles, Slabs, Sales, eBay, Listings, Sealed dropdown, More dropdown)</td>
+<td>Page navigation</td>
+<td>Sealed dropdown holds ETBs / Booster Boxes / Booster Packs (rarely-used grouping). More dropdown holds Trash and other admin views.</td>
+</tr>
+<tr>
+<td><strong>+ Quick Entry button (⌘K)</strong></td>
+<td>Opens the command-bar modal for fast inventory entry or sale logging</td>
+<td>The single most-used flow. Lives in the top bar so it's always one click away.</td>
+</tr>
+<tr>
+<td><strong>🔑 API settings</strong></td>
+<td>Price API key configuration (PPT, PokeTrace)</td>
+<td>Edit-once, ignore after. Hidden behind an icon to keep the bar clean.</td>
+</tr>
+<tr>
+<td><strong>GitHub icon</strong></td>
+<td>Push the current HTML file to GitHub Pages (deploys instantly)</td>
+<td>Lets you ship updates without leaving the app. Token stored locally only.</td>
+</tr>
+<tr>
+<td><strong>Clock icon</strong></td>
+<td>Open Version History (snapshots)</td>
+<td>Recovery for "I broke something" moments.</td>
+</tr>
+<tr>
+<td><strong>Lightning bolt icon</strong></td>
+<td>Run Health Check (~20 data-integrity tests)</td>
+<td>Quick way to spot orphans, malformed dates, missing fields, etc.</td>
+</tr>
+<tr>
+<td><strong>Bug icon</strong></td>
+<td>Open Sentry error panel (added 24/05)</td>
+<td>Shows unresolved JS errors captured from your real browser sessions.</td>
+</tr>
+<tr>
+<td><strong>Reset arrow</strong></td>
+<td>Clear filters and sort on the current tab</td>
+<td>Faster than clicking each column header to reset.</td>
+</tr>
+<tr>
+<td><strong>Moon/Sun icon</strong></td>
+<td>Toggle light/dark theme</td>
+<td>Personal preference; persisted in localStorage.</td>
+</tr>
+</tbody></table>
+<h3 id="bottom-tab-bar-mobile">Bottom tab bar (mobile)</h3>
+<p>On screens under 768px wide, the desktop nav collapses and a bottom tab bar appears. It holds: Dashboard, Singles, Slabs, Sales, eBay, Import.</p>
+<p>Why these six and not all 14 tabs? Mobile is mostly used for sale logging and quick inventory checks. The full set is still reachable through the menu, but the bottom bar surfaces what you actually tap with one thumb while walking around.</p>
+<h3 id="where-things-live">Where things live</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│ Logo · Sync · | Nav tabs | Quick Entry · icon row              │  ← Top bar
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│                       (active page)                             │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [mobile only] Dashboard · Singles · Slabs · Sales · eBay · Import │  ← Bottom bar
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<hr>
+<h2 id="3-each-tab-in-detail">3. Each tab in detail</h2>
+<h3 id="31-dashboard">3.1 Dashboard</h3>
+<p>The landing page. Read-only KPIs over the entire portfolio plus a Custom Chart Builder.</p>
+<p><strong>Top metric cards</strong></p>
+<table>
+<thead>
+<tr>
+<th>Card</th>
+<th>Calculation</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Total Cost</td>
+<td>Sum of <code>costPrice × qty</code> across all unsold inventory</td>
+<td>Capital exposure — how much money is currently locked up</td>
+</tr>
+<tr>
+<td>Total Market Value</td>
+<td>Sum of <code>marketPrice × qty</code> across all priced inventory</td>
+<td>Estimated portfolio value at current prices</td>
+</tr>
+<tr>
+<td>All-time Profit</td>
+<td>Sum of <code>profit</code> from all sale records</td>
+<td>Realised gains since the app's first sale entry</td>
+</tr>
+<tr>
+<td>Realised ROI</td>
+<td>Profit / Total cost basis sold × 100</td>
+<td>Return on capital that has cycled through</td>
+</tr>
+</tbody></table>
+<p>The Total Market Value card shows a freshness chip ("2% priced · refreshed today") if not all items have a price. This is intentional — half-priced portfolios mislead the eye. If the chip is red, you should run a price refresh.</p>
+<p><strong>Capital Exposure &amp; Inventory bar</strong></p>
+<p>Horizontal stacked bar showing how your capital is split across Singles / Slabs / Sealed. Click any segment to drill down.</p>
+<p>Why a bar instead of a pie? Pies are hard to compare at a glance. A horizontal bar lets you read percentages and absolute SGD values from the same row.</p>
+<p><strong>Custom Chart Builder</strong></p>
+<p>Drag-and-drop axis selector. Pick a dimension (e.g. Set, Grader, Month) for the X axis, a measure (e.g. Cost, Market, Profit) for the Y axis. Apply filters and a top-N cap. Pin to dashboard.</p>
+<p>Why drag instead of dropdowns? Faster iteration when you're exploring. Most users never touch this; the few who do iterate a lot.</p>
+<h3 id="32-singles">3.2 Singles</h3>
+<p>Tracks raw (ungraded) cards.</p>
+<p><strong>Columns</strong> (left to right, default order)</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>☐</td>
+<td>UI only</td>
+<td>Bulk-select checkbox</td>
+</tr>
+<tr>
+<td>Card</td>
+<td><code>name</code></td>
+<td>Truncates with ellipsis if too long; hover for full name</td>
+</tr>
+<tr>
+<td>Lang</td>
+<td><code>language</code></td>
+<td>EN / JP / CN / ID</td>
+</tr>
+<tr>
+<td>Type</td>
+<td><code>type</code></td>
+<td>Raw / Sealed badge</td>
+</tr>
+<tr>
+<td>Date</td>
+<td><code>datePurchased</code></td>
+<td>Displayed as "19 May 2026"</td>
+</tr>
+<tr>
+<td>Cost Price</td>
+<td><code>costPrice</code></td>
+<td>Inline-editable. Round-trips through <code>kjrMoneyStr</code> so pasting <code>$1,250.00</code> stores <code>1250</code> correctly.</td>
+</tr>
+<tr>
+<td>Market</td>
+<td><code>marketPrice</code></td>
+<td>Inline-editable. Refreshed from PPT/PokeTrace via the price proxy.</td>
+</tr>
+<tr>
+<td>Carousell Price</td>
+<td><code>listPrice</code></td>
+<td>Your asking price on Carousell</td>
+</tr>
+<tr>
+<td>Actions</td>
+<td>UI</td>
+<td>Quick Sell ✓ button, Listing generator 📋, alerts 🔔, links 🔗</td>
+</tr>
+</tbody></table>
+<p><strong>Default sort:</strong> most recent <code>datePurchased</code> first. Click any header to override.</p>
+<p><strong>Buttons / actions</strong></p>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Card row click</strong></td>
+<td>Open edit modal</td>
+</tr>
+<tr>
+<td><strong>Inline cost/market/list edit</strong></td>
+<td>Type in the cell; auto-saves on blur. Strips $ and commas automatically.</td>
+</tr>
+<tr>
+<td><strong>✓ Sold button (row action)</strong></td>
+<td>Opens Quick Sell modal for that item</td>
+</tr>
+<tr>
+<td><strong>📋 Listing button (row action)</strong></td>
+<td>Opens the Carousell listing generator with that item pre-filled</td>
+</tr>
+<tr>
+<td><strong>🔔 (price alert icon)</strong></td>
+<td>Appears when market price hits your set target. Click to view alert details.</td>
+</tr>
+<tr>
+<td><strong>🔗 (link icon)</strong></td>
+<td>Appears if the item has an eBay or Carousell URL set. Click to open.</td>
+</tr>
+<tr>
+<td><strong>Bulk select + Delete</strong></td>
+<td>Select multiple rows via the checkbox column; bulk-deletes all selected rows. Prompts to also void linked sales if any exist.</td>
+</tr>
+</tbody></table>
+<p><strong>Sub-sections</strong></p>
+<ul>
+<li><strong>Sold rows</strong> appear in a collapsible section below the active rows. Toggle with the "Show Sold" row.</li>
+<li>A small green dot in the leftmost column marks recently-added rows for a few seconds after they appear.</li>
+</ul>
+<p><strong>Why this design</strong></p>
+<ul>
+<li>Inline price editing — you adjust market prices constantly, so opening a modal every time would kill the flow.</li>
+<li>Sold rows shown below by default but collapsed — they're useful for context but you mostly care about what's still in stock.</li>
+<li>Default sort by most-recent-date — when you add a card, you want to see it appear at the top to confirm it worked.</li>
+</ul>
+<h3 id="33-slabs">3.3 Slabs</h3>
+<p>Same shape as Singles, plus grading-specific fields.</p>
+<p><strong>Extra columns</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Grade</td>
+<td><code>grader</code> + <code>grade</code></td>
+<td>Badge showing e.g. "PSA 10", "TAG 9.5". Coloured by grader (PSA red, TAG blue, CGC bronze)</td>
+</tr>
+<tr>
+<td>Cert #</td>
+<td><code>certNo</code></td>
+<td>Link to TAG grading lookup if grader is TAG</td>
+</tr>
+<tr>
+<td>Rank</td>
+<td><code>rank</code></td>
+<td>Population rank, e.g. "3rd", "10th"</td>
+</tr>
+</tbody></table>
+<p><strong>Why a separate Slabs tab from Singles?</strong></p>
+<p>Slabs and raw cards have fundamentally different valuation logic (grade matters for slabs, condition matters for raws), different pricing sources, and different sale dynamics. Mixing them in one tab obscures which copies are graded vs raw.</p>
+<h3 id="34-etbs-elite-trainer-boxes">3.4 ETBs (Elite Trainer Boxes)</h3>
+<p>Sealed product tracking with simpler economics — you usually have one of each, sometimes a few.</p>
+<p><strong>Columns:</strong> Product · Condition · Date · Cost · Market · Carousell Price · Status · Actions</p>
+<p>Status values: In Stock, Sold, Traded, Reserved.</p>
+<h3 id="35-booster-boxes">3.5 Booster Boxes</h3>
+<p>Same shape as ETBs but with <code>qty</code> and <code>unitPrice</code> fields. <code>totalPrice</code> is computed as <code>unitPrice × qty</code>.</p>
+<p><strong>Why qty here but not on ETBs?</strong> ETBs you typically buy individually. Booster boxes you often buy a few cases at a time.</p>
+<h3 id="36-booster-packs">3.6 Booster Packs</h3>
+<p>Lightest variant of the sealed lineup. Same shape as Booster Boxes but at single-pack granularity.</p>
+<h3 id="37-ebay-purchases">3.7 eBay Purchases</h3>
+<p>Tracks the journey of items bought on eBay through your Buyandship forwarding pipeline. The most complex tab because each row passes through 6 stages.</p>
+<p><strong>Pipeline stages</strong></p>
+<pre><code>Paid
+  → Shipping to Buyandship
+    → At Buyandship
+      → Ready to Consolidate
+        → Shipping to Singapore
+          → Completed
+              ↓
+            (modal: push to Singles or Slabs inventory)
+
+(parallel from any stage: Cancelled — terminal)
+</code></pre>
+<p><strong>Columns</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Date</td>
+<td>Purchase date</td>
+</tr>
+<tr>
+<td>Product</td>
+<td>What you bought</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Current pipeline stage (coloured chip)</td>
+</tr>
+<tr>
+<td>Tracking #</td>
+<td>Shipment tracking from Buyandship</td>
+</tr>
+<tr>
+<td>Price USD</td>
+<td>Original purchase price in USD</td>
+</tr>
+<tr>
+<td>Freight SGD</td>
+<td>Freight portion in SGD</td>
+</tr>
+<tr>
+<td>Total SGD</td>
+<td>Auto-calculated: (Price USD × SGD rate) + Freight SGD</td>
+</tr>
+<tr>
+<td>Declared</td>
+<td>Customs declared value</td>
+</tr>
+<tr>
+<td>Target</td>
+<td>Where it lands on completion: Singles or Slabs</td>
+</tr>
+</tbody></table>
+<p><strong>Actions</strong></p>
+<ul>
+<li><strong>Advance Stage</strong> button (single row) — moves one stage forward.</li>
+<li><strong>Bulk Advance</strong> — select multiple rows and advance them all at once. Useful when a Buyandship batch arrives.</li>
+<li><strong>Cancel</strong> — moves to the Cancelled terminal state. Row stays in the table for accounting.</li>
+<li><strong>Complete</strong> — on the final stage, a modal asks whether to push to Singles or Slabs. Creates a new row in the destination table with all relevant fields pre-filled.</li>
+</ul>
+<p><strong>Why a 6-stage pipeline?</strong></p>
+<p>Because real-world fulfilment has 6 distinct waiting points. Knowing whether an item is "at Buyandship" vs "in Singapore" affects whether you can mark it as sellable. A status of "shipped" alone would be too coarse.</p>
+<p><strong>Why bulk advance?</strong></p>
+<p>A Buyandship shipment from US to Singapore typically contains 5–30 items, all moving stages together. Single-row advancing 30 times is annoying.</p>
+<h3 id="38-sales">3.8 Sales</h3>
+<p>The realised P&amp;L log.</p>
+<p><strong>Columns</strong></p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Date</td>
+<td><code>dateSold</code></td>
+<td>Sale date</td>
+</tr>
+<tr>
+<td>Product</td>
+<td><code>product</code></td>
+<td>Snapshot of the item name at sale time</td>
+</tr>
+<tr>
+<td>Buyer</td>
+<td><code>buyer</code></td>
+<td>Identifier — username, phone, or note</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td><code>costPrice</code></td>
+<td>Cost basis at sale time</td>
+</tr>
+<tr>
+<td>Revenue</td>
+<td><code>totalCollected</code></td>
+<td>Gross amount collected</td>
+</tr>
+<tr>
+<td>Shipping</td>
+<td><code>shippingCost</code></td>
+<td>Shipping you paid</td>
+</tr>
+<tr>
+<td>Profit</td>
+<td><code>profit</code></td>
+<td>Auto-calculated: Revenue − Cost − Shipping</td>
+</tr>
+<tr>
+<td>Margin</td>
+<td><code>margin</code></td>
+<td>Profit / Revenue × 100, displayed as a percent</td>
+</tr>
+</tbody></table>
+<p><strong>Default sort:</strong> most recent <code>dateSold</code> first.</p>
+<p><strong>Why snapshot the product name?</strong></p>
+<p>If you later rename or delete the original inventory item, the sale record still shows what was sold. Sale history shouldn't shift under your feet.</p>
+<p><strong>The ↗ button on each row</strong> opens the source inventory item (via <code>inventoryId</code> + <code>inventoryTable</code> linkage). Useful for cross-referencing.</p>
+<h3 id="39-listings">3.9 Listings</h3>
+<p>Carousell listing template generator. Pick an item, enter a price and notes, and the page renders a paste-ready listing block with title, condition, price, and the rest of your standard listing fields.</p>
+<p><strong>Why a generator?</strong></p>
+<p>You list the same kinds of cards over and over with the same boilerplate. Copy-pasting saves typing time and ensures consistency across listings.</p>
+<h3 id="310-chart-builder">3.10 Chart Builder</h3>
+<p>Standalone version of the dashboard's Custom Chart Builder. Bigger canvas, more space to iterate. Save charts here, pin them to the dashboard, or delete them.</p>
+<h3 id="311-trash">3.11 Trash</h3>
+<p>All deletions land here first. Nothing is ever hard-deleted via the UI.</p>
+<p><strong>Columns:</strong> Original Table · Item Identifier · Reason · Deleted At · Actions (Restore / Delete forever)</p>
+<p><strong>Auto-purge:</strong> items older than 30 days are flagged for permanent deletion (you confirm before removal).</p>
+<p><strong>Why soft delete?</strong></p>
+<p>Because "I deleted the wrong card" used to be a daily occurrence. Now you have 30 days to recover.</p>
+<h3 id="312-import">3.12 Import</h3>
+<p>Paste any CSV/TSV (or a Google Sheets selection) and the importer maps columns automatically.</p>
+<p><strong>Steps</strong></p>
+<ol>
+<li>Paste data into the textarea.</li>
+<li>Auto-detection guesses the type (Singles / Slabs / Sales) from the header row. The banner shows what it guessed; click "Apply" to confirm or change the dropdown manually.</li>
+<li>Choose <strong>Append</strong> or <strong>Replace</strong> mode:<ul>
+<li>Append — adds new rows, skips duplicates (by cert# for slabs, by name+set+language+condition for singles)</li>
+<li>Replace — wipes all existing rows for that table and inserts the new set</li>
+</ul>
+</li>
+<li>Preview the matched fields; rows with missing required fields show as Skipped.</li>
+<li>Click Import.</li>
+</ol>
+<p><strong>AI-assisted import</strong></p>
+<p>If your column headers don't match the standard schema, click "AI-assisted import" to send the data to Claude, which maps the columns automatically. Requires an Anthropic API key in localStorage.</p>
+<p><strong>Why Append vs Replace?</strong></p>
+<p>Append is the daily case (adding new acquisitions). Replace is the once-in-a-while case (full re-sync from a master spreadsheet). Mixing them in one button would be ambiguous.</p>
+<h3 id="313-versions">3.13 Versions</h3>
+<p>Manual and automatic full-DB snapshots. Restore returns the entire app state to that point in time.</p>
+<p><strong>Daily auto-snapshot:</strong> the app checks once per session whether a snapshot exists for today; if not, it creates one named "Auto — DD/MM/YYYY".</p>
+<p><strong>Manual snapshot:</strong> click "Save Version", give it a name (e.g. "before bulk price refresh").</p>
+<p><strong>Restore:</strong> loads the snapshot back into <code>DB</code>, marks every row dirty, and pushes to Supabase.</p>
+<h3 id="314-health-check-lightning-bolt-icon">3.14 Health Check (lightning bolt icon)</h3>
+<p>Runs ~20 automated tests across all tables. Examples:</p>
+<ul>
+<li>Dates that don't parse correctly</li>
+<li>Grader values that aren't canonical (e.g. "psa" not "PSA")</li>
+<li>Items with status=Sold but no matching sale record</li>
+<li>Sales with <code>inventoryId</code> pointing to a non-existent inventory row</li>
+<li>Dashboard totals that don't sum correctly</li>
+</ul>
+<p>Most issues offer an <strong>Auto-fix</strong> option. Run this when something looks wrong on the dashboard.</p>
+<h3 id="315-changelog-more-menu">3.15 Changelog (More menu)</h3>
+<p>Immutable event log (capped at 500 entries). Every add, edit, delete, sale, and import action is recorded with action, table, detail, timestamp. Filter by action type with the chips at the top.</p>
+<h3 id="316-sentry-errors-panel-new-2405">3.16 Sentry errors panel (new, 24/05)</h3>
+<p>The 🐛 button in the top bar opens a right-side drawer showing unresolved JS errors captured from real browser sessions. First-time use prompts for a Sentry auth token (one-time setup).</p>
+<p><strong>Why this exists:</strong> without it you'd only learn about a crash when a user reported it. Sentry catches the error stack trace silently and you see it next time you open the panel.</p>
+<hr>
+<h2 id="4-cross-cutting-features">4. Cross-cutting features</h2>
+<h3 id="41-quick-entry-k">4.1 Quick Entry (⌘K)</h3>
+<p>The single most-used flow. Hit ⌘K (or click the green button) to open a command bar that lets you:</p>
+<ul>
+<li>Add a card by typing it (Smart Add)</li>
+<li>Log a sale by searching for an existing item</li>
+<li>Switch between Add and Sell modes via the toggle</li>
+</ul>
+<p>The command bar handles 80% of daily interactions. It's there so you can capture an acquisition or sale in under 5 seconds.</p>
+<h3 id="42-smart-add">4.2 Smart Add</h3>
+<p>Paste any text into the Quick Entry input and the parser extracts the fields. Examples:</p>
+<pre><code>Eevee 173 TAG 10 cert L6786028 rank 10th $81
+→ name: Eevee 173, grader: TAG, grade: 10, certNo: L6786028, rank: 10th, costPrice: 81
+
+Charizard ex 199/197 PSA 9 $250
+→ name: Charizard ex 199/197, grader: PSA, grade: 9, costPrice: 250
+
+2x Booster Box - Scarlet &amp; Violet $180 each
+→ product: Scarlet &amp; Violet, qty: 2, unitPrice: 180
+</code></pre>
+<p>The parser handles grader keywords (PSA/TAG/CGC/BGS/ACE/SGC), cert numbers, ranks, prices with or without $, quantity prefixes, and many variants.</p>
+<h3 id="43-sort-and-filter">4.3 Sort and filter</h3>
+<ul>
+<li>Click any column header to sort. Click again to flip direction. A third click clears.</li>
+<li>The filter row below the headers accepts text matches and numeric expressions:<ul>
+<li><code>100</code> — match values within ±$1</li>
+<li><code>&gt;100</code>, <code>&lt;50</code> — comparison</li>
+<li><code>100-200</code> — range</li>
+<li><code>$100</code> — explicit currency</li>
+</ul>
+</li>
+<li>Sort direction shows as ↑ / ↓ on the active column.</li>
+</ul>
+<h3 id="44-column-toggle-and-reorder">4.4 Column toggle and reorder</h3>
+<p>On Singles, Slabs, Sales, ETBs, Booster Boxes, Booster Packs:</p>
+<ul>
+<li>Right-click any column header for a show/hide menu</li>
+<li>Drag a header to reorder columns</li>
+<li>Preferences persist per-table to localStorage</li>
+</ul>
+<h3 id="45-bulk-select">4.5 Bulk select</h3>
+<ul>
+<li>Click the header checkbox to select all visible rows</li>
+<li>Click any row checkbox to add/remove from selection</li>
+<li>A floating action bar appears with bulk options (Delete, Refresh Prices, Mark Sold, etc.)</li>
+</ul>
+<h3 id="46-undo-redo">4.6 Undo / Redo</h3>
+<p>In-memory stack. Most write operations (add, edit, delete, mark sold, import) snapshot the DB before the change. Undo/Redo are buttons in the header (or use the keyboard shortcut if assigned).</p>
+<p>The stack is per-session — refreshing the page clears it.</p>
+<h3 id="47-inline-price-edit">4.7 Inline price edit</h3>
+<p>Cost, Market, and Carousell prices on every inventory tab are editable directly in the table cell. Type a new value, blur the field, and it saves automatically.</p>
+<p>The input accepts any common currency format. As of 24/05, pasting <code>$1,250.00</code> correctly stores <code>1250</code> (a previous bug would have silently stored <code>1</code>).</p>
+<h3 id="48-price-alerts">4.8 Price alerts</h3>
+<p>Set a target price for any item. When the live market price reaches or exceeds the target, a 🔔 icon appears in the row's Actions column. Hover for details.</p>
+<h3 id="49-light-dark-theme">4.9 Light / dark theme</h3>
+<p>Moon/sun icon in the top bar. Choice persists to localStorage. The app uses a teal accent in both modes for consistency.</p>
+<h3 id="410-toast-notifications">4.10 Toast notifications</h3>
+<p>Bottom-right (or bottom on mobile) slide-in panel with three variants:</p>
+<ul>
+<li><strong>Default / success</strong> (teal border, ✓ icon)</li>
+<li><strong>Warning</strong> (amber border, ⚠ icon — auto-detected when message starts with ⚠)</li>
+<li><strong>Error</strong> (red border, ✕ icon)</li>
+</ul>
+<p>Click to dismiss early. The thin bar at the bottom of each toast drains in real time so you know how long it will persist.</p>
+<h3 id="411-sentry-error-panel">4.11 Sentry error panel</h3>
+<p>See section 3.16.</p>
+<hr>
+<h2 id="5-external-tools-and-links">5. External tools and links</h2>
+<h3 id="51-supabase-cloud-database">5.1 Supabase (cloud database)</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Project</td>
+<td><code>eywncywatxtlqtrvxjsi</code></td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>Anon key embedded in source HTML</td>
+</tr>
+<tr>
+<td>Tables</td>
+<td>singles, slabs, sales, etbs, booster_boxes, booster_packs, ebay_purchases, trash, versions</td>
+</tr>
+<tr>
+<td>Row limit</td>
+<td>10,000 per fetch (Supabase default)</td>
+</tr>
+<tr>
+<td>Conflict strategy</td>
+<td>UPSERT on <code>id</code> column</td>
+</tr>
+</tbody></table>
+<p>Used as the single source of truth for cloud state. All edits flush here on a 1-second debounce. If Supabase is down, edits stay in localStorage and retry on next session.</p>
+<p><strong>Functions:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>sbFetchAll(table)</code></td>
+<td>Load all rows for a table</td>
+</tr>
+<tr>
+<td><code>sbBatchUpsert(table, items)</code></td>
+<td>Bulk insert/update, chunked at 200 rows</td>
+</tr>
+<tr>
+<td><code>sbUpsert(table, id, data)</code></td>
+<td>Single row save</td>
+</tr>
+<tr>
+<td><code>sbDelete(table, id)</code></td>
+<td>Delete one row. Now queues to <code>_kjrPendingCloudDeletes</code> localStorage key on failure, retried on next sync.</td>
+</tr>
+<tr>
+<td><code>sbFetchVersions()</code></td>
+<td>List saved snapshots</td>
+</tr>
+<tr>
+<td><code>sbSaveVersion(ver)</code></td>
+<td>Store full-DB snapshot</td>
+</tr>
+<tr>
+<td><code>flushPendingDeletes()</code></td>
+<td>Retry any previously failed deletes</td>
+</tr>
+</tbody></table>
+<p><strong>What happens if Supabase is down:</strong> edits keep working locally, the sync indicator turns red, dirty rows queue up. Next time Supabase responds, everything flushes.</p>
+<h3 id="52-cloudflare-worker-price-proxy">5.2 Cloudflare Worker (price proxy)</h3>
+<p>File: <code>2026-05-18-kujira-prices-worker.js</code></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>URL</td>
+<td><code>kujira-prices.julianchow21.workers.dev</code></td>
+</tr>
+<tr>
+<td>Purpose</td>
+<td>CORS proxy + holds PPT and PokeTrace API keys server-side</td>
+</tr>
+<tr>
+<td>Allowed origin</td>
+<td><code>https://julianchow21.github.io</code></td>
+</tr>
+<tr>
+<td>Routes</td>
+<td><code>GET /ppt/cards?search=X&amp;limit=5</code>, <code>GET /poketrace/cards?search=X&amp;limit=3</code></td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td><code>PPT_KEY</code>, <code>POKETRACE_KEY</code> (Cloudflare dashboard, never in source)</td>
+</tr>
+</tbody></table>
+<p><strong>Why a proxy:</strong> the price APIs don't allow direct browser calls (CORS), and embedding API keys in the HTML would expose them. The Worker gives us a single trusted endpoint and keeps the keys server-side.</p>
+<p><strong>Redeploy:</strong> paste the worker file into the Cloudflare dashboard editor, save, deploy. See <code>2026-05-18-worker-deploy-guide.md</code>.</p>
+<h3 id="53-pokemonpricetracker-ppt">5.3 PokemonPriceTracker (PPT)</h3>
+<p>Primary price source. Reached via <code>/ppt/cards</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Plan</td>
+<td>Free tier</td>
+</tr>
+<tr>
+<td>Daily limit</td>
+<td>100 requests/day (enforced client-side via <code>DAILY_LIMIT</code>)</td>
+</tr>
+<tr>
+<td>Inter-request gap</td>
+<td>6 seconds (<code>REQUEST_GAP_MS</code>) to respect rate limits</td>
+</tr>
+<tr>
+<td>Match threshold</td>
+<td>Jaccard token overlap ≥ 0.2 (raise to 0.35 if false positives appear)</td>
+</tr>
+</tbody></table>
+<p>The 6-second gap means refreshing 500 items takes ~50 minutes. This is a deliberate trade-off for the free tier — the alternative is paying for a higher plan.</p>
+<h3 id="54-poketrace">5.4 PokeTrace</h3>
+<p>Secondary price source. Reached via <code>/poketrace/cards</code>. Used in parallel with PPT and the best match wins (<code>_pickBestMatch</code>).</p>
+<h3 id="55-sgd-exchange-rate">5.5 SGD exchange rate</h3>
+<p>Used by the eBay Purchases tab to convert USD prices. Fetched once, cached in localStorage for 7 days. Source endpoint configured in <code>fetchSgdRate()</code>.</p>
+<h3 id="56-chartjs">5.6 Chart.js</h3>
+<p>Loaded from <code>cdn.jsdelivr.net/npm/chart.js@4.4.1</code>. Used for dashboard KPI charts and the Chart Builder. No server-side dependency. If the CDN is down, charts won't render but the rest of the app keeps working.</p>
+<h3 id="57-claude-api-anthropic">5.7 Claude API (Anthropic)</h3>
+<p>Used for:</p>
+<ul>
+<li>AI-assisted import (Claude maps unfamiliar column headers)</li>
+<li>Dashboard AI portfolio analyst (occasional)</li>
+<li>Smart import from unstructured text</li>
+</ul>
+<p>API key stored in localStorage. Falls back to OpenRouter if no Anthropic key is set.</p>
+<h3 id="58-sentry-error-monitoring-added-2405">5.8 Sentry (error monitoring) — added 24/05</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Project</td>
+<td><code>javascript</code> in your Sentry org</td>
+</tr>
+<tr>
+<td>DSN</td>
+<td>Embedded in <code>index.html</code></td>
+</tr>
+<tr>
+<td>Free tier</td>
+<td>5,000 errors/month</td>
+</tr>
+</tbody></table>
+<p>Catches every unhandled JS exception and promise rejection with a full stack trace, browser fingerprint, and breadcrumbs. Browser-extension noise and common network errors are filtered out via <code>ignoreErrors</code> and <code>beforeSend</code> hooks.</p>
+<p><strong>View errors:</strong> click the 🐛 button in the top bar or visit your Sentry dashboard.</p>
+<h3 id="59-uptimerobot-uptime-monitoring-added-2405">5.9 UptimeRobot (uptime monitoring) — added 24/05</h3>
+<p>External free service that pings the GitHub Pages URL every 5 minutes and emails you if it goes down. Set up at <code>uptimerobot.com</code>. Nothing inside the HTML connects to it.</p>
+<h3 id="510-github-pages-hosting">5.10 GitHub Pages (hosting)</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>URL</td>
+<td><code>https://julianchow21.github.io/Kujira-Collectibles/</code></td>
+</tr>
+<tr>
+<td>Repo</td>
+<td><code>julianchow21/Kujira-Collectibles</code></td>
+</tr>
+<tr>
+<td>Push method</td>
+<td>GitHub icon in top bar → personal access token (stored locally)</td>
+</tr>
+</tbody></table>
+<p>Pushing from the top-bar button writes the current HTML directly to the repo and triggers an instant Pages deploy.</p>
+<hr>
+<h2 id="6-data-and-persistence">6. Data and persistence</h2>
+<h3 id="61-the-sync-model">6.1 The sync model</h3>
+<pre><code>You make an edit
+  → markDirty(table, id)           queues this row for cloud sync
+  → saveData()                      writes the whole DB to localStorage immediately
+  → [1-second debounce]
+  → _flushDirtyToSupabase()         batch-upserts dirty rows
+      → success: dirty IDs cleared, sync indicator turns green
+      → failure: IDs stay dirty, retried on next saveData
+  → flushPendingDeletes()           opportunistic retry of any failed deletes
+</code></pre>
+<h3 id="62-the-load-model-start-of-session">6.2 The load model (start of session)</h3>
+<pre><code>initDB()
+  → load localStorage (local copy + dirty set)
+  → render local state immediately (so the app feels fast)
+  → sbFetchAll() for each table     fetch cloud state
+  → mergeTable(cloud, local, dirty)  dirty local rows always win
+  → re-render
+  → flushPendingDeletes()            retry any failed deletes from previous session
+  → maybeRunDailyAutoVersion()       create today's snapshot if none exists
+</code></pre>
+<h3 id="63-what-offline-means">6.3 What "offline" means</h3>
+<ul>
+<li>All reads and writes continue against localStorage.</li>
+<li>The sync indicator turns red ("Cloud sync failed").</li>
+<li>Dirty rows queue up; the next successful sync flushes everything.</li>
+<li>Avoid hard-refreshing the page in this state — your unsynced edits will still be there on reload, but if you also clear browser data you'll lose them.</li>
+</ul>
+<h3 id="64-recovery-options-ranked-by-reversibility">6.4 Recovery options, ranked by reversibility</h3>
+<table>
+<thead>
+<tr>
+<th>What broke</th>
+<th>First try</th>
+<th>Then try</th>
+<th>Last resort</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Accidentally deleted an item</td>
+<td>Undo (in-session)</td>
+<td>Restore from Trash (within 30 days)</td>
+<td>Restore a Version</td>
+</tr>
+<tr>
+<td>Edited the wrong field</td>
+<td>Undo (in-session)</td>
+<td>Restore a Version</td>
+<td>Manually fix</td>
+</tr>
+<tr>
+<td>Bulk operation went wrong</td>
+<td>Undo (in-session)</td>
+<td>Restore the most recent Version</td>
+<td>Manually unwind</td>
+</tr>
+<tr>
+<td>Dashboard shows wrong totals</td>
+<td>Run Health Check → auto-fix</td>
+<td>Restore a Version</td>
+<td>Inspect changelog</td>
+</tr>
+<tr>
+<td>Cloud out of sync</td>
+<td>Wait for sync indicator to clear</td>
+<td>Manual refresh</td>
+<td>Check Supabase dashboard directly</td>
+</tr>
+</tbody></table>
+<h3 id="65-daily-snapshot">6.5 Daily snapshot</h3>
+<p>Once per session the app checks whether a snapshot exists for today (<code>Auto — DD/MM/YYYY</code>). If not, one is created. Worst case scenario, you can always roll back a full day.</p>
+<hr>
+<h2 id="7-keyboard-shortcuts">7. Keyboard shortcuts</h2>
+<table>
+<thead>
+<tr>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>⌘K</code> / <code>Ctrl+K</code></td>
+<td>Open Quick Entry command bar</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>Close any open modal or drawer (including the Sentry panel)</td>
+</tr>
+<tr>
+<td><code>Enter</code> (in Quick Entry)</td>
+<td>Submit</td>
+</tr>
+</tbody></table>
+<p>The app deliberately uses few shortcuts. Most interactions are click-driven so the muscle memory works on mobile too.</p>
+<hr>
+<h2 id="appendix-a-how-do-i-playbook">Appendix A — How do I... playbook</h2>
+<h3 id="a1-add-a-new-card">A.1 Add a new card</h3>
+<p><strong>Fastest way (Quick Entry):</strong></p>
+<ol>
+<li>Hit <code>⌘K</code>.</li>
+<li>Type the card details freely, e.g. <code>Charizard ex 199/197 PSA 9 cert 12345678 $250</code>.</li>
+<li>Press Enter.</li>
+</ol>
+<p>The Smart Add parser extracts grader, grade, cert, price, etc. The card lands in the relevant table (Singles or Slabs) and the toast confirms it.</p>
+<p><strong>Manual way (form):</strong></p>
+<ol>
+<li>Go to the Singles or Slabs tab.</li>
+<li>Click "+ Add Card" (or "+ Add Slab").</li>
+<li>Fill in fields, click Save.</li>
+</ol>
+<h3 id="a2-log-a-sale">A.2 Log a sale</h3>
+<p><strong>From Quick Entry:</strong></p>
+<ol>
+<li>Hit <code>⌘K</code>.</li>
+<li>Switch to "Sell" mode.</li>
+<li>Start typing the card name; pick from the dropdown.</li>
+<li>Enter total collected, shipping, date, buyer.</li>
+<li>Click Confirm.</li>
+</ol>
+<p>The system calculates profit and margin, adds a row to Sales, marks the inventory item as Sold (or decrements qty if qty &gt; 1), and logs the action to the changelog.</p>
+<p><strong>From a table row:</strong></p>
+<ol>
+<li>Find the item in Singles or Slabs.</li>
+<li>Click the ✓ Sold button in the row's Actions column.</li>
+<li>Fill the Quick Sell modal; confirm.</li>
+</ol>
+<h3 id="a3-refresh-prices">A.3 Refresh prices</h3>
+<p><strong>One item:</strong></p>
+<ol>
+<li>Open the item's edit modal.</li>
+<li>Click "Refresh Price".</li>
+</ol>
+<p><strong>Multiple items (bulk):</strong></p>
+<ol>
+<li>On the Singles or Slabs tab, select rows via the checkbox column.</li>
+<li>In the floating action bar, click "Refresh Prices".</li>
+<li>Items are queued and processed at 1 every 6 seconds (rate limit).</li>
+<li>The queue indicator at the top shows progress; the page can stay open in the background.</li>
+</ol>
+<h3 id="a4-import-from-a-spreadsheet">A.4 Import from a spreadsheet</h3>
+<ol>
+<li>Copy your data from Google Sheets / Excel (include the header row).</li>
+<li>Go to the Import tab.</li>
+<li>Paste into the textarea.</li>
+<li>Confirm the auto-detected type (or change it).</li>
+<li>Pick Append (default) or Replace.</li>
+<li>Preview the matched fields. Skipped rows are shown for review.</li>
+<li>Click Import.</li>
+</ol>
+<p>If your columns are unusual, try "AI-assisted import" — Claude will map the columns for you.</p>
+<h3 id="a5-handle-an-ebay-purchase-end-to-end">A.5 Handle an eBay purchase end-to-end</h3>
+<ol>
+<li>After buying on eBay, go to the eBay tab and click "+ Add Purchase".</li>
+<li>Fill in: product, price USD, freight SGD (estimate), declared value, tracking #, target table (Singles/Slabs).</li>
+<li>Status starts at "Paid".</li>
+<li>As the package moves through Buyandship, use "Advance Stage" (or bulk advance) to progress it.</li>
+<li>On final stage (Completed), a modal asks "Push to Singles?" or "Push to Slabs?".</li>
+<li>Confirm. A new row appears in the target table with the price (in SGD), date, and other fields pre-filled.</li>
+<li>The eBay row stays in the log with status "Completed".</li>
+</ol>
+<h3 id="a6-build-a-chart-on-the-dashboard">A.6 Build a chart on the dashboard</h3>
+<ol>
+<li>Scroll to the "Custom Chart Builder" section on Dashboard (or use the Chart Builder tab for more space).</li>
+<li>Drag a dimension (e.g. "Grader") onto the X axis.</li>
+<li>Drag a measure (e.g. "Cost") onto the Y axis. Multiple measures supported.</li>
+<li>Optionally apply filters and a Top-N cap.</li>
+<li>Click "Add to Dashboard" to pin it. Charts are saved to localStorage and survive refreshes.</li>
+</ol>
+<h3 id="a7-recover-a-deleted-item">A.7 Recover a deleted item</h3>
+<ol>
+<li>Go to the Trash tab.</li>
+<li>Find the item (or filter by original table).</li>
+<li>Click Restore on the row.</li>
+<li>The item reappears in its original tab with all fields intact.</li>
+</ol>
+<p>If it's been deleted more than 30 days ago, the row is marked for permanent deletion. Recovery is still possible until you confirm the permanent delete.</p>
+<h3 id="a8-roll-back-to-a-previous-version">A.8 Roll back to a previous version</h3>
+<ol>
+<li>Click the clock icon (Version History) in the top bar.</li>
+<li>Pick a version from the list (auto-snapshots are dated, manual ones have your name).</li>
+<li>Click "Restore".</li>
+<li>The entire DB is replaced with that snapshot. The current state is itself snapshotted as "Pre-restore — DD/MM/YYYY" so you can undo the rollback.</li>
+</ol>
+<h3 id="a9-export-data">A.9 Export data</h3>
+<ol>
+<li>Go to the More menu → Export.</li>
+<li>Pick the table(s) you want and the format (CSV or JSON).</li>
+<li>The file downloads to your browser's default download folder.</li>
+</ol>
+<p>CSV is one file per table; JSON is the full DB.</p>
+<h3 id="a10-run-a-health-check">A.10 Run a health check</h3>
+<ol>
+<li>Click the lightning bolt icon in the top bar.</li>
+<li>The modal shows ~20 test results with pass/fail/warn status.</li>
+<li>For any failing test, click "Auto-fix" (if offered) or "View affected rows" to inspect manually.</li>
+</ol>
+<p>Common issues caught: malformed dates, non-canonical grader values (e.g. "psa" instead of "PSA"), orphaned sales, dashboard totals that don't sum, items missing required fields.</p>
+<h3 id="a11-generate-a-carousell-listing">A.11 Generate a Carousell listing</h3>
+<ol>
+<li>Find the item in Singles or Slabs.</li>
+<li>Click the 📋 button in the row's Actions column.</li>
+<li>The Listings page opens with the item pre-loaded.</li>
+<li>Enter a price and any notes.</li>
+<li>Click "Copy" — the formatted listing is in your clipboard, ready to paste into Carousell.</li>
+</ol>
+<h3 id="a12-view-sentry-errors">A.12 View Sentry errors</h3>
+<ol>
+<li>Click the 🐛 button in the top bar.</li>
+<li>First time only: paste your Sentry auth token (from <code>sentry.io/settings/account/api/auth-tokens/</code> with <code>project:read</code> and <code>org:read</code> scopes).</li>
+<li>The drawer shows recent unresolved issues with level (error / warning / info), event count, and last-seen time.</li>
+<li>Click any row to open the full issue on Sentry.</li>
+</ol>
+<p>A red badge on the 🐛 button shows the unresolved error count.</p>
+<h3 id="a13-push-updates-to-github-pages">A.13 Push updates to GitHub Pages</h3>
+<ol>
+<li>Click the GitHub icon in the top bar.</li>
+<li>First time only: paste a GitHub Personal Access Token (created at <code>github.com/settings/tokens/new?scopes=repo</code>).</li>
+<li>Confirm the repo and filename.</li>
+<li>Click "Push". The HTML is committed and a Pages deploy fires within seconds.</li>
+</ol>
+<p>The token is stored in your browser only.</p>
+<h3 id="a14-connect-a-fresh-device">A.14 Connect a fresh device</h3>
+<ol>
+<li>Open the GitHub Pages URL on the new device.</li>
+<li>The app starts empty and immediately syncs from Supabase. All your data appears within a few seconds.</li>
+<li>If you use the Sentry panel, you'll need to re-paste your Sentry token (it's per-device localStorage).</li>
+<li>Same for the GitHub Personal Access Token if you plan to push from this device.</li>
+</ol>
+<hr>
+<h2 id="appendix-b-data-model-reference">Appendix B — Data model reference</h2>
+<h3 id="b1-singles">B.1 Singles</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>string</td>
+<td><code>s_*</code> prefix</td>
+</tr>
+<tr>
+<td>name</td>
+<td>string</td>
+<td>Card name</td>
+</tr>
+<tr>
+<td>set</td>
+<td>string</td>
+<td>Set name</td>
+</tr>
+<tr>
+<td>language</td>
+<td>string</td>
+<td>EN, JP, CN, ID</td>
+</tr>
+<tr>
+<td>type</td>
+<td>string</td>
+<td>raw, sealed</td>
+</tr>
+<tr>
+<td>condition</td>
+<td>string</td>
+<td>Near Mint, Lightly Played, etc.</td>
+</tr>
+<tr>
+<td>qty</td>
+<td>number</td>
+<td>Defaults to 1</td>
+</tr>
+<tr>
+<td>costPrice</td>
+<td>number</td>
+<td>Purchase cost in SGD</td>
+</tr>
+<tr>
+<td>listPrice</td>
+<td>number</td>
+<td>Carousell listing price</td>
+</tr>
+<tr>
+<td>marketPrice</td>
+<td>number</td>
+<td>Live market price (fetched or manual)</td>
+</tr>
+<tr>
+<td>datePurchased</td>
+<td>string</td>
+<td>DD/MM/YYYY or "D MMM YYYY"</td>
+</tr>
+<tr>
+<td>status</td>
+<td>string</td>
+<td>Available, Sold</td>
+</tr>
+<tr>
+<td>priceHistory</td>
+<td>array</td>
+<td><code>[{date, price}]</code> — appended on every market price change, capped at 100 entries</td>
+</tr>
+<tr>
+<td>priceAlert</td>
+<td>number</td>
+<td>Optional target price threshold</td>
+</tr>
+<tr>
+<td>ebayUrl / carousellUrl</td>
+<td>string</td>
+<td>Optional listing URLs</td>
+</tr>
+<tr>
+<td>notes</td>
+<td>string</td>
+<td>Free text</td>
+</tr>
+</tbody></table>
+<h3 id="b2-slabs">B.2 Slabs</h3>
+<p>Same fields as Singles plus:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>grader</td>
+<td>string</td>
+<td>PSA, TAG, CGC, BGS, ACE, SGC (canonical form via <code>_resolveGrader</code>)</td>
+</tr>
+<tr>
+<td>grade</td>
+<td>number/string</td>
+<td>Numeric grade; may be embedded in grader field depending on entry method</td>
+</tr>
+<tr>
+<td>certNo</td>
+<td>string</td>
+<td>Grading certificate number</td>
+</tr>
+<tr>
+<td>rank</td>
+<td>string</td>
+<td>Population rank (e.g. "3rd", "10th")</td>
+</tr>
+<tr>
+<td>dateListed</td>
+<td>string</td>
+<td>Date added to inventory</td>
+</tr>
+</tbody></table>
+<h3 id="b3-sales">B.3 Sales</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>string</td>
+<td><code>sale_*</code> prefix</td>
+</tr>
+<tr>
+<td>dateSold</td>
+<td>string</td>
+<td>Date of sale</td>
+</tr>
+<tr>
+<td>product</td>
+<td>string</td>
+<td>Product description (snapshot from inventory at sale time)</td>
+</tr>
+<tr>
+<td>buyer</td>
+<td>string</td>
+<td>Buyer identifier</td>
+</tr>
+<tr>
+<td>costPrice</td>
+<td>number</td>
+<td>Cost basis at time of sale</td>
+</tr>
+<tr>
+<td>totalCollected</td>
+<td>number</td>
+<td>Gross revenue</td>
+</tr>
+<tr>
+<td>shippingCost</td>
+<td>number</td>
+<td>Shipping cost deducted</td>
+</tr>
+<tr>
+<td>profit</td>
+<td>number</td>
+<td>totalCollected − costPrice − shippingCost</td>
+</tr>
+<tr>
+<td>margin</td>
+<td>string</td>
+<td><code>"XX%"</code> — profit as percentage of revenue</td>
+</tr>
+<tr>
+<td>inventoryId</td>
+<td>string</td>
+<td>Source item ID (links back to singles or slabs)</td>
+</tr>
+<tr>
+<td>inventoryTable</td>
+<td>string</td>
+<td><code>singles</code> or <code>slabs</code></td>
+</tr>
+</tbody></table>
+<h3 id="b4-ebay-purchases">B.4 eBay Purchases</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>string</td>
+<td><code>ebay_*</code> prefix</td>
+</tr>
+<tr>
+<td>date</td>
+<td>string</td>
+<td>Purchase date</td>
+</tr>
+<tr>
+<td>product</td>
+<td>string</td>
+<td>Item description</td>
+</tr>
+<tr>
+<td>status</td>
+<td>string</td>
+<td>One of 6 pipeline stages (see Section 3.7)</td>
+</tr>
+<tr>
+<td>tracking</td>
+<td>string</td>
+<td>Shipment tracking number</td>
+</tr>
+<tr>
+<td>priceUsd</td>
+<td>number</td>
+<td>Purchase price in USD</td>
+</tr>
+<tr>
+<td>freightSgd</td>
+<td>number</td>
+<td>Freight cost in SGD</td>
+</tr>
+<tr>
+<td>totalSgd</td>
+<td>number</td>
+<td>Auto-computed: <code>(priceUsd × SGD rate) + freightSgd</code></td>
+</tr>
+<tr>
+<td>declared</td>
+<td>number</td>
+<td>Declared customs value</td>
+</tr>
+<tr>
+<td>targetTable</td>
+<td>string</td>
+<td><code>singles</code> or <code>slabs</code> — destination on completion</td>
+</tr>
+<tr>
+<td>lastUpdated</td>
+<td>string</td>
+<td>ISO timestamp of last status change</td>
+</tr>
+</tbody></table>
+<h3 id="b5-sealed-products-etbs-booster-boxes-booster-packs">B.5 Sealed products (ETBs, Booster Boxes, Booster Packs)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>id</td>
+<td>string</td>
+<td>Table-specific prefix (<code>etb_*</code>, <code>bb_*</code>, <code>bp_*</code>)</td>
+</tr>
+<tr>
+<td>date</td>
+<td>string</td>
+<td>Purchase date</td>
+</tr>
+<tr>
+<td>product</td>
+<td>string</td>
+<td>Product name</td>
+</tr>
+<tr>
+<td>unitPrice</td>
+<td>number</td>
+<td>Per-unit cost (boxes and packs)</td>
+</tr>
+<tr>
+<td>qty</td>
+<td>number</td>
+<td>Quantity (boxes and packs)</td>
+</tr>
+<tr>
+<td>totalPrice</td>
+<td>number</td>
+<td>Total cost (ETBs) or <code>unitPrice × qty</code></td>
+</tr>
+<tr>
+<td>marketPrice</td>
+<td>number</td>
+<td>Current market value</td>
+</tr>
+<tr>
+<td>carousellPrice</td>
+<td>number</td>
+<td>Listing price on Carousell</td>
+</tr>
+<tr>
+<td>condition</td>
+<td>string</td>
+<td>Mint, Near Mint, etc. (ETBs)</td>
+</tr>
+<tr>
+<td>status</td>
+<td>string</td>
+<td>In Stock, Sold, Traded, etc.</td>
+</tr>
+<tr>
+<td>notes</td>
+<td>string</td>
+<td>Free text</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="appendix-c-security-and-naming">Appendix C — Security and naming</h2>
+<h3 id="c1-security-model-current-state">C.1 Security model (current state)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Current state</th>
+<th>Risk</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>XSS</td>
+<td>All user strings passed through <code>esc()</code> / <code>kjrEscape()</code> before innerHTML</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Supabase anon key</td>
+<td>Embedded in source HTML</td>
+<td>Medium — requires correct RLS</td>
+</tr>
+<tr>
+<td>Authentication</td>
+<td>None — single-user personal app</td>
+<td>High if deployed publicly</td>
+</tr>
+<tr>
+<td>Multi-tenancy</td>
+<td>Not implemented — all users share same tables</td>
+<td>Critical for shared deploy</td>
+</tr>
+<tr>
+<td>Price API keys (PPT, PokeTrace)</td>
+<td>Held server-side in Cloudflare Worker secrets</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Sentry DSN</td>
+<td>Embedded in source (this is by design — DSNs are not secrets)</td>
+<td>None</td>
+</tr>
+<tr>
+<td>LocalStorage</td>
+<td>Not encrypted — readable by other scripts on the same origin</td>
+<td>Low (single domain)</td>
+</tr>
+</tbody></table>
+<p><strong>For personal single-user use:</strong> acceptable. No other users can access the app as deployed.</p>
+<p><strong>For shared or multi-user deployment:</strong> authentication and RLS policies scoped to <code>auth.uid()</code> are required before deployment.</p>
+<h3 id="c2-naming-conventions">C.2 Naming conventions</h3>
+<table>
+<thead>
+<tr>
+<th>Convention</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Row IDs</td>
+<td><code>s_*</code>, <code>sl_*</code>, <code>sale_*</code>, <code>ebay_*</code>, <code>etb_*</code>, <code>bb_*</code>, <code>bp_*</code></td>
+</tr>
+<tr>
+<td>localStorage keys</td>
+<td><code>pokeinv_*</code> prefix (e.g. <code>pokeinv_dirty_v1</code>, <code>pokeinv_col_vis_v3</code>)</td>
+</tr>
+<tr>
+<td>Pending deletes queue</td>
+<td><code>_kjrPendingCloudDeletes</code></td>
+</tr>
+<tr>
+<td>Sentry token</td>
+<td><code>_sentryToken</code></td>
+</tr>
+<tr>
+<td>Versioned files</td>
+<td><code>YYYY-MM-DD-description.ext</code></td>
+</tr>
+<tr>
+<td>Canonical grader values</td>
+<td>PSA, TAG, CGC, BGS, ACE, SGC (uppercase via <code>_resolveGrader</code>)</td>
+</tr>
+<tr>
+<td>Date display format</td>
+<td>D MMM YYYY (e.g. "19 May 2026")</td>
+</tr>
+<tr>
+<td>Date input format</td>
+<td>DD/MM/YYYY (Singapore convention)</td>
+</tr>
+<tr>
+<td>Currency</td>
+<td>SGD, displayed as <code>S$XX</code> or <code>$XX</code> (whole numbers throughout the app)</td>
+</tr>
+</tbody></table>
+<h3 id="c3-file-reference">C.3 File reference</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>index.html</code></td>
+<td>Main application (all CSS, JS, HTML inline)</td>
+</tr>
+<tr>
+<td><code>2026-05-18-kujira-prices-worker.js</code></td>
+<td>Cloudflare Worker source (price proxy)</td>
+</tr>
+<tr>
+<td><code>2026-05-18-worker-deploy-guide.md</code></td>
+<td>Worker deploy instructions</td>
+</tr>
+<tr>
+<td><code>2026-05-18-qa-report.md</code></td>
+<td>Earlier QA report (historical)</td>
+</tr>
+<tr>
+<td><code>2026-05-24-kujira-user-guide.md</code></td>
+<td>This document</td>
+</tr>
+<tr>
+<td><code>AUDIT_REPORT.md</code></td>
+<td>Earlier audit report (historical)</td>
+</tr>
+<tr>
+<td>Backup <code>.html</code> snapshots</td>
+<td><code>2026-MM-DD-&lt;name&gt;-backup-&lt;reason&gt;.html</code> — created before significant edits</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="appendix-d-scale-up-notes">Appendix D — Scale-up notes</h2>
+<p>The current architecture is a personal single-user tool. The table below summarises what would need to change for a shared deployment.</p>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Current state</th>
+<th>Change required for 100–500 users</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User authentication</td>
+<td>None</td>
+<td>Supabase Auth or equivalent JWT provider</td>
+</tr>
+<tr>
+<td>Data isolation</td>
+<td>All users share one Supabase project</td>
+<td>Row-level security policies scoped to <code>auth.uid()</code></td>
+</tr>
+<tr>
+<td>Concurrent edit conflicts</td>
+<td>Last write wins</td>
+<td>Optimistic locking via <code>updated_at</code> timestamp comparison</td>
+</tr>
+<tr>
+<td>Row volume</td>
+<td>No pagination; fetches up to 10,000 rows</td>
+<td>Paginated fetch; lazy-load on scroll</td>
+</tr>
+<tr>
+<td>Audit trail</td>
+<td>localStorage-only (per-device)</td>
+<td>Move changelog to Supabase with <code>user_id</code> column</td>
+</tr>
+<tr>
+<td>Price API limits</td>
+<td>100 requests/day shared</td>
+<td>Upgrade PPT plan or implement server-side caching</td>
+</tr>
+<tr>
+<td>Realtime sync</td>
+<td>None; refresh-on-load only</td>
+<td>Supabase Realtime subscriptions for live data</td>
+</tr>
+<tr>
+<td>Error monitoring</td>
+<td>Sentry free tier (5k errors/month)</td>
+<td>Upgrade plan if user count grows</td>
+</tr>
+</tbody></table>
+<p><strong>Rough migration estimate for a 100-person shared deployment:</strong> 2–3 weeks of engineering work, not including testing.</p>
+<hr>
+<p><em>End of document. Last updated 24/05/2026.</em></p>
+</article>
+  </div>
+</div>
+
 <div id="page-trash" class="page">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
     <div>
@@ -1578,7 +3169,7 @@ PSA 9 Bulbasaur 143 #119569490 $77" style="font-family:monospace;font-size:13px;
   </div>
 </div>
 
-<div id="toast" role="alert" aria-live="assertive" aria-atomic="true" onclick="toastDismiss()"><div id="toast-inner"><em id="toast-icon"></em><span id="toast-msg"></span></div><div id="toast-bar"></div></div>
+<div id="toast" role="alert" aria-live="assertive" aria-atomic="true" onclick="toastDismiss()" class=""><div id="toast-inner"><em id="toast-icon" style="color: var(--accent);">✓</em><span id="toast-msg"></span></div><div id="toast-bar" style="transition: transform 7000ms linear; transform: scaleX(0);"></div></div>
 
 <script>
 // =========== DATA ===========
@@ -10117,7 +11708,7 @@ async function pushToGithub() {
       <th data-col-key="lastUpdated"></th>
       <th data-col-key="actions"></th>
     </tr>
-  </thead><tbody id="kjr-ebay-body"><tr data-id="eb_mp5iiqic_xyo16v"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_xyo16v',this.checked)"></td><td class="num" data-col-key="date">10 May 2026</td><td data-col-key="product" style="text-align:left">3 dragonite 5</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','At Buyandship')" title="At Buyandship">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Ready to Consolidate')" title="Ready to Consolidate"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Completed')" title="Completed"></button></div><div class="eb-tl-label">At Buyandship</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245147849043</td><td class="num" data-col-key="priceUsd">$49</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_xyo16v','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$62</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--amber)" title="Last sync: 16 May 2026, 21:34 — older than 3 days, consider re-checking Buyandship"><span style="color:var(--amber);margin-right:3px">●</span>7d ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_xyo16v')" style="font-size:11px;padding:3px 8px" title="Advance to: Ready to Consolidate">→ Ready to Consolidate</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_xyo16v&quot;,&quot;date&quot;:&quot;10 May 2026&quot;,&quot;status&quot;:&quot;At Buyandship&quot;,&quot;product&quot;:&quot;3 dragonite 5&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;48.5&quot;,&quot;totalSgd&quot;:61.83,&quot;tracking&quot;:&quot;9400108106245147849043&quot;,&quot;_updatedAt&quot;:&quot;2026-05-16T13:34:32.56171+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1778938471313})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_xyo16v')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_mayn7v"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_mayn7v',this.checked)"></td><td class="num" data-col-key="date">22 Apr 2026</td><td data-col-key="product" style="text-align:left">Probopass 76 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106244056822895</td><td class="num" data-col-key="priceUsd">$28</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_mayn7v','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$36</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_mayn7v')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_mayn7v&quot;,&quot;date&quot;:&quot;22 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Probopass 76 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;28.3&quot;,&quot;totalSgd&quot;:36.08,&quot;tracking&quot;:&quot;9400108106244056822895&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_mayn7v')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_hwnn5p"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_hwnn5p',this.checked)"></td><td class="num" data-col-key="date">26 Apr 2026</td><td data-col-key="product" style="text-align:left">Pikachu 25th anni psa 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9200190163776900195111</td><td class="num" data-col-key="priceUsd">$101</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_hwnn5p','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$128</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_hwnn5p')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_hwnn5p&quot;,&quot;date&quot;:&quot;26 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Pikachu 25th anni psa 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;100.7&quot;,&quot;totalSgd&quot;:128.38,&quot;tracking&quot;:&quot;9200190163776900195111&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_hwnn5p')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_jxttd3"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_jxttd3',this.checked)"></td><td class="num" data-col-key="date">29 Apr 2026</td><td data-col-key="product" style="text-align:left">mega latias tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9434608106245102053906</td><td class="num" data-col-key="priceUsd">$208</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_jxttd3','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$265</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_jxttd3')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_jxttd3&quot;,&quot;date&quot;:&quot;29 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;mega latias tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;208.0&quot;,&quot;totalSgd&quot;:265.16,&quot;tracking&quot;:&quot;9434608106245102053906&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_jxttd3')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_cglwix"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_cglwix',this.checked)"></td><td class="num" data-col-key="date">29 Apr 2026</td><td data-col-key="product" style="text-align:left">Minccino 157 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245099790400</td><td class="num" data-col-key="priceUsd">$25</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_cglwix','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$32</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_cglwix')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_cglwix&quot;,&quot;date&quot;:&quot;29 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Minccino 157 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;25.0&quot;,&quot;totalSgd&quot;:31.87,&quot;tracking&quot;:&quot;9400108106245099790400&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_cglwix')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_6rpqpa"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_6rpqpa',this.checked)"></td><td class="num" data-col-key="date">30 Apr 2026</td><td data-col-key="product" style="text-align:left">Beautifly tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245102752203</td><td class="num" data-col-key="priceUsd">$36</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_6rpqpa','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$45</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_6rpqpa')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_6rpqpa&quot;,&quot;date&quot;:&quot;30 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Beautifly tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;35.6&quot;,&quot;totalSgd&quot;:45.38,&quot;tracking&quot;:&quot;9400108106245102752203&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_6rpqpa')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_60ujit"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_60ujit',this.checked)"></td><td class="num" data-col-key="date">30 Apr 2026</td><td data-col-key="product" style="text-align:left">mismagius tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245102250006</td><td class="num" data-col-key="priceUsd">$45</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_60ujit','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$57</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_60ujit')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_60ujit&quot;,&quot;date&quot;:&quot;30 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;mismagius tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;45.0&quot;,&quot;totalSgd&quot;:57.37,&quot;tracking&quot;:&quot;9400108106245102250006&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_60ujit')">×</button></span></td></tr><tr data-id="eb_mp5iiqib_xihu3p"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqib_xihu3p',this.checked)"></td><td class="num" data-col-key="date">3 May 2026</td><td data-col-key="product" style="text-align:left">Dragonite 5 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245123604666</td><td class="num" data-col-key="priceUsd">$66</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqib_xihu3p','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$84</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--amber)" title="Last sync: 20 May 2026, 17:28 — older than 3 days, consider re-checking Buyandship"><span style="color:var(--amber);margin-right:3px">●</span>3d ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqib_xihu3p')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqib_xihu3p&quot;,&quot;date&quot;:&quot;3 May 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Dragonite 5 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;65.7&quot;,&quot;totalSgd&quot;:83.76,&quot;tracking&quot;:&quot;9400108106245123604666&quot;,&quot;_updatedAt&quot;:&quot;2026-05-20T09:28:20.357957+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1779269298261})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqib_xihu3p')">×</button></span></td></tr><tr data-id="eb_mp5iiqib_aichoe"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqib_aichoe',this.checked)"></td><td class="num" data-col-key="date">5 May 2026</td><td data-col-key="product" style="text-align:left">Charmeleon tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106244099956151</td><td class="num" data-col-key="priceUsd">$46</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqib_aichoe','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$59</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--text3)" title="Last sync: 23 May 2026, 17:03">10h ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqib_aichoe')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqib_aichoe&quot;,&quot;date&quot;:&quot;5 May 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Charmeleon tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;46.0&quot;,&quot;totalSgd&quot;:58.64,&quot;tracking&quot;:&quot;9400108106244099956151&quot;,&quot;_updatedAt&quot;:&quot;2026-05-23T09:03:27.670031+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1779527005739})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqib_aichoe')">×</button></span></td></tr><tr class="kjr-sold-divider"><td colspan="10" style="padding:0">
+  </thead><tbody id="kjr-ebay-body"><tr data-id="eb_mp5iiqic_xyo16v"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_xyo16v',this.checked)"></td><td class="num" data-col-key="date">10 May 2026</td><td data-col-key="product" style="text-align:left">3 dragonite 5</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','At Buyandship')" title="At Buyandship">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Ready to Consolidate')" title="Ready to Consolidate"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_xyo16v','Completed')" title="Completed"></button></div><div class="eb-tl-label">At Buyandship</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245147849043</td><td class="num" data-col-key="priceUsd">$49</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_xyo16v','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$62</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--amber)" title="Last sync: 16 May 2026, 21:34 — older than 3 days, consider re-checking Buyandship"><span style="color:var(--amber);margin-right:3px">●</span>7d ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_xyo16v')" style="font-size:11px;padding:3px 8px" title="Advance to: Ready to Consolidate">→ Ready to Consolidate</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_xyo16v&quot;,&quot;date&quot;:&quot;10 May 2026&quot;,&quot;status&quot;:&quot;At Buyandship&quot;,&quot;product&quot;:&quot;3 dragonite 5&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;48.5&quot;,&quot;totalSgd&quot;:61.83,&quot;tracking&quot;:&quot;9400108106245147849043&quot;,&quot;_updatedAt&quot;:&quot;2026-05-16T13:34:32.56171+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1778938471313})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_xyo16v')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_mayn7v"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_mayn7v',this.checked)"></td><td class="num" data-col-key="date">22 Apr 2026</td><td data-col-key="product" style="text-align:left">Probopass 76 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_mayn7v','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106244056822895</td><td class="num" data-col-key="priceUsd">$28</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_mayn7v','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$36</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_mayn7v')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_mayn7v&quot;,&quot;date&quot;:&quot;22 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Probopass 76 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;28.3&quot;,&quot;totalSgd&quot;:36.08,&quot;tracking&quot;:&quot;9400108106244056822895&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_mayn7v')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_hwnn5p"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_hwnn5p',this.checked)"></td><td class="num" data-col-key="date">26 Apr 2026</td><td data-col-key="product" style="text-align:left">Pikachu 25th anni psa 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_hwnn5p','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9200190163776900195111</td><td class="num" data-col-key="priceUsd">$101</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_hwnn5p','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$128</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_hwnn5p')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_hwnn5p&quot;,&quot;date&quot;:&quot;26 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Pikachu 25th anni psa 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;100.7&quot;,&quot;totalSgd&quot;:128.38,&quot;tracking&quot;:&quot;9200190163776900195111&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_hwnn5p')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_jxttd3"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_jxttd3',this.checked)"></td><td class="num" data-col-key="date">29 Apr 2026</td><td data-col-key="product" style="text-align:left">mega latias tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_jxttd3','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9434608106245102053906</td><td class="num" data-col-key="priceUsd">$208</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_jxttd3','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$265</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_jxttd3')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_jxttd3&quot;,&quot;date&quot;:&quot;29 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;mega latias tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;208.0&quot;,&quot;totalSgd&quot;:265.16,&quot;tracking&quot;:&quot;9434608106245102053906&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_jxttd3')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_cglwix"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_cglwix',this.checked)"></td><td class="num" data-col-key="date">29 Apr 2026</td><td data-col-key="product" style="text-align:left">Minccino 157 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_cglwix','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245099790400</td><td class="num" data-col-key="priceUsd">$25</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_cglwix','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$32</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_cglwix')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_cglwix&quot;,&quot;date&quot;:&quot;29 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Minccino 157 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;25.0&quot;,&quot;totalSgd&quot;:31.87,&quot;tracking&quot;:&quot;9400108106245099790400&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_cglwix')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_6rpqpa"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_6rpqpa',this.checked)"></td><td class="num" data-col-key="date">30 Apr 2026</td><td data-col-key="product" style="text-align:left">Beautifly tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_6rpqpa','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245102752203</td><td class="num" data-col-key="priceUsd">$36</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_6rpqpa','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$45</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_6rpqpa')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_6rpqpa&quot;,&quot;date&quot;:&quot;30 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Beautifly tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;35.6&quot;,&quot;totalSgd&quot;:45.38,&quot;tracking&quot;:&quot;9400108106245102752203&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_6rpqpa')">×</button></span></td></tr><tr data-id="eb_mp5iiqic_60ujit"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqic_60ujit',this.checked)"></td><td class="num" data-col-key="date">30 Apr 2026</td><td data-col-key="product" style="text-align:left">mismagius tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqic_60ujit','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245102250006</td><td class="num" data-col-key="priceUsd">$45</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqic_60ujit','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$57</td><td class="num" data-col-key="lastUpdated" style="color:var(--text3);font-size:11px" title="Never synced">never</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqic_60ujit')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqic_60ujit&quot;,&quot;date&quot;:&quot;30 Apr 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;mismagius tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;45.0&quot;,&quot;totalSgd&quot;:57.37,&quot;tracking&quot;:&quot;9400108106245102250006&quot;,&quot;_updatedAt&quot;:&quot;2026-05-15T05:58:58.823338+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqic_60ujit')">×</button></span></td></tr><tr data-id="eb_mp5iiqib_xihu3p"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqib_xihu3p',this.checked)"></td><td class="num" data-col-key="date">3 May 2026</td><td data-col-key="product" style="text-align:left">Dragonite 5 tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_xihu3p','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106245123604666</td><td class="num" data-col-key="priceUsd">$66</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqib_xihu3p','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$84</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--amber)" title="Last sync: 20 May 2026, 17:28 — older than 3 days, consider re-checking Buyandship"><span style="color:var(--amber);margin-right:3px">●</span>4d ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqib_xihu3p')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqib_xihu3p&quot;,&quot;date&quot;:&quot;3 May 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Dragonite 5 tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;65.7&quot;,&quot;totalSgd&quot;:83.76,&quot;tracking&quot;:&quot;9400108106245123604666&quot;,&quot;_updatedAt&quot;:&quot;2026-05-20T09:28:20.357957+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1779269298261})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqib_xihu3p')">×</button></span></td></tr><tr data-id="eb_mp5iiqib_aichoe"><td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" onchange="kjrEbayToggleRow('eb_mp5iiqib_aichoe',this.checked)"></td><td class="num" data-col-key="date">5 May 2026</td><td data-col-key="product" style="text-align:left">Charmeleon tag 10</td><td data-col-key="status" style="min-width:260px"><div class="eb-tl" title="Click any step to jump this row directly to it"><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Paid')" title="Paid">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Shipping to Buyandship')" title="Shipping to Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-done" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','At Buyandship')" title="At Buyandship">✓</button><span class="eb-tl-conn eb-tl-conn-done"></span><button class="eb-tl-dot eb-tl-now" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Ready to Consolidate')" title="Ready to Consolidate">●</button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Shipping to Singapore')" title="Shipping to Singapore"></button><span class="eb-tl-conn "></span><button class="eb-tl-dot eb-tl-todo" onclick="kjrEbaySetStatus('eb_mp5iiqib_aichoe','Completed')" title="Completed"></button></div><div class="eb-tl-label">Ready to Consolidate</div></td><td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">9400108106244099956151</td><td class="num" data-col-key="priceUsd">$46</td><td class="num" data-col-key="freightSgd"><input class="kjr-inline-input" type="number" step="0.01" min="0" value="3" placeholder="—" onchange="kjrEbayInlineEdit('eb_mp5iiqib_aichoe','freightSgd',this.value)"></td><td class="num" data-col-key="totalSgd">$59</td><td class="num" data-col-key="lastUpdated" style="font-size:11px;color:var(--text3)" title="Last sync: 23 May 2026, 17:03">1d ago</td><td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn-sm" onclick="kjrEbayAdvance('eb_mp5iiqib_aichoe')" style="font-size:11px;padding:3px 8px" title="Advance to: Shipping to Singapore">→ Shipping to Singapore</button><button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal({&quot;id&quot;:&quot;eb_mp5iiqib_aichoe&quot;,&quot;date&quot;:&quot;5 May 2026&quot;,&quot;status&quot;:&quot;Ready to Consolidate&quot;,&quot;product&quot;:&quot;Charmeleon tag 10&quot;,&quot;declared&quot;:&quot;Yes&quot;,&quot;priceUsd&quot;:&quot;46.0&quot;,&quot;totalSgd&quot;:58.64,&quot;tracking&quot;:&quot;9400108106244099956151&quot;,&quot;_updatedAt&quot;:&quot;2026-05-23T09:03:27.670031+00:00&quot;,&quot;freightSgd&quot;:&quot;$3&quot;,&quot;lastUpdated&quot;:1779527005739})">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow('ebayPurchases','eb_mp5iiqib_aichoe')">×</button></span></td></tr><tr class="kjr-sold-divider"><td colspan="10" style="padding:0">
     <button class="sold-section-toggle" onclick="kjrToggleSoldSection('ebayPurchases')">
       <span>▶</span><span>Show Completed</span>
       <span class="sold-count-badge">218</span>
@@ -12364,6 +13955,1030 @@ document.addEventListener('DOMContentLoaded', () => {
     bar.insertBefore(b, bar.firstChild);
   }
   document.addEventListener('DOMContentLoaded', addCacheButton);
+})();
+</script>
+
+<!-- ── USER GUIDE markdown source (rendered by kjrGuideRender below) ── -->
+<script type="text/markdown" id="guide-source"># Kujira Collectibles — User & Reference Guide
+
+**Version:** 24/05/2026
+**Author:** Julian Chow
+**Status:** Internal document
+**Supersedes:** 2026-05-20-kujira-business-overview.md
+
+---
+
+## Table of contents
+
+1. [Introduction](#1-introduction)
+2. [The interface](#2-the-interface)
+3. [Each tab in detail](#3-each-tab-in-detail)
+4. [Cross-cutting features](#4-cross-cutting-features)
+5. [External tools and links](#5-external-tools-and-links)
+6. [Data and persistence](#6-data-and-persistence)
+7. [Keyboard shortcuts](#7-keyboard-shortcuts)
+8. [Appendix A — How do I... playbook](#appendix-a--how-do-i-playbook)
+9. [Appendix B — Data model reference](#appendix-b--data-model-reference)
+10. [Appendix C — Security and naming](#appendix-c--security-and-naming)
+11. [Appendix D — Scale-up notes](#appendix-d--scale-up-notes)
+
+---
+
+## 1. Introduction
+
+### What this app is
+
+Kujira Collectibles is a single-user inventory tracker for a Pokemon card trading business. It records raw cards, graded slabs, and sealed products across the full purchase-to-sale lifecycle, with live price lookups, sale logging, and a dashboard that reports on profit, ROI, and capital exposure.
+
+It runs as a single HTML file at `https://julianchow21.github.io/Kujira-Collectibles/`. No login. No build system. Open it and it works.
+
+### Mental model
+
+Three layers of memory:
+
+1. **The DB object in memory.** Everything you see on screen lives in a JavaScript object called `DB`, keyed by table name (singles, slabs, sales, etbs, boosterBoxes, boosterPacks, ebayPurchases, trash, changelog).
+2. **localStorage on your browser.** Every edit writes immediately to localStorage so a refresh never loses work.
+3. **Supabase as the cloud source of truth.** On a 1-second debounce, dirty rows flush to Supabase. On the next session, the app reconciles local against cloud (dirty local always wins).
+
+This means: the app works fully offline. The sync indicator at the top tells you the cloud state. If it's red, the cloud is behind — but your work is safe in localStorage and will retry on next session.
+
+### Where your data lives
+
+| Layer | Location | When written |
+|---|---|---|
+| In-memory | `DB` object | Every interaction |
+| Browser cache | `localStorage` key `pokeinv_*` | Every interaction (immediate) |
+| Cloud database | Supabase project `eywncywatxtlqtrvxjsi` | 1-second debounce after each change |
+| Snapshots | Supabase `versions` table | Manual save or daily auto-snapshot |
+| Soft-deleted items | `DB.trash` (synced to cloud) | When you delete anything |
+
+### Who this is for
+
+- **You (the operator)** — primary user. The app is designed around a single person managing roughly 1,000 inventory rows.
+- **Future helpers** — anyone you hand the app to should be able to read Part 3 of this doc and start using it within an hour.
+
+---
+
+## 2. The interface
+
+### Top bar (desktop)
+
+Reading left to right.
+
+| Element | What it does | Why |
+|---|---|---|
+| **Logo (KUJIRA Collectibles)** | Clicks home to the dashboard | Standard convention; quick anchor back to overview |
+| **Sync indicator** | Shows current cloud state: ✓ Synced, Saving..., Error | Gives you confidence that local edits made it to cloud. Red means investigate. |
+| **Nav tabs** (Dashboard, Singles, Slabs, Sales, eBay, Listings, Sealed dropdown, More dropdown) | Page navigation | Sealed dropdown holds ETBs / Booster Boxes / Booster Packs (rarely-used grouping). More dropdown holds Trash and other admin views. |
+| **+ Quick Entry button (⌘K)** | Opens the command-bar modal for fast inventory entry or sale logging | The single most-used flow. Lives in the top bar so it's always one click away. |
+| **🔑 API settings** | Price API key configuration (PPT, PokeTrace) | Edit-once, ignore after. Hidden behind an icon to keep the bar clean. |
+| **GitHub icon** | Push the current HTML file to GitHub Pages (deploys instantly) | Lets you ship updates without leaving the app. Token stored locally only. |
+| **Clock icon** | Open Version History (snapshots) | Recovery for "I broke something" moments. |
+| **Lightning bolt icon** | Run Health Check (~20 data-integrity tests) | Quick way to spot orphans, malformed dates, missing fields, etc. |
+| **Bug icon** | Open Sentry error panel (added 24/05) | Shows unresolved JS errors captured from your real browser sessions. |
+| **Reset arrow** | Clear filters and sort on the current tab | Faster than clicking each column header to reset. |
+| **Moon/Sun icon** | Toggle light/dark theme | Personal preference; persisted in localStorage. |
+
+### Bottom tab bar (mobile)
+
+On screens under 768px wide, the desktop nav collapses and a bottom tab bar appears. It holds: Dashboard, Singles, Slabs, Sales, eBay, Import.
+
+Why these six and not all 14 tabs? Mobile is mostly used for sale logging and quick inventory checks. The full set is still reachable through the menu, but the bottom bar surfaces what you actually tap with one thumb while walking around.
+
+### Where things live
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Logo · Sync · | Nav tabs | Quick Entry · icon row              │  ← Top bar
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│                       (active page)                             │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [mobile only] Dashboard · Singles · Slabs · Sales · eBay · Import │  ← Bottom bar
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Each tab in detail
+
+### 3.1 Dashboard
+
+The landing page. Read-only KPIs over the entire portfolio plus a Custom Chart Builder.
+
+**Top metric cards**
+
+| Card | Calculation | Why |
+|---|---|---|
+| Total Cost | Sum of `costPrice × qty` across all unsold inventory | Capital exposure — how much money is currently locked up |
+| Total Market Value | Sum of `marketPrice × qty` across all priced inventory | Estimated portfolio value at current prices |
+| All-time Profit | Sum of `profit` from all sale records | Realised gains since the app's first sale entry |
+| Realised ROI | Profit / Total cost basis sold × 100 | Return on capital that has cycled through |
+
+The Total Market Value card shows a freshness chip ("2% priced · refreshed today") if not all items have a price. This is intentional — half-priced portfolios mislead the eye. If the chip is red, you should run a price refresh.
+
+**Capital Exposure & Inventory bar**
+
+Horizontal stacked bar showing how your capital is split across Singles / Slabs / Sealed. Click any segment to drill down.
+
+Why a bar instead of a pie? Pies are hard to compare at a glance. A horizontal bar lets you read percentages and absolute SGD values from the same row.
+
+**Custom Chart Builder**
+
+Drag-and-drop axis selector. Pick a dimension (e.g. Set, Grader, Month) for the X axis, a measure (e.g. Cost, Market, Profit) for the Y axis. Apply filters and a top-N cap. Pin to dashboard.
+
+Why drag instead of dropdowns? Faster iteration when you're exploring. Most users never touch this; the few who do iterate a lot.
+
+### 3.2 Singles
+
+Tracks raw (ungraded) cards.
+
+**Columns** (left to right, default order)
+
+| Column | Source | Notes |
+|---|---|---|
+| ☐ | UI only | Bulk-select checkbox |
+| Card | `name` | Truncates with ellipsis if too long; hover for full name |
+| Lang | `language` | EN / JP / CN / ID |
+| Type | `type` | Raw / Sealed badge |
+| Date | `datePurchased` | Displayed as "19 May 2026" |
+| Cost Price | `costPrice` | Inline-editable. Round-trips through `kjrMoneyStr` so pasting `$1,250.00` stores `1250` correctly. |
+| Market | `marketPrice` | Inline-editable. Refreshed from PPT/PokeTrace via the price proxy. |
+| Carousell Price | `listPrice` | Your asking price on Carousell |
+| Actions | UI | Quick Sell ✓ button, Listing generator 📋, alerts 🔔, links 🔗 |
+
+**Default sort:** most recent `datePurchased` first. Click any header to override.
+
+**Buttons / actions**
+
+| Element | Action |
+|---|---|
+| **Card row click** | Open edit modal |
+| **Inline cost/market/list edit** | Type in the cell; auto-saves on blur. Strips $ and commas automatically. |
+| **✓ Sold button (row action)** | Opens Quick Sell modal for that item |
+| **📋 Listing button (row action)** | Opens the Carousell listing generator with that item pre-filled |
+| **🔔 (price alert icon)** | Appears when market price hits your set target. Click to view alert details. |
+| **🔗 (link icon)** | Appears if the item has an eBay or Carousell URL set. Click to open. |
+| **Bulk select + Delete** | Select multiple rows via the checkbox column; bulk-deletes all selected rows. Prompts to also void linked sales if any exist. |
+
+**Sub-sections**
+
+- **Sold rows** appear in a collapsible section below the active rows. Toggle with the "Show Sold" row.
+- A small green dot in the leftmost column marks recently-added rows for a few seconds after they appear.
+
+**Why this design**
+
+- Inline price editing — you adjust market prices constantly, so opening a modal every time would kill the flow.
+- Sold rows shown below by default but collapsed — they're useful for context but you mostly care about what's still in stock.
+- Default sort by most-recent-date — when you add a card, you want to see it appear at the top to confirm it worked.
+
+### 3.3 Slabs
+
+Same shape as Singles, plus grading-specific fields.
+
+**Extra columns**
+
+| Column | Source | Notes |
+|---|---|---|
+| Grade | `grader` + `grade` | Badge showing e.g. "PSA 10", "TAG 9.5". Coloured by grader (PSA red, TAG blue, CGC bronze) |
+| Cert # | `certNo` | Link to TAG grading lookup if grader is TAG |
+| Rank | `rank` | Population rank, e.g. "3rd", "10th" |
+
+**Why a separate Slabs tab from Singles?**
+
+Slabs and raw cards have fundamentally different valuation logic (grade matters for slabs, condition matters for raws), different pricing sources, and different sale dynamics. Mixing them in one tab obscures which copies are graded vs raw.
+
+### 3.4 ETBs (Elite Trainer Boxes)
+
+Sealed product tracking with simpler economics — you usually have one of each, sometimes a few.
+
+**Columns:** Product · Condition · Date · Cost · Market · Carousell Price · Status · Actions
+
+Status values: In Stock, Sold, Traded, Reserved.
+
+### 3.5 Booster Boxes
+
+Same shape as ETBs but with `qty` and `unitPrice` fields. `totalPrice` is computed as `unitPrice × qty`.
+
+**Why qty here but not on ETBs?** ETBs you typically buy individually. Booster boxes you often buy a few cases at a time.
+
+### 3.6 Booster Packs
+
+Lightest variant of the sealed lineup. Same shape as Booster Boxes but at single-pack granularity.
+
+### 3.7 eBay Purchases
+
+Tracks the journey of items bought on eBay through your Buyandship forwarding pipeline. The most complex tab because each row passes through 6 stages.
+
+**Pipeline stages**
+
+```
+Paid
+  → Shipping to Buyandship
+    → At Buyandship
+      → Ready to Consolidate
+        → Shipping to Singapore
+          → Completed
+              ↓
+            (modal: push to Singles or Slabs inventory)
+
+(parallel from any stage: Cancelled — terminal)
+```
+
+**Columns**
+
+| Column | Notes |
+|---|---|
+| Date | Purchase date |
+| Product | What you bought |
+| Status | Current pipeline stage (coloured chip) |
+| Tracking # | Shipment tracking from Buyandship |
+| Price USD | Original purchase price in USD |
+| Freight SGD | Freight portion in SGD |
+| Total SGD | Auto-calculated: (Price USD × SGD rate) + Freight SGD |
+| Declared | Customs declared value |
+| Target | Where it lands on completion: Singles or Slabs |
+
+**Actions**
+
+- **Advance Stage** button (single row) — moves one stage forward.
+- **Bulk Advance** — select multiple rows and advance them all at once. Useful when a Buyandship batch arrives.
+- **Cancel** — moves to the Cancelled terminal state. Row stays in the table for accounting.
+- **Complete** — on the final stage, a modal asks whether to push to Singles or Slabs. Creates a new row in the destination table with all relevant fields pre-filled.
+
+**Why a 6-stage pipeline?**
+
+Because real-world fulfilment has 6 distinct waiting points. Knowing whether an item is "at Buyandship" vs "in Singapore" affects whether you can mark it as sellable. A status of "shipped" alone would be too coarse.
+
+**Why bulk advance?**
+
+A Buyandship shipment from US to Singapore typically contains 5–30 items, all moving stages together. Single-row advancing 30 times is annoying.
+
+### 3.8 Sales
+
+The realised P&L log.
+
+**Columns**
+
+| Column | Source | Notes |
+|---|---|---|
+| Date | `dateSold` | Sale date |
+| Product | `product` | Snapshot of the item name at sale time |
+| Buyer | `buyer` | Identifier — username, phone, or note |
+| Cost | `costPrice` | Cost basis at sale time |
+| Revenue | `totalCollected` | Gross amount collected |
+| Shipping | `shippingCost` | Shipping you paid |
+| Profit | `profit` | Auto-calculated: Revenue − Cost − Shipping |
+| Margin | `margin` | Profit / Revenue × 100, displayed as a percent |
+
+**Default sort:** most recent `dateSold` first.
+
+**Why snapshot the product name?**
+
+If you later rename or delete the original inventory item, the sale record still shows what was sold. Sale history shouldn't shift under your feet.
+
+**The ↗ button on each row** opens the source inventory item (via `inventoryId` + `inventoryTable` linkage). Useful for cross-referencing.
+
+### 3.9 Listings
+
+Carousell listing template generator. Pick an item, enter a price and notes, and the page renders a paste-ready listing block with title, condition, price, and the rest of your standard listing fields.
+
+**Why a generator?**
+
+You list the same kinds of cards over and over with the same boilerplate. Copy-pasting saves typing time and ensures consistency across listings.
+
+### 3.10 Chart Builder
+
+Standalone version of the dashboard's Custom Chart Builder. Bigger canvas, more space to iterate. Save charts here, pin them to the dashboard, or delete them.
+
+### 3.11 Trash
+
+All deletions land here first. Nothing is ever hard-deleted via the UI.
+
+**Columns:** Original Table · Item Identifier · Reason · Deleted At · Actions (Restore / Delete forever)
+
+**Auto-purge:** items older than 30 days are flagged for permanent deletion (you confirm before removal).
+
+**Why soft delete?**
+
+Because "I deleted the wrong card" used to be a daily occurrence. Now you have 30 days to recover.
+
+### 3.12 Import
+
+Paste any CSV/TSV (or a Google Sheets selection) and the importer maps columns automatically.
+
+**Steps**
+
+1. Paste data into the textarea.
+2. Auto-detection guesses the type (Singles / Slabs / Sales) from the header row. The banner shows what it guessed; click "Apply" to confirm or change the dropdown manually.
+3. Choose **Append** or **Replace** mode:
+   - Append — adds new rows, skips duplicates (by cert# for slabs, by name+set+language+condition for singles)
+   - Replace — wipes all existing rows for that table and inserts the new set
+4. Preview the matched fields; rows with missing required fields show as Skipped.
+5. Click Import.
+
+**AI-assisted import**
+
+If your column headers don't match the standard schema, click "AI-assisted import" to send the data to Claude, which maps the columns automatically. Requires an Anthropic API key in localStorage.
+
+**Why Append vs Replace?**
+
+Append is the daily case (adding new acquisitions). Replace is the once-in-a-while case (full re-sync from a master spreadsheet). Mixing them in one button would be ambiguous.
+
+### 3.13 Versions
+
+Manual and automatic full-DB snapshots. Restore returns the entire app state to that point in time.
+
+**Daily auto-snapshot:** the app checks once per session whether a snapshot exists for today; if not, it creates one named "Auto — DD/MM/YYYY".
+
+**Manual snapshot:** click "Save Version", give it a name (e.g. "before bulk price refresh").
+
+**Restore:** loads the snapshot back into `DB`, marks every row dirty, and pushes to Supabase.
+
+### 3.14 Health Check (lightning bolt icon)
+
+Runs ~20 automated tests across all tables. Examples:
+
+- Dates that don't parse correctly
+- Grader values that aren't canonical (e.g. "psa" not "PSA")
+- Items with status=Sold but no matching sale record
+- Sales with `inventoryId` pointing to a non-existent inventory row
+- Dashboard totals that don't sum correctly
+
+Most issues offer an **Auto-fix** option. Run this when something looks wrong on the dashboard.
+
+### 3.15 Changelog (More menu)
+
+Immutable event log (capped at 500 entries). Every add, edit, delete, sale, and import action is recorded with action, table, detail, timestamp. Filter by action type with the chips at the top.
+
+### 3.16 Sentry errors panel (new, 24/05)
+
+The 🐛 button in the top bar opens a right-side drawer showing unresolved JS errors captured from real browser sessions. First-time use prompts for a Sentry auth token (one-time setup).
+
+**Why this exists:** without it you'd only learn about a crash when a user reported it. Sentry catches the error stack trace silently and you see it next time you open the panel.
+
+---
+
+## 4. Cross-cutting features
+
+### 4.1 Quick Entry (⌘K)
+
+The single most-used flow. Hit ⌘K (or click the green button) to open a command bar that lets you:
+
+- Add a card by typing it (Smart Add)
+- Log a sale by searching for an existing item
+- Switch between Add and Sell modes via the toggle
+
+The command bar handles 80% of daily interactions. It's there so you can capture an acquisition or sale in under 5 seconds.
+
+### 4.2 Smart Add
+
+Paste any text into the Quick Entry input and the parser extracts the fields. Examples:
+
+```
+Eevee 173 TAG 10 cert L6786028 rank 10th $81
+→ name: Eevee 173, grader: TAG, grade: 10, certNo: L6786028, rank: 10th, costPrice: 81
+
+Charizard ex 199/197 PSA 9 $250
+→ name: Charizard ex 199/197, grader: PSA, grade: 9, costPrice: 250
+
+2x Booster Box - Scarlet & Violet $180 each
+→ product: Scarlet & Violet, qty: 2, unitPrice: 180
+```
+
+The parser handles grader keywords (PSA/TAG/CGC/BGS/ACE/SGC), cert numbers, ranks, prices with or without $, quantity prefixes, and many variants.
+
+### 4.3 Sort and filter
+
+- Click any column header to sort. Click again to flip direction. A third click clears.
+- The filter row below the headers accepts text matches and numeric expressions:
+  - `100` — match values within ±$1
+  - `>100`, `<50` — comparison
+  - `100-200` — range
+  - `$100` — explicit currency
+- Sort direction shows as ↑ / ↓ on the active column.
+
+### 4.4 Column toggle and reorder
+
+On Singles, Slabs, Sales, ETBs, Booster Boxes, Booster Packs:
+
+- Right-click any column header for a show/hide menu
+- Drag a header to reorder columns
+- Preferences persist per-table to localStorage
+
+### 4.5 Bulk select
+
+- Click the header checkbox to select all visible rows
+- Click any row checkbox to add/remove from selection
+- A floating action bar appears with bulk options (Delete, Refresh Prices, Mark Sold, etc.)
+
+### 4.6 Undo / Redo
+
+In-memory stack. Most write operations (add, edit, delete, mark sold, import) snapshot the DB before the change. Undo/Redo are buttons in the header (or use the keyboard shortcut if assigned).
+
+The stack is per-session — refreshing the page clears it.
+
+### 4.7 Inline price edit
+
+Cost, Market, and Carousell prices on every inventory tab are editable directly in the table cell. Type a new value, blur the field, and it saves automatically.
+
+The input accepts any common currency format. As of 24/05, pasting `$1,250.00` correctly stores `1250` (a previous bug would have silently stored `1`).
+
+### 4.8 Price alerts
+
+Set a target price for any item. When the live market price reaches or exceeds the target, a 🔔 icon appears in the row's Actions column. Hover for details.
+
+### 4.9 Light / dark theme
+
+Moon/sun icon in the top bar. Choice persists to localStorage. The app uses a teal accent in both modes for consistency.
+
+### 4.10 Toast notifications
+
+Bottom-right (or bottom on mobile) slide-in panel with three variants:
+- **Default / success** (teal border, ✓ icon)
+- **Warning** (amber border, ⚠ icon — auto-detected when message starts with ⚠)
+- **Error** (red border, ✕ icon)
+
+Click to dismiss early. The thin bar at the bottom of each toast drains in real time so you know how long it will persist.
+
+### 4.11 Sentry error panel
+
+See section 3.16.
+
+---
+
+## 5. External tools and links
+
+### 5.1 Supabase (cloud database)
+
+| Parameter | Value |
+|---|---|
+| Project | `eywncywatxtlqtrvxjsi` |
+| Auth | Anon key embedded in source HTML |
+| Tables | singles, slabs, sales, etbs, booster_boxes, booster_packs, ebay_purchases, trash, versions |
+| Row limit | 10,000 per fetch (Supabase default) |
+| Conflict strategy | UPSERT on `id` column |
+
+Used as the single source of truth for cloud state. All edits flush here on a 1-second debounce. If Supabase is down, edits stay in localStorage and retry on next session.
+
+**Functions:**
+
+| Function | Purpose |
+|---|---|
+| `sbFetchAll(table)` | Load all rows for a table |
+| `sbBatchUpsert(table, items)` | Bulk insert/update, chunked at 200 rows |
+| `sbUpsert(table, id, data)` | Single row save |
+| `sbDelete(table, id)` | Delete one row. Now queues to `_kjrPendingCloudDeletes` localStorage key on failure, retried on next sync. |
+| `sbFetchVersions()` | List saved snapshots |
+| `sbSaveVersion(ver)` | Store full-DB snapshot |
+| `flushPendingDeletes()` | Retry any previously failed deletes |
+
+**What happens if Supabase is down:** edits keep working locally, the sync indicator turns red, dirty rows queue up. Next time Supabase responds, everything flushes.
+
+### 5.2 Cloudflare Worker (price proxy)
+
+File: `2026-05-18-kujira-prices-worker.js`
+
+| Parameter | Value |
+|---|---|
+| URL | `kujira-prices.julianchow21.workers.dev` |
+| Purpose | CORS proxy + holds PPT and PokeTrace API keys server-side |
+| Allowed origin | `https://julianchow21.github.io` |
+| Routes | `GET /ppt/cards?search=X&limit=5`, `GET /poketrace/cards?search=X&limit=3` |
+| Secrets | `PPT_KEY`, `POKETRACE_KEY` (Cloudflare dashboard, never in source) |
+
+**Why a proxy:** the price APIs don't allow direct browser calls (CORS), and embedding API keys in the HTML would expose them. The Worker gives us a single trusted endpoint and keeps the keys server-side.
+
+**Redeploy:** paste the worker file into the Cloudflare dashboard editor, save, deploy. See `2026-05-18-worker-deploy-guide.md`.
+
+### 5.3 PokemonPriceTracker (PPT)
+
+Primary price source. Reached via `/ppt/cards`.
+
+| Parameter | Value |
+|---|---|
+| Plan | Free tier |
+| Daily limit | 100 requests/day (enforced client-side via `DAILY_LIMIT`) |
+| Inter-request gap | 6 seconds (`REQUEST_GAP_MS`) to respect rate limits |
+| Match threshold | Jaccard token overlap ≥ 0.2 (raise to 0.35 if false positives appear) |
+
+The 6-second gap means refreshing 500 items takes ~50 minutes. This is a deliberate trade-off for the free tier — the alternative is paying for a higher plan.
+
+### 5.4 PokeTrace
+
+Secondary price source. Reached via `/poketrace/cards`. Used in parallel with PPT and the best match wins (`_pickBestMatch`).
+
+### 5.5 SGD exchange rate
+
+Used by the eBay Purchases tab to convert USD prices. Fetched once, cached in localStorage for 7 days. Source endpoint configured in `fetchSgdRate()`.
+
+### 5.6 Chart.js
+
+Loaded from `cdn.jsdelivr.net/npm/chart.js@4.4.1`. Used for dashboard KPI charts and the Chart Builder. No server-side dependency. If the CDN is down, charts won't render but the rest of the app keeps working.
+
+### 5.7 Claude API (Anthropic)
+
+Used for:
+- AI-assisted import (Claude maps unfamiliar column headers)
+- Dashboard AI portfolio analyst (occasional)
+- Smart import from unstructured text
+
+API key stored in localStorage. Falls back to OpenRouter if no Anthropic key is set.
+
+### 5.8 Sentry (error monitoring) — added 24/05
+
+| Parameter | Value |
+|---|---|
+| Project | `javascript` in your Sentry org |
+| DSN | Embedded in `index.html` |
+| Free tier | 5,000 errors/month |
+
+Catches every unhandled JS exception and promise rejection with a full stack trace, browser fingerprint, and breadcrumbs. Browser-extension noise and common network errors are filtered out via `ignoreErrors` and `beforeSend` hooks.
+
+**View errors:** click the 🐛 button in the top bar or visit your Sentry dashboard.
+
+### 5.9 UptimeRobot (uptime monitoring) — added 24/05
+
+External free service that pings the GitHub Pages URL every 5 minutes and emails you if it goes down. Set up at `uptimerobot.com`. Nothing inside the HTML connects to it.
+
+### 5.10 GitHub Pages (hosting)
+
+| Parameter | Value |
+|---|---|
+| URL | `https://julianchow21.github.io/Kujira-Collectibles/` |
+| Repo | `julianchow21/Kujira-Collectibles` |
+| Push method | GitHub icon in top bar → personal access token (stored locally) |
+
+Pushing from the top-bar button writes the current HTML directly to the repo and triggers an instant Pages deploy.
+
+---
+
+## 6. Data and persistence
+
+### 6.1 The sync model
+
+```
+You make an edit
+  → markDirty(table, id)           queues this row for cloud sync
+  → saveData()                      writes the whole DB to localStorage immediately
+  → [1-second debounce]
+  → _flushDirtyToSupabase()         batch-upserts dirty rows
+      → success: dirty IDs cleared, sync indicator turns green
+      → failure: IDs stay dirty, retried on next saveData
+  → flushPendingDeletes()           opportunistic retry of any failed deletes
+```
+
+### 6.2 The load model (start of session)
+
+```
+initDB()
+  → load localStorage (local copy + dirty set)
+  → render local state immediately (so the app feels fast)
+  → sbFetchAll() for each table     fetch cloud state
+  → mergeTable(cloud, local, dirty)  dirty local rows always win
+  → re-render
+  → flushPendingDeletes()            retry any failed deletes from previous session
+  → maybeRunDailyAutoVersion()       create today's snapshot if none exists
+```
+
+### 6.3 What "offline" means
+
+- All reads and writes continue against localStorage.
+- The sync indicator turns red ("Cloud sync failed").
+- Dirty rows queue up; the next successful sync flushes everything.
+- Avoid hard-refreshing the page in this state — your unsynced edits will still be there on reload, but if you also clear browser data you'll lose them.
+
+### 6.4 Recovery options, ranked by reversibility
+
+| What broke | First try | Then try | Last resort |
+|---|---|---|---|
+| Accidentally deleted an item | Undo (in-session) | Restore from Trash (within 30 days) | Restore a Version |
+| Edited the wrong field | Undo (in-session) | Restore a Version | Manually fix |
+| Bulk operation went wrong | Undo (in-session) | Restore the most recent Version | Manually unwind |
+| Dashboard shows wrong totals | Run Health Check → auto-fix | Restore a Version | Inspect changelog |
+| Cloud out of sync | Wait for sync indicator to clear | Manual refresh | Check Supabase dashboard directly |
+
+### 6.5 Daily snapshot
+
+Once per session the app checks whether a snapshot exists for today (`Auto — DD/MM/YYYY`). If not, one is created. Worst case scenario, you can always roll back a full day.
+
+---
+
+## 7. Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `⌘K` / `Ctrl+K` | Open Quick Entry command bar |
+| `Esc` | Close any open modal or drawer (including the Sentry panel) |
+| `Enter` (in Quick Entry) | Submit |
+
+The app deliberately uses few shortcuts. Most interactions are click-driven so the muscle memory works on mobile too.
+
+---
+
+## Appendix A — How do I... playbook
+
+### A.1 Add a new card
+
+**Fastest way (Quick Entry):**
+
+1. Hit `⌘K`.
+2. Type the card details freely, e.g. `Charizard ex 199/197 PSA 9 cert 12345678 $250`.
+3. Press Enter.
+
+The Smart Add parser extracts grader, grade, cert, price, etc. The card lands in the relevant table (Singles or Slabs) and the toast confirms it.
+
+**Manual way (form):**
+
+1. Go to the Singles or Slabs tab.
+2. Click "+ Add Card" (or "+ Add Slab").
+3. Fill in fields, click Save.
+
+### A.2 Log a sale
+
+**From Quick Entry:**
+
+1. Hit `⌘K`.
+2. Switch to "Sell" mode.
+3. Start typing the card name; pick from the dropdown.
+4. Enter total collected, shipping, date, buyer.
+5. Click Confirm.
+
+The system calculates profit and margin, adds a row to Sales, marks the inventory item as Sold (or decrements qty if qty > 1), and logs the action to the changelog.
+
+**From a table row:**
+
+1. Find the item in Singles or Slabs.
+2. Click the ✓ Sold button in the row's Actions column.
+3. Fill the Quick Sell modal; confirm.
+
+### A.3 Refresh prices
+
+**One item:**
+
+1. Open the item's edit modal.
+2. Click "Refresh Price".
+
+**Multiple items (bulk):**
+
+1. On the Singles or Slabs tab, select rows via the checkbox column.
+2. In the floating action bar, click "Refresh Prices".
+3. Items are queued and processed at 1 every 6 seconds (rate limit).
+4. The queue indicator at the top shows progress; the page can stay open in the background.
+
+### A.4 Import from a spreadsheet
+
+1. Copy your data from Google Sheets / Excel (include the header row).
+2. Go to the Import tab.
+3. Paste into the textarea.
+4. Confirm the auto-detected type (or change it).
+5. Pick Append (default) or Replace.
+6. Preview the matched fields. Skipped rows are shown for review.
+7. Click Import.
+
+If your columns are unusual, try "AI-assisted import" — Claude will map the columns for you.
+
+### A.5 Handle an eBay purchase end-to-end
+
+1. After buying on eBay, go to the eBay tab and click "+ Add Purchase".
+2. Fill in: product, price USD, freight SGD (estimate), declared value, tracking #, target table (Singles/Slabs).
+3. Status starts at "Paid".
+4. As the package moves through Buyandship, use "Advance Stage" (or bulk advance) to progress it.
+5. On final stage (Completed), a modal asks "Push to Singles?" or "Push to Slabs?".
+6. Confirm. A new row appears in the target table with the price (in SGD), date, and other fields pre-filled.
+7. The eBay row stays in the log with status "Completed".
+
+### A.6 Build a chart on the dashboard
+
+1. Scroll to the "Custom Chart Builder" section on Dashboard (or use the Chart Builder tab for more space).
+2. Drag a dimension (e.g. "Grader") onto the X axis.
+3. Drag a measure (e.g. "Cost") onto the Y axis. Multiple measures supported.
+4. Optionally apply filters and a Top-N cap.
+5. Click "Add to Dashboard" to pin it. Charts are saved to localStorage and survive refreshes.
+
+### A.7 Recover a deleted item
+
+1. Go to the Trash tab.
+2. Find the item (or filter by original table).
+3. Click Restore on the row.
+4. The item reappears in its original tab with all fields intact.
+
+If it's been deleted more than 30 days ago, the row is marked for permanent deletion. Recovery is still possible until you confirm the permanent delete.
+
+### A.8 Roll back to a previous version
+
+1. Click the clock icon (Version History) in the top bar.
+2. Pick a version from the list (auto-snapshots are dated, manual ones have your name).
+3. Click "Restore".
+4. The entire DB is replaced with that snapshot. The current state is itself snapshotted as "Pre-restore — DD/MM/YYYY" so you can undo the rollback.
+
+### A.9 Export data
+
+1. Go to the More menu → Export.
+2. Pick the table(s) you want and the format (CSV or JSON).
+3. The file downloads to your browser's default download folder.
+
+CSV is one file per table; JSON is the full DB.
+
+### A.10 Run a health check
+
+1. Click the lightning bolt icon in the top bar.
+2. The modal shows ~20 test results with pass/fail/warn status.
+3. For any failing test, click "Auto-fix" (if offered) or "View affected rows" to inspect manually.
+
+Common issues caught: malformed dates, non-canonical grader values (e.g. "psa" instead of "PSA"), orphaned sales, dashboard totals that don't sum, items missing required fields.
+
+### A.11 Generate a Carousell listing
+
+1. Find the item in Singles or Slabs.
+2. Click the 📋 button in the row's Actions column.
+3. The Listings page opens with the item pre-loaded.
+4. Enter a price and any notes.
+5. Click "Copy" — the formatted listing is in your clipboard, ready to paste into Carousell.
+
+### A.12 View Sentry errors
+
+1. Click the 🐛 button in the top bar.
+2. First time only: paste your Sentry auth token (from `sentry.io/settings/account/api/auth-tokens/` with `project:read` and `org:read` scopes).
+3. The drawer shows recent unresolved issues with level (error / warning / info), event count, and last-seen time.
+4. Click any row to open the full issue on Sentry.
+
+A red badge on the 🐛 button shows the unresolved error count.
+
+### A.13 Push updates to GitHub Pages
+
+1. Click the GitHub icon in the top bar.
+2. First time only: paste a GitHub Personal Access Token (created at `github.com/settings/tokens/new?scopes=repo`).
+3. Confirm the repo and filename.
+4. Click "Push". The HTML is committed and a Pages deploy fires within seconds.
+
+The token is stored in your browser only.
+
+### A.14 Connect a fresh device
+
+1. Open the GitHub Pages URL on the new device.
+2. The app starts empty and immediately syncs from Supabase. All your data appears within a few seconds.
+3. If you use the Sentry panel, you'll need to re-paste your Sentry token (it's per-device localStorage).
+4. Same for the GitHub Personal Access Token if you plan to push from this device.
+
+---
+
+## Appendix B — Data model reference
+
+### B.1 Singles
+
+| Field | Type | Notes |
+|---|---|---|
+| id | string | `s_*` prefix |
+| name | string | Card name |
+| set | string | Set name |
+| language | string | EN, JP, CN, ID |
+| type | string | raw, sealed |
+| condition | string | Near Mint, Lightly Played, etc. |
+| qty | number | Defaults to 1 |
+| costPrice | number | Purchase cost in SGD |
+| listPrice | number | Carousell listing price |
+| marketPrice | number | Live market price (fetched or manual) |
+| datePurchased | string | DD/MM/YYYY or "D MMM YYYY" |
+| status | string | Available, Sold |
+| priceHistory | array | `[{date, price}]` — appended on every market price change, capped at 100 entries |
+| priceAlert | number | Optional target price threshold |
+| ebayUrl / carousellUrl | string | Optional listing URLs |
+| notes | string | Free text |
+
+### B.2 Slabs
+
+Same fields as Singles plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| grader | string | PSA, TAG, CGC, BGS, ACE, SGC (canonical form via `_resolveGrader`) |
+| grade | number/string | Numeric grade; may be embedded in grader field depending on entry method |
+| certNo | string | Grading certificate number |
+| rank | string | Population rank (e.g. "3rd", "10th") |
+| dateListed | string | Date added to inventory |
+
+### B.3 Sales
+
+| Field | Type | Notes |
+|---|---|---|
+| id | string | `sale_*` prefix |
+| dateSold | string | Date of sale |
+| product | string | Product description (snapshot from inventory at sale time) |
+| buyer | string | Buyer identifier |
+| costPrice | number | Cost basis at time of sale |
+| totalCollected | number | Gross revenue |
+| shippingCost | number | Shipping cost deducted |
+| profit | number | totalCollected − costPrice − shippingCost |
+| margin | string | `"XX%"` — profit as percentage of revenue |
+| inventoryId | string | Source item ID (links back to singles or slabs) |
+| inventoryTable | string | `singles` or `slabs` |
+
+### B.4 eBay Purchases
+
+| Field | Type | Notes |
+|---|---|---|
+| id | string | `ebay_*` prefix |
+| date | string | Purchase date |
+| product | string | Item description |
+| status | string | One of 6 pipeline stages (see Section 3.7) |
+| tracking | string | Shipment tracking number |
+| priceUsd | number | Purchase price in USD |
+| freightSgd | number | Freight cost in SGD |
+| totalSgd | number | Auto-computed: `(priceUsd × SGD rate) + freightSgd` |
+| declared | number | Declared customs value |
+| targetTable | string | `singles` or `slabs` — destination on completion |
+| lastUpdated | string | ISO timestamp of last status change |
+
+### B.5 Sealed products (ETBs, Booster Boxes, Booster Packs)
+
+| Field | Type | Notes |
+|---|---|---|
+| id | string | Table-specific prefix (`etb_*`, `bb_*`, `bp_*`) |
+| date | string | Purchase date |
+| product | string | Product name |
+| unitPrice | number | Per-unit cost (boxes and packs) |
+| qty | number | Quantity (boxes and packs) |
+| totalPrice | number | Total cost (ETBs) or `unitPrice × qty` |
+| marketPrice | number | Current market value |
+| carousellPrice | number | Listing price on Carousell |
+| condition | string | Mint, Near Mint, etc. (ETBs) |
+| status | string | In Stock, Sold, Traded, etc. |
+| notes | string | Free text |
+
+---
+
+## Appendix C — Security and naming
+
+### C.1 Security model (current state)
+
+| Area | Current state | Risk |
+|---|---|---|
+| XSS | All user strings passed through `esc()` / `kjrEscape()` before innerHTML | Low |
+| Supabase anon key | Embedded in source HTML | Medium — requires correct RLS |
+| Authentication | None — single-user personal app | High if deployed publicly |
+| Multi-tenancy | Not implemented — all users share same tables | Critical for shared deploy |
+| Price API keys (PPT, PokeTrace) | Held server-side in Cloudflare Worker secrets | Low |
+| Sentry DSN | Embedded in source (this is by design — DSNs are not secrets) | None |
+| LocalStorage | Not encrypted — readable by other scripts on the same origin | Low (single domain) |
+
+**For personal single-user use:** acceptable. No other users can access the app as deployed.
+
+**For shared or multi-user deployment:** authentication and RLS policies scoped to `auth.uid()` are required before deployment.
+
+### C.2 Naming conventions
+
+| Convention | Example |
+|---|---|
+| Row IDs | `s_*`, `sl_*`, `sale_*`, `ebay_*`, `etb_*`, `bb_*`, `bp_*` |
+| localStorage keys | `pokeinv_*` prefix (e.g. `pokeinv_dirty_v1`, `pokeinv_col_vis_v3`) |
+| Pending deletes queue | `_kjrPendingCloudDeletes` |
+| Sentry token | `_sentryToken` |
+| Versioned files | `YYYY-MM-DD-description.ext` |
+| Canonical grader values | PSA, TAG, CGC, BGS, ACE, SGC (uppercase via `_resolveGrader`) |
+| Date display format | D MMM YYYY (e.g. "19 May 2026") |
+| Date input format | DD/MM/YYYY (Singapore convention) |
+| Currency | SGD, displayed as `S$XX` or `$XX` (whole numbers throughout the app) |
+
+### C.3 File reference
+
+| File | Purpose |
+|---|---|
+| `index.html` | Main application (all CSS, JS, HTML inline) |
+| `2026-05-18-kujira-prices-worker.js` | Cloudflare Worker source (price proxy) |
+| `2026-05-18-worker-deploy-guide.md` | Worker deploy instructions |
+| `2026-05-18-qa-report.md` | Earlier QA report (historical) |
+| `2026-05-24-kujira-user-guide.md` | This document |
+| `AUDIT_REPORT.md` | Earlier audit report (historical) |
+| Backup `.html` snapshots | `2026-MM-DD-<name>-backup-<reason>.html` — created before significant edits |
+
+---
+
+## Appendix D — Scale-up notes
+
+The current architecture is a personal single-user tool. The table below summarises what would need to change for a shared deployment.
+
+| Requirement | Current state | Change required for 100–500 users |
+|---|---|---|
+| User authentication | None | Supabase Auth or equivalent JWT provider |
+| Data isolation | All users share one Supabase project | Row-level security policies scoped to `auth.uid()` |
+| Concurrent edit conflicts | Last write wins | Optimistic locking via `updated_at` timestamp comparison |
+| Row volume | No pagination; fetches up to 10,000 rows | Paginated fetch; lazy-load on scroll |
+| Audit trail | localStorage-only (per-device) | Move changelog to Supabase with `user_id` column |
+| Price API limits | 100 requests/day shared | Upgrade PPT plan or implement server-side caching |
+| Realtime sync | None; refresh-on-load only | Supabase Realtime subscriptions for live data |
+| Error monitoring | Sentry free tier (5k errors/month) | Upgrade plan if user count grows |
+
+**Rough migration estimate for a 100-person shared deployment:** 2–3 weeks of engineering work, not including testing.
+
+---
+
+*End of document. Last updated 24/05/2026.*
+</script>
+
+<script>
+// ── USER GUIDE renderer ──────────────────────────────────────────────────────
+(function() {
+  let _rendered = false;
+  let _slugify = function(s) {
+    return String(s).toLowerCase()
+      .replace(/[^a-z0-9\s\-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .substring(0, 80);
+  };
+
+  window.kjrGuideRender = function() {
+    if (_rendered) return;
+    if (typeof marked === 'undefined') {
+      document.getElementById('guide-content').innerHTML = '<div class="guide-empty">Markdown library failed to load. Refresh the page.</div>';
+      return;
+    }
+    const src = document.getElementById('guide-source');
+    if (!src) return;
+    const md = src.textContent.trim();
+    // Configure marked: GFM, no embedded HTML risk because content is trusted (we wrote it)
+    marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
+    const html = marked.parse(md);
+    const content = document.getElementById('guide-content');
+    content.innerHTML = html;
+
+    // Add IDs to h2/h3 headings for TOC links
+    const tocItems = [];
+    content.querySelectorAll('h2, h3').forEach(h => {
+      const id = _slugify(h.textContent);
+      h.id = id;
+      tocItems.push({ level: h.tagName.toLowerCase(), text: h.textContent, id: id });
+    });
+
+    // Build TOC
+    const tocHtml = tocItems.map(it =>
+      '<a href="#' + it.id + '" class="toc-' + it.level + '" onclick="kjrGuideJump(\'' + it.id + '\');return false">' + it.text + '</a>'
+    ).join('');
+    document.getElementById('guide-toc-list').innerHTML = tocHtml;
+
+    _rendered = true;
+  };
+
+  window.kjrGuideJump = function(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Mark active
+    document.querySelectorAll('.guide-toc a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
+    // On mobile, close the toc after jump
+    if (window.matchMedia('(max-width:900px)').matches) {
+      document.querySelector('.guide-toc')?.classList.remove('mobile-open');
+    }
+  };
+
+  window.kjrGuideSearch = function(query) {
+    const q = (query || '').trim().toLowerCase();
+    const content = document.getElementById('guide-content');
+    if (!content) return;
+    // Remove any existing highlights
+    content.querySelectorAll('mark.guide-hl').forEach(m => {
+      const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize();
+    });
+    if (!q) return;
+    // Walk text nodes, wrap matches
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => (n.nodeValue.trim() && n.parentNode.tagName !== 'SCRIPT' && n.parentNode.tagName !== 'STYLE') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+    });
+    const nodes = [];
+    let n; while (n = walker.nextNode()) nodes.push(n);
+    let firstMatch = null;
+    nodes.forEach(node => {
+      const text = node.nodeValue;
+      const idx = text.toLowerCase().indexOf(q);
+      if (idx < 0) return;
+      const before = text.substring(0, idx);
+      const match  = text.substring(idx, idx + q.length);
+      const after  = text.substring(idx + q.length);
+      const frag = document.createDocumentFragment();
+      if (before) frag.appendChild(document.createTextNode(before));
+      const m = document.createElement('mark');
+      m.className = 'guide-hl';
+      m.style.cssText = 'background:#f59e0b;color:#000;padding:0 2px;border-radius:2px';
+      m.textContent = match;
+      frag.appendChild(m);
+      if (!firstMatch) firstMatch = m;
+      if (after) frag.appendChild(document.createTextNode(after));
+      node.parentNode.replaceChild(frag, node);
+    });
+    if (firstMatch) firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  // Hook showPage so the guide renders the first time you open it
+  const _origShow = window.showPage;
+  window.showPage = function(id) {
+    if (_origShow) _origShow(id);
+    if (id === 'guide' && !_rendered) {
+      // Defer to next frame so the page is visible before we render (gives "Loading..." a chance)
+      requestAnimationFrame(kjrGuideRender);
+    }
+  };
 })();
 </script>
 

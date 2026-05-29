@@ -1274,7 +1274,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
-        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 10:04 PM</span>
+        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 10:23 PM</span>
       </span>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -3538,8 +3538,11 @@ function renderCmdSellResults() {
       const meta = isSlab
         ? [(i.certNo ? '#' + i.certNo : ''), (i.rank||''), 'Cost: ' + (i.costPrice ? 'S$'+i.costPrice : '—')].filter(Boolean).join(' · ')
         : [(i.language||''), (i.condition||''), 'Qty: '+(i.qty||1), 'Cost: '+(i.costPrice ? 'S$'+i.costPrice : '—')].join(' · ');
-      // Show how many units of this exact row are already staged in the cart.
-      const line = cmdSellCart.find(l => l.id === i.id);
+      // Show how many units are already staged. Singles match by group (any
+      // copy of the same card), slabs by their unique row id.
+      const line = isSlab
+        ? cmdSellCart.find(l => l._table === 'slabs' && l.id === i.id)
+        : cmdSellCart.find(l => l._table === 'singles' && l.groupKey === cmdSingleGroupKey(i));
       const inCart = line ? '<span class="cmd-result-incart">✓ ' + line.qty + ' in sale</span>' : '';
       return '<div class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onclick="cmdSellAddToCart(' + idx + ')">' +
         '<div class="cmd-result-icon" style="background:var(--bg3)">' + (isSlab ? '🏆' : '🃏') + '</div>' +
@@ -3558,29 +3561,79 @@ function cmdSellKey(e) {
 }
 
 // ── MULTI-ITEM SALE CART ──────────────────────────────────────
-// Add the specific inventory row the user picked from search. We add the
-// exact clicked row (no highest-cost re-resolution) so that selling two
-// separate copies of the same card is possible — the user controls which
-// copies leave inventory.
+// A single card is usually stored as many separate inventory rows (one per
+// purchase lot, each Qty 1, each a slightly different cost). For selling we
+// treat functionally-identical available copies as ONE cart line so the qty
+// stepper can climb to the full owned count. Slabs stay one row each (unique).
+//
+// `cmdSingleGroupKey` defines "functionally identical": same name, set,
+// language, condition and type. Cost and purchase date are deliberately NOT
+// part of the key — those are the things that differ across lots.
+function cmdSingleGroupKey(i) {
+  return [i.name||'', i.set||'', i.language||'', i.condition||'', i.type||'']
+    .join('¦').toLowerCase().trim();
+}
+
+// Cost basis for selling `n` units from a grouped line. Consumes the most
+// expensive lots first (the agreed allocation rule), so each sale reports the
+// most conservative profit and the cheaper stock stays on the books.
+function cmdLineCost(line, n) {
+  const want = (n == null) ? line.qty : n;
+  if (line._table === 'slabs' || !Array.isArray(line.lots)) {
+    return (line.costPrice || 0) * want;
+  }
+  const units = [];
+  line.lots.forEach(lot => { for (let u = 0; u < lot.availUnits; u++) units.push(lot.costPrice); });
+  units.sort((a, b) => b - a);
+  return units.slice(0, want).reduce((s, c) => s + c, 0);
+}
+
+// Add the inventory the user picked from search. Slabs add as a single unique
+// row. Singles add (or bump) a grouped line covering every matching available
+// lot, with the qty stepper capped at the total owned count.
 function cmdSellAddToCart(idx) {
   const picked = cmdSellResults[idx];
   if (!picked) return;
   const isSlab = picked._table === 'slabs';
-  const availQty = isSlab ? 1 : Math.max(1, parseInt(picked.qty) || 1);
-  const existing = cmdSellCart.find(l => l.id === picked.id && l._table === picked._table);
-  if (existing) {
-    if (existing.qty >= existing.availQty) { toast('Only ' + existing.availQty + ' available for that item'); return; }
-    existing.qty += 1;
+
+  if (isSlab) {
+    const existing = cmdSellCart.find(l => l._table === 'slabs' && l.id === picked.id);
+    if (existing) {
+      toast('That slab is already in the sale');
+    } else {
+      cmdSellCart.push({
+        id: picked.id, _table: 'slabs', name: picked.name || '',
+        grader: picked.grader || '', grade: picked.grade || '', certNo: picked.certNo || '',
+        type: picked.type || '', costPrice: parseFloat(picked.costPrice) || 0,
+        availQty: 1, qty: 1,
+        price: (typeof bestMarketFor === 'function')
+          ? (parseFloat(bestMarketFor(picked)) || 0)
+          : (parseFloat(picked.listPrice) || parseFloat(picked.marketPrice) || 0)
+      });
+    }
   } else {
-    cmdSellCart.push({
-      id: picked.id, _table: picked._table, name: picked.name || '',
-      grader: picked.grader || '', grade: picked.grade || '', certNo: picked.certNo || '',
-      type: picked.type || '', costPrice: parseFloat(picked.costPrice) || 0,
-      availQty, qty: 1,
-      price: (typeof bestMarketFor === 'function')
-        ? (parseFloat(bestMarketFor(picked)) || 0)
-        : (parseFloat(picked.listPrice) || parseFloat(picked.marketPrice) || 0)
-    });
+    const key = cmdSingleGroupKey(picked);
+    const lots = DB.singles
+      .filter(i => (i.status||'Available') !== 'Sold' && cmdSingleGroupKey(i) === key)
+      .map(i => ({ id: i.id, costPrice: parseFloat(i.costPrice) || 0, availUnits: Math.max(1, parseInt(i.qty) || 1) }))
+      .sort((a, b) => b.costPrice - a.costPrice);
+    const availQty = lots.reduce((s, l) => s + l.availUnits, 0);
+    const existing = cmdSellCart.find(l => l._table === 'singles' && l.groupKey === key);
+    if (existing) {
+      existing.lots = lots; existing.availQty = availQty;  // refresh in case inventory shifted
+      if (existing.qty >= availQty) { toast('Only ' + availQty + ' available for that card'); return; }
+      existing.qty += 1;
+    } else {
+      cmdSellCart.push({
+        id: picked.id, _table: 'singles', groupKey: key, lots,
+        name: picked.name || '', type: picked.type || '',
+        costPrice: lots.length ? lots[0].costPrice : (parseFloat(picked.costPrice) || 0),
+        availQty, qty: 1,
+        price: (typeof bestMarketFor === 'function')
+          ? (parseFloat(bestMarketFor(picked)) || 0)
+          : (parseFloat(picked.listPrice) || parseFloat(picked.marketPrice) || 0)
+      });
+    }
   }
   // First item opens the form and seeds shared fields.
   const form = document.getElementById('cmd-sell-form');
@@ -3660,10 +3713,19 @@ function renderCmdSellCart() {
             '<button onclick="cmdSellSetQty(\'' + l.id + '\',1)"' + (l.qty >= l.availQty ? ' disabled' : '') + '>+</button>' +
           '</div>';
       const availNote = (!isSlab && l.availQty > 1) ? ' · ' + l.availQty + ' avail' : '';
+      // Grouped multi-unit lines blend several lot costs, so show the total
+      // allocated cost and the average per unit. Single units keep the /ea form.
+      let costLabel;
+      if (!isSlab && l.qty > 1) {
+        const lineCost = cmdLineCost(l);
+        costLabel = 'Cost S$' + lineCost.toFixed(0) + ' (avg S$' + (lineCost / l.qty).toFixed(2) + '/ea)';
+      } else {
+        costLabel = 'Cost S$' + cmdLineCost(l, 1).toFixed(0) + '/ea';
+      }
       return '<div class="sell-cart-line">' +
         '<div class="sell-cart-main">' +
           '<div class="sell-cart-name">' + esc(l.name || '—') + badge + '</div>' +
-          '<div class="sell-cart-meta">Cost S$' + l.costPrice.toFixed(0) + '/ea' + availNote + '</div>' +
+          '<div class="sell-cart-meta">' + costLabel + availNote + '</div>' +
         '</div>' +
         qtyCtrl +
         '<input class="sell-cart-price" type="number" step="0.01" inputmode="decimal" value="' + l.price + '" ' +
@@ -3679,7 +3741,7 @@ function cmdCalcProfit() {
   const ship = kjrNum(document.getElementById('cmd-sell-ship').value);
   let totalCost = 0, totalRev = 0, units = 0;
   cmdSellCart.forEach(l => {
-    totalCost += l.costPrice * l.qty;
+    totalCost += cmdLineCost(l);
     totalRev  += (l.price || 0) * l.qty;
     units     += l.qty;
   });
@@ -3700,71 +3762,91 @@ function cmdCalcProfit() {
 function cmdConfirmSell() {
   if (cmdSellCart.length === 0) { toast('Add at least one item to the sale'); return; }
 
-  // Re-clamp each line against current inventory (guards against the row
-  // changing under us) and drop anything that vanished.
-  const lines = [];
+  // Resolve every cart line into a flat list of per-unit sales, reading CURRENT
+  // inventory so a row that changed under us can't cause a half-applied sale.
+  // Grouped singles allocate their units across matching lots most-expensive-
+  // first (the agreed cost-basis rule); slabs are one unique unit each.
+  const planned = [];   // { name, productName, table, rowId, cost, price }
   for (const l of cmdSellCart) {
-    const row = DB[l._table] && DB[l._table].find(i => i.id === l.id);
-    if (!row) continue;
-    const avail = l._table === 'slabs' ? 1 : Math.max(1, parseInt(row.qty) || 1);
-    const qty = Math.min(l.qty, avail);
-    if (qty < 1) continue;
-    lines.push({ ...l, qty, _row: row });
+    if (l._table === 'slabs') {
+      const row = DB.slabs.find(i => i.id === l.id && (i.status||'Available') !== 'Sold');
+      if (!row) continue;
+      const productName = l.name + (l.grader ? ' ' + l.grader + ' ' + l.grade + (l.certNo ? ' #' + l.certNo : '') : '');
+      planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price: l.price || 0 });
+    } else {
+      // Re-gather matching available lots and expand to per-unit costs.
+      const key = l.groupKey;
+      const units = [];
+      DB.singles
+        .filter(i => (i.status||'Available') !== 'Sold' && cmdSingleGroupKey(i) === key)
+        .forEach(i => {
+          const c = parseFloat(i.costPrice) || 0;
+          const n = Math.max(1, parseInt(i.qty) || 1);
+          for (let u = 0; u < n; u++) units.push({ id: i.id, cost: c });
+        });
+      units.sort((a, b) => b.cost - a.cost);   // most expensive first
+      const take = Math.min(l.qty, units.length);
+      for (let u = 0; u < take; u++) {
+        planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price: l.price || 0 });
+      }
+    }
   }
-  if (lines.length === 0) { toast('Those items are no longer available'); return; }
+  if (planned.length === 0) { toast('Those items are no longer available'); return; }
 
   const ship  = kjrNum(document.getElementById('cmd-sell-ship').value);
   const buyer = document.getElementById('cmd-sell-buyer').value;
   const dateSold = formatDateInput(document.getElementById('cmd-sell-date').value);
 
   // Total revenue drives the pro-rata shipping split across every unit.
-  let totalRev = 0, totalUnits = 0;
-  lines.forEach(l => { totalRev += (l.price || 0) * l.qty; totalUnits += l.qty; });
+  const totalUnits = planned.length;
+  let totalRev = 0;
+  planned.forEach(p => { totalRev += p.price; });
   if (totalRev <= 0) { toast('Enter a sold price for the items'); return; }
 
   snapshotForUndo();
 
   const newSales = [];
-  let shipAllocated = 0, unitsDone = 0;
-  let grandProfit = 0;
+  let shipAllocated = 0, unitsDone = 0, grandProfit = 0;
+  const retireSingles = {};   // rowId -> units to retire
 
-  lines.forEach(l => {
-    const productName = l.name + (l.grader ? ' ' + l.grader + ' ' + l.grade + (l.certNo ? ' #' + l.certNo : '') : '');
-    for (let u = 0; u < l.qty; u++) {
-      unitsDone++;
-      // Pro-rata shipping by this unit's revenue share. Last unit absorbs any
-      // rounding remainder so the per-row shipping sums back to the entered total.
-      let unitShip;
-      if (unitsDone === totalUnits) {
-        unitShip = +(ship - shipAllocated).toFixed(2);
-      } else {
-        unitShip = totalRev > 0 ? +(ship * ((l.price || 0) / totalRev)).toFixed(2) : +(ship / totalUnits).toFixed(2);
-        shipAllocated += unitShip;
-      }
-      const cost = l.costPrice;
-      const rev  = l.price || 0;
-      const profit = rev - cost - unitShip;
-      const margin = rev > 0 ? ((profit / rev) * 100).toFixed(0) + '%' : '—';
-      grandProfit += profit;
-      const saleId = genId('sale');
-      newSales.push({
-        id: saleId, dateSold, product: productName, buyer,
-        costPrice: cost, totalCollected: rev, shippingCost: unitShip, profit, margin,
-        inventoryId: l.id, inventoryTable: l._table
-      });
-      markDirty('sales', saleId);
-    }
-
-    // Retire the sold units from inventory.
-    const row = l._row;
-    if (l._table === 'slabs') {
-      row.status = 'Sold';
+  planned.forEach(p => {
+    unitsDone++;
+    // Pro-rata shipping by this unit's revenue share. Last unit absorbs any
+    // rounding remainder so the per-row shipping sums back to the entered total.
+    let unitShip;
+    if (unitsDone === totalUnits) {
+      unitShip = +(ship - shipAllocated).toFixed(2);
     } else {
-      const remaining = (parseInt(row.qty) || 1) - l.qty;
-      if (remaining >= 1) row.qty = remaining;
-      else row.status = 'Sold';
+      unitShip = totalRev > 0 ? +(ship * (p.price / totalRev)).toFixed(2) : +(ship / totalUnits).toFixed(2);
+      shipAllocated += unitShip;
     }
-    markDirty(l._table, row.id);
+    const profit = p.price - p.cost - unitShip;
+    const margin = p.price > 0 ? ((profit / p.price) * 100).toFixed(0) + '%' : '—';
+    grandProfit += profit;
+    const saleId = genId('sale');
+    newSales.push({
+      id: saleId, dateSold, product: p.productName, buyer,
+      costPrice: p.cost, totalCollected: p.price, shippingCost: unitShip, profit, margin,
+      inventoryId: p.rowId, inventoryTable: p.table
+    });
+    markDirty('sales', saleId);
+
+    if (p.table === 'slabs') {
+      const row = DB.slabs.find(i => i.id === p.rowId);
+      if (row) { row.status = 'Sold'; markDirty('slabs', row.id); }
+    } else {
+      retireSingles[p.rowId] = (retireSingles[p.rowId] || 0) + 1;
+    }
+  });
+
+  // Retire the consumed single lots — decrement qty, or mark Sold when emptied.
+  Object.keys(retireSingles).forEach(rowId => {
+    const row = DB.singles.find(i => i.id === rowId);
+    if (!row) return;
+    const remaining = (parseInt(row.qty) || 1) - retireSingles[rowId];
+    if (remaining >= 1) row.qty = remaining;
+    else row.status = 'Sold';
+    markDirty('singles', row.id);
   });
 
   // Newest first, preserving cart order within this transaction.
@@ -3772,17 +3854,26 @@ function cmdConfirmSell() {
   saveData();
 
   // Refresh only the views that could have changed.
-  if (lines.some(l => l._table === 'singles')) renderSingles();
-  if (lines.some(l => l._table === 'slabs'))   renderSlabs();
+  if (planned.some(p => p.table === 'singles')) renderSingles();
+  if (planned.some(p => p.table === 'slabs'))   renderSlabs();
   renderSales();
   renderDashboard();
+
+  // Per-card summary for the changelog (name xN @ avg price).
+  const byName = {};
+  planned.forEach(p => {
+    byName[p.name] = byName[p.name] || { n: 0, rev: 0 };
+    byName[p.name].n++; byName[p.name].rev += p.price;
+  });
+  const itemSummary = Object.keys(byName)
+    .map(n => n + ' x' + byName[n].n + ' @S$' + (byName[n].rev / byName[n].n).toFixed(0)).join(' | ');
 
   toast(totalUnits + ' item' + (totalUnits === 1 ? '' : 's') + ' sold — ' + (grandProfit >= 0 ? '+' : '') + 'S$' + grandProfit.toFixed(0) + ' profit');
   clLog('sell', 'sales',
     totalUnits + ' item' + (totalUnits === 1 ? '' : 's') + ' in one sale',
     'buyer=' + (buyer || '∅') + ' · revenue=S$' + totalRev.toFixed(0) + ' · ship=S$' + ship.toFixed(0) +
     ' · profit=S$' + grandProfit.toFixed(0) +
-    ' · items: ' + lines.map(l => l.name + ' x' + l.qty + ' @S$' + (l.price || 0)).join(' | '));
+    ' · items: ' + itemSummary);
   closeCmdBar();
 }
 

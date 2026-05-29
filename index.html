@@ -35,13 +35,12 @@
     release: 'kujira-collectibles@1.0',
     // Sample 10 % of page loads for performance tracing — keeps quota low
     tracesSampleRate: 0.1,
-    // Suppress noise that is not actionable
+    // Suppress noise that is not actionable. ResizeObserver warnings are pure
+    // browser noise. Network errors are handled in beforeSend (see below) so we
+    // keep the signal when the user is online and only drop the offline noise.
     ignoreErrors: [
       'ResizeObserver loop limit exceeded',
       'ResizeObserver loop completed with undelivered notifications',
-      /^Network request failed/,
-      /^Failed to fetch/,
-      /^Load failed/,
     ],
     beforeSend: function(event) {
       // Drop errors from browser extensions (chrome-extension://, moz-extension://)
@@ -49,6 +48,14 @@
                     event.exception.values[0].stacktrace && event.exception.values[0].stacktrace.frames) || [];
       for (var i = 0; i < frames.length; i++) {
         if (/^(chrome|moz|safari)-extension:/.test(frames[i].filename || '')) return null;
+      }
+      // Network failures: only ignore when the device is genuinely offline — that
+      // is expected, not a bug. When online, a failed fetch is a real signal (a
+      // Supabase sync or price-API outage) and must reach Sentry.
+      if (navigator.onLine === false) {
+        var nv = (event.exception && event.exception.values && event.exception.values[0] &&
+                  event.exception.values[0].value) || event.message || '';
+        if (/network request failed|failed to fetch|load failed/i.test(nv)) return null;
       }
       return event;
     }
@@ -242,9 +249,11 @@ textarea.fi{resize:vertical;min-height:70px}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:live-pulse 2s ease-in-out infinite}
 @keyframes live-pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 .last-updated{font-size:11px;color:var(--text3);margin-left:4px}
-th[data-tip]{position:relative;cursor:help}
-th[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:5px 9px;font-size:11px;color:var(--text2);white-space:nowrap;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.4);font-weight:400;text-transform:none;letter-spacing:0}
-th[data-tip]:hover::before{content:'';position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:var(--border2);z-index:201}
+/* Touch tooltip — surfaces a long-pressed element's native title text on
+   devices with no hover (iPad / iPhone), where title attributes never show. */
+.touch-tip{position:fixed;z-index:9000;max-width:min(78vw,300px);background:var(--bg4);border:1px solid var(--border2);border-radius:8px;padding:7px 11px;font-size:13px;line-height:1.4;color:var(--text);box-shadow:0 6px 20px rgba(0,0,0,0.45);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;white-space:normal}
+.touch-tip.show{opacity:1;transform:translateY(0)}
+@media (hover:none){[title]{-webkit-touch-callout:none}}
 /* Bottom tab bar (mobile) */
 .bottom-tab-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);z-index:150;padding:0;padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
 .bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:56px}
@@ -1203,7 +1212,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
-        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 06:14 PM</span>
+        <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updated 09:25 PM</span>
       </span>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -4997,11 +5006,72 @@ function kjrSegmentize(selectId) {
 
 // Wire up once the whole DOM is parsed — some tables (ETBs, Boxes, Packs,
 // eBay) live further down the document than this script.
+// ---- Touch tooltips ----------------------------------------------------
+// On touch devices there is no hover, so the app's ~100 title="" hints never
+// appear. This surfaces the title of a long-pressed element in a floating
+// bubble. A normal tap is untouched, so buttons still fire as usual.
+function kjrInitTouchTips() {
+  if (!window.matchMedia || !matchMedia('(hover: none)').matches) return;
+  if (kjrInitTouchTips._done) return;
+  kjrInitTouchTips._done = true;
+
+  let bubble = null, timer = null, startX = 0, startY = 0, swallow = false;
+
+  function hide() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (bubble) { bubble.classList.remove('show'); }
+  }
+  function show(el, x, y) {
+    const text = el.getAttribute('title');
+    if (!text) return;
+    if (!bubble) { bubble = document.createElement('div'); bubble.className = 'touch-tip'; document.body.appendChild(bubble); }
+    bubble.textContent = text;
+    bubble.classList.add('show');
+    // Position above the press point, clamped to the viewport.
+    const r = bubble.getBoundingClientRect();
+    let left = Math.min(Math.max(8, x - r.width / 2), innerWidth - r.width - 8);
+    let top = y - r.height - 14;
+    if (top < 8) top = y + 18; // not enough room above → drop below
+    bubble.style.left = left + 'px';
+    bubble.style.top = top + 'px';
+    swallow = true;
+    setTimeout(() => bubble && bubble.classList.remove('show'), 3000);
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    const el = e.target.closest('[title]');
+    if (!el || !el.getAttribute('title')) return;
+    startX = e.clientX; startY = e.clientY; swallow = false;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => show(el, startX, startY), 450);
+  }, true);
+
+  document.addEventListener('pointermove', (e) => {
+    if (timer && (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10)) {
+      clearTimeout(timer); timer = null;
+    }
+  }, true);
+
+  document.addEventListener('pointerup', () => { if (timer) { clearTimeout(timer); timer = null; } }, true);
+  document.addEventListener('pointercancel', hide, true);
+
+  // After a long-press, swallow the click that the browser fires so the
+  // element's action does not also run (the user meant "inspect", not "tap").
+  document.addEventListener('click', (e) => {
+    if (swallow) { swallow = false; e.preventDefault(); e.stopPropagation(); }
+  }, true);
+
+  // Tap elsewhere or scroll dismisses the bubble.
+  document.addEventListener('scroll', hide, true);
+}
+
 function kjrInitMobileShell() {
   kjrInitCardLabels();
   kjrApplyTableMode();
   // Short, clearly-exclusive filters → segmented controls (≤4 options).
   ['singles-status-filter', 'singles-type', 'slabs-grader', 'dash-range'].forEach(kjrSegmentize);
+  kjrInitTouchTips();
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', kjrInitMobileShell);

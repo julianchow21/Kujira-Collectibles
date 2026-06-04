@@ -1061,7 +1061,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.1 (4 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.2 (4 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -3777,7 +3777,7 @@ function cmdAddKey(e) {
 function cmdSellSearch() {
   const raw = document.getElementById('cmd-sell-search').value.toLowerCase().trim();
   const el = document.getElementById('cmd-sell-preview');
-  if (!raw) { el.innerHTML = '<div class="cmd-empty">Type to search your inventory...</div>'; cmdSellResults = []; return; }
+  if (!raw) { el.innerHTML = cmdSellCart.length ? '' : '<div class="cmd-empty">Type to search your inventory...</div>'; cmdSellResults = []; return; }
   const tokens = raw.split(/\s+/).filter(Boolean);
 
   // Build a single haystack string per row that includes every field a
@@ -3933,7 +3933,7 @@ function cmdSellAddToCart(idx) {
   // Keep the search box ready for the next item.
   const search = document.getElementById('cmd-sell-search');
   search.value = '';
-  document.getElementById('cmd-sell-preview').innerHTML = '<div class="cmd-empty">Type to add another item, or confirm the sale below.</div>';
+  document.getElementById('cmd-sell-preview').innerHTML = '';
   cmdSellResults = [];
   setTimeout(() => search.focus(), 30);
 }

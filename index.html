@@ -1070,7 +1070,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.7 (6 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.8 (6 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -14420,6 +14420,44 @@ The full written guide lives in the project's **Docs** folder: `Docs/Kujira User
     new MutationObserver(apply).observe(document.documentElement, {subtree:true, attributes:true, attributeFilter:['style','class']});
     apply();
   }
+  if (document.readyState !== 'loading') start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>
+<script>
+/* Back button closes the open overlay instead of exiting the PWA. When any
+   full-screen overlay opens we push one history entry; pressing Back (popstate)
+   dismisses overlays and keeps the user in the app. Closing a modal by normal
+   means quietly consumes the pushed entry so history does not accumulate. */
+(function(){
+  var SEL = '.modal-overlay,.sheet-overlay,.cmd-overlay,.kjr-modal-back,#ver-overlay,#more-sheet-overlay,#sentry-drawer-overlay';
+  function shown(el){
+    var cs = getComputedStyle(el);
+    if (cs.display==='none' || cs.visibility==='hidden' || cs.opacity==='0') return false;
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function anyOpen(){
+    var els = document.querySelectorAll(SEL);
+    for (var i=0;i<els.length;i++){ if (shown(els[i])) return true; }
+    return false;
+  }
+  function closeOverlays(){
+    ['closeCmdBar','closeVerModal','closeMoreSheet','closeNavDD'].forEach(function(fn){ try { if (typeof window[fn]==='function') window[fn](); } catch(e){} });
+    try { document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); } catch(e){}
+    document.querySelectorAll('.cmd-overlay.open,.sheet-overlay.open,.kjr-modal-back.open,#ver-overlay.open,#more-sheet-overlay.open,#sentry-drawer.open,#sentry-drawer-overlay.open').forEach(function(el){ el.classList.remove('open'); });
+    document.querySelectorAll('.modal-overlay').forEach(function(el){ try { if (getComputedStyle(el).display!=='none') el.remove(); } catch(e){} });
+  }
+  var pushed = false;
+  function sync(){
+    var open = anyOpen();
+    if (open && !pushed) { history.pushState({kjrModalGuard:1}, ''); pushed = true; }
+    else if (!open && pushed) { pushed = false; if (history.state && history.state.kjrModalGuard) history.back(); }
+  }
+  window.addEventListener('popstate', function(){
+    if (anyOpen()) { closeOverlays(); pushed = false; }
+  });
+  function start(){ new MutationObserver(sync).observe(document.documentElement, {subtree:true, attributes:true, attributeFilter:['style','class']}); }
   if (document.readyState !== 'loading') start();
   else document.addEventListener('DOMContentLoaded', start);
 })();

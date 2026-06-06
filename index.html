@@ -2348,6 +2348,12 @@ function saveData() {
 }
 
 async function _flushDirtyToSupabase() {
+  // In a local preview (file:// or localhost) every write is gated off so we
+  // never touch prod. Bail BEFORE the loop — otherwise the skipped upserts read
+  // as success and we'd clear the dirty flags, so the reload-merge would drop
+  // the local-only rows (silent data loss). Leaving them dirty makes the merge
+  // preserve them across refresh.
+  if (isLocalhostPreview()) return;
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
   // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
   const toSync = [];

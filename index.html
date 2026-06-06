@@ -30,6 +30,10 @@
     console.info('[Sentry] DSN not configured — error monitoring inactive. See HTML comment for setup steps.');
     return;
   }
+  if (typeof Sentry === 'undefined') {
+    console.warn('[Sentry] SDK failed to load (CDN blocked or offline), error monitoring inactive. App continues normally.');
+    return;
+  }
   Sentry.init({
     dsn: DSN,
     environment: 'production',
@@ -1066,7 +1070,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.5 (6 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.6 (6 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -1665,7 +1669,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <select id="lst-item" style="display:none" onchange="onListingItemChanged()"><option value="">—</option></select>
         <div class="form-group">
           <label class="lbl">Price Listed (S$)</label>
-          <input type="number" class="fi" id="lst-price" placeholder="0" step="1">
+          <input type="number" class="fi" id="lst-price" min="0" placeholder="0" step="1">
         </div>
         <div class="form-group">
           <label class="lbl">Market Price (auto)</label>
@@ -1903,7 +1907,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <div class="sell-grid">
             <div class="sell-field"><label>Buyer</label><input id="cmd-sell-buyer" placeholder="Username / name"></div>
             <div class="sell-field"><label>Date Sold</label><input id="cmd-sell-date" type="text"></div>
-            <div class="sell-field" style="grid-column:1/-1"><label>Shipping for whole order (S$)</label><input id="cmd-sell-ship" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
+            <div class="sell-field" style="grid-column:1/-1"><label>Shipping for whole order (S$)</label><input id="cmd-sell-ship" min="0" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
           </div>
           <div class="sell-profit-preview" id="cmd-sell-profit-preview">Add items to see totals</div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -1970,13 +1974,13 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Condition</label>
           <select class="fi" id="ms-cond"><option>Mint</option><option>Near Mint</option><option value="NM">NM (Near Mint, short form)</option><option>Lightly Played</option><option>Moderately Played</option><option>Heavily Played</option><option>Damaged</option></select></div>
         <div class="form-group"><label class="lbl">Qty</label><input class="fi" type="number" id="ms-qty" value="1" min="1"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="ms-market" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="ms-list" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="ms-market" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="ms-list" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Date Purchased</label><input class="fi" id="ms-date" placeholder="e.g. 9 Nov 2025"></div>
         <div class="form-group"><label class="lbl">Status</label>
           <select class="fi" id="ms-status"><option>Available</option><option>Sold</option></select></div>
-        <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" placeholder="e.g. 150" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" min="0" placeholder="e.g. 150" step="0.01"></div>
         <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="ms-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
         <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="ms-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
         <div class="form-group full"><label class="lbl">Notes</label><textarea class="fi" id="ms-notes" rows="2"></textarea></div>
@@ -2006,13 +2010,13 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <select class="fi" id="msl-lang"><option>EN</option><option>JP</option><option>CN</option><option>KR</option><option>FR</option><option>DE</option><option>IT</option><option>ES</option><option>PT</option><option>ID</option><option>TH</option></select></div>
         <div class="form-group"><label class="lbl">Cert #</label><input class="fi" id="msl-cert" placeholder="e.g. L6786028"></div>
         <div class="form-group"><label class="lbl">Rank</label><input class="fi" id="msl-rank" placeholder="e.g. 1st"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="msl-cost" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="msl-market" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="msl-list" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="msl-cost" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="msl-market" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="msl-list" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Date Listed</label><input class="fi" id="msl-date" placeholder="e.g. 9 Nov"></div>
         <div class="form-group"><label class="lbl">Status</label>
           <select class="fi" id="msl-status"><option>Available</option><option>Sold</option></select></div>
-        <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" placeholder="e.g. 500" step="0.01"></div>
+        <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" min="0" placeholder="e.g. 500" step="0.01"></div>
         <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="msl-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
         <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="msl-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
         <div class="form-group full"><label class="lbl">TAG URL / Notes</label><textarea class="fi" id="msl-notes" rows="2"></textarea></div>
@@ -2058,9 +2062,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <div class="form-grid">
         <div class="form-group"><label class="lbl">Date Sold</label><input class="fi" id="qs-date"></div>
         <div class="form-group"><label class="lbl">Buyer</label><input class="fi" id="qs-buyer" placeholder="Username / name"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="qs-cost" step="0.01" oninput="calcQsProfit()"></div>
-        <div class="form-group"><label class="lbl">Sold For (S$) *</label><input class="fi" type="number" id="qs-total" placeholder="0" step="0.01" oninput="calcQsProfit()" autofocus></div>
-        <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="qs-ship" placeholder="0" step="0.01" value="0" oninput="calcQsProfit()"></div>
+        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="qs-cost" min="0" step="0.01" oninput="calcQsProfit()"></div>
+        <div class="form-group"><label class="lbl">Sold For (S$) *</label><input class="fi" type="number" id="qs-total" min="0" placeholder="0" step="0.01" oninput="calcQsProfit()" autofocus></div>
+        <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="qs-ship" min="0" placeholder="0" step="0.01" value="0" oninput="calcQsProfit()"></div>
         <div class="form-group"><label class="lbl">Profit (auto)</label><input class="fi" id="qs-profit" readonly style="opacity:0.6"></div>
       </div>
     </div>
@@ -2083,9 +2087,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Date Sold</label><input class="fi" id="msa-date" placeholder="e.g. 8 May 2026"></div>
         <div class="form-group full"><label class="lbl">Product <span style="color:var(--text3);font-weight:400;font-size:11px">— separate items with " | " for bundle</span></label><input class="fi" id="msa-product" placeholder="Card name(s) or Item A | Item B | Item C" oninput="msaOnProductChange()"></div>
         <div class="form-group"><label class="lbl">Buyer</label><input class="fi" id="msa-buyer" placeholder="Username / name"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$) <span id="msa-cost-lbl-note" style="color:var(--text3);font-weight:400;font-size:11px"></span></label><input class="fi" type="number" id="msa-cost" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
-        <div class="form-group"><label class="lbl">Total Collected (S$)</label><input class="fi" type="number" id="msa-total" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
-        <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="msa-ship" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl">Cost Price (S$) <span id="msa-cost-lbl-note" style="color:var(--text3);font-weight:400;font-size:11px"></span></label><input class="fi" type="number" id="msa-cost" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl">Total Collected (S$)</label><input class="fi" type="number" id="msa-total" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="msa-ship" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
         <div class="form-group"><label class="lbl">Profit (auto)</label><input class="fi" id="msa-profit" readonly style="opacity:0.6"></div>
         <div class="form-group"><label class="lbl">Margin (auto)</label><input class="fi" id="msa-margin" readonly style="opacity:0.6"></div>
       </div>
@@ -13537,7 +13541,7 @@ function _renderCompleteModal(){
           </div>
           <div class="form-group">
             <label class="lbl">Cost (SGD)</label>
-            <input class="fi" type="number" step="0.01" value="${it.cost}" oninput="kjrCompleteUpdateField(${idx}, 'cost', this.value)">
+            <input class="fi" type="number" min="0" step="0.01" value="${it.cost}" oninput="kjrCompleteUpdateField(${idx}, 'cost', this.value)">
           </div>
           ${(it.table === 'singles' || it.table === 'slabs') ? `
           <div class="form-group">
@@ -14386,5 +14390,34 @@ The full written guide lives in the project's **Docs** folder: `Docs/Kujira User
 })();
 </script>
 
+<script>
+/* Modal scroll-lock: freeze background scroll while any full-screen overlay is
+   open. Centralised so it covers every modal/sheet/drawer without editing each
+   open/close site. A viewport-coverage test makes it safe regardless of how an
+   overlay hides (display, opacity, or transform off-screen). */
+(function(){
+  var SEL = '.modal-overlay,.sheet-overlay,.cmd-overlay,#kjr-modal-back,#ver-overlay,#sentry-drawer-overlay';
+  function active(el){
+    var cs = getComputedStyle(el);
+    if (cs.display==='none' || cs.visibility==='hidden' || cs.opacity==='0') return false;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    var ix = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+    var iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+    return ix * iy >= 0.5 * vw * vh;   // covers at least half the viewport
+  }
+  function anyOpen(){
+    var els = document.querySelectorAll(SEL);
+    for (var i=0;i<els.length;i++){ if (active(els[i])) return true; }
+    return false;
+  }
+  function apply(){ document.body.style.overflow = anyOpen() ? 'hidden' : ''; }
+  function start(){
+    new MutationObserver(apply).observe(document.documentElement, {subtree:true, attributes:true, attributeFilter:['style','class']});
+    apply();
+  }
+  if (document.readyState !== 'loading') start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>
 </body>
 </html>

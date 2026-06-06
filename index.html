@@ -1070,7 +1070,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.6 (6 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.7 (6 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -13972,7 +13972,9 @@ document.addEventListener('DOMContentLoaded', () => {
   window._kjrMarketReadInstalled = true;
 
   // Map of "table:id" → { price_sgd, price_usd, source, fetched_at }
-  window._priceLookup = window._priceLookup || {};
+  // Hydrate from localStorage first so market values show instantly on load and
+  // survive offline. loadMarketPrices() refreshes this from Supabase when online.
+  window._priceLookup = window._priceLookup || (function(){ try { return JSON.parse(localStorage.getItem('kjr_price_cache') || 'null') || {}; } catch(e){ return {}; } })();
 
   async function loadMarketPrices(){
     try {
@@ -13983,6 +13985,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const map = {};
       rows.forEach(p => { map[p.source_table + ':' + p.item_id] = p; });
       window._priceLookup = map;
+      // Persist so the cache survives reloads and offline. Skip silently if the
+      // payload exceeds the localStorage quota (online fetch still works).
+      try { localStorage.setItem('kjr_price_cache', JSON.stringify(map)); } catch(e){ /* quota exceeded */ }
       console.log('[market_prices] loaded', rows.length, 'cached prices');
       // Diagnostic: how many cached prices actually match current item IDs?
       // If this is much lower than rows.length, the cache contains stale IDs

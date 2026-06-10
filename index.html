@@ -1073,7 +1073,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v1.9 (10 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.0 (11 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -9396,8 +9396,12 @@ async function searchEbay() {
   outEl.style.display = 'block';
   outEl.innerHTML = '<span class="ai-status">Searching…</span>';
 
-  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
-  if (hasKeys) {
+  // Real sold-price path is available when EITHER a client key is set OR the
+  // Cloudflare Worker proxy is configured (the Worker holds the key
+  // server-side, so no client key is needed). Without this, a fresh browser
+  // with no local key would skip the Worker and fall to the AI estimate.
+  const hasRealSource = getApiKey('ppt') || getApiKey('poketrace') || PRICE_PROXY_BASE;
+  if (hasRealSource) {
     // Use real APIs
     outEl.innerHTML = '<span class="ai-status">Fetching from PokemonPriceTracker + PokeTrace...</span>';
     let r;
@@ -9430,6 +9434,18 @@ async function searchEbay() {
           ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Sources disagree significantly — manually verify</div>' : ''}
 
         </div>`;
+    } else if (/HTTP 429/.test(r.pptError || '')) {
+      // PPT free tier is 100 lookups/day and resets at 00:00 UTC (08:00 SGT).
+      // PokeTrace is disabled, so a 429 means no source is available until reset.
+      outEl.innerHTML = '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
+        '<strong>⏳ Daily price-lookup limit reached</strong>' +
+        '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' +
+          'PokemonPriceTracker allows 100 lookups per day on the free tier, and that is used up. It resets at 08:00 SGT (midnight UTC).' +
+        '</div>' +
+        '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
+          'Try again after the reset, or clear your keys in 🔑 Settings to use the AI estimate in the meantime.' +
+        '</div>' +
+        '</div>';
     } else {
       outEl.innerHTML = '<div style="padding:10px;background:var(--red-soft);border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:13px">' +
         '<strong>No price found for "' + esc(q) + '"</strong>' +

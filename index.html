@@ -491,6 +491,7 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
      its inline min-width and let the dot track wrap inside a narrow column. */
   body:not(.force-tables) #kjr-ebay-table [data-col-key="date"],
   body:not(.force-tables) #kjr-ebay-table [data-col-key="tracking"],
+  body:not(.force-tables) #kjr-ebay-table [data-col-key="declared"],
   body:not(.force-tables) #kjr-ebay-table [data-col-key="priceUsd"],
   body:not(.force-tables) #kjr-ebay-table [data-col-key="freightSgd"],
   body:not(.force-tables) #kjr-ebay-table [data-col-key="totalSgd"],
@@ -11788,9 +11789,10 @@ if ('serviceWorker' in navigator) {
     <tr>
       <th data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" id="cb-all-ebay" onchange="kjrEbayToggleAll(this.checked)" title="Select all visible"></th>
       <th data-col-key="date" class="sortable" onclick="kjrSort('ebayPurchases','date')">Date</th>
-      <th data-col-key="product" class="sortable" onclick="kjrSort('ebayPurchases','product')" style="text-align:left">Product</th>
+      <th data-col-key="product" class="sortable" onclick="kjrSort('ebayPurchases','product')">Product</th>
       <th data-col-key="status" class="sortable" onclick="kjrSort('ebayPurchases','status')" style="min-width:260px">Pipeline</th>
       <th data-col-key="tracking">Tracking</th>
+      <th data-col-key="declared" class="sortable" onclick="kjrSort('ebayPurchases','declared')" title="Declared on Buyandship?">Declared</th>
       <th data-col-key="priceUsd" class="sortable" onclick="kjrSort('ebayPurchases','priceUsd')">USD</th>
       <th data-col-key="freightSgd" class="sortable" onclick="kjrSort('ebayPurchases','freightSgd')">Freight</th>
       <th data-col-key="totalSgd" class="sortable" onclick="kjrSort('ebayPurchases','totalSgd')">SGD</th>
@@ -11803,6 +11805,7 @@ if ('serviceWorker' in navigator) {
       <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderEbayPurchases()" id="kjr-ebay-cf-product"></th>
       <th data-col-key="status"></th>
       <th data-col-key="tracking"><input class="col-filter" placeholder="Filter..." oninput="renderEbayPurchases()" id="kjr-ebay-cf-tracking"></th>
+      <th data-col-key="declared"><input class="col-filter" placeholder="Yes / No…" oninput="renderEbayPurchases()" id="kjr-ebay-cf-declared"></th>
       <th data-col-key="priceUsd"><input class="col-filter" placeholder=">20 / 50-100" title="USD — Examples: 50 (±$1) · &gt;20 · &lt;100 · 20-80" oninput="renderEbayPurchases()" id="kjr-ebay-cf-usd"></th>
       <th data-col-key="freightSgd"><input class="col-filter" placeholder=">5 / 10-20" title="SGD freight — Examples: 10 (±$1) · &gt;5 · &lt;20" oninput="renderEbayPurchases()" id="kjr-ebay-cf-freight"></th>
       <th data-col-key="totalSgd"><input class="col-filter" placeholder=">50 / 100-300" title="Total SGD — Examples: 100 (±$1) · &gt;50 · &lt;300 · 100-500" oninput="renderEbayPurchases()" id="kjr-ebay-cf-sgd"></th>
@@ -12620,7 +12623,7 @@ function kjrParseMultiItemProduct(text){
 
 function kjrOpenEbayModal(item){
   const isNew = !item;
-  if (isNew) item = { id: kjrId('eb'), status:'Paid', date:new Date().toISOString().slice(0,10), declared:'Yes' };
+  if (isNew) item = { id: kjrId('eb'), status:'Paid', date:new Date().toISOString().slice(0,10), declared:'No' };
   // Resolve to the live DB record on edit so changes persist (the row's JSON
   // is inlined into the onclick handler, giving us a clone).
   const target = isNew ? item : (DB.ebayPurchases.find(r => r.id === item.id) || item);
@@ -12636,36 +12639,45 @@ function kjrOpenEbayModal(item){
   _kjrEbUserPickedTarget = !!(target.targetTable);
   // Convert stored "D MMM YYYY" → "YYYY-MM-DD" so the date input populates.
   const dateIso = _kjrDateToIso(target.date) || new Date().toISOString().slice(0,10);
-  document.getElementById('kjr-modal-fields').innerHTML = `
-    <div class="form-grid">
+  // Field blocks. Status and Freight only show when editing an existing
+  // purchase — a new purchase sets status via the pipeline and freight inline
+  // in the table, so the Add form stays to the essentials.
+  const fDate = `
       <div class="form-group">
         <label class="lbl">Date</label>
         <input class="fi" data-k="date" type="date" value="${kjrEscape(dateIso)}">
-      </div>
+      </div>`;
+  const fStatus = `
       <div class="form-group">
         <label class="lbl">Status</label>
         <select class="fi" data-k="status">${statusOpts}</select>
-      </div>
+      </div>`;
+  const fProduct = `
       <div class="form-group full">
         <label class="lbl">Product <span style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0">— for multiple items, separate with "and", commas, or new lines (e.g. "Jirachi XY67a $82.95 and Gyarados 21 $20")</span></label>
         <textarea class="fi" data-k="product" id="kjr-eb-product" rows="2" placeholder="Card / item name (multi-item: 'Jirachi XY67a $82.95 and Gyarados 21 $20')" oninput="kjrEbayAutoTarget()" style="resize:vertical;min-height:38px;font-family:inherit">${kjrEscape(target.product||'')}</textarea>
-      </div>
+      </div>`;
+  const fTracking = `
       <div class="form-group">
         <label class="lbl">Tracking #</label>
         <input class="fi" data-k="tracking" type="text" value="${kjrEscape(target.tracking||'')}">
-      </div>
+      </div>`;
+  const fDeclared = `
       <div class="form-group">
         <label class="lbl">Declared on Buyandship?</label>
         <select class="fi" data-k="declared">${declaredOpts}</select>
-      </div>
+      </div>`;
+  const fPriceUsd = `
       <div class="form-group">
         <label class="lbl">Price (USD)</label>
         <input class="fi" data-k="priceUsd" id="kjr-eb-usd" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.priceUsd||'')}" placeholder="0.00" oninput="kjrEbayRecalc()">
-      </div>
+      </div>`;
+  const fFreight = `
       <div class="form-group">
         <label class="lbl">Buyandship Freight (SGD)</label>
         <input class="fi" data-k="freightSgd" id="kjr-eb-frt" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.freightSgd||'')}" placeholder="0.00" oninput="kjrEbayRecalc()">
-      </div>
+      </div>`;
+  const fTotal = `
       <div class="form-group full">
         <label class="lbl" style="display:flex;align-items:center;gap:8px">
           Total (SGD)
@@ -12674,13 +12686,16 @@ function kjrOpenEbayModal(item){
         </label>
         <input class="fi" data-k="totalSgd" id="kjr-eb-sgd" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.totalSgd||'')}" placeholder="auto" oninput="kjrEbayUserEditedSgd()">
         <div id="kjr-eb-breakdown" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5"></div>
-      </div>
+      </div>`;
+  const fPush = `
       <div class="form-group full">
         <label class="lbl">When received, push into… <span id="kjr-eb-target-hint" style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0"></span></label>
         <select class="fi" data-k="targetTable" id="kjr-eb-target" onchange="kjrEbayUserPickedTarget()">${targetOpts}</select>
-      </div>
-    </div>
-  `;
+      </div>`;
+  const fields = isNew
+    ? fDate + fDeclared + fProduct + fTracking + fPriceUsd + fTotal + fPush
+    : fDate + fStatus + fProduct + fTracking + fDeclared + fPriceUsd + fFreight + fTotal + fPush;
+  document.getElementById('kjr-modal-fields').innerHTML = `<div class="form-grid">${fields}</div>`;
   document.getElementById('kjr-modal-back').classList.add('open');
   _kjrEbUserEditedSgd = !!(target.totalSgd && target.totalSgd !== '');
   kjrEbayRecalc(); // initial render of breakdown
@@ -12732,11 +12747,12 @@ function kjrEbayRecalc(){
   const sgdEl = document.getElementById('kjr-eb-sgd');
   const bdEl  = document.getElementById('kjr-eb-breakdown');
   if (!usdEl || !sgdEl) return;
-  const calc = kjrEbayComputeSgd(usdEl.value, frtEl.value, '');
+  const frtVal = frtEl ? frtEl.value : '';
+  const calc = kjrEbayComputeSgd(usdEl.value, frtVal, '');
   if (!_kjrEbUserEditedSgd) {
     sgdEl.value = calc.computed > 0 ? Math.round(calc.computed) : '';
   }
-  const usd = kjrNum(usdEl.value), frt = kjrNum(frtEl.value);
+  const usd = kjrNum(usdEl.value), frt = kjrNum(frtVal);
   const usdInSgd = +(usd * calc.rate).toFixed(2);
   bdEl.innerHTML =
     `US$${Math.round(usd)} × ${calc.rate.toFixed(4)} = S$${Math.round(usdInSgd)}` +
@@ -12791,25 +12807,8 @@ function renderEbayPurchases(){
   const rowHtml = (r, sold) => {
     const isCompleted = (r.status||'').toLowerCase() === 'completed';
     const isCancelled = (r.status||'').toLowerCase() === 'cancelled';
-    const nextStatus = kjrEbayNextStatus(r.status);
-    // Action button — always renders SOMETHING so the column never looks blank.
-    let actionBtn;
-    if (isCompleted) {
-      actionBtn = r._historical
-        ? '<span style="color:var(--text3);font-size:11px" title="Historical row — already in inventory">✓ historical</span>'
-        : '<span style="color:var(--green);font-size:11px">✓ ' + kjrEscape(r.completedAt || r.receivedAt || 'completed') + '</span>';
-    } else if (isCancelled) {
-      actionBtn = '<span style="color:var(--text3);font-size:11px">— cancelled</span>';
-    } else if (nextStatus === 'Completed') {
-      actionBtn = '<button class="btn btn-sm" onclick="kjrEbayAdvance(\''+r.id+'\')" style="background:var(--accent);color:#fff;border-color:var(--accent);font-size:11px;padding:3px 8px" title="Open completion modal to push items into inventory">✓ Complete</button>';
-    } else if (nextStatus) {
-      actionBtn = '<button class="btn btn-sm" onclick="kjrEbayAdvance(\''+r.id+'\')" style="font-size:11px;padding:3px 8px" title="Advance to: '+kjrEscape(nextStatus)+'">→ ' + kjrEscape(nextStatus) + '</button>';
-    } else {
-      // Status is something we don't recognise (legacy / typo). Offer the first
-      // pipeline step as a recovery action instead of leaving the cell empty.
-      const first = KJR_EBAY_PIPELINE[0];
-      actionBtn = '<button class="btn btn-sm" onclick="kjrEbayResetToPaid(\''+r.id+'\')" style="font-size:11px;padding:3px 8px;color:var(--amber)" title="Status &quot;'+kjrEscape(r.status||'(blank)')+'&quot; is not in the pipeline — reset to '+first+'">↺ Reset</button>';
-    }
+    // Status is advanced by clicking the pipeline dots below — no per-row
+    // push button in the Actions column.
 
     // ── Pipeline timeline component ──
     // Six little dots, one per status. Filled & teal up to and including the
@@ -12855,20 +12854,26 @@ function renderEbayPurchases(){
       return '<td class="num" data-col-key="lastUpdated" style="font-size:11px;color:' + (stale ? 'var(--amber)' : 'var(--text3)') + '" title="Last sync: ' + abs + (stale ? ' — older than 3 days, consider re-checking Buyandship' : '') + '">' + dot + label + '</td>';
     })();
 
+    // Declared on Buyandship cell — colour-flags an undeclared shipment in amber.
+    const declVal = (r.declared || '').trim();
+    const declCol = declVal === 'No' ? 'var(--amber)' : (declVal === 'Yes' ? 'var(--text2)' : 'var(--text3)');
+    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + '">' + kjrEscape(declVal || '—') + '</td>';
+
     const isSel = _kjrEbaySel.has(r.id);
     return '<tr data-id="' + kjrEscape(r.id) + '"' + (sold ? ' class="sold-row"' : '') + (isSel ? ' style="background:var(--accent-soft)"' : '') + '>' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (isSel ? 'checked' : '') + ' onchange="kjrEbayToggleRow(\''+r.id+'\',this.checked)"></td>' +
-      '<td class="num" data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
-      '<td data-col-key="product" style="text-align:left">'+kjrEscape(r.product||'')+'</td>' +
+      '<td data-col-key="date" style="text-align:center">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
+      '<td data-col-key="product" style="text-align:center">'+kjrEscape(r.product||'')+'</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +
       '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">'+kjrEscape(r.tracking||'')+'</td>' +
+      declaredCell +
       '<td class="num" data-col-key="priceUsd">'+kjrFmt(r.priceUsd)+'</td>' +
       '<td class="num" data-col-key="freightSgd">' +
         '<input class="kjr-inline-input" type="number" step="0.01" min="0" value="' + (kjrNum(r.freightSgd) > 0 ? Math.round(kjrNum(r.freightSgd)) : '') + '" placeholder="—" onchange="kjrEbayInlineEdit(\''+r.id+'\',\'freightSgd\',this.value)">' +
       '</td>' +
       sgdCell +
       updatedCell +
-      '<td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px">' + actionBtn +
+      '<td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px">' +
         '<button class="btn btn-ghost btn-sm" onclick=\'kjrOpenEbayModal('+JSON.stringify(r).replace(/'/g,'&#39;')+')\'>Edit</button>' +
         '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'ebayPurchases\',\''+r.id+'\')">×</button>' +
       '</span></td>' +
@@ -12876,11 +12881,11 @@ function renderEbayPurchases(){
   };
   let body = active.map(r => rowHtml(r, false)).join('');
   if (active.length === 0 && inactive.length === 0) {
-    body = '<tr><td colspan="10" style="color:var(--text3);padding:24px;text-align:center">No purchases match.</td></tr>';
+    body = '<tr><td colspan="11" style="color:var(--text3);padding:24px;text-align:center">No purchases match.</td></tr>';
   } else if (active.length === 0) {
-    body = '<tr><td colspan="10" style="color:var(--text3);padding:18px;text-align:center">Nothing in transit — all received or cancelled.</td></tr>';
+    body = '<tr><td colspan="11" style="color:var(--text3);padding:18px;text-align:center">Nothing in transit — all received or cancelled.</td></tr>';
   }
-  body += kjrSoldToggleRow('ebayPurchases', inactive.length, 10);
+  body += kjrSoldToggleRow('ebayPurchases', inactive.length, 11);
   if (_kjrSoldOpen.ebayPurchases) body += inactive.map(r => rowHtml(r, true)).join('');
   document.getElementById('kjr-ebay-body').innerHTML = body;
   _kjrEbayUpdateBulkBar();
@@ -13012,7 +13017,7 @@ function kjrEbayInlineEdit(id, field, value){
 const EBAY_COL_KEY = 'pokeinv_ebay_col_vis';
 const EBAY_COL_LABELS = {
   date: 'Date', product: 'Product', status: 'Pipeline', tracking: 'Tracking',
-  priceUsd: 'USD', freightSgd: 'Freight', totalSgd: 'SGD All-In',
+  declared: 'Declared', priceUsd: 'USD', freightSgd: 'Freight', totalSgd: 'SGD All-In',
   lastUpdated: 'Updated', actions: 'Actions'
 };
 function _kjrEbayLoadColVis(){
@@ -13157,7 +13162,7 @@ function _kjrColAttach(tbl){
 
 // ── eBay column ORDER (drag-to-reorder) ────────────────────────────────
 const EBAY_COL_ORDER_KEY = 'pokeinv_ebay_col_order';
-const EBAY_DEFAULT_COL_ORDER = ['_cb','date','product','status','tracking','priceUsd','freightSgd','totalSgd','lastUpdated','actions'];
+const EBAY_DEFAULT_COL_ORDER = ['_cb','date','product','status','tracking','declared','priceUsd','freightSgd','totalSgd','lastUpdated','actions'];
 function _kjrEbayLoadColOrder(){
   try {
     const saved = JSON.parse(localStorage.getItem(EBAY_COL_ORDER_KEY) || 'null');

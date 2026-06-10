@@ -178,6 +178,8 @@ tbody tr:hover td{background:var(--bg3);cursor:default}
 .num{font-variant-numeric:tabular-nums;font-family:'SF Mono','Fira Code',monospace;font-size:12px;text-align:center}
 td input{text-align:center}
 td .col-filter{text-align:center}
+th input{text-align:center}
+th .col-filter{text-align:center}
 
 /* BADGES */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px}
@@ -2654,6 +2656,17 @@ function formatDateInput(val) {
   // Wrap the strict normalizer so existing callers keep working.
   return toDateMmmYyyy(val);
 }
+// Convert any stored date ("D MMM YYYY" or ISO) → "YYYY-MM-DD" for <input type="date">.
+// The modal stores dates as "D MMM YYYY"; the browser date picker needs ISO format.
+function toIsoDateStr(val) {
+  const s = toDateMmmYyyy(val);
+  if (!s) return '';
+  const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (!m) return '';
+  const mi = _monthIdxFromString(m[2]);
+  if (mi < 0) return '';
+  return m[3] + '-' + String(mi + 1).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+}
 
 // =========== UNIFIED MANUAL-INPUT NORMALIZER ===========
 // Every manual-entry path (Add Single modal, Add Slab modal, Add Sale modal,
@@ -3810,11 +3823,18 @@ function cmdSellSearch() {
 
   const singles = DB.singles.filter(i => (i.status||'Available') !== 'Sold' && allMatch(haystackSingle(i)));
   const slabs   = DB.slabs  .filter(i => (i.status||'Available') !== 'Sold' && allMatch(haystackSlab(i)));
+  const haystackSealed = i => [i.product, i.notes, i.status].filter(Boolean).join(' ').toLowerCase();
+  const etbs    = (DB.etbs||[])         .filter(i => kjrIsActiveStatus('etbs', i.status)         && allMatch(haystackSealed(i)));
+  const bbs     = (DB.boosterBoxes||[]) .filter(i => kjrIsActiveStatus('boosterBoxes', i.status) && allMatch(haystackSealed(i)));
+  const bps     = (DB.boosterPacks||[]) .filter(i => kjrIsActiveStatus('boosterPacks', i.status) && allMatch(haystackSealed(i)));
 
   cmdSellResults = [
     ...slabs  .map(i => ({ ...i, _table: 'slabs' })),    // slabs first — usually highest value
     ...singles.map(i => ({ ...i, _table: 'singles' })),
-  ].slice(0, 12);
+    ...etbs   .map(i => ({ ...i, _table: 'etbs' })),
+    ...bbs    .map(i => ({ ...i, _table: 'boosterBoxes' })),
+    ...bps    .map(i => ({ ...i, _table: 'boosterPacks' })),
+  ].slice(0, 15);
 
   if (cmdSellResults.length === 0) {
     el.innerHTML = '<div class="cmd-empty">No available inventory matches "' + raw + '"</div>';
@@ -3829,21 +3849,33 @@ function renderCmdSellResults() {
   const el = document.getElementById('cmd-sell-preview');
   el.innerHTML = '<div class="cmd-section-label">Available Inventory</div>' +
     cmdSellResults.map((i, idx) => {
-      const isSlab = i._table === 'slabs';
-      const badge = isSlab ? graderGradeBadge(i.grader, i.grade, i.notes) : (i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
+      const isSlab   = i._table === 'slabs';
+      const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(i._table);
+      const badge = isSlab
+        ? graderGradeBadge(i.grader, i.grade, i.notes)
+        : isSealed
+          ? '<span class="badge b-sealed">Sealed</span>'
+          : (i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
       const meta = isSlab
         ? [(i.certNo ? '#' + i.certNo : ''), (i.rank||''), 'Cost: ' + (i.costPrice ? 'S$'+i.costPrice : '—')].filter(Boolean).join(' · ')
-        : [(i.language||''), (i.condition||''), 'Qty: '+(i.qty||1), 'Cost: '+(i.costPrice ? 'S$'+i.costPrice : '—')].join(' · ');
+        : isSealed
+          ? (i._table === 'boosterPacks'
+              ? ['Qty: '+(i.qty||1)+' packs', 'Cost: S$'+(i.unitPrice||'—')+'/pack'].join(' · ')
+              : ['Status: '+(i.status||''), 'Cost: S$'+(i.totalPrice||'—')].join(' · '))
+          : [(i.language||''), (i.condition||''), 'Qty: '+(i.qty||1), 'Cost: '+(i.costPrice ? 'S$'+i.costPrice : '—')].join(' · ');
       // Show how many units are already staged. Singles match by group (any
-      // copy of the same card), slabs by their unique row id.
+      // copy of the same card), slabs and sealed items by their unique row id.
       const line = isSlab
         ? cmdSellCart.find(l => l._table === 'slabs' && l.id === i.id)
-        : cmdSellCart.find(l => l._table === 'singles' && l.groupKey === cmdSingleGroupKey(i));
+        : isSealed
+          ? cmdSellCart.find(l => l._table === i._table && l.id === i.id)
+          : cmdSellCart.find(l => l._table === 'singles' && l.groupKey === cmdSingleGroupKey(i));
       const inCart = line ? '<span class="cmd-result-incart">✓ ' + line.qty + ' in sale</span>' : '';
+      const icon = isSlab ? '🏆' : isSealed ? '📦' : '🃏';
       return '<div class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onclick="cmdSellAddToCart(' + idx + ')">' +
-        '<div class="cmd-result-icon" style="background:var(--bg3)">' + (isSlab ? '🏆' : '🃏') + '</div>' +
+        '<div class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</div>' +
         '<div class="cmd-result-main">' +
-          '<div class="cmd-result-name">' + esc(i.name||'—') + '</div>' +
+          '<div class="cmd-result-name">' + esc(i.product || i.name || '—') + '</div>' +
           '<div class="cmd-result-meta">' + esc(meta) + '</div>' +
         '</div>' + inCart + badge +
       '</div>';
@@ -3909,6 +3941,33 @@ function cmdSellAddToCart(idx) {
         price: parseFloat(picked.listPrice) > 0 ? parseFloat(picked.listPrice) : ''
       });
     }
+  } else if (picked._table === 'etbs' || picked._table === 'boosterBoxes') {
+    const existing = cmdSellCart.find(l => l._table === picked._table && l.id === picked.id);
+    if (existing) {
+      toast('That item is already in the sale');
+    } else {
+      cmdSellCart.push({
+        id: picked.id, _table: picked._table, name: picked.product || '',
+        costPrice: parseFloat(picked.totalPrice) || 0,
+        availQty: 1, qty: 1,
+        price: parseFloat(picked.carousellPrice) > 0 ? parseFloat(picked.carousellPrice) : ''
+      });
+    }
+  } else if (picked._table === 'boosterPacks') {
+    const existing = cmdSellCart.find(l => l._table === 'boosterPacks' && l.id === picked.id);
+    const availQty = Math.max(1, parseInt(picked.qty) || 1);
+    if (existing) {
+      existing.availQty = availQty;
+      if (existing.qty >= availQty) { toast('Only ' + availQty + ' packs available'); return; }
+      existing.qty += 1;
+    } else {
+      cmdSellCart.push({
+        id: picked.id, _table: 'boosterPacks', name: picked.product || '',
+        costPrice: parseFloat(picked.unitPrice) || 0,
+        availQty, qty: 1,
+        price: ''
+      });
+    }
   } else {
     const key = cmdSingleGroupKey(picked);
     const lots = DB.singles
@@ -3927,9 +3986,6 @@ function cmdSellAddToCart(idx) {
         name: picked.name || '', type: picked.type || '',
         costPrice: lots.length ? lots[0].costPrice : (parseFloat(picked.costPrice) || 0),
         availQty, qty: 1,
-        // Default to YOUR asking (list) price so a one-tap confirm sells at the
-        // price you set. If none is set, leave it blank (empty string) rather
-        // than auto-filling a stale market estimate that fakes a huge loss.
         price: parseFloat(picked.listPrice) > 0 ? parseFloat(picked.listPrice) : ''
       });
     }
@@ -4000,12 +4056,16 @@ function renderCmdSellCart() {
     const units = cmdSellCart.reduce((s, l) => s + l.qty, 0);
     countEl.textContent = '(' + units + ' unit' + (units === 1 ? '' : 's') + ')';
     list.innerHTML = cmdSellCart.map(l => {
-      const isSlab = l._table === 'slabs';
+      const isSlab   = l._table === 'slabs';
+      const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(l._table);
       const badge = isSlab
         ? (typeof graderGradeBadge === 'function' ? graderGradeBadge(l.grader, l.grade, '') : '')
-        : (l.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
-      const qtyCtrl = isSlab
-        ? '<span class="sell-cart-qty-fixed" title="Slabs are unique — one unit">×1</span>'
+        : isSealed
+          ? '<span class="badge b-sealed">Sealed</span>'
+          : (l.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
+      const isFixedQty = isSlab || l._table === 'etbs' || l._table === 'boosterBoxes';
+      const qtyCtrl = isFixedQty
+        ? '<span class="sell-cart-qty-fixed" title="Unique unit — one in sale">×1</span>'
         : '<div class="sell-qty">' +
             '<button onclick="cmdSellSetQty(\'' + l.id + '\',-1)"' + (l.qty <= 1 ? ' disabled' : '') + '>−</button>' +
             '<span>' + l.qty + '</span>' +
@@ -4089,6 +4149,19 @@ function cmdConfirmSell() {
         : [l.grader, l.grade].filter(Boolean).join(' ').trim();
       const productName = l.name + (gradeLabel ? ' ' + gradeLabel : '') + (l.certNo ? ' #' + l.certNo : '');
       planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price: l.price || 0 });
+    } else if (l._table === 'etbs' || l._table === 'boosterBoxes') {
+      const row = DB[l._table].find(i => i.id === l.id && kjrIsActiveStatus(l._table, i.status||''));
+      if (!row) continue;
+      planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price: l.price || 0 });
+    } else if (l._table === 'boosterPacks') {
+      const row = DB.boosterPacks.find(i => i.id === l.id && kjrIsActiveStatus('boosterPacks', i.status||''));
+      if (!row) continue;
+      const unitCost = parseFloat(row.unitPrice) || 0;
+      const available = Math.max(1, parseInt(row.qty) || 1);
+      const take = Math.min(l.qty, available);
+      for (let u = 0; u < take; u++) {
+        planned.push({ name: l.name, productName: l.name, table: 'boosterPacks', rowId: row.id, cost: unitCost, price: l.price || 0 });
+      }
     } else {
       // Re-gather matching available lots and expand to per-unit costs.
       const key = l.groupKey;
@@ -4123,7 +4196,8 @@ function cmdConfirmSell() {
 
   const newSales = [];
   let shipAllocated = 0, unitsDone = 0, grandProfit = 0;
-  const retireSingles = {};   // rowId -> units to retire
+  const retireSingles = {};      // rowId -> units to retire
+  const retireBoosterPacks = {}; // rowId -> units to retire
 
   planned.forEach(p => {
     unitsDone++;
@@ -4150,6 +4224,11 @@ function cmdConfirmSell() {
     if (p.table === 'slabs') {
       const row = DB.slabs.find(i => i.id === p.rowId);
       if (row) { row.status = 'Sold'; markDirty('slabs', row.id); }
+    } else if (p.table === 'etbs' || p.table === 'boosterBoxes') {
+      const row = DB[p.table].find(i => i.id === p.rowId);
+      if (row) { row.status = 'Sold'; markDirty(p.table, row.id); }
+    } else if (p.table === 'boosterPacks') {
+      retireBoosterPacks[p.rowId] = (retireBoosterPacks[p.rowId] || 0) + 1;
     } else {
       retireSingles[p.rowId] = (retireSingles[p.rowId] || 0) + 1;
     }
@@ -4165,6 +4244,16 @@ function cmdConfirmSell() {
     markDirty('singles', row.id);
   });
 
+  // Retire booster pack lots — decrement qty, or mark Sold when emptied.
+  Object.keys(retireBoosterPacks).forEach(rowId => {
+    const row = DB.boosterPacks.find(i => i.id === rowId);
+    if (!row) return;
+    const remaining = (parseInt(row.qty) || 1) - retireBoosterPacks[rowId];
+    if (remaining >= 1) row.qty = remaining;
+    else { row.qty = 0; row.status = 'Sold'; }
+    markDirty('boosterPacks', row.id);
+  });
+
   // Newest first, preserving cart order within this transaction.
   DB.sales.unshift(...newSales);
   saveData();
@@ -4172,6 +4261,9 @@ function cmdConfirmSell() {
   // Refresh only the views that could have changed.
   if (planned.some(p => p.table === 'singles')) renderSingles();
   if (planned.some(p => p.table === 'slabs'))   renderSlabs();
+  if (planned.some(p => p.table === 'etbs') && typeof renderEtbs === 'function') renderEtbs();
+  if (planned.some(p => p.table === 'boosterBoxes') && typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
+  if (planned.some(p => p.table === 'boosterPacks') && typeof renderBoosterPacks === 'function') renderBoosterPacks();
   renderSales();
   renderDashboard();
 
@@ -12140,7 +12232,7 @@ function kjrOpenModal(ctx){
   _kjrModalCtx = ctx;
   document.getElementById('kjr-modal-title').textContent = (ctx.isNew?'Add ':'Edit ') + ctx.singular;
   document.getElementById('kjr-modal-fields').innerHTML = ctx.fields.map(f => {
-    const v = ctx.item[f.key] || '';
+    const v = f.type === 'date' ? toIsoDateStr(ctx.item[f.key] || '') : (ctx.item[f.key] || '');
     if (f.type === 'select') {
       return '<label class="lbl">'+kjrEscape(f.label)+'</label><select class="fi" data-k="'+f.key+'">' +
         f.options.map(o => '<option value="'+kjrEscape(o)+'"'+(o===v?' selected':'')+'>'+kjrEscape(o||'—')+'</option>').join('') +
@@ -12632,7 +12724,7 @@ function kjrOpenEbayModal(item){
   const rate = (typeof _sgdRate === 'number' && _sgdRate > 0) ? _sgdRate.toFixed(4) : '1.2700';
   const statusOpts = KJR_EBAY_STATUSES.map(s => `<option value="${s}" ${s===(target.status||'')?'selected':''}>${s}</option>`).join('');
   const declaredOpts = ['','Yes','No','N/A'].map(s => `<option value="${s}" ${s===(target.declared||'')?'selected':''}>${s||'—'}</option>`).join('');
-  const targetLabels = { '':'—', singles:'singles', slabs:'slabs', etbs:'etbs', boosterBoxes:'boosterBoxes', boosterPacks:'boosterPacks' };
+  const targetLabels = { '':'', singles:'Singles', slabs:'Slabs', etbs:'ETBs', boosterBoxes:'Booster Boxes', boosterPacks:'Booster Packs' };
   const targetOpts = Object.keys(targetLabels).map(s => `<option value="${s}" ${s===(target.targetTable||'')?'selected':''}>${targetLabels[s]}</option>`).join('');
   // Track whether the user has manually picked a target. Once they have,
   // auto-detection stops fighting them.
@@ -12654,8 +12746,8 @@ function kjrOpenEbayModal(item){
       </div>`;
   const fProduct = `
       <div class="form-group full">
-        <label class="lbl">Product <span style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0">— for multiple items, separate with "and", commas, or new lines (e.g. "Jirachi XY67a $82.95 and Gyarados 21 $20")</span></label>
-        <textarea class="fi" data-k="product" id="kjr-eb-product" rows="2" placeholder="Card / item name (multi-item: 'Jirachi XY67a $82.95 and Gyarados 21 $20')" oninput="kjrEbayAutoTarget()" style="resize:vertical;min-height:38px;font-family:inherit">${kjrEscape(target.product||'')}</textarea>
+        <label class="lbl">Product <span style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0">Separate with "and", or add line spacing per card</span></label>
+        <textarea class="fi" data-k="product" id="kjr-eb-product" rows="2" placeholder="Card Name" oninput="kjrEbayAutoTarget()" style="resize:vertical;min-height:38px;font-family:inherit">${kjrEscape(target.product||'')}</textarea>
       </div>`;
   const fTracking = `
       <div class="form-group">
@@ -12681,15 +12773,14 @@ function kjrOpenEbayModal(item){
       <div class="form-group full">
         <label class="lbl" style="display:flex;align-items:center;gap:8px">
           Total (SGD)
-          <span id="kjr-eb-rate-chip" style="font-size:10px;font-weight:500;color:var(--text3);text-transform:none;letter-spacing:0">@ ${rate} SGD/USD</span>
+          <span id="kjr-eb-rate-chip" style="font-size:10px;font-weight:500;color:var(--text3);text-transform:none;letter-spacing:0">USD:SGD ${rate}</span>
           <a id="kjr-eb-reset" style="font-size:10px;color:var(--accent);cursor:pointer;text-transform:none;letter-spacing:0;display:none;margin-left:auto" onclick="kjrEbayResetTotal()">↺ use auto-calc</a>
         </label>
-        <input class="fi" data-k="totalSgd" id="kjr-eb-sgd" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.totalSgd||'')}" placeholder="auto" oninput="kjrEbayUserEditedSgd()">
-        <div id="kjr-eb-breakdown" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5"></div>
+        <input class="fi" data-k="totalSgd" id="kjr-eb-sgd" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.totalSgd||'')}" oninput="kjrEbayUserEditedSgd()">
       </div>`;
   const fPush = `
       <div class="form-group full">
-        <label class="lbl">When received, push into… <span id="kjr-eb-target-hint" style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0"></span></label>
+        <label class="lbl">When received, push into <span id="kjr-eb-target-hint" style="font-weight:400;color:var(--text3);font-size:10px;text-transform:none;letter-spacing:0"></span></label>
         <select class="fi" data-k="targetTable" id="kjr-eb-target" onchange="kjrEbayUserPickedTarget()">${targetOpts}</select>
       </div>`;
   const fields = isNew
@@ -12754,7 +12845,7 @@ function kjrEbayRecalc(){
   }
   const usd = kjrNum(usdEl.value), frt = kjrNum(frtVal);
   const usdInSgd = +(usd * calc.rate).toFixed(2);
-  bdEl.innerHTML =
+  if (bdEl) bdEl.innerHTML =
     `US$${Math.round(usd)} × ${calc.rate.toFixed(4)} = S$${Math.round(usdInSgd)}` +
     `  +  S$${Math.round(frt)} freight` +
     `  =  <strong style="color:var(--text)">S$${Math.round(calc.computed)}</strong>` +
@@ -12854,10 +12945,10 @@ function renderEbayPurchases(){
       return '<td class="num" data-col-key="lastUpdated" style="font-size:11px;color:' + (stale ? 'var(--amber)' : 'var(--text3)') + '" title="Last sync: ' + abs + (stale ? ' — older than 3 days, consider re-checking Buyandship' : '') + '">' + dot + label + '</td>';
     })();
 
-    // Declared on Buyandship cell — colour-flags an undeclared shipment in amber.
+    // Declared on Buyandship cell — clickable to cycle Yes → No → N/A → Yes.
     const declVal = (r.declared || '').trim();
     const declCol = declVal === 'No' ? 'var(--amber)' : (declVal === 'Yes' ? 'var(--text2)' : 'var(--text3)');
-    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + '">' + kjrEscape(declVal || '—') + '</td>';
+    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + ';cursor:pointer" title="Click to toggle declared status" onclick="kjrToggleDeclared(\'' + kjrEscape(r.id) + '\')">' + kjrEscape(declVal || '—') + '</td>';
 
     const isSel = _kjrEbaySel.has(r.id);
     return '<tr data-id="' + kjrEscape(r.id) + '"' + (sold ? ' class="sold-row"' : '') + (isSel ? ' style="background:var(--accent-soft)"' : '') + '>' +
@@ -12892,6 +12983,15 @@ function renderEbayPurchases(){
   _kjrApplyEbayColVisibility();
   if (typeof _kjrApplyEbayColOrder === 'function') _kjrApplyEbayColOrder();
   if (typeof _kjrEbayAttachHeaderDrag === 'function') _kjrEbayAttachHeaderDrag();
+}
+
+function kjrToggleDeclared(id) {
+  const row = (DB.ebayPurchases || []).find(r => r.id === id);
+  if (!row) return;
+  const cycle = { '': 'Yes', 'Yes': 'No', 'No': 'Yes', 'N/A': 'Yes' };
+  const next = cycle[(row.declared || '')] || 'Yes';
+  updateField('ebayPurchases', id, 'declared', next);
+  renderEbayPurchases();
 }
 
 // ═════════════ eBay pipeline timeline (status dots) ═════════════
@@ -14128,19 +14228,21 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- ── USER GUIDE markdown source (rendered by kjrGuideRender below) ── -->
 <script type="text/markdown" id="guide-source"># Kujira Collectibles
 
-The full written guide lives in the project's **Docs** folder: `Docs/Kujira User Guide v1 (24 May).md`. Open it there for the complete reference (data model, pricing, deployment).
+The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https://app.notion.com/p/37b8d0753fdb81cab3aac8314a8a9b2f)
 
 ## Quick reference
 
 - **Quick Entry** — press the **+** button (or **Cmd/Ctrl + K**) to add inventory or log a sale from one search box.
 - **Add a card** — type name, set, language, price, e.g. `Charizard ex 223 EN $108`. Slabs: `PSA 10 Eevee 173 #cert`.
 - **Edit** — desktop: the row's edit button. Mobile: tap the card / product cell.
-- **Log a sale** — Quick Entry, "Log Sale" tab: search items into the cart, set buyer, date and shipping, then Confirm.
+- **Log a sale** — Quick Entry, "Log Sale" tab: search items (Singles, Slabs, ETBs, Booster Boxes, Packs) into the cart, set buyer, date and shipping, then Confirm.
 - **Delete** — goes to **Trash** (restore within 30 days), never a hard delete.
 - **Listings** — builds a Carousell title and description and pulls the market price.
 - **Tabs** — Singles, Slabs, ETBs, Booster Boxes and Packs, eBay, Sales, Dashboard, Chart Builder, Trash.
+- **Undo / Redo** — **Ctrl+Z** / **Ctrl+Y** for any action.
+- **eBay Declared** — click the cell to toggle Yes → No → N/A.
 
-*Full detail is in `Docs/`.*
+*Full reference (data model, deployment, security) is on Notion.*
 </script>
 
 <script>

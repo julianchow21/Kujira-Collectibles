@@ -455,7 +455,10 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
   body:not(.force-tables) #page-sales [data-col-key="buyer"],
   body:not(.force-tables) #page-sales [data-col-key="costPrice"],
   body:not(.force-tables) #page-sales [data-col-key="shippingCost"],
-  body:not(.force-tables) #page-sales [data-col-key="margin"]{display:none}
+  body:not(.force-tables) #page-sales [data-col-key="margin"],
+  body:not(.force-tables) #page-sales [data-col-key="fees"],
+  body:not(.force-tables) #page-sales [data-col-key="channel"],
+  body:not(.force-tables) #page-sales [data-col-key="daysHeld"]{display:none}
   body:not(.force-tables) #page-sales [data-col-key="product"]{width:50%}
   body:not(.force-tables) #page-sales [data-col-key="totalCollected"],
   body:not(.force-tables) #page-sales [data-col-key="profit"]{width:25%;text-align:right}
@@ -1073,7 +1076,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.0 (11 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.1 (11 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -1441,6 +1444,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
             <th data-col-key="costPrice" class="sortable" onclick="sortTable('sales','costPrice')">Cost</th>
             <th data-col-key="totalCollected" class="sortable" onclick="sortTable('sales','totalCollected')">Revenue</th>
             <th data-col-key="shippingCost" class="sortable" onclick="sortTable('sales','shippingCost')">Shipping</th>
+            <th data-col-key="fees" class="sortable" onclick="sortTable('sales','fees')">Fees</th>
+            <th data-col-key="channel" class="sortable" onclick="sortTable('sales','channel')">Channel</th>
+            <th data-col-key="daysHeld" class="sortable" onclick="sortTable('sales','daysHeld')">Days Held</th>
             <th data-col-key="profit" class="sortable" onclick="sortTable('sales','profit')">Profit</th>
             <th data-col-key="margin" class="sortable" onclick="sortTable('sales','margin')">Margin</th>
             <th data-col-key="actions">Actions</th>
@@ -1450,7 +1456,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
             <th data-col-key="dateSold"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-date"></th>
             <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-product"></th>
             <th data-col-key="buyer"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-buyer"></th>
-            <th data-col-key="costPrice"></th><th data-col-key="totalCollected"></th><th data-col-key="shippingCost"></th><th data-col-key="profit"></th><th data-col-key="margin"></th><th data-col-key="actions"></th>
+            <th data-col-key="costPrice"></th><th data-col-key="totalCollected"></th><th data-col-key="shippingCost"></th><th data-col-key="fees"></th><th data-col-key="channel"></th><th data-col-key="daysHeld"></th><th data-col-key="profit"></th><th data-col-key="margin"></th><th data-col-key="actions"></th>
           </tr>
         </thead>
         <tbody id="sales-body"></tbody>
@@ -1911,6 +1917,8 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
             <div class="sell-field"><label>Buyer</label><input id="cmd-sell-buyer" placeholder="Username / name"></div>
             <div class="sell-field"><label>Date Sold</label><input id="cmd-sell-date" type="text"></div>
             <div class="sell-field" style="grid-column:1/-1"><label>Shipping for whole order (S$)</label><input id="cmd-sell-ship" min="0" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
+            <div class="sell-field"><label>Platform fees (S$)</label><input id="cmd-sell-fees" min="0" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
+            <div class="sell-field"><label>Channel</label><select id="cmd-sell-channel"><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></div>
           </div>
           <div class="sell-profit-preview" id="cmd-sell-profit-preview">Add items to see totals</div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -2068,6 +2076,8 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="qs-cost" min="0" step="0.01" oninput="calcQsProfit()"></div>
         <div class="form-group"><label class="lbl">Sold For (S$) *</label><input class="fi" type="number" id="qs-total" min="0" placeholder="0" step="0.01" oninput="calcQsProfit()" autofocus></div>
         <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="qs-ship" min="0" placeholder="0" step="0.01" value="0" oninput="calcQsProfit()"></div>
+        <div class="form-group"><label class="lbl">Fees (S$)</label><input class="fi" type="number" id="qs-fees" min="0" placeholder="0" step="0.01" value="0" oninput="calcQsProfit()"></div>
+        <div class="form-group"><label class="lbl">Channel</label><select class="fi" id="qs-channel"><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></div>
         <div class="form-group"><label class="lbl">Profit (auto)</label><input class="fi" id="qs-profit" readonly style="opacity:0.6"></div>
       </div>
     </div>
@@ -2093,6 +2103,8 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Cost Price (S$) <span id="msa-cost-lbl-note" style="color:var(--text3);font-weight:400;font-size:11px"></span></label><input class="fi" type="number" id="msa-cost" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
         <div class="form-group"><label class="lbl">Total Collected (S$)</label><input class="fi" type="number" id="msa-total" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
         <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="msa-ship" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl">Fees (S$)</label><input class="fi" type="number" id="msa-fees" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl">Channel</label><select class="fi" id="msa-channel"><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></div>
         <div class="form-group"><label class="lbl">Profit (auto)</label><input class="fi" id="msa-profit" readonly style="opacity:0.6"></div>
         <div class="form-group"><label class="lbl">Margin (auto)</label><input class="fi" id="msa-margin" readonly style="opacity:0.6"></div>
       </div>
@@ -2825,6 +2837,20 @@ async function initDB() {
       localStorage.setItem('pokeinv_migrated_v2', '1');
     }
 
+    // ── Session 1 migration: backfill fees=0 and channel='Carousell' on ──
+    // existing sales that pre-date these fields. Runs once per device.
+    if (!localStorage.getItem('pokeinv_migrated_v3')) {
+      let n = 0;
+      (DB.sales || []).forEach(s => {
+        let changed = false;
+        if (s.fees == null) { s.fees = 0; changed = true; }
+        if (!s.channel)     { s.channel = 'Carousell'; changed = true; }
+        if (changed) { markDirty('sales', s.id); n++; }
+      });
+      if (n > 0) { saveData(); console.info('[v3 migration] backfilled ' + n + ' sales'); }
+      localStorage.setItem('pokeinv_migrated_v3', '1');
+    }
+
     // ── Retry any dirty items persisted from a previous failed sync ──
     const dirtyCount = _dirty.singles.size + _dirty.slabs.size + _dirty.sales.size +
                        (_dirty.etbs?.size||0) + (_dirty.boosterBoxes?.size||0) +
@@ -2991,16 +3017,19 @@ const COL_DEFS = {
     { key: 'actions',     label: 'Actions',           locked: true }
   ],
   sales: [
-    { key: '_cb',            label: '',         locked: true },
-    { key: 'dateSold',       label: 'Date',     locked: true },
-    { key: 'product',        label: 'Product',  locked: true },
+    { key: '_cb',            label: '',          locked: true },
+    { key: 'dateSold',       label: 'Date',      locked: true },
+    { key: 'product',        label: 'Product',   locked: true },
     { key: 'buyer',          label: 'Buyer' },
     { key: 'costPrice',      label: 'Cost' },
     { key: 'totalCollected', label: 'Revenue' },
     { key: 'shippingCost',   label: 'Shipping' },
+    { key: 'fees',           label: 'Fees' },
+    { key: 'channel',        label: 'Channel' },
+    { key: 'daysHeld',       label: 'Days Held' },
     { key: 'profit',         label: 'Profit' },
     { key: 'margin',         label: 'Margin' },
-    { key: 'actions',        label: 'Actions',  locked: true }
+    { key: 'actions',        label: 'Actions',   locked: true }
   ]
 };
 
@@ -3998,6 +4027,8 @@ function cmdSellAddToCart(idx) {
     if (cmdSellCart.length === 1) {
       document.getElementById('cmd-sell-buyer').value = '';
       document.getElementById('cmd-sell-ship').value = '0';
+      document.getElementById('cmd-sell-fees').value = '0';
+      document.getElementById('cmd-sell-channel').value = 'Carousell';
     }
   }
   renderCmdSellCart();
@@ -4107,6 +4138,7 @@ function renderCmdSellCart() {
 
 function cmdCalcProfit() {
   const ship = kjrNum(document.getElementById('cmd-sell-ship').value);
+  const fees = kjrNum(document.getElementById('cmd-sell-fees').value);
   let totalCost = 0, totalRev = 0, units = 0;
   cmdSellCart.forEach(l => {
     totalCost += cmdLineCost(l);
@@ -4115,7 +4147,7 @@ function cmdCalcProfit() {
   });
   const el = document.getElementById('cmd-sell-profit-preview');
   if (units === 0) { el.innerHTML = 'Add items to see totals'; return; }
-  const profit = totalRev - totalCost - ship;
+  const profit = totalRev - totalCost - ship - fees;
   const margin = totalRev > 0 ? ((profit / totalRev) * 100).toFixed(0) + '%' : '—';
   const cls = profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
   el.innerHTML =
@@ -4123,6 +4155,7 @@ function cmdCalcProfit() {
     '<span>Cost: <strong>S$' + totalCost.toFixed(0) + '</strong></span>' +
     '<span>Revenue: <strong>S$' + totalRev.toFixed(0) + '</strong></span>' +
     '<span>Shipping: <strong>S$' + ship.toFixed(0) + '</strong></span>' +
+    (fees > 0 ? '<span>Fees: <strong>S$' + fees.toFixed(0) + '</strong></span>' : '') +
     '<span>Profit: <strong style="' + cls + '">' + (profit >= 0 ? '+' : '') + 'S$' + profit.toFixed(0) + '</strong></span>' +
     '<span>Margin: <strong>' + margin + '</strong></span>';
 }
@@ -4139,31 +4172,29 @@ function cmdConfirmSell() {
     if (l._table === 'slabs') {
       const row = DB.slabs.find(i => i.id === l.id && (i.status||'Available') !== 'Sold');
       if (!row) continue;
-      // Build the grade suffix from the SAME resolver the badge uses, so a slab
-      // whose grade lives in the combined "grade" field (e.g. grade="TAG 10",
-      // grader="") still records "Eevee 173 TAG 10" instead of a bare card name.
-      // Falls back to the raw fields if the resolver can't classify it.
       const rg = (typeof _resolveGrader === 'function') ? _resolveGrader(l.grader, l.grade, l.notes) : null;
       const gradeLabel = (rg && rg.grader)
         ? (rg.grader + ' ' + rg.grade).trim()
         : [l.grader, l.grade].filter(Boolean).join(' ').trim();
       const productName = l.name + (gradeLabel ? ' ' + gradeLabel : '') + (l.certNo ? ' #' + l.certNo : '');
-      planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price: l.price || 0 });
+      const dateAcqSlab = toDateMmmYyyy(row.datePurchased || row.dateListed || row.date || '') || '';
+      planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price: l.price || 0, dateAcquired: dateAcqSlab });
     } else if (l._table === 'etbs' || l._table === 'boosterBoxes') {
       const row = DB[l._table].find(i => i.id === l.id && kjrIsActiveStatus(l._table, i.status||''));
       if (!row) continue;
-      planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price: l.price || 0 });
+      const dateAcqSealed = toDateMmmYyyy(row.date || '') || '';
+      planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price: l.price || 0, dateAcquired: dateAcqSealed });
     } else if (l._table === 'boosterPacks') {
       const row = DB.boosterPacks.find(i => i.id === l.id && kjrIsActiveStatus('boosterPacks', i.status||''));
       if (!row) continue;
       const unitCost = parseFloat(row.unitPrice) || 0;
       const available = Math.max(1, parseInt(row.qty) || 1);
       const take = Math.min(l.qty, available);
+      const dateAcqBp = toDateMmmYyyy(row.date || '') || '';
       for (let u = 0; u < take; u++) {
-        planned.push({ name: l.name, productName: l.name, table: 'boosterPacks', rowId: row.id, cost: unitCost, price: l.price || 0 });
+        planned.push({ name: l.name, productName: l.name, table: 'boosterPacks', rowId: row.id, cost: unitCost, price: l.price || 0, dateAcquired: dateAcqBp });
       }
     } else {
-      // Re-gather matching available lots and expand to per-unit costs.
       const key = l.groupKey;
       const units = [];
       DB.singles
@@ -4171,19 +4202,22 @@ function cmdConfirmSell() {
         .forEach(i => {
           const c = parseFloat(i.costPrice) || 0;
           const n = Math.max(1, parseInt(i.qty) || 1);
-          for (let u = 0; u < n; u++) units.push({ id: i.id, cost: c });
+          const da = toDateMmmYyyy(i.datePurchased || '') || '';
+          for (let u = 0; u < n; u++) units.push({ id: i.id, cost: c, dateAcquired: da });
         });
-      units.sort((a, b) => b.cost - a.cost);   // most expensive first
+      units.sort((a, b) => b.cost - a.cost);
       const take = Math.min(l.qty, units.length);
       for (let u = 0; u < take; u++) {
-        planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price: l.price || 0 });
+        planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price: l.price || 0, dateAcquired: units[u].dateAcquired });
       }
     }
   }
   if (planned.length === 0) { toast('Those items are no longer available'); return; }
 
-  const ship  = kjrNum(document.getElementById('cmd-sell-ship').value);
-  const buyer = document.getElementById('cmd-sell-buyer').value;
+  const ship    = kjrNum(document.getElementById('cmd-sell-ship').value);
+  const fees    = kjrNum(document.getElementById('cmd-sell-fees').value);
+  const channel = document.getElementById('cmd-sell-channel').value || 'Carousell';
+  const buyer   = document.getElementById('cmd-sell-buyer').value;
   const dateSold = formatDateInput(document.getElementById('cmd-sell-date').value);
 
   // Total revenue drives the pro-rata shipping split across every unit.
@@ -4195,28 +4229,34 @@ function cmdConfirmSell() {
   snapshotForUndo();
 
   const newSales = [];
-  let shipAllocated = 0, unitsDone = 0, grandProfit = 0;
+  let shipAllocated = 0, feesAllocated = 0, unitsDone = 0, grandProfit = 0;
   const retireSingles = {};      // rowId -> units to retire
   const retireBoosterPacks = {}; // rowId -> units to retire
 
   planned.forEach(p => {
     unitsDone++;
-    // Pro-rata shipping by this unit's revenue share. Last unit absorbs any
-    // rounding remainder so the per-row shipping sums back to the entered total.
-    let unitShip;
+    // Pro-rata shipping and fees by revenue share. Last unit absorbs rounding.
+    let unitShip, unitFees;
     if (unitsDone === totalUnits) {
       unitShip = +(ship - shipAllocated).toFixed(2);
+      unitFees = +(fees - feesAllocated).toFixed(2);
     } else {
-      unitShip = totalRev > 0 ? +(ship * (p.price / totalRev)).toFixed(2) : +(ship / totalUnits).toFixed(2);
-      shipAllocated += unitShip;
+      const share = totalRev > 0 ? (p.price / totalRev) : (1 / totalUnits);
+      unitShip = +(ship * share).toFixed(2); shipAllocated += unitShip;
+      unitFees = +(fees * share).toFixed(2); feesAllocated += unitFees;
     }
-    const profit = p.price - p.cost - unitShip;
+    const profit = p.price - p.cost - unitShip - unitFees;
     const margin = p.price > 0 ? ((profit / p.price) * 100).toFixed(0) + '%' : '—';
     grandProfit += profit;
+    const daysHeld = _kjrDaysHeld(p.dateAcquired || '', dateSold);
     const saleId = genId('sale');
     newSales.push({
       id: saleId, dateSold, product: p.productName, buyer,
-      costPrice: p.cost, totalCollected: p.price, shippingCost: unitShip, profit, margin,
+      costPrice: p.cost, totalCollected: p.price, shippingCost: unitShip,
+      fees: unitFees, channel,
+      dateAcquired: p.dateAcquired || '',
+      ...(daysHeld !== null ? { daysHeld } : {}),
+      profit, margin,
       inventoryId: p.rowId, inventoryTable: p.table
     });
     markDirty('sales', saleId);
@@ -4280,6 +4320,8 @@ function cmdConfirmSell() {
   clLog('sell', 'sales',
     totalUnits + ' item' + (totalUnits === 1 ? '' : 's') + ' in one sale',
     'buyer=' + (buyer || '∅') + ' · revenue=S$' + totalRev.toFixed(0) + ' · ship=S$' + ship.toFixed(0) +
+    (fees > 0 ? ' · fees=S$' + fees.toFixed(0) : '') +
+    ' · channel=' + channel +
     ' · profit=S$' + grandProfit.toFixed(0) +
     ' · items: ' + itemSummary);
   closeCmdBar();
@@ -4875,6 +4917,8 @@ function markStatus(table, id, status) {
     // so the user can confirm with one Enter for a sale at fair value.
     document.getElementById('qs-total').value = bestMarketFor(item);
     document.getElementById('qs-ship').value = '0';
+    document.getElementById('qs-fees').value = '0';
+    document.getElementById('qs-channel').value = 'Carousell';
     calcQsProfit();
     openModal('modal-quick-sell');
     setTimeout(() => document.getElementById('qs-total').focus(), 100);
@@ -4923,12 +4967,23 @@ function markStatus(table, id, status) {
   }
 }
 
+// Returns number of days between two "D MMM YYYY" date strings, or null if
+// either date is missing or unparseable. Used by all sell flows to compute
+// how long an item was held before sale.
+function _kjrDaysHeld(dateAcquired, dateSold) {
+  if (!dateAcquired || !dateSold) return null;
+  const a = new Date(dateAcquired);
+  const b = new Date(dateSold);
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.max(0, Math.round((b - a) / 86400000));
+}
+
 function calcQsProfit() {
   const cost  = kjrNum(document.getElementById('qs-cost').value);
   const total = kjrNum(document.getElementById('qs-total').value);
   const ship  = kjrNum(document.getElementById('qs-ship').value);
-  const profit = total - cost - ship;
-  // True gross margin = profit ÷ revenue × 100
+  const fees  = kjrNum(document.getElementById('qs-fees').value);
+  const profit = total - cost - ship - fees;
   const margin = total > 0 ? ((profit / total) * 100).toFixed(0) + '%' : '—';
   document.getElementById('qs-profit').value = fmtSigned(profit) + (total > 0 ? '  (' + margin + ' margin)' : '');
 }
@@ -4948,18 +5003,27 @@ function confirmQuickSell() {
   item.status = 'Sold';
 
   // Create sales record
-  const cost   = kjrNum(document.getElementById('qs-cost').value);
-  const ship   = kjrNum(document.getElementById('qs-ship').value);
-  const profit = total - cost - ship;
-  const margin = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '—';
+  const cost    = kjrNum(document.getElementById('qs-cost').value);
+  const ship    = kjrNum(document.getElementById('qs-ship').value);
+  const fees    = kjrNum(document.getElementById('qs-fees').value);
+  const channel = document.getElementById('qs-channel').value || 'Carousell';
+  const profit  = total - cost - ship - fees;
+  const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '—';
+  const dateSold = formatDateInput(document.getElementById('qs-date').value);
+  const dateAcquired = toDateMmmYyyy(item.datePurchased || item.dateListed || item.date || '') || '';
+  const daysHeld = _kjrDaysHeld(dateAcquired, dateSold);
   const saleRecord = {
     id: genId('sale'),
-    dateSold: formatDateInput(document.getElementById('qs-date').value),
+    dateSold,
     product: item.name + (item.grader ? ' ' + item.grader + ' ' + item.grade + (item.certNo ? ' #' + item.certNo : '') : ''),
     buyer: document.getElementById('qs-buyer').value,
     costPrice: cost,
     totalCollected: total,
     shippingCost: ship,
+    fees,
+    channel,
+    dateAcquired,
+    ...(daysHeld !== null ? { daysHeld } : {}),
     profit,
     margin,
     inventoryId: id,
@@ -4974,12 +5038,13 @@ function confirmQuickSell() {
   if (table === 'slabs') renderSlabs();
   renderSales();
   toast('Sold ✓ — sale recorded in Sales tab');
-  // Audit log carries every accounting field for the sale, plus the
-  // pointer back to the inventory row that was retired.
   clLog('sell', table, saleRecord.product,
     'cost=S$' + cost + ' · revenue=S$' + total + ' · ship=S$' + ship +
+    (fees > 0 ? ' · fees=S$' + fees : '') +
     ' · profit=S$' + profit.toFixed(0) + ' · margin=' + margin +
-    ' · buyer=' + (saleRecord.buyer || '∅') + ' · linked ' + table + '#' + id);
+    ' · channel=' + channel + ' · buyer=' + (saleRecord.buyer || '∅') +
+    ' · held=' + (daysHeld !== null ? daysHeld + 'd' : '?') +
+    ' · linked ' + table + '#' + id);
 }
 
 // ════════════════════ HEALTH CHECK ════════════════════
@@ -5136,9 +5201,40 @@ function runHealthCheck(){
     F('warn', 'eBay', freightAlt.length + ' eBay row(s) have freight stored under a legacy column (not freightSgd).',
       'Open the eBay tab — auto-backfill runs on render and will fix these next time you view the page.', freightAlt);
 
+  // 10. Missing dateAcquired on sales that have an inventory link
+  const missingDateAcq = [];
+  (DB.sales || []).forEach(s => {
+    if (s.dateAcquired) return;
+    if (!s.inventoryId || !s.inventoryTable) return;
+    missingDateAcq.push({ label: describe(s, 'sales'), table: 'sales', id: s.id });
+  });
+  if (missingDateAcq.length)
+    F('info', 'Sales', missingDateAcq.length + ' sale(s) are missing dateAcquired (holding period unknown).',
+      'Click "Backfill" to pull the acquisition date from the linked inventory row.', missingDateAcq);
+
   // Store the most-recent run so the modal can re-render after auto-fixes.
   window._lastHealthFindings = findings;
   _renderHealthResults(findings);
+}
+
+// Backfill dateAcquired + daysHeld for linked sales that are missing it.
+function healthBackfillDateAcquired() {
+  let n = 0;
+  (DB.sales || []).forEach(s => {
+    if (s.dateAcquired || !s.inventoryId || !s.inventoryTable) return;
+    const srcRow = (DB[s.inventoryTable] || []).find(r => r.id === s.inventoryId);
+    if (!srcRow) return;
+    const da = toDateMmmYyyy(srcRow.datePurchased || srcRow.dateListed || srcRow.date || '') || '';
+    if (!da) return;
+    s.dateAcquired = da;
+    const dh = _kjrDaysHeld(da, s.dateSold);
+    if (dh !== null) s.daysHeld = dh;
+    markDirty('sales', s.id);
+    n++;
+  });
+  if (n > 0) { saveData(); toast('Backfilled dateAcquired on ' + n + ' sale(s)'); }
+  else toast('Nothing to backfill');
+  runHealthCheck();
 }
 
 // Bulk auto-fix: re-canonicalises every date field across the DB.
@@ -5273,6 +5369,8 @@ function _renderHealthResults(findings){
         const hasDetails = f.details && f.details.length > 0;
         // The "Auto-fix dates" finding gets an extra button.
         const isDateFinding = f.area === 'Dates' && f.details && f.details.length > 0;
+        // The dateAcquired backfill finding gets its own button.
+        const isDateAcqFinding = f.area === 'Sales' && f.message && f.message.includes('dateAcquired');
         const fp = _healthFingerprint(f).replace(/'/g, '&#39;');
         return `<div style="border:1px solid var(--border);border-left:3px solid ${color};border-radius:6px;padding:8px 10px;margin-bottom:6px;background:var(--bg3)">
           <div style="display:flex;align-items:flex-start;gap:8px">
@@ -5289,6 +5387,7 @@ function _renderHealthResults(findings){
             </div>
           </div>
           ${isDateFinding ? `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" style="font-size:11px;padding:4px 10px" onclick="healthFixDates()">⚡ Auto-fix all dates</button></div>` : ''}
+          ${isDateAcqFinding ? `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" style="font-size:11px;padding:4px 10px" onclick="healthBackfillDateAcquired()">⚡ Backfill holding period</button></div>` : ''}
           ${renderDetails(f.details, idx)}
         </div>`;
       }).join('') + '</div>';
@@ -6807,22 +6906,21 @@ function renderSales() {
   items = _pinRecentsToTop(sortItems(items, 'sales'), 'sales');
   
   const totalRevenue = items.reduce((s,i) => s + (parseFloat(i.totalCollected)||0), 0);
-  const totalCost = items.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const totalProfit = items.reduce((s,i) => s + (parseFloat(i.profit)||0), 0);
-  const avgMargin = totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(0) : 0;
-  const profitCls = totalProfit >= 0 ? 'pos' : 'neg';
+  const totalCost    = items.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
+  const totalProfit  = items.reduce((s,i) => s + (parseFloat(i.profit)||0), 0);
+  const totalFees    = items.reduce((s,i) => s + (parseFloat(i.fees)||0), 0);
+  const avgMargin    = totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(0) : 0;
+  const profitCls    = totalProfit >= 0 ? 'pos' : 'neg';
 
-  // Sub-line removed — duplicates the stat cards below.
   document.getElementById('sales-sub').textContent = '';
-  // Reorder: Profit → Margin → Transactions → Revenue → Cost. Drop the leading
-  // "+" on profit since the green/red colour already signals direction.
   const profitDisplay = totalProfit >= 0 ? 'S$' + Math.round(totalProfit) : '-S$' + Math.abs(Math.round(totalProfit));
   document.getElementById('sales-metrics').innerHTML =
     '<div class="metric"><div class="metric-label">Total Profit</div><div class="metric-value ' + profitCls + '">' + profitDisplay + '</div></div>' +
     '<div class="metric"><div class="metric-label">Avg Margin</div><div class="metric-value ' + (avgMargin >= 0 ? 'pos' : 'neg') + '">' + avgMargin + '%</div></div>' +
     '<div class="metric"><div class="metric-label">Transactions</div><div class="metric-value">' + items.length + '</div></div>' +
     '<div class="metric"><div class="metric-label">Total Revenue</div><div class="metric-value">S$' + Math.round(totalRevenue) + '</div></div>' +
-    '<div class="metric"><div class="metric-label">Total Cost</div><div class="metric-value">S$' + Math.round(totalCost) + '</div></div>';
+    '<div class="metric"><div class="metric-label">Total Cost</div><div class="metric-value">S$' + Math.round(totalCost) + '</div></div>' +
+    (totalFees > 0 ? '<div class="metric"><div class="metric-label">Total Fees</div><div class="metric-value" style="color:var(--text2)">S$' + Math.round(totalFees) + '</div></div>' : '');
   
   const tbody = document.getElementById('sales-body');
   tbody.innerHTML = items.map(i => {
@@ -6873,6 +6971,9 @@ function renderSales() {
       '<td data-col-key="costPrice" class="num">' + fmt(i.costPrice) + '</td>' +
       '<td data-col-key="totalCollected" class="num" style="font-weight:500">' + fmt(i.totalCollected) + '</td>' +
       '<td data-col-key="shippingCost" class="num" style="color:var(--text3)">' + fmt(i.shippingCost) + '</td>' +
+      '<td data-col-key="fees" class="num" style="color:var(--text3)">' + (parseFloat(i.fees) > 0 ? fmt(i.fees) : '—') + '</td>' +
+      '<td data-col-key="channel" style="font-size:12px;color:var(--text2)">' + esc(i.channel || '—') + '</td>' +
+      '<td data-col-key="daysHeld" class="num" style="color:var(--text3)">' + (i.daysHeld != null ? i.daysHeld + 'd' : '—') + '</td>' +
       '<td data-col-key="profit" class="num ' + cls + '" style="font-weight:600">' + fmtSigned(parseFloat(i.profit)||0) + '</td>' +
       '<td data-col-key="margin" class="num ' + cls + '">' + esc(i.margin||'—') + '</td>' +
       '<td data-col-key="actions" style="white-space:nowrap;text-align:center">' +
@@ -6888,7 +6989,8 @@ function renderSales() {
 
 function openAddSale() {
   document.getElementById('msa-id').value = '';
-  ['msa-date','msa-product','msa-buyer','msa-cost','msa-total','msa-ship','msa-profit','msa-margin'].forEach(id => document.getElementById(id).value = '');
+  ['msa-date','msa-product','msa-buyer','msa-cost','msa-total','msa-ship','msa-fees','msa-profit','msa-margin'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('msa-channel').value = 'Carousell';
   document.getElementById('msa-date').value = new Date().toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'});
   document.getElementById('msa-item-costs').style.display = 'none';
   document.getElementById('msa-cost-lbl-note').textContent = '';
@@ -6907,9 +7009,10 @@ function openEditSale(id) {
   document.getElementById('msa-cost').value = item.costPrice || '';
   document.getElementById('msa-total').value = item.totalCollected || '';
   document.getElementById('msa-ship').value = item.shippingCost || '';
+  document.getElementById('msa-fees').value = item.fees || '';
+  document.getElementById('msa-channel').value = item.channel || 'Carousell';
   document.getElementById('msa-profit').value = item.profit || '';
   document.getElementById('msa-margin').value = item.margin || '';
-  // Rebuild per-item cost UI from stored itemCosts
   msaOnProductChange(item.itemCosts || []);
   calcSaleProfit();
   document.getElementById('msa-modal-title').textContent = 'Edit Sale';
@@ -6975,13 +7078,12 @@ function msaReadItemCosts() {
 }
 
 function calcSaleProfit() {
-  const cost = kjrNum(document.getElementById('msa-cost').value);
+  const cost  = kjrNum(document.getElementById('msa-cost').value);
   const total = kjrNum(document.getElementById('msa-total').value);
-  const ship = kjrNum(document.getElementById('msa-ship').value);
-  const profit = total - cost - ship;
-  // True gross margin = profit ÷ revenue × 100
+  const ship  = kjrNum(document.getElementById('msa-ship').value);
+  const fees  = kjrNum(document.getElementById('msa-fees').value);
+  const profit = total - cost - ship - fees;
   const margin = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '—';
-  // Sign-prefixed value so a loss reads as "-12" rather than "0" - "..." confusion.
   document.getElementById('msa-profit').value = (profit > 0 ? '+' : (profit < 0 ? '-' : '')) + Math.abs(profit).toFixed(0);
   document.getElementById('msa-margin').value = margin;
 }
@@ -6990,28 +7092,38 @@ function saveSale() {
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
   snapshotForUndo();
-  const cost = kjrNum(document.getElementById('msa-cost').value);
-  const total = kjrNum(document.getElementById('msa-total').value);
-  const ship = kjrNum(document.getElementById('msa-ship').value);
-  const profit = total - cost - ship;
-  // True gross margin = profit ÷ revenue × 100
-  const margin = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '—';
+  const cost    = kjrNum(document.getElementById('msa-cost').value);
+  const total   = kjrNum(document.getElementById('msa-total').value);
+  const ship    = kjrNum(document.getElementById('msa-ship').value);
+  const fees    = kjrNum(document.getElementById('msa-fees').value);
+  const channel = document.getElementById('msa-channel').value || 'Carousell';
+  const profit  = total - cost - ship - fees;
+  const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '—';
   const id = document.getElementById('msa-id').value;
-  // Normalise to the "D MMM YYYY" format used everywhere else (the cmd-bar
-  // sell path and quick-sell already do this). Without it, sorts / filters /
-  // dashboard date-window logic see a mix of "8 May" and "8 May 2026".
   const itemCosts = msaReadItemCosts();
-  // Preserve inventoryId/inventoryTable from the original sale on edit so the
-  // "↗ source" link and re-avail cleanup keep working. Previously an edit
-  // silently dropped the linkage because this object didn't carry it.
   const prevForLink = id ? DB.sales.find(s => s.id === id) : null;
+  // Preserve dateAcquired/daysHeld from original sale on edit; try to backfill
+  // from linked inventory row if missing.
+  let dateAcquired = (prevForLink && prevForLink.dateAcquired) || '';
+  let daysHeld = (prevForLink && prevForLink.daysHeld != null) ? prevForLink.daysHeld : null;
+  if (!dateAcquired && prevForLink && prevForLink.inventoryId && prevForLink.inventoryTable) {
+    const srcRow = (DB[prevForLink.inventoryTable] || []).find(r => r.id === prevForLink.inventoryId);
+    if (srcRow) {
+      dateAcquired = toDateMmmYyyy(srcRow.datePurchased || srcRow.dateListed || srcRow.date || '') || '';
+      const ds = formatDateInput(document.getElementById('msa-date').value);
+      daysHeld = _kjrDaysHeld(dateAcquired, ds);
+    }
+  }
   const item = {
     id: id || genId('sale'),
     dateSold: formatDateInput(document.getElementById('msa-date').value),
     product,
     buyer: document.getElementById('msa-buyer').value,
     costPrice: cost, totalCollected: total, shippingCost: ship,
+    fees, channel,
     profit, margin,
+    ...(dateAcquired ? { dateAcquired } : {}),
+    ...(daysHeld !== null ? { daysHeld } : {}),
     ...(itemCosts ? { itemCosts } : {}),
     ...(prevForLink && prevForLink.inventoryId    ? { inventoryId:    prevForLink.inventoryId }    : {}),
     ...(prevForLink && prevForLink.inventoryTable ? { inventoryTable: prevForLink.inventoryTable } : {})
@@ -7498,6 +7610,8 @@ const AI_QUICK_PROMPTS = [
   { icon: '🏆', label: 'Slabs vs Raw',         prompt: 'Compare slabs vs raw singles: how much capital in each, average margin on sales, and which has performed better overall?' },
   { icon: '⚠️', label: 'Missing prices',       prompt: 'How many available cards have no market price set? List up to 10 of them by cost price descending.' },
   { icon: '📊', label: 'Margin trend',          prompt: 'What is my average profit margin across all sales? Has it improved over time? Show monthly averages if there is enough data.' },
+  { icon: '🏪', label: 'By channel',            prompt: 'Break down my sales by channel (Carousell, eBay, In person, etc). Show revenue, net profit, margin %, and sale count for each channel.' },
+  { icon: '⏱', label: 'Holding speed',          prompt: 'What is my average days-held across all sold items? Break it down by category (Singles, Slabs, Sealed) if possible. Which cards took the longest to sell?' },
 ];
 
 function initAiAnalyst() {
@@ -10179,6 +10293,9 @@ const CB_FIELDS = {
   ebayTotalSgd: { label: 'Total SGD',          icon: '💰', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['ebay','everything'],  get: r => parseFloat(r.totalSgd)||0 },
   costSold:     { label: 'Cost of Sale (S$)',  icon: '💵', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales'],                          get: s => parseFloat(s.costPrice)||0 },
   saleCount:    { label: 'Sale Count',         icon: '🔢', type: 'meas', agg: 'sum', unit:'count', tables: ['sales'],                          get: () => 1 },
+  fees:         { label: 'Fees (S$)',          icon: '💸', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],             get: s => parseFloat(s.fees)||0 },
+  daysHeld:     { label: 'Days Held (avg)',    icon: '📆', type: 'meas', agg: 'avg', unit:'count', tables: ['sales','everything'],             get: s => parseFloat(s.daysHeld)||0 },
+  channel:      { label: 'Channel',            icon: '🏪', type: 'dim',  tables: ['sales','everything'],                                       get: s => s.channel || 'Carousell' },
 };
 
 // Format a measure value according to its unit. Centralised so axis labels,

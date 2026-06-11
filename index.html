@@ -382,6 +382,9 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
   .topbar-actions .btn-primary span{display:none}
 }
 
+/* Hidden on desktop; revealed in the mobile eBay section below */
+.eb-mobile-meta{display:none}
+
 /* ── Tier 5: phones (≤600px) show a compact, fit-to-width TABLE ──
    Every inventory / transaction table keeps its real <table> markup (so
    inline editing, sort/filter and column toggles keep working) but is
@@ -505,6 +508,13 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
   body:not(.force-tables) #kjr-ebay-table [data-col-key="status"]{
     width:60%;min-width:0!important;white-space:normal}
   body:not(.force-tables) #kjr-ebay-table [data-col-key="status"] .eb-tl{flex-wrap:wrap}
+  body:not(.force-tables) #kjr-ebay-table .eb-mobile-meta{
+    display:flex;flex-wrap:wrap;gap:5px;justify-content:center;
+    font-size:10px;color:var(--text3);margin-top:4px;align-items:center}
+  body:not(.force-tables) #kjr-ebay-table .eb-meta-track{
+    max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  body:not(.force-tables) #kjr-ebay-table .eb-meta-decl{font-weight:600}
+  body:not(.force-tables) #kjr-ebay-table .eb-meta-usd{color:var(--text2)}
 }
 
 /* ── Tier 5b: Singles + Slabs show EVERY column on phones ──
@@ -1076,7 +1086,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.1 (11 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.2 (11 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -12144,15 +12154,10 @@ function kjrApplySort(rows, dbKey){
   const s = _kjrSort[dbKey];
   const key = s.k || _KJR_DEFAULT_SORT[dbKey];
   if (!key) return rows;
-  // ebayPurchases default: sort by pipeline position ASC (Paid first →
-  // Shipping to Singapore last); within same stage, oldest date first.
+  // ebayPurchases default: date DESC (newest purchase at top) so pushing a
+  // pipeline status never rearranges rows.
   if (!s.k && dbKey === 'ebayPurchases') {
-    return [...rows].sort((a, b) => {
-      const ai = KJR_EBAY_PIPELINE.indexOf(a.status), bi = KJR_EBAY_PIPELINE.indexOf(b.status);
-      const aN = ai < 0 ? 999 : ai, bN = bi < 0 ? 999 : bi;
-      if (aN !== bN) return aN - bN;
-      return (dateToMs(a.date) || 0) - (dateToMs(b.date) || 0);
-    });
+    return [...rows].sort((a, b) => (dateToMs(b.date) || 0) - (dateToMs(a.date) || 0));
   }
   const dir = s.k ? s.dir : 1;
   const DATE_KEYS = new Set(['date','dateListed','datePurchased','dateSold','receivedAt']);
@@ -13087,7 +13092,14 @@ function renderEbayPurchases(){
     return '<tr data-id="' + kjrEscape(r.id) + '"' + (sold ? ' class="sold-row"' : '') + (isSel ? ' style="background:var(--accent-soft)"' : '') + '>' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (isSel ? 'checked' : '') + ' onchange="kjrEbayToggleRow(\''+r.id+'\',this.checked)"></td>' +
       '<td data-col-key="date" style="text-align:center">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
-      '<td data-col-key="product" style="text-align:center">'+kjrEscape(r.product||'')+'</td>' +
+      '<td data-col-key="product" style="text-align:center">' +
+        kjrEscape(r.product||'') +
+        '<div class="eb-mobile-meta">' +
+          (r.tracking ? '<span class="eb-meta-track" title="'+kjrEscape(r.tracking)+'">'+kjrEscape(r.tracking)+'</span>' : '') +
+          '<span class="eb-meta-decl" style="color:'+declCol+';cursor:pointer" onclick="kjrToggleDeclared(\''+kjrEscape(r.id)+'\')" title="Tap to toggle declared">'+kjrEscape(declVal||'—')+'</span>' +
+          (kjrNum(r.priceUsd) > 0 ? '<span class="eb-meta-usd">US$'+Math.round(kjrNum(r.priceUsd))+'</span>' : '') +
+        '</div>' +
+      '</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +
       '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">'+kjrEscape(r.tracking||'')+'</td>' +
       declaredCell +

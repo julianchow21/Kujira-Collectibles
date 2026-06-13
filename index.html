@@ -872,8 +872,9 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 .sell-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}@media(max-width:768px){.sell-grid{grid-template-columns:1fr}}
 .sell-field{display:flex;flex-direction:column;gap:4px}
 .sell-field label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px}
-.sell-field input{padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit}
-.sell-field input:focus{outline:none;border-color:var(--accent)}
+.sell-field input,.sell-field select{padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit}
+.sell-field select{cursor:pointer}
+.sell-field input:focus,.sell-field select:focus{outline:none;border-color:var(--accent)}
 .sell-profit-preview{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:12px;color:var(--text2);margin-bottom:12px;display:flex;gap:16px;flex-wrap:wrap}
 .sell-profit-preview strong{color:var(--text)}
 /* ── Multi-item sale cart (Quick Entry → Log Sale) ── */
@@ -1086,7 +1087,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.2 (11 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.3 (13 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -1926,8 +1927,8 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <div class="sell-grid">
             <div class="sell-field"><label>Buyer</label><input id="cmd-sell-buyer" placeholder="Username / name"></div>
             <div class="sell-field"><label>Date Sold</label><input id="cmd-sell-date" type="text"></div>
-            <div class="sell-field" style="grid-column:1/-1"><label>Shipping for whole order (S$)</label><input id="cmd-sell-ship" min="0" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
-            <div class="sell-field"><label>Platform fees (S$)</label><input id="cmd-sell-fees" min="0" type="number" step="0.01" value="0" oninput="cmdCalcProfit()"></div>
+            <div class="sell-field" style="grid-column:1/-1"><label>Shipping for whole order (S$)</label><input id="cmd-sell-ship" min="0" type="number" step="0.01" placeholder="0" oninput="cmdCalcProfit()"></div>
+            <div class="sell-field"><label>Platform fees (S$)</label><input id="cmd-sell-fees" min="0" type="number" step="0.01" placeholder="0" oninput="cmdCalcProfit()"></div>
             <div class="sell-field"><label>Channel</label><select id="cmd-sell-channel"><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></div>
           </div>
           <div class="sell-profit-preview" id="cmd-sell-profit-preview">Add items to see totals</div>
@@ -4036,8 +4037,8 @@ function cmdSellAddToCart(idx) {
     document.getElementById('cmd-sell-date').value = new Date().toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'});
     if (cmdSellCart.length === 1) {
       document.getElementById('cmd-sell-buyer').value = '';
-      document.getElementById('cmd-sell-ship').value = '0';
-      document.getElementById('cmd-sell-fees').value = '0';
+      document.getElementById('cmd-sell-ship').value = '';
+      document.getElementById('cmd-sell-fees').value = '';
       document.getElementById('cmd-sell-channel').value = 'Carousell';
     }
   }

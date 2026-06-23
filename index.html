@@ -13147,7 +13147,7 @@ function renderEbayPurchases(){
         '</div>' +
       '</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +
-      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">'+kjrEscape(r.tracking||'')+'</td>' +
+      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">' + (r.tracking ? kjrEscape(r.tracking) + ' <button class="btn-copy-track" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy tracking number">📋</button>' : '') + '</td>' +
       declaredCell +
       '<td class="num" data-col-key="priceUsd">'+kjrFmt(r.priceUsd)+'</td>' +
       '<td class="num" data-col-key="freightSgd">' +
@@ -13174,6 +13174,15 @@ function renderEbayPurchases(){
   _kjrApplyEbayColVisibility();
   if (typeof _kjrApplyEbayColOrder === 'function') _kjrApplyEbayColOrder();
   if (typeof _kjrEbayAttachHeaderDrag === 'function') _kjrEbayAttachHeaderDrag();
+}
+
+function kjrCopyTracking(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+    toast('Tracking number copied');
+  });
 }
 
 function kjrToggleDeclared(id) {
@@ -13203,6 +13212,8 @@ function kjrToggleDeclared(id) {
     .eb-tl-conn-done{background:var(--accent)}
     .eb-tl-label{font-size:10px;color:var(--text3);text-align:center;margin-top:3px;text-transform:none;font-weight:500;letter-spacing:0}
     .eb-tl-cancel{font-size:11px;color:var(--text3);font-style:italic;text-align:center}
+    .btn-copy-track{background:none;border:none;cursor:pointer;padding:0 0 0 4px;font-size:12px;opacity:0.5;vertical-align:middle;line-height:1;transition:opacity 0.12s}
+    .btn-copy-track:hover{opacity:1}
   `;
   document.head.appendChild(s);
 })();

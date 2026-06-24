@@ -13147,7 +13147,7 @@ function renderEbayPurchases(){
         '</div>' +
       '</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +
-      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">' + (r.tracking ? kjrEscape(r.tracking) + ' <button class="btn-copy-track" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy tracking number">📋</button>' : '') + '</td>' +
+      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">' + (r.tracking ? '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap">' + kjrEscape(r.tracking) + '<button class="btn-copy-track" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy tracking number"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span>' : '') + '</td>' +
       declaredCell +
       '<td class="num" data-col-key="priceUsd">'+kjrFmt(r.priceUsd)+'</td>' +
       '<td class="num" data-col-key="freightSgd">' +
@@ -13178,9 +13178,9 @@ function renderEbayPurchases(){
 
 function kjrCopyTracking(btn, text) {
   navigator.clipboard.writeText(text).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = '✓';
-    setTimeout(() => { btn.textContent = orig; }, 1200);
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg>';
+    setTimeout(() => { btn.innerHTML = orig; }, 1200);
     toast('Tracking number copied');
   });
 }

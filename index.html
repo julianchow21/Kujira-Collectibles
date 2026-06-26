@@ -88,6 +88,18 @@
   --cgc-bg:#2a1a0d;--cgc-border:#3a2a1a;
   --accent:#2dd4bf;--accent2:#14b8a6;--accent-soft:#0d2420;
   --radius:8px;--radius-lg:12px;
+  /* Status badge tokens (dark). Light overrides live in html.light. */
+  --b-raw-bg:#1a2a1a;--b-raw-fg:#4CAF50;--b-raw-bd:#2a3a2a;
+  --b-sealed-bg:#2a1f0a;--b-sealed-fg:#f59e0b;--b-sealed-bd:#3a2f1a;
+  --b-slab-bg:#0d1f33;--b-slab-fg:#4a9eff;--b-slab-bd:#1a2f43;
+  --b-pristine-bg1:#3a2a0a;--b-pristine-bg2:#2a1f08;--b-pristine-fg:#fcd34d;--b-pristine-bd:#facc15;
+  --b-sold-bg:#2a2018;--b-sold-fg:#d18558;--b-sold-bd:#3a2a1f;
+  --b-avail-bg:#1a2a1a;--b-avail-fg:var(--green);--b-avail-bd:#2a3a2a;
+  --split-bar-fg:#ffffff;
+  /* Elevation tokens (dark) */
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.4);
+  --shadow-lg:0 8px 32px rgba(0,0,0,0.5);
 }
 html.light{
   --bg:#f0f2f5;--bg2:#ffffff;--bg3:#f5f6f8;--bg4:#eaecef;
@@ -102,15 +114,28 @@ html.light{
   --tag-bg:#dbeafe;--tag-border:#93c5fd;
   --psa-bg:#fde8e8;--psa-border:#fca5a5;
   --cgc-bg:#fde8d4;--cgc-border:#d4a074;
+  /* Status badge tokens (light) */
+  --b-raw-bg:#e6f4e8;--b-raw-fg:#2e8b3e;--b-raw-bd:#bfe3c6;
+  --b-sealed-bg:#fef3dc;--b-sealed-fg:#b87000;--b-sealed-bd:#f0d8a0;
+  --b-slab-bg:#e0ecfb;--b-slab-fg:#1a6fd4;--b-slab-bd:#a8c8f0;
+  --b-pristine-bg1:#fef3c7;--b-pristine-bg2:#fde68a;--b-pristine-fg:#92400e;--b-pristine-bd:#d97706;
+  --b-sold-bg:#f7ecdf;--b-sold-fg:#a65d2e;--b-sold-bd:#e0c4a8;
+  --b-avail-bg:#e6f4e8;--b-avail-fg:var(--green);--b-avail-bd:#bfe3c6;
+  --split-bar-fg:#ffffff;
+  /* Elevation tokens (light) */
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.10);
+  --shadow-lg:0 8px 32px rgba(0,0,0,0.14);
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.5;transition:background 0.2s,color 0.2s}
 a{color:var(--blue);text-decoration:none}
 a:hover{text-decoration:underline}
 
 /* TOPBAR */
-.topbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 24px;padding-top:env(safe-area-inset-top);padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right));display:flex;align-items:center;gap:0;height:calc(56px + env(safe-area-inset-top));position:sticky;top:0;z-index:100}
+.topbar{background:var(--bg2);background:color-mix(in srgb,var(--bg2) 82%,transparent);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 24px;padding-top:env(safe-area-inset-top);padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right));display:flex;align-items:center;gap:0;height:calc(56px + env(safe-area-inset-top));position:sticky;top:0;z-index:100}
 .logo{font-weight:800;font-size:16px;letter-spacing:0.2px;margin-right:32px;display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);cursor:pointer}
 .logo:hover,.logo:focus{text-decoration:none;outline:none}
+.logo:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
 .logo-whale{height:30px;width:auto;flex-shrink:0}
 .logo-name{display:flex;flex-direction:column;line-height:1.1}
 .logo-name span:first-child{font-size:14px;font-weight:800;letter-spacing:0.5px;background:linear-gradient(135deg,#2dd4bf,#a78bfa,#f472b6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
@@ -124,7 +149,7 @@ a:hover{text-decoration:underline}
 .nav-dd-trigger{display:flex;align-items:center;gap:6px}
 .nav-dd.open .nav-dd-caret{transform:rotate(180deg)}
 .nav-dd-caret{transition:transform 0.15s}
-.nav-dd-menu{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:4px;z-index:160;min-width:172px;box-shadow:0 8px 24px rgba(0,0,0,0.45)}
+.nav-dd-menu{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:4px;z-index:160;min-width:172px;box-shadow:var(--shadow-md)}
 .nav-dd.open .nav-dd-menu{display:flex;flex-direction:column;gap:1px}
 .nav-dd-menu.dd-right{left:auto;right:0}
 .nav-dd-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border:none;background:transparent;color:var(--text2);cursor:pointer;font-size:13px;font-family:inherit;border-radius:var(--radius);text-align:left;width:100%;white-space:nowrap;transition:background 0.1s,color 0.1s}
@@ -153,7 +178,7 @@ a:hover{text-decoration:underline}
 
 /* CARDS */
 .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:16px}
-.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.card-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
 .card-head h3{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
 .card-body{padding:18px}
 
@@ -171,34 +196,54 @@ a:hover{text-decoration:underline}
 /* TABLE */
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:800px}
-th{text-align:center;padding:10px 12px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg2);position:sticky;top:0}
-td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:center}
+th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg2);position:sticky;top:0}
+td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:var(--bg3);cursor:default}
-.num{font-variant-numeric:tabular-nums;font-family:'SF Mono','Fira Code',monospace;font-size:12px;text-align:center}
-td input{text-align:center}
-td .col-filter{text-align:center}
-th input{text-align:center}
-th .col-filter{text-align:center}
+.num{font-variant-numeric:tabular-nums;font-family:'SF Mono','Fira Code',monospace;font-size:12px;text-align:right}
+th.num,td.num{text-align:right}
+td input{text-align:left}
+td .col-filter{text-align:left}
+th input{text-align:left}
+th .col-filter{text-align:left}
+td.num input,td.num .col-filter,th.num input,th.num .col-filter{text-align:right}
+/* Numeric / price / qty columns align right in both header and body. Text and
+   label columns keep the left default set above. */
+th[data-col-key="costPrice"],td[data-col-key="costPrice"],
+th[data-col-key="marketPrice"],td[data-col-key="marketPrice"],
+th[data-col-key="listPrice"],td[data-col-key="listPrice"],
+th[data-col-key="totalCollected"],td[data-col-key="totalCollected"],
+th[data-col-key="shippingCost"],td[data-col-key="shippingCost"],
+th[data-col-key="fees"],td[data-col-key="fees"],
+th[data-col-key="profit"],td[data-col-key="profit"],
+th[data-col-key="margin"],td[data-col-key="margin"],
+th[data-col-key="daysHeld"],td[data-col-key="daysHeld"],
+th[data-col-key="qty"],td[data-col-key="qty"],
+th[data-col-key="unitPrice"],td[data-col-key="unitPrice"],
+th[data-col-key="totalPrice"],td[data-col-key="totalPrice"],
+th[data-col-key="priceUsd"],td[data-col-key="priceUsd"]{text-align:right}
+th[data-col-key="costPrice"] input,th[data-col-key="marketPrice"] input,
+th[data-col-key="listPrice"] input,th[data-col-key="totalCollected"] input,
+th[data-col-key="shippingCost"] input,th[data-col-key="fees"] input,
+th[data-col-key="profit"] input,th[data-col-key="qty"] input{text-align:right}
 
 /* BADGES */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px}
-.b-raw{background:#1a2a1a;color:#4CAF50;border:1px solid #2a3a2a}
-.b-sealed{background:#2a1f0a;color:#f59e0b;border:1px solid #3a2f1a}
-.b-slab{background:#0d1f33;color:#4a9eff;border:1px solid #1a2f43}
+.b-raw{background:var(--b-raw-bg);color:var(--b-raw-fg);border:1px solid var(--b-raw-bd)}
+.b-sealed{background:var(--b-sealed-bg);color:var(--b-sealed-fg);border:1px solid var(--b-sealed-bd)}
+.b-slab{background:var(--b-slab-bg);color:var(--b-slab-fg);border:1px solid var(--b-slab-bd)}
 .b-tag{background:var(--tag-bg);color:var(--tag);border:1px solid var(--tag-border)}
 .b-psa{background:var(--psa-bg);color:var(--psa);border:1px solid var(--psa-border)}
 .b-cgc{background:var(--cgc-bg);color:var(--cgc);border:1px solid var(--cgc-border)}
 /* Pristine — PSA's top-pop subgrade. Gold accent + subtle inner glow to
    make Pristine 10s instantly distinguishable from regular PSA 10s in the
-   badge column. Works for both dark and light themes via the var() colour. */
-.b-pristine{background:linear-gradient(135deg,#3a2a0a,#2a1f08);color:#fcd34d;border:1px solid #facc15;box-shadow:inset 0 0 0 1px rgba(252,211,77,0.25),0 0 8px rgba(250,204,21,0.18)}
-[data-theme="light"] .b-pristine,html:not([data-theme="dark"]) .b-pristine{background:linear-gradient(135deg,#fef3c7,#fde68a);color:#92400e;border:1px solid #d97706}
-.b-sold{background:#2a2018;color:#d18558;border:1px solid #3a2a1f}
-.b-avail{background:#1a2a1a;color:var(--green);border:1px solid #2a3a2a}
+   badge column. Adapts to light/dark via the badge tokens. */
+.b-pristine{background:linear-gradient(135deg,var(--b-pristine-bg1),var(--b-pristine-bg2));color:var(--b-pristine-fg);border:1px solid var(--b-pristine-bd);box-shadow:inset 0 0 0 1px rgba(252,211,77,0.25),0 0 8px rgba(250,204,21,0.18)}
+.b-sold{background:var(--b-sold-bg);color:var(--b-sold-fg);border:1px solid var(--b-sold-bd)}
+.b-avail{background:var(--b-avail-bg);color:var(--b-avail-fg);border:1px solid var(--b-avail-bd)}
 
 /* BUTTONS */
-.btn{padding:7px 14px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;font-size:13px;color:var(--text);transition:all 0.15s;display:inline-flex;align-items:center;gap:6px;font-family:inherit;white-space:nowrap}
+.btn{padding:7px 16px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;font-size:13px;color:var(--text);transition:all 0.15s;display:inline-flex;align-items:center;gap:6px;font-family:inherit;white-space:nowrap}
 .btn:hover{background:var(--bg4);border-color:var(--border2)}
 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn-primary:hover{background:var(--accent2)}
@@ -213,7 +258,7 @@ th .col-filter{text-align:center}
 select.filter-sel{padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;cursor:pointer;font-family:inherit}
 select.filter-sel:focus{outline:none;border-color:var(--accent)}
 .pills{display:flex;gap:4px}
-.pill{padding:6px 14px;border-radius:999px;border:1px solid var(--border);background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all 0.15s}
+.pill{padding:6px 16px;border-radius:999px;border:1px solid var(--border);background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all 0.15s}
 .pill:hover{border-color:var(--border2);color:var(--text)}
 .pill.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 
@@ -228,7 +273,7 @@ dialog.overlay::backdrop{background:rgba(0,0,0,0.7)}
 .modal-head h3{font-size:15px;font-weight:600}
 .modal-body{padding:20px}
 .modal-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
-.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
 .form-group{display:flex;flex-direction:column;gap:5px}
 .form-group.full{grid-column:1/-1}
 label.lbl{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;font-weight:500}
@@ -237,14 +282,14 @@ input.fi:focus,select.fi:focus,textarea.fi:focus{outline:none;border-color:var(-
 textarea.fi{resize:vertical;min-height:70px}
 
 /* LISTING OUTPUT */
-.listing-box{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:'SF Mono','Fira Code',monospace;max-height:320px;overflow-y:auto;color:var(--text)}
+.listing-box{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:'SF Mono','Fira Code',monospace;max-height:320px;overflow-y:auto;color:var(--text)}
 .ai-status{color:var(--text3);font-style:italic}
 
 /* CHARTS */
 .chart-wrap{position:relative;height:240px}
 
 /* TOAST */
-#toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);padding:0;border-radius:var(--radius-lg);font-size:13px;z-index:9999;opacity:0;transform:translateX(calc(100% + 32px));transition:opacity 0.22s,transform 0.28s cubic-bezier(0.34,1.3,0.64,1);pointer-events:none;max-width:340px;min-width:210px;box-shadow:0 8px 32px rgba(0,0,0,0.38),0 2px 8px rgba(0,0,0,0.18);overflow:hidden;cursor:pointer;user-select:none}
+#toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);padding:0;border-radius:var(--radius-lg);font-size:13px;z-index:9999;opacity:0;transform:translateX(calc(100% + 32px));transition:opacity 0.22s,transform 0.28s cubic-bezier(0.34,1.3,0.64,1);pointer-events:none;max-width:340px;min-width:210px;box-shadow:var(--shadow-lg);overflow:hidden;cursor:pointer;user-select:none}
 #toast.show{opacity:1;transform:translateX(0);pointer-events:auto}
 #toast-inner{display:flex;align-items:flex-start;gap:10px;padding:12px 16px}
 #toast-icon{font-size:14px;flex-shrink:0;margin-top:1px;line-height:1.45;font-style:normal}
@@ -256,8 +301,14 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast.toast-warn #toast-bar{background:#f59e0b}
 @media(max-width:768px){#toast{bottom:calc(56px + env(safe-area-inset-bottom) + 12px);right:12px;left:12px;max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
 /* ── HIG additions ── */
-.hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:14px;color:var(--text3)}
+.hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:16px;color:var(--text3)}
 .hig-spinner{width:28px;height:28px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:hig-spin 0.75s linear infinite}
+.kjr-btn-spinner{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:hig-spin 0.7s linear infinite;vertical-align:-1px;margin-right:2px}
+.ai-typing{display:inline-flex;gap:4px;align-items:center}
+.ai-typing i{width:6px;height:6px;border-radius:50%;background:var(--text3);display:inline-block;animation:ai-typing-bounce 1.2s ease-in-out infinite}
+.ai-typing i:nth-child(2){animation-delay:0.15s}
+.ai-typing i:nth-child(3){animation-delay:0.3s}
+@keyframes ai-typing-bounce{0%,60%,100%{opacity:0.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 @keyframes hig-spin{to{transform:rotate(360deg)}}
 .hig-loading-text{font-size:13px;color:var(--text3)}
 .hig-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:56px 24px;gap:10px;text-align:center}
@@ -271,11 +322,11 @@ textarea.fi{resize:vertical;min-height:70px}
 .last-updated{font-size:11px;color:var(--text3);margin-left:4px}
 /* Touch tooltip — surfaces a long-pressed element's native title text on
    devices with no hover (iPad / iPhone), where title attributes never show. */
-.touch-tip{position:fixed;z-index:9000;max-width:min(78vw,300px);background:var(--bg4);border:1px solid var(--border2);border-radius:8px;padding:7px 11px;font-size:13px;line-height:1.4;color:var(--text);box-shadow:0 6px 20px rgba(0,0,0,0.45);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;white-space:normal}
+.touch-tip{position:fixed;z-index:9000;max-width:min(78vw,300px);background:var(--bg4);border:1px solid var(--border2);border-radius:8px;padding:7px 11px;font-size:13px;line-height:1.4;color:var(--text);box-shadow:var(--shadow-md);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;white-space:normal}
 .touch-tip.show{opacity:1;transform:translateY(0)}
 @media (hover:none){[title]{-webkit-touch-callout:none}}
 /* Dashboard header — title on the left, range + refresh on the right. */
-.dash-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.dash-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 @media (max-width:600px){
   /* Stack on phones so the range control never collides with the large title. */
   .dash-header{flex-direction:column;align-items:stretch;gap:10px}
@@ -351,7 +402,7 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5)}
 .sheet-title{font-size:18px;font-weight:700;letter-spacing:-0.3px;padding:4px 4px 12px;color:var(--text)}
 .sheet-section-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;padding:10px 4px 6px}
 .sheet-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px}
-.sheet-item{display:flex;align-items:center;gap:10px;padding:14px 14px;min-height:52px;border:1px solid var(--border);background:var(--bg3);border-radius:var(--radius-lg);color:var(--text);font-size:14px;font-family:inherit;cursor:pointer;text-align:left;transition:background 0.12s,border-color 0.12s}
+.sheet-item{display:flex;align-items:center;gap:10px;padding:16px 16px;min-height:52px;border:1px solid var(--border);background:var(--bg3);border-radius:var(--radius-lg);color:var(--text);font-size:14px;font-family:inherit;cursor:pointer;text-align:left;transition:background 0.12s,border-color 0.12s}
 .sheet-item:hover{background:var(--bg4)}
 .sheet-item.active{border-color:var(--accent);color:var(--accent)}
 .sheet-item svg{width:18px;height:18px;flex-shrink:0;color:var(--text3)}
@@ -702,6 +753,7 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5)}
 
 /* ── Draggable Dashboard Grid ── */
 .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:420px){ .dash-grid{ grid-template-columns:1fr } }
 .dash-card-wrap{position:relative}
 .dash-card-wrap .drag-handle{position:absolute;top:10px;right:10px;cursor:grab;color:var(--text3);font-size:14px;z-index:10;opacity:0;transition:opacity 0.15s;padding:2px 4px;border-radius:4px;line-height:1}
 .dash-card-wrap:hover .drag-handle{opacity:1}
@@ -729,7 +781,7 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5)}
 .tab-wrap{display:flex;gap:1px;background:var(--bg3);border-radius:var(--radius);padding:3px;width:fit-content;margin-bottom:16px}
 .tab{padding:6px 16px;border-radius:6px;border:none;background:transparent;color:var(--text2);cursor:pointer;font-size:13px;font-family:inherit;transition:all 0.15s}
 .tab:hover{color:var(--text)}
-.tab.active{background:var(--bg2);color:var(--text);font-weight:500;box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+.tab.active{background:var(--bg2);color:var(--text);font-weight:500;box-shadow:var(--shadow-sm)}
 
 /* SALE ROW */
 .sale-profit-pos{color:var(--green)}
@@ -743,7 +795,7 @@ tr.sold-row td{opacity:0.55}
 tr.sold-row:hover td{opacity:0.8}
 
 /* BULK SELECT */
-.bulk-bar{display:none;align-items:center;gap:10px;padding:8px 14px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius);margin-bottom:12px;font-size:13px}
+.bulk-bar{display:none;align-items:center;gap:10px;padding:8px 16px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius);margin-bottom:12px;font-size:13px}
 .bulk-bar.show{display:flex}
 .bulk-bar-count{color:var(--accent);font-weight:600}
 .bulk-bar-actions{display:flex;gap:6px;margin-left:auto}
@@ -754,9 +806,9 @@ tr.row-selected td{background:var(--accent-soft) !important}
 /* COLUMN VISIBILITY TOGGLE */
 .col-toggle-wrap{position:relative}
 .col-toggle-btn{white-space:nowrap}
-.col-toggle-dropdown{display:none;position:absolute;top:calc(100% + 6px);right:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:8px 0;z-index:150;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.col-toggle-dropdown{display:none;position:absolute;top:calc(100% + 6px);right:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:8px 0;z-index:150;min-width:200px;box-shadow:var(--shadow-md)}
 .col-toggle-wrap.open .col-toggle-dropdown{display:block}
-.col-toggle-item{display:flex;align-items:center;gap:8px;padding:6px 14px;cursor:pointer;font-size:13px;color:var(--text2);transition:background 0.1s;user-select:none}
+.col-toggle-item{display:flex;align-items:center;gap:8px;padding:6px 16px;cursor:pointer;font-size:13px;color:var(--text2);transition:background 0.1s;user-select:none}
 .col-toggle-item:hover{background:var(--bg3);color:var(--text)}
 .col-toggle-item input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;cursor:pointer;flex-shrink:0}
 .col-toggle-item.checked{color:var(--text)}
@@ -764,7 +816,7 @@ tr.row-selected td{background:var(--accent-soft) !important}
 
 /* FILTERS POPOVER (consolidated Language / Type / Status) */
 .filters-wrap{position:relative}
-.filters-dropdown{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px;z-index:160;min-width:210px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.filters-dropdown{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px;z-index:160;min-width:210px;box-shadow:var(--shadow-md)}
 .filters-wrap.open .filters-dropdown{display:block}
 .filters-row{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .filters-row:last-of-type{margin-bottom:0}
@@ -775,7 +827,7 @@ tr.row-selected td{background:var(--accent-soft) !important}
 .filters-foot button:hover{text-decoration:underline}
 .filters-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:999px;background:var(--accent);color:#06302b;font-size:10px;font-weight:700;line-height:1}
 .filters-badge:empty{display:none}
-.col-toggle-all{font-size:11px;color:var(--text3);padding:4px 14px 6px;display:flex;gap:8px}
+.col-toggle-all{font-size:11px;color:var(--text3);padding:4px 16px 6px;display:flex;gap:8px}
 .col-toggle-all button{background:none;border:none;color:var(--blue);cursor:pointer;font-size:11px;font-family:inherit;padding:0}
 .col-toggle-all button:hover{text-decoration:underline}
 
@@ -800,7 +852,7 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 
 /* INVENTORY STATS BAR */
 .inv-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
-.inv-stat{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;position:relative}
+.inv-stat{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;position:relative}
 /* eBay stats: two summary cards on top, Pipeline spans the full width below them */
 #kjr-ebay-stats{grid-template-columns:1fr 1fr}
 #kjr-ebay-stats>.inv-stat:last-child{grid-column:1 / -1}
@@ -810,11 +862,11 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 .inv-stat-value{font-size:20px;font-weight:700;letter-spacing:-0.3px}
 .inv-stat-info{position:absolute;top:8px;right:8px;width:16px;height:16px;border-radius:50%;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;font-family:inherit;line-height:1}
 .inv-stat-info:hover{background:var(--bg4);color:var(--text);border-color:var(--accent)}
-.inv-stat-tooltip{display:none;position:absolute;top:calc(100% + 6px);right:0;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:11px;color:var(--text2);line-height:1.6;z-index:50;min-width:200px;max-width:260px;box-shadow:0 4px 16px rgba(0,0,0,0.4);text-align:left;white-space:normal}
+.inv-stat-tooltip{display:none;position:absolute;top:calc(100% + 6px);right:0;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:11px;color:var(--text2);line-height:1.6;z-index:50;min-width:200px;max-width:260px;box-shadow:var(--shadow-md);text-align:left;white-space:normal}
 .inv-stat-info:hover .inv-stat-tooltip{display:block}
 /* Mini split-bar inside an inventory stat card */
 .inv-split-bar{display:flex;height:18px;border-radius:5px;overflow:hidden;border:1px solid var(--border);background:var(--bg3);margin-top:6px}
-.inv-split-bar > div{display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
+.inv-split-bar > div{display:flex;align-items:center;justify-content:center;color:var(--split-bar-fg);font-size:10px;font-weight:600;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
 .inv-split-raw{background:linear-gradient(135deg,#4CAF50,#3a8a3e)}
 .inv-split-sealed{background:linear-gradient(135deg,#f59e0b,#c77800)}
 .inv-split-legend{display:flex;gap:10px;margin-top:6px;font-size:11px;color:var(--text2)}
@@ -846,7 +898,7 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 dialog.cmd-overlay{border:none;background:transparent;padding:0;padding-top:80px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-start;justify-content:center}
 dialog.cmd-overlay[open]{display:flex}
 dialog.cmd-overlay::backdrop{background:rgba(0,0,0,0.6)}
-.cmd-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:100%;max-width:620px;box-shadow:0 16px 48px rgba(0,0,0,0.6);overflow:hidden}
+.cmd-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:100%;max-width:620px;box-shadow:var(--shadow-lg);overflow:hidden}
 /* Mobile: vertically centre the Quick Entry popup. Placed after the base
    .cmd-overlay rule so it wins by source order (the earlier mobile block is
    overridden by the base rule). Desktop keeps its top-pinned position. */
@@ -856,7 +908,7 @@ dialog.cmd-overlay::backdrop{background:rgba(0,0,0,0.6)}
 .cmd-mode-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg3)}
 .cmd-mode-tab{flex:1;padding:10px;border:none;background:transparent;color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:0.3px;transition:all 0.15s;text-transform:uppercase}
 .cmd-mode-tab.active{background:var(--bg2);color:var(--text);border-bottom:2px solid var(--accent)}
-.cmd-input-wrap{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
+.cmd-input-wrap{display:flex;align-items:center;gap:10px;padding:16px 16px;border-bottom:1px solid var(--border)}
 .cmd-input-wrap svg{width:18px;height:18px;color:var(--text3);flex-shrink:0}
 .cmd-input{flex:1;background:transparent;border:none;color:var(--text);font-size:15px;font-family:inherit;outline:none}
 .cmd-input::placeholder{color:var(--text3)}
@@ -887,7 +939,7 @@ dialog.cmd-overlay::backdrop{background:rgba(0,0,0,0.6)}
 .sell-profit-preview strong{color:var(--text)}
 /* ── Multi-item sale cart (Quick Entry → Log Sale) ── */
 .sell-cart-list{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;max-height:240px;overflow-y:auto}
-.sell-cart-empty{font-size:12px;color:var(--text3);padding:14px;text-align:center;background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--radius)}
+.sell-cart-empty{font-size:12px;color:var(--text3);padding:16px;text-align:center;background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--radius)}
 .sell-cart-line{display:flex;flex-direction:column;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
 .sell-cart-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .sell-cart-bottom{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -967,6 +1019,9 @@ th.sort-asc::after{content:'↑';opacity:1;color:var(--text)}
 th.sort-desc::after{content:'↓';opacity:1;color:var(--text)}
 .col-filter{width:100%;margin-top:4px;padding:3px 6px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;font-family:inherit;text-align:center}
 .col-filter:focus{outline:none;border-color:var(--accent)}
+/* Inline-edit price inputs: focus gives a clear edit highlight so the user
+   knows the cell is live. Enter commits, Escape reverts (see keydown handler). */
+.kjr-inline:focus{outline:none;background:var(--accent-soft) !important;border-radius:4px;box-shadow:0 0 0 1px var(--accent)}
 .col-filter::placeholder{color:var(--text3)}
 thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 
@@ -974,7 +1029,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 .ebay-result{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-size:13px;line-height:1.7;margin-top:12px}
 
 /* IMPORT */
-.import-hint{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px;font-size:13px;line-height:1.8;margin-bottom:14px;color:var(--text2)}
+.import-hint{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:13px;line-height:1.8;margin-bottom:16px;color:var(--text2)}
 .import-hint strong{color:var(--text)}
 
 /* SCROLLBAR */
@@ -990,7 +1045,7 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 .exp-seg-singles{background:linear-gradient(135deg,#2dd4bf,#14b8a6)}
 .exp-seg-slabs{background:linear-gradient(135deg,#a78bfa,#7c3aed)}
 .exp-seg-sealed{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.exp-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:12px;color:var(--text2)}
+.exp-legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:12px;color:var(--text2)}
 .exp-legend-item{display:flex;align-items:center;gap:6px}
 .exp-legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
 .exp-legend-amt{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
@@ -1026,7 +1081,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 
 /* ── GUIDE PAGE (in-app user guide rendered from markdown) ── */
 .guide-wrap{display:grid;grid-template-columns:240px 1fr;gap:24px;align-items:flex-start;max-width:1200px;margin:0 auto}
-.guide-toc{position:sticky;top:80px;max-height:calc(100vh - 100px);overflow-y:auto;padding:14px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px}
+.guide-toc{position:sticky;top:80px;max-height:calc(100vh - 100px);overflow-y:auto;padding:16px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px}
 .guide-toc-title{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px;padding:0 4px}
 .guide-toc a{display:block;padding:5px 8px;color:var(--text2);text-decoration:none;border-radius:4px;line-height:1.4;transition:background 0.1s,color 0.1s;border-left:2px solid transparent}
 .guide-toc a:hover{background:var(--bg3);color:var(--text)}
@@ -1034,17 +1089,17 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 .guide-toc a.toc-h3{padding-left:18px;font-size:11.5px;color:var(--text3)}
 .guide-toc a.active{background:var(--bg3);color:var(--accent);border-left-color:var(--accent)}
 .guide-content{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px 40px;line-height:1.65;color:var(--text);font-size:14px;min-height:60vh;min-width:0;overflow-wrap:break-word;word-wrap:break-word}
-.guide-content h1{font-size:26px;font-weight:700;margin:0 0 18px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:14px;overflow-wrap:break-word;word-wrap:break-word}
-.guide-content h2{font-size:20px;font-weight:600;margin:36px 0 14px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h1{font-size:26px;font-weight:700;margin:0 0 18px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:16px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h2{font-size:20px;font-weight:600;margin:36px 0 16px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
 .guide-content h3{font-size:16px;font-weight:600;margin:24px 0 10px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
 .guide-content h4{font-size:14px;font-weight:600;margin:18px 0 8px;color:var(--text2)}
 .guide-content p{margin:0 0 12px;color:var(--text2)}
 .guide-content strong{color:var(--text);font-weight:600}
 .guide-content em{font-style:italic;color:var(--text)}
 .guide-content code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:monospace;font-size:12.5px;color:var(--text)}
-.guide-content pre{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:12.5px;line-height:1.55}
+.guide-content pre{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px 16px;overflow-x:auto;margin:0 0 16px;font-size:12.5px;line-height:1.55}
 .guide-content pre code{background:none;border:none;padding:0;font-size:12.5px}
-.guide-content ul,.guide-content ol{margin:0 0 14px;padding-left:24px;color:var(--text2)}
+.guide-content ul,.guide-content ol{margin:0 0 16px;padding-left:24px;color:var(--text2)}
 .guide-content li{margin-bottom:4px}
 .guide-content li>strong{color:var(--text)}
 .guide-content table{width:100%;border-collapse:collapse;margin:0 0 18px;font-size:13px}
@@ -1055,7 +1110,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 .guide-content a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;transition:border-color 0.15s}
 .guide-content a:hover{border-bottom-color:var(--accent)}
 .guide-content hr{border:none;border-top:1px solid var(--border);margin:32px 0}
-.guide-content blockquote{border-left:3px solid var(--accent);padding:8px 14px;margin:0 0 14px;background:var(--bg3);border-radius:4px;color:var(--text2)}
+.guide-content blockquote{border-left:3px solid var(--accent);padding:8px 16px;margin:0 0 16px;background:var(--bg3);border-radius:4px;color:var(--text2)}
 .guide-content blockquote p:last-child{margin-bottom:0}
 .guide-search{width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:10px}
 .guide-search:focus{outline:none;border-color:var(--accent)}
@@ -1096,7 +1151,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.5 (24 Jun)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v2.6 (25 Jun)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -1266,6 +1321,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="filters-foot"><button type="button" onclick="resetSinglesFilters()">Reset filters</button></div>
       </div>
     </div>
+    <button class="btn btn-sm" id="clear-filters-singles" style="display:none" onclick="clearAllFilters('singles')" title="Clear search, column filters and dropdown filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('singles')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-singles">
       <button class="btn btn-sm col-toggle-btn" onclick="toggleColMenu('singles')">⊞ Columns</button>
@@ -1356,6 +1412,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <option value="5">5</option>
     </select>
     <button class="btn btn-sm" onclick="openTagRankHelper()" title="Open each TAG 10 / Pristine card's grading page and enter its Gem Mint rank">🏆 TAG Ranks</button>
+    <button class="btn btn-sm" id="clear-filters-slabs" style="display:none" onclick="clearAllFilters('slabs')" title="Clear search, column filters and dropdown filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('slabs')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-slabs">
       <button class="btn btn-sm col-toggle-btn" onclick="toggleColMenu('slabs')">⊞ Columns</button>
@@ -1427,11 +1484,12 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 
 <!-- SALES PAGE -->
 <div id="page-sales" class="page">
-  <div class="section-title" style="margin-bottom:14px">Sales History</div>
+  <div class="section-title" style="margin-bottom:16px">Sales History</div>
   <div id="sales-sub" style="display:none"></div>
   <div class="metrics" id="sales-metrics"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="sales-search" oninput="renderSales()" title='Search across product, buyer, dates. Numbers match ±$1 on cost/revenue/profit; use &lt;0 to find losses or &gt;100 for big sales.'>
+    <button class="btn btn-sm" id="clear-filters-sales" style="display:none" onclick="clearAllFilters('sales')" title="Clear search and column filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('sales')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-sales">
       <button class="btn btn-sm col-toggle-btn" onclick="toggleColMenu('sales')">⊞ Columns</button>
@@ -1488,7 +1546,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 <!-- DASHBOARD PAGE -->
 <div id="page-dashboard" class="page active">
   <div class="dash-header">
-    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+    <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap">
       <div class="section-title" style="margin-bottom:0">Dashboard</div>
       <span class="live-indicator" style="font-size:11px;color:var(--text3)">
         <span class="live-dot"></span><span id="dash-last-updated" class="last-updated">Updating...</span>
@@ -1530,7 +1588,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="cb-layout" style="display:grid;grid-template-columns:220px 1fr;gap:0;min-height:400px">
 
       <!-- Left: field palette -->
-      <div class="cb-palette-col" style="border-right:1px solid var(--border);padding:14px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:560px">
+      <div class="cb-palette-col" style="border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:560px">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600">Available Fields</div>
         <input id="cb-palette-search" class="fi" placeholder="Search fields..." style="font-size:11px;padding:5px 8px" oninput="cbFilterPalette(this.value)">
         <div id="cb-field-palette" style="display:flex;flex-direction:column;gap:5px"></div>
@@ -1540,7 +1598,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <div style="display:flex;flex-direction:column">
 
         <!-- Axes row -->
-        <div class="cb-axes-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:14px;border-bottom:1px solid var(--border)">
+        <div class="cb-axes-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px;border-bottom:1px solid var(--border)">
           <!-- X axis — multi-dim -->
           <div>
             <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:5px">
@@ -1571,7 +1629,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         </div>
 
         <!-- Controls row -->
-        <div style="display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <div style="display:flex;gap:10px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap">
           <div style="font-size:11px;color:var(--text3)">Source:</div>
           <select class="filter-sel" id="cb-source" onchange="cbSourceChanged()" style="font-size:11px">
             <option value="all_inventory" selected>All inventory</option>
@@ -1605,7 +1663,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         </div>
 
         <!-- Item picker panel -->
-        <div id="cb-picker-wrap" style="display:none;padding:10px 14px;border-bottom:1px solid var(--border)">
+        <div id="cb-picker-wrap" style="display:none;padding:10px 16px;border-bottom:1px solid var(--border)">
           <div style="font-size:11px;color:var(--text3);margin-bottom:7px">Choose which items to show:</div>
           <div id="cb-picker-list" style="display:flex;flex-wrap:wrap;gap:5px;max-height:120px;overflow-y:auto;margin-bottom:8px"></div>
           <div style="display:flex;gap:6px;align-items:center">
@@ -1617,7 +1675,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         </div>
 
         <!-- Chart area -->
-        <div style="padding:14px;flex:1;min-height:280px;position:relative">
+        <div style="padding:16px;flex:1;min-height:280px;position:relative">
           <div id="cb-empty-state" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:260px;color:var(--text3)">
             <svg width="52" height="52" viewBox="0 0 52 52" fill="none" style="opacity:0.12"><rect x="4" y="30" width="12" height="18" rx="2" fill="currentColor"/><rect x="20" y="18" width="12" height="30" rx="2" fill="currentColor"/><rect x="36" y="6" width="12" height="42" rx="2" fill="currentColor"/></svg>
           </div>
@@ -1638,7 +1696,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
   <!-- AI Analyst Panel -->
   <div id="ai-analyst-card" style="margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg)">
     <!-- Header -->
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg2);cursor:pointer;user-select:none" onclick="toggleAiPanel()">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);background:var(--bg2);cursor:pointer;user-select:none" onclick="toggleAiPanel()">
       <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
         <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#4a9eff);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🤖</div>
         <div style="min-width:0">
@@ -1650,12 +1708,12 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     </div>
     <div id="ai-analyst-body" style="display:none">
       <!-- Quick prompts -->
-      <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg2)">
+      <div style="padding:16px 18px;border-bottom:1px solid var(--border);background:var(--bg2)">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:8px">Quick Analysis</div>
         <div id="ai-quick-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
       <!-- Chat history -->
-      <div id="ai-chat-history" style="max-height:420px;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;min-height:80px;background:var(--bg)"></div>
+      <div id="ai-chat-history" style="max-height:420px;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:16px;min-height:80px;background:var(--bg)"></div>
       <!-- Visualisation output -->
       <div id="ai-viz-area" style="padding:0 18px 12px;display:none;background:var(--bg)">
         <div style="font-size:10px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.6px;font-weight:600">Chart</div>
@@ -1690,7 +1748,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <label class="lbl">Search Item</label>
           <div style="position:relative">
             <input class="fi" type="text" id="lst-search" placeholder="Type a card or product name..." oninput="lstSearchItems(this.value)" onkeydown="lstSearchKey(event)" autocomplete="off" spellcheck="false">
-            <div id="lst-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:300;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 8px 8px;max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.35)"></div>
+            <div id="lst-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:300;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 8px 8px;max-height:220px;overflow-y:auto;box-shadow:var(--shadow-md)"></div>
           </div>
           <div id="lst-selected-label" style="display:none;font-size:11px;color:var(--accent);margin-top:4px"></div>
         </div>
@@ -1705,7 +1763,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <input type="text" class="fi" id="lst-market" readonly placeholder="—" style="background:var(--bg3);color:var(--text2)">
         </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
         <button class="btn" id="lst-ai-btn" onclick="enhanceListingWithAI()" title="Optional: rewrite the description in your AI's voice. Free Gemini key works.">✨ Enhance with AI</button>
         <span id="lst-status" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
       </div>
@@ -1790,7 +1848,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       </div>
       <textarea class="fi" id="import-data" rows="8" placeholder="Paste your Google Sheets / CSV data here..." style="margin-bottom:12px;font-family:monospace;font-size:12px" oninput="autoDetectImportType()"></textarea>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary" onclick="importData()">Import</button>
+        <button class="btn btn-primary" id="import-btn" onclick="importData()">Import</button>
         <button class="btn" onclick="importWithAI()">🤖 AI Smart Import</button>
       </div>
       <div id="import-result" style="margin-top:12px;font-size:13px;display:none"></div>
@@ -1838,7 +1896,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 <!-- TRASH PAGE -->
 <!-- GUIDE PAGE (renders user guide markdown in-app) -->
 <div id="page-guide" class="page">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;max-width:1200px;margin-left:auto;margin-right:auto">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;max-width:1200px;margin-left:auto;margin-right:auto">
     <div>
       <div class="section-title" style="display:flex;align-items:center;gap:8px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;color:var(--accent)"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -1981,7 +2039,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="modal-foot">
       <div id="smart-add-count" style="font-size:12px;color:var(--text2);margin-right:auto"></div>
       <button class="btn" onclick="closeModal('modal-smart-add')">Cancel</button>
-      <button class="btn btn-primary" id="smart-add-save-btn" onclick="saveSmartAdd()" disabled>Save All</button>
+      <button class="btn btn-primary" id="smart-add-save-btn" onclick="kjrGuardSave(this, saveSmartAdd)" disabled>Save All</button>
     </div>
   </div>
 </div>
@@ -2008,7 +2066,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="ms-market" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="ms-list" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Date Purchased</label><input class="fi" id="ms-date" placeholder="e.g. 9 Nov 2025"></div>
+        <div class="form-group"><label class="lbl">Date Purchased</label><input class="fi" type="date" id="ms-date"></div>
         <div class="form-group"><label class="lbl">Status</label>
           <select class="fi" id="ms-status"><option>Available</option><option>Sold</option></select></div>
         <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" min="0" placeholder="e.g. 150" step="0.01"></div>
@@ -2019,7 +2077,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('modal-single')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSingle()">Save</button>
+      <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSingle)">Save</button>
     </div>
   </div>
 </div>
@@ -2044,7 +2102,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="msl-cost" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="msl-market" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="msl-list" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Date Listed</label><input class="fi" id="msl-date" placeholder="e.g. 9 Nov"></div>
+        <div class="form-group"><label class="lbl">Date Listed</label><input class="fi" type="date" id="msl-date"></div>
         <div class="form-group"><label class="lbl">Status</label>
           <select class="fi" id="msl-status"><option>Available</option><option>Sold</option></select></div>
         <div class="form-group"><label class="lbl">Price Alert — notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" min="0" placeholder="e.g. 500" step="0.01"></div>
@@ -2055,7 +2113,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('modal-slab')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSlab()">Save</button>
+      <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSlab)">Save</button>
     </div>
   </div>
 </div>
@@ -2086,12 +2144,12 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="modal-body">
       <input type="hidden" id="qs-table">
       <input type="hidden" id="qs-id">
-      <div style="font-size:13px;color:var(--text2);margin-bottom:14px">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:16px">
         Marking <strong id="qs-name" style="color:var(--text)"></strong> as sold.
         This will create a sales record automatically.
       </div>
       <div class="form-grid">
-        <div class="form-group"><label class="lbl">Date Sold</label><input class="fi" id="qs-date"></div>
+        <div class="form-group"><label class="lbl">Date Sold</label><input class="fi" type="date" id="qs-date"></div>
         <div class="form-group"><label class="lbl">Buyer</label><input class="fi" id="qs-buyer" placeholder="Username / name"></div>
         <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="qs-cost" min="0" step="0.01" oninput="calcQsProfit()"></div>
         <div class="form-group"><label class="lbl">Sold For (S$) *</label><input class="fi" type="number" id="qs-total" min="0" placeholder="0" step="0.01" oninput="calcQsProfit()" autofocus></div>
@@ -2103,7 +2161,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('modal-quick-sell')">Cancel</button>
-      <button class="btn btn-primary" onclick="confirmQuickSell()">Confirm Sale</button>
+      <button class="btn btn-primary" onclick="kjrGuardSave(this, confirmQuickSell)">Confirm Sale</button>
     </div>
   </div>
 </div>
@@ -2162,6 +2220,7 @@ const kjrModalCtrl = (() => {
     const trigger = triggerEl || document.activeElement;
     stack.push({ dialog, trigger });
     dialog.showModal();
+    if (typeof trapFocus === 'function') trapFocus(dialog);
     if (!pushed) { history.pushState({ kjrModal: 1 }, ''); pushed = true; }
     syncScroll();
   }
@@ -3007,15 +3066,16 @@ async function deleteSelected(table) {
   const ids = selectedIds[table];
   if (ids.size === 0) return;
   const count = ids.size;
-  if (!confirm('Move ' + count + ' item' + (count !== 1 ? 's' : '') + ' to trash? Restore within 30 days from the Trash tab.')) return;
+  if (!await kjrConfirm('Move ' + count + ' item' + (count !== 1 ? 's' : '') + ' to trash? Restore within 30 days from the Trash tab.', {ok:'Move to trash', danger:true})) return;
 
   // Check for linked sales across all selected items.
   const linkedSales = DB.sales.filter(s => ids.has(s.inventoryId) && s.inventoryTable === table);
   let voidLinkedSales = false;
   if (linkedSales.length) {
-    voidLinkedSales = confirm(
+    voidLinkedSales = await kjrConfirm(
       linkedSales.length + ' sale record' + (linkedSales.length !== 1 ? 's are' : ' is') +
-      ' linked to items in this selection.\n\nOK   → also move those sale(s) to trash.\nCancel → keep the sale record(s).'
+      ' linked to items in this selection.\n\nTrash sales too → also move those sale(s) to trash.\nKeep sales → keep the sale record(s).',
+      {ok:'Trash sales too', cancel:'Keep sales'}
     );
   }
 
@@ -3646,8 +3706,8 @@ function previewSmartAdd() {
     if (p._error) {
       return '<div class="sa-item sa-error">' +
         '<span class="sa-badge sa-badge-error">ERR</span>' +
-        '<div><div class="sa-name">' + p._raw + '</div>' +
-        '<div class="sa-meta" style="color:var(--red)">' + p._error + '</div></div></div>';
+        '<div><div class="sa-name">' + esc(p._raw) + '</div>' +
+        '<div class="sa-meta" style="color:var(--red)">' + esc(p._error) + '</div></div></div>';
     }
     const typeLabel = p.type === 'slab' ? 'SLAB' : p.type === 'sealed' ? 'SEALED' : 'RAW';
     const typeCls   = p.type === 'slab' ? 'slab' : p.type === 'sealed' ? 'sealed' : 'raw';
@@ -3670,7 +3730,7 @@ function previewSmartAdd() {
     }
     return '<div class="sa-item sa-' + typeCls + '">' +
       '<span class="sa-badge sa-badge-' + typeCls + '">' + typeLabel + '</span>' +
-      '<div style="flex:1"><div class="sa-name">' + p.name + '</div>' +
+      '<div style="flex:1"><div class="sa-name">' + esc(p.name) + '</div>' +
       '<div class="sa-meta">' + meta.join(' · ') + '</div></div>' +
       '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;color:var(--text3)" onclick="removeSmartItem(' + idx + ')" title="Remove">✕</button>' +
       '</div>';
@@ -3922,7 +3982,7 @@ function cmdSellSearch() {
   ].slice(0, 15);
 
   if (cmdSellResults.length === 0) {
-    el.innerHTML = '<div class="cmd-empty">No available inventory matches "' + raw + '"</div>';
+    el.innerHTML = '<div class="cmd-empty">No available inventory matches "' + esc(raw) + '"</div>';
     return;
   }
 
@@ -4454,8 +4514,8 @@ function _clSummary(table, item) {
   return parts.join(' · ');
 }
 
-function clearChangelog() {
-  if (!confirm('Clear all changelog entries?')) return;
+async function clearChangelog() {
+  if (!await kjrConfirm('Clear all changelog entries?', {ok:'Clear all', danger:true})) return;
   localStorage.removeItem(CL_KEY);
   renderChangelog();
   toast('Changelog cleared');
@@ -4485,8 +4545,8 @@ function renderChangelog() {
     // Diff / summary lines can be long (multiple "field: from → to" parts
     // joined by · ). Render them on a separate row in a monospace tone so
     // they're scannable, and let them wrap rather than truncate.
-    const detailEsc = (e.detail||'').replace(/</g,'&lt;');
-    const extraEsc  = (e.extra ||'').replace(/</g,'&lt;');
+    const detailEsc = esc(e.detail||'');
+    const extraEsc  = esc(e.extra ||'');
     return '<div class="cl-item">' +
       '<div class="cl-dot ' + (dotCls[e.action]||'cl-dot-edit') + '"></div>' +
       '<div class="cl-body">' +
@@ -4770,7 +4830,7 @@ async function restoreVersion(id) {
   }
   if (!ver) { toast('Version not found'); return; }
   if (!ver.data) { toast('⚠ This version\'s snapshot is only in the cloud and it could not be reached. Try again when online.'); return; }
-  if (!confirm('Restore "' + ver.name + '"? Current data will be overwritten (a backup version will be saved first).')) return;
+  if (!await kjrConfirm('Restore "' + esc(ver.name) + '"? Current data will be overwritten (a backup version will be saved first).', {ok:'Restore'})) return;
   // Auto-save current state before restoring
   const backup = {
     id: 'v_' + Date.now(),
@@ -4813,8 +4873,8 @@ async function restoreVersion(id) {
 async function deleteVersion(id) {
   const all = loadVersions();
   const target = all.find(v => v.id === id);
-  const label = target ? ('"' + (target.name || 'Untitled') + '"') : 'this version';
-  if (!confirm('Permanently delete ' + label + '?\nThis cannot be undone.')) return;
+  const label = target ? ('"' + esc(target.name || 'Untitled') + '"') : 'this version';
+  if (!await kjrConfirm('Permanently delete ' + label + '?\nThis cannot be undone.', {ok:'Delete', danger:true})) return;
   const versions = all.filter(v => v.id !== id);
   _cacheVersions(versions);
   renderVerList();
@@ -4948,7 +5008,7 @@ function bestMarketFor(item) {
   return '';
 }
 
-function markStatus(table, id, status) {
+async function markStatus(table, id, status) {
   if (status === 'Sold') {
     // Open quick-sell modal instead of directly marking. Lock onto the
     // highest-cost duplicate so the right copy gets sold.
@@ -4962,7 +5022,7 @@ function markStatus(table, id, status) {
     let displayName = item.name + (item.grader ? ' (' + item.grader + ' ' + item.grade + ')' : '');
     if (usingDup) displayName += '  · selling highest-cost copy (S$' + (parseFloat(item.costPrice)||0).toFixed(0) + ')';
     document.getElementById('qs-name').textContent = displayName;
-    document.getElementById('qs-date').value = new Date().toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
+    document.getElementById('qs-date').value = new Date().toISOString().slice(0,10);
     document.getElementById('qs-buyer').value = '';
     document.getElementById('qs-cost').value = item.costPrice || '';
     // Pre-fill the "Total Collected" with the best available market/list price
@@ -4984,9 +5044,10 @@ function markStatus(table, id, status) {
     const linked = DB.sales.filter(s => s.inventoryId === id && s.inventoryTable === table);
     let removeSales = false;
     if (linked.length) {
-      removeSales = confirm(
+      removeSales = await kjrConfirm(
         'There ' + (linked.length === 1 ? 'is 1 sale' : 'are ' + linked.length + ' sales') +
-        ' linked to this item.\n\nOK   → remove the linked sale(s) so revenue/profit aren\'t double-counted.\nCancel → keep the sale record(s) (you marked the item available without retracting the sale).'
+        ' linked to this item.\n\nRemove sales → remove the linked sale(s) so revenue/profit aren\'t double-counted.\nKeep sales → keep the sale record(s) (you marked the item available without retracting the sale).',
+        {ok:'Remove sales', cancel:'Keep sales'}
       );
     }
     snapshotForUndo();
@@ -5362,8 +5423,8 @@ function healthIgnoreFinding(fp){
   _saveHealthIgnores(set);
   runHealthCheck(); // re-render without it
 }
-function healthRestoreIgnored(){
-  if (!confirm('Restore all ignored findings? You\'ll see them again on the next run.')) return;
+async function healthRestoreIgnored(){
+  if (!await kjrConfirm('Restore all ignored findings? You\'ll see them again on the next run.', {ok:'Restore all'})) return;
   localStorage.removeItem(HEALTH_IGNORE_KEY);
   runHealthCheck();
 }
@@ -5415,7 +5476,7 @@ function _renderHealthResults(findings){
   let cardIdx = 0;
   const renderGroup = (group, label, color) => {
     if (group.length === 0) return '';
-    return `<div style="margin-top:14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:${color};margin-bottom:6px">${label} (${group.length})</div>` +
+    return `<div style="margin-top:16px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:${color};margin-bottom:6px">${label} (${group.length})</div>` +
       group.map(f => {
         const idx = cardIdx++;
         const hasDetails = f.details && f.details.length > 0;
@@ -5463,7 +5524,7 @@ function _renderHealthResults(findings){
         <button class="btn btn-ghost btn-sm" onclick="document.getElementById('health-overlay').remove()">✕</button>
       </div>
       <div class="modal-body">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:8px;background:var(--bg3);border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-radius:8px;background:var(--bg3);border:1px solid var(--border)">
           <div>
             <div style="font-weight:600">${esc(overallText)}</div>
             <div style="font-size:11px;color:var(--text3);margin-top:2px">Run at ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${fails.length} fail · ${infos.length} info</div>
@@ -5474,7 +5535,7 @@ function _renderHealthResults(findings){
           </div>
         </div>
         ${(fails.length === 0 && infos.length === 0)
-          ? `<div style="margin-top:14px;padding:14px;border:1px solid var(--green);border-radius:6px;background:var(--green-soft);color:var(--green);font-size:13px">✓ Nothing to act on right now.</div>`
+          ? `<div style="margin-top:16px;padding:16px;border:1px solid var(--green);border-radius:6px;background:var(--green-soft);color:var(--green);font-size:13px">✓ Nothing to act on right now.</div>`
           : ''}
         ${renderGroup(fails, '❌ Fail — fix before trusting totals', 'var(--red)')}
         ${renderGroup(infos, 'ℹ Info', 'var(--blue)')}
@@ -5636,6 +5697,60 @@ function sortItems(items, table) {
 }
 
 function colFilter(id) { return (document.getElementById(id)?.value||'').toLowerCase(); }
+
+// Per-table filter input ids: search + column-filter boxes + dropdown selects.
+// status defaults to 'available' (not counted as an active filter).
+const _FILTER_INPUTS = {
+  singles: { search:'singles-search', cols:['sf-name','sf-cost','sf-mkt','sf-list','sf-lang','sf-type','sf-date'],
+             sels:['singles-lang','singles-type'], statusSel:'singles-status-filter' },
+  slabs:   { search:'slabs-search', cols:['slbf-name','slbf-cost','slbf-mkt','slbf-list','slbf-grade','slbf-cert','slbf-rank','slbf-lang','slbf-date'],
+             sels:['slabs-grader','slabs-grade'], statusSel:null },
+  sales:   { search:'sales-search', cols:['slf-date','slf-product','slf-buyer'], sels:[], statusSel:null }
+};
+function _hasActiveFilters(table) {
+  const cfg = _FILTER_INPUTS[table];
+  if (!cfg) return false;
+  if ((document.getElementById(cfg.search)?.value||'').trim()) return true;
+  if (cfg.cols.some(id => (document.getElementById(id)?.value||'').trim())) return true;
+  if (cfg.sels.some(id => (document.getElementById(id)?.value||'').trim())) return true;
+  if (cfg.statusSel) { const v = document.getElementById(cfg.statusSel)?.value; if (v && v !== 'available') return true; }
+  return false;
+}
+function updateClearFiltersBtn(table) {
+  const btn = document.getElementById('clear-filters-' + table);
+  if (btn) btn.style.display = _hasActiveFilters(table) ? '' : 'none';
+}
+function clearAllFilters(table) {
+  const cfg = _FILTER_INPUTS[table];
+  if (!cfg) return;
+  const s = document.getElementById(cfg.search); if (s) s.value = '';
+  cfg.cols.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  cfg.sels.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  if (cfg.statusSel) { const el = document.getElementById(cfg.statusSel); if (el) el.value = 'available'; }
+  const render = table === 'singles' ? renderSingles : table === 'slabs' ? renderSlabs : renderSales;
+  render();
+}
+
+// Inline-edit keyboard behaviour (delegated, survives re-renders):
+//   • on focus: remember the original value so Escape can revert
+//   • Enter: commit by blurring (fires the existing onchange)
+//   • Escape: restore original value and blur without committing
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (el && el.classList && el.classList.contains('kjr-inline')) el.dataset.kjrOrig = el.value;
+});
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  if (!el || !el.classList || !el.classList.contains('kjr-inline')) return;
+  if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  else if (e.key === 'Escape') {
+    e.preventDefault();
+    if (el.dataset.kjrOrig !== undefined) el.value = el.dataset.kjrOrig;
+    el._kjrReverting = true;
+    el.blur();
+    el._kjrReverting = false;
+  }
+});
 
 // =========== NAVIGATION ===========
 function showPage(name) {
@@ -6070,6 +6185,26 @@ function _statMktFreshDot(items) {
   return '<span style="width:7px;height:7px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:6px;vertical-align:middle;cursor:help" title="Oldest refresh: ' + ago + '"></span>';
 }
 
+// Shared inventory empty-state row. When the table is genuinely empty (no
+// filter active) it shows a CTA to add the first card. When a filter hides
+// everything, it shows a neutral "no matches" message with no CTA.
+function kjrInvEmptyRow(opts) {
+  const { colspan, filtered, icon, title, sub, ctaLabel, ctaAction } = opts;
+  if (filtered) {
+    return '<tr><td colspan="' + colspan + '">' +
+      '<div class="hig-empty"><div class="hig-empty-icon">🔍</div>' +
+      '<div class="hig-empty-title">No matches</div>' +
+      '<div class="hig-empty-sub">Nothing matches the current search or filters. Clear them to see everything.</div>' +
+      '</div></td></tr>';
+  }
+  return '<tr><td colspan="' + colspan + '">' +
+    '<div class="hig-empty"><div class="hig-empty-icon">' + icon + '</div>' +
+    '<div class="hig-empty-title">' + title + '</div>' +
+    '<div class="hig-empty-sub">' + sub + '</div>' +
+    '<div class="hig-empty-action"><button class="btn btn-primary" onclick="' + ctaAction + '">' + ctaLabel + '</button></div>' +
+    '</div></td></tr>';
+}
+
 function renderSingles() {
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
   const lang = document.getElementById('singles-lang').value;
@@ -6147,8 +6282,8 @@ function renderSingles() {
       </div>`;
 
   document.getElementById('singles-stats').innerHTML =
-    statCard('Total Cost', 'S$' + Math.round(totalCost)) +
-    statCard('Market Price', (totalValue > 0 ? 'S$' + Math.round(totalValue) : '—') + _statMktFreshDot(available)) +
+    statCard('Total Cost', 'S$' + Math.round(totalCost).toLocaleString('en-SG')) +
+    statCard('Market Price', (totalValue > 0 ? 'S$' + Math.round(totalValue).toLocaleString('en-SG') : '—') + _statMktFreshDot(available)) +
     statCard('Available', available.length) +
     splitCard;
 
@@ -6175,9 +6310,9 @@ function renderSingles() {
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',\'' + safeId + '\',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'—') + '</div></td>' +
-      '<td data-col-key="costPrice" class="num"><input style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.marketPrice ? '$' + Math.round(parseFloat(i.marketPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.marketPrice ? '$' + Math.round(parseFloat(i.marketPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="—" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'—') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
       '<td data-col-key="datePurchased" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.datePurchased)||'—') + '</td>' +
@@ -6194,7 +6329,15 @@ function renderSingles() {
 
   const tbody = document.getElementById('singles-body');
   tbody.innerHTML = displayItems.length === 0
-    ? '<tr><td colspan="12" style="text-align:center;padding:32px;color:var(--text3)">' + (showSoldMain ? 'No sold items' : 'No available items') + '</td></tr>'
+    ? kjrInvEmptyRow({
+        colspan: 12,
+        filtered: DB.singles.length > 0,
+        icon: '🃏',
+        title: 'No singles yet',
+        sub: 'Track your ungraded cards here. Add your first one to get started.',
+        ctaLabel: '+ Add your first card',
+        ctaAction: 'openAddSingle()'
+      })
     : displayItems.map(i => buildRow(i, showSoldMain)).join('');
 
   // Secondary section (the "other" status) — always in the collapsible toggle
@@ -6229,6 +6372,7 @@ function renderSingles() {
   applyColVisibility('singles');
   attachHeaderDrag('singles');
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
+  updateClearFiltersBtn('singles');
 }
 
 function updateField(table, id, field, val) {
@@ -6364,7 +6508,7 @@ async function restoreFromTrash(trashId) {
 async function emptyTrash() {
   const entries = await fetchTrash();
   if (!entries.length) { toast('Trash is already empty'); return; }
-  if (!confirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.')) return;
+  if (!await kjrConfirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.', {ok:'Delete all', danger:true})) return;
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash?id=not.is.null', {
       method: 'DELETE', headers: SB_HDR
@@ -6443,7 +6587,7 @@ function renderTrash() {
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash('${e.id}')">↻ Restore</button>
-          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(confirm('Permanently delete this item? Cannot be undone.')) { await hardDeleteTrashEntry('${e.id}'); toast('Permanently deleted'); renderTrash(); } })()">✕ Delete forever</button>
+          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { await hardDeleteTrashEntry('${e.id}'); toast('Permanently deleted'); renderTrash(); } })()">✕ Delete forever</button>
         </div>
       </div>`;
     }).join('');
@@ -6455,15 +6599,16 @@ function renderTrash() {
 async function deleteItem(id, table) {
   const item = DB[table].find(i => i.id === id);
   if (!item) return;
-  if (!confirm('Move this item to trash? You can restore it within 30 days from the Trash tab.')) return;
+  if (!await kjrConfirm('Move this item to trash? You can restore it within 30 days from the Trash tab.', {ok:'Move to trash', danger:true})) return;
 
   // If there are linked sales, offer to void them so they don't become orphans.
   const linkedSales = DB.sales.filter(s => s.inventoryId === id && s.inventoryTable === table);
   let voidLinkedSales = false;
   if (linkedSales.length) {
-    voidLinkedSales = confirm(
+    voidLinkedSales = await kjrConfirm(
       'There ' + (linkedSales.length === 1 ? 'is 1 sale' : 'are ' + linkedSales.length + ' sales') +
-      ' linked to this item.\n\nOK   → also move the linked sale(s) to trash.\nCancel → keep the sale record(s).'
+      ' linked to this item.\n\nTrash sales too → also move the linked sale(s) to trash.\nKeep sales → keep the sale record(s).',
+      {ok:'Trash sales too', cancel:'Keep sales'}
     );
   }
 
@@ -6526,13 +6671,31 @@ function openEditSingle(id) {
   document.getElementById('ms-cost').value = item.costPrice||'';
   document.getElementById('ms-list').value = item.listPrice||'';
   document.getElementById('ms-market').value = item.marketPrice||'';
-  document.getElementById('ms-date').value = item.datePurchased||'';
+  document.getElementById('ms-date').value = toIsoDateStr(item.datePurchased);
   document.getElementById('ms-status').value = item.status||'Available';
   document.getElementById('ms-notes').value = item.notes||'';
   document.getElementById('ms-alert').value = item.priceAlert||'';
   document.getElementById('ms-ebay-url').value = item.ebayUrl||'';
   document.getElementById('ms-carousell-url').value = item.carousellUrl||'';
   openModal('modal-single');
+}
+
+// Wrap a save handler so the button disables + shows a brief loading label
+// while it runs, preventing double-submit. Works for sync and async handlers.
+async function kjrGuardSave(btn, fn) {
+  if (!btn || btn.disabled) return;
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.style.opacity = '0.7';
+  btn.style.cursor = 'wait';
+  btn.innerHTML = '<span class="kjr-btn-spinner"></span> Saving…';
+  try { await fn(); }
+  finally {
+    btn.disabled = false;
+    btn.style.opacity = '';
+    btn.style.cursor = '';
+    btn.innerHTML = label;
+  }
 }
 
 function saveSingle() {
@@ -6695,8 +6858,8 @@ function renderSlabs() {
       </div>`;
 
   document.getElementById('slabs-stats').innerHTML =
-    statCard('Total Cost', 'S$' + Math.round(totalCostSlabs)) +
-    statCard('Market Price', (totalValueSlabs > 0 ? 'S$' + Math.round(totalValueSlabs) : '—') + _statMktFreshDot(available)) +
+    statCard('Total Cost', 'S$' + Math.round(totalCostSlabs).toLocaleString('en-SG')) +
+    statCard('Market Price', (totalValueSlabs > 0 ? 'S$' + Math.round(totalValueSlabs).toLocaleString('en-SG') : '—') + _statMktFreshDot(available)) +
     statCard('Available', available.length) +
     splitCard;
 
@@ -6736,9 +6899,9 @@ function renderSlabs() {
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '—') + '</td>' +
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'—') + '</td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'—') + '</span></td>' +
-      '<td data-col-key="costPrice" class="num"><input style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="—" onchange="updateField(\'slabs\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
         soldBtn +
@@ -6751,7 +6914,15 @@ function renderSlabs() {
 
   const tbody = document.getElementById('slabs-body');
   tbody.innerHTML = available.length === 0
-    ? '<tr><td colspan="12" style="text-align:center;padding:32px;color:var(--text3)">No available slabs</td></tr>'
+    ? kjrInvEmptyRow({
+        colspan: 12,
+        filtered: DB.slabs.length > 0,
+        icon: '🏆',
+        title: 'No slabs yet',
+        sub: 'Track your graded cards (PSA, CGC, TAG) here. Add your first slab to get started.',
+        ctaLabel: '+ Add your first card',
+        ctaAction: 'openAddSlab()'
+      })
     : available.map(i => buildRow(i, false)).join('');
 
   // Sold section
@@ -6775,6 +6946,8 @@ function renderSlabs() {
   applyColOrder('slabs');
   applyColVisibility('slabs');
   attachHeaderDrag('slabs');
+  if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
+  updateClearFiltersBtn('slabs');
 }
 
 function openAddSlab() {
@@ -6801,7 +6974,7 @@ function openEditSlab(id) {
   document.getElementById('msl-cost').value = item.costPrice||'';
   document.getElementById('msl-list').value = item.listPrice||'';
   document.getElementById('msl-market').value = item.marketPrice||'';
-  document.getElementById('msl-date').value = item.dateListed||'';
+  document.getElementById('msl-date').value = toIsoDateStr(item.dateListed);
   document.getElementById('msl-status').value = item.status||'Available';
   document.getElementById('msl-notes').value = item.notes||'';
   document.getElementById('msl-alert').value = item.priceAlert||'';
@@ -6967,16 +7140,28 @@ function renderSales() {
   const profitCls    = totalProfit >= 0 ? 'pos' : 'neg';
 
   document.getElementById('sales-sub').textContent = '';
-  const profitDisplay = totalProfit >= 0 ? 'S$' + Math.round(totalProfit) : '-S$' + Math.abs(Math.round(totalProfit));
+  const _sgd = n => Math.round(n).toLocaleString('en-SG');
+  const profitDisplay = totalProfit >= 0 ? 'S$' + _sgd(totalProfit) : '-S$' + _sgd(Math.abs(totalProfit));
   document.getElementById('sales-metrics').innerHTML =
     '<div class="metric"><div class="metric-label">Total Profit</div><div class="metric-value ' + profitCls + '">' + profitDisplay + '</div></div>' +
     '<div class="metric"><div class="metric-label">Avg Margin</div><div class="metric-value ' + (avgMargin >= 0 ? 'pos' : 'neg') + '">' + avgMargin + '%</div></div>' +
     '<div class="metric"><div class="metric-label">Transactions</div><div class="metric-value">' + items.length + '</div></div>' +
-    '<div class="metric"><div class="metric-label">Total Revenue</div><div class="metric-value">S$' + Math.round(totalRevenue) + '</div></div>' +
-    '<div class="metric"><div class="metric-label">Total Cost</div><div class="metric-value">S$' + Math.round(totalCost) + '</div></div>' +
-    (totalFees > 0 ? '<div class="metric"><div class="metric-label">Total Fees</div><div class="metric-value" style="color:var(--text2)">S$' + Math.round(totalFees) + '</div></div>' : '');
+    '<div class="metric"><div class="metric-label">Total Revenue</div><div class="metric-value">S$' + _sgd(totalRevenue) + '</div></div>' +
+    '<div class="metric"><div class="metric-label">Total Cost</div><div class="metric-value">S$' + _sgd(totalCost) + '</div></div>' +
+    (totalFees > 0 ? '<div class="metric"><div class="metric-label">Total Fees</div><div class="metric-value" style="color:var(--text2)">S$' + _sgd(totalFees) + '</div></div>' : '');
   
   const tbody = document.getElementById('sales-body');
+  if (!items.length) {
+    const _filtered = !!(q || fDate || fProduct || fBuyer);
+    const _colCount = tbody.previousElementSibling ? tbody.previousElementSibling.querySelectorAll('th').length : 13;
+    tbody.innerHTML = '<tr><td colspan="' + _colCount + '" style="text-align:center;padding:32px 16px;color:var(--text3)">' +
+      (_filtered ? 'No sales match the current filters.' : 'No sales logged yet.') + '</td></tr>';
+    applyColOrder('sales');
+    applyColVisibility('sales');
+    attachHeaderDrag('sales');
+    updateClearFiltersBtn('sales');
+    return;
+  }
   tbody.innerHTML = items.map(i => {
     const cls = (i.profit||0) >= 0 ? 'sale-profit-pos' : 'sale-profit-neg';
     const chk = selectedIds.sales.has(i.id);
@@ -7039,6 +7224,7 @@ function renderSales() {
   applyColOrder('sales');
   applyColVisibility('sales');
   attachHeaderDrag('sales');
+  updateClearFiltersBtn('sales');
 }
 
 function openAddSale() {
@@ -7541,7 +7727,7 @@ function renderDashboard() {
     : `<span class="freshness-chip" style="opacity:0.6">No Singles or Slabs to price</span>`;
   // Drop the leading "+" on profit — the green colour already signals positive.
   const profitDisplay = allTimeSales.length === 0 ? '—'
-    : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit) : '-S$' + Math.abs(Math.round(allTimeProfit)));
+    : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG'));
   const roiPct = (allTimeSales.length === 0 || allTimeRevenue === 0)
     ? null
     : (allTimeProfit / Math.max(1, allTimeRevenue - allTimeProfit)) * 100;
@@ -7552,10 +7738,10 @@ function renderDashboard() {
   // hover. Only shown when there is Singles/Slabs inventory to price.
   const trustMeta = hasPriceableInventory ? { color: freshDot, text: _chipText } : null;
   document.getElementById('dash-metrics-primary').innerHTML =
-    dashMetric('Total Cost', 'S$' + totalInvCost.toFixed(0),
+    dashMetric('Total Cost', 'S$' + Math.round(totalInvCost).toLocaleString('en-SG'),
       'Cost basis across Singles + Slabs + Sealed (ETBs / Booster Boxes / Packs in stock). ' + grandItemCount + ' units in stock.') +
     dashMetric('Total Market Value',
-      (totalMktValue > 0 ? 'S$' + totalMktValue.toFixed(0) : '—') +
+      (totalMktValue > 0 ? 'S$' + Math.round(totalMktValue).toLocaleString('en-SG') : '—') +
         // Tiny "view breakdown" affordance — clicking it lists every
         // Singles/Slabs row currently contributing to this figure, so the
         // user can trace S$X back to the exact items that produced it.
@@ -7637,7 +7823,7 @@ function renderDashboard() {
         return mainRow + subHtml;
       }).join('');
       expBody.innerHTML = `<div class="exp-bar">${barHtml}</div>
-        <div style="margin-top:14px">${detailHtml}</div>`;
+        <div style="margin-top:16px">${detailHtml}</div>`;
       if (expTotal) expTotal.textContent = '';
     }
   }
@@ -7830,10 +8016,26 @@ function appendAiMessage(role, html) {
   div.style.cssText = 'display:flex;gap:8px;align-items:flex-start;' + (isUser ? 'flex-direction:row-reverse' : '');
   div.innerHTML =
     '<div style="width:28px;height:28px;border-radius:50%;background:' + (isUser ? 'var(--accent)' : 'var(--bg3)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">' + (isUser ? '👤' : '🤖') + '</div>' +
-    '<div style="background:' + (isUser ? 'var(--accent)22' : 'var(--bg2)') + ';border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.6;max-width:85%;word-break:break-word">' + html + '</div>';
+    '<div style="background:' + (isUser ? 'var(--accent)22' : 'var(--bg2)') + ';border:1px solid var(--border);border-radius:10px;padding:10px 16px;font-size:13px;line-height:1.6;max-width:85%;word-break:break-word">' + html + '</div>';
   el.appendChild(div);
   el.scrollTop = el.scrollHeight;
 }
+
+// Typing indicator row while the assistant is thinking. Removed once a reply
+// (or error) arrives.
+function showAiTyping() {
+  const el = document.getElementById('ai-chat-history');
+  if (!el || document.getElementById('ai-typing-row')) return;
+  const div = document.createElement('div');
+  div.id = 'ai-typing-row';
+  div.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
+  div.innerHTML =
+    '<div style="width:28px;height:28px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">🤖</div>' +
+    '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 16px"><span class="ai-typing"><i></i><i></i><i></i></span></div>';
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+function hideAiTyping() { document.getElementById('ai-typing-row')?.remove(); }
 
 // Build a slim portfolio snapshot for the AI. Free models (Gemini Flash,
 // Groq Llama-3 8B, OpenRouter free tier) have small context windows — we
@@ -7983,6 +8185,8 @@ async function sendAiAnalyst() {
     return;
   }
 
+  showAiTyping();
+
   const snapshot = _buildAnalystSnapshot();
   const snapJson = JSON.stringify(snapshot);
   if (sublineEl) sublineEl.textContent = 'Using ' + provider + ' · sending ' + Math.round(snapJson.length/1024) + 'KB of portfolio data';
@@ -8029,6 +8233,7 @@ async function sendAiAnalyst() {
 
   try {
     const result = await callAI(finalPrompt, false);
+    hideAiTyping();
     if (!result || result.startsWith('Error') || result.includes('AI features need')) {
       appendAiMessage('assistant', '⚠ ' + esc(result || 'Empty response — check 🔑 settings or try again'));
       btn.disabled = false; btn.textContent = 'Ask →';
@@ -8046,9 +8251,11 @@ async function sendAiAnalyst() {
       } catch(e) {}
     }
   } catch(e) {
+    hideAiTyping();
     appendAiMessage('assistant', '⚠ Error: ' + esc(e.message));
   }
 
+  hideAiTyping();
   btn.disabled = false;
   btn.textContent = 'Ask →';
 }
@@ -8072,7 +8279,7 @@ function renderAiChart(cd) {
       responsive: true, maintainAspectRatio: false,
       animation: { duration: 500 },
       plugins: {
-        legend: { display: cd.type === 'doughnut' || cd.type === 'pie', position: 'bottom', labels: { color: '#999', font: {size:11}, padding:10, usePointStyle:true } },
+        legend: { display: cd.type === 'doughnut' || cd.type === 'pie', position: 'bottom', labels: { color: '#999', font: {size:11}, padding:10, usePointStyle:true} },
         title: { display: !!cd.title, text: cd.title, color: '#ccc', font: {size:13} }
       },
       scales: cd.type === 'doughnut' || cd.type === 'pie' ? {} : {
@@ -8215,7 +8422,7 @@ function lstSearchItems(q) {
   ].slice(0, 12);
   _lstHitIdx = 0;
 
-  if (!_lstHits.length) { res.innerHTML = '<div class="cmd-empty" style="padding:14px">No matches</div>'; res.style.display = 'block'; return; }
+  if (!_lstHits.length) { res.innerHTML = '<div class="cmd-empty" style="padding:16px">No matches</div>'; res.style.display = 'block'; return; }
   _renderLstResults();
   res.style.display = 'block';
 }
@@ -8328,8 +8535,8 @@ const POKETRACE_ENABLED = false;
   // Pre-populate localStorage for backward compat — but the proxy is the
   // authoritative path now, and the proxy uses Cloudflare-side secrets, not
   // these values. Once you fully cut over, you can delete these literals.
-  if (!localStorage.getItem(PPT_KEY_STORAGE))  localStorage.setItem(PPT_KEY_STORAGE,  'pokeprice_free_120a9fd64a47b2b584e508483a6d7301113ad64b5da7c48f');
-  if (!localStorage.getItem(POKETRACE_KEY_STORAGE)) localStorage.setItem(POKETRACE_KEY_STORAGE, 'pc_6e25a4e288325b6bb1c6b07b8d7d578d99d245ae9b5042fd');
+  if (!localStorage.getItem(PPT_KEY_STORAGE))  localStorage.setItem(PPT_KEY_STORAGE,  '');
+  if (!localStorage.getItem(POKETRACE_KEY_STORAGE)) localStorage.setItem(POKETRACE_KEY_STORAGE, '');
   if (!window._kjrKeyWarnShown && !PRICE_PROXY_BASE) {
     console.warn('[Kujira] Price-API keys are baked into source. See TODO comment above. Rotate + proxy via Cloudflare Worker before public deploy.');
     window._kjrKeyWarnShown = true;
@@ -8351,10 +8558,10 @@ function openApiSettings() {
   document.getElementById('api-key-modal')?.remove();
   const html = `
     <div id="api-key-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
-      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg,12px);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,0.5)">
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg,12px);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--border)">
           <h3 style="font-size:15px;font-weight:600;margin:0">🔑 Price API Settings</h3>
-          <button onclick="document.getElementById('api-key-modal').remove()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px">&times;</button>
+          <button onclick="window._closeApiSettings&&window._closeApiSettings()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px" aria-label="Close">&times;</button>
         </div>
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
 
@@ -8364,7 +8571,7 @@ function openApiSettings() {
 
           <div>
             <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokemonPriceTracker API Key</div>
-            <input type="text" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
               <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> — 100 free lookups/day
             </div>
@@ -8372,18 +8579,18 @@ function openApiSettings() {
 
           <div>
             <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokeTrace API Key</div>
-            <input type="text" id="poketrace-key-input" class="fi" placeholder="pc_..." value="${pkt}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="poketrace-key-input" class="fi" placeholder="pc_..." value="${pkt}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
               <a href="https://poketrace.com/developers" target="_blank" style="color:var(--accent)">poketrace.com/developers</a>
             </div>
           </div>
 
-          <div style="border-top:1px solid var(--border);padding-top:14px">
+          <div style="border-top:1px solid var(--border);padding-top:16px">
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">🤖 AI Analyst &amp; Import</div>
             <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.6">Pick any one provider. Free options work great for casual analysis. Keys stored only in this browser.</div>
 
             <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">Preferred Provider</div>
-            <select id="ai-provider-select" class="fi" style="margin-bottom:14px">
+            <select id="ai-provider-select" class="fi" style="margin-bottom:16px">
               <option value="auto" ${getAIProvider()==='auto'?'selected':''}>Auto — pick best free key available</option>
               <option value="gemini" ${getAIProvider()==='gemini'?'selected':''}>Google Gemini (free · recommended)</option>
               <option value="groq" ${getAIProvider()==='groq'?'selected':''}>Groq Llama-3 (free · fastest)</option>
@@ -8444,18 +8651,31 @@ function openApiSettings() {
             </button>
           </div>
 
-          <div style="display:flex;justify-content:flex-end;border-top:1px solid var(--border);padding-top:14px">
-            <button class="btn btn-sm" onclick="document.getElementById('api-key-modal').remove()">Close</button>
+          <div style="display:flex;justify-content:flex-end;border-top:1px solid var(--border);padding-top:16px">
+            <button class="btn btn-sm" onclick="window._closeApiSettings&&window._closeApiSettings()">Close</button>
           </div>
         </div>
       </div>
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
   setTimeout(_renderQueueStatus, 50);
+  const modal = document.getElementById('api-key-modal');
+  // Body scroll lock while open, restored on close.
+  const _prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  const closeModal = () => {
+    document.removeEventListener('keydown', onKey);
+    document.body.style.overflow = _prevOverflow;
+    modal.remove();
+  };
+  window._closeApiSettings = closeModal;
+  // ESC-to-close (this overlay is a plain div, not a native <dialog>).
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closeModal(); } };
+  document.addEventListener('keydown', onKey);
   // Close on backdrop click
-  document.getElementById('api-key-modal').addEventListener('click', function(e) {
-    if (e.target === this) this.remove();
-  });
+  modal.addEventListener('click', function(e) { if (e.target === this) closeModal(); });
+  trapFocus(modal);
+  setTimeout(() => modal.querySelector('input,button,select')?.focus(), 30);
 }
 
 function saveApiKeys() {
@@ -9207,15 +9427,15 @@ function _renderQueueStatus() {
         ▶ Run Today's Batch
       </button>
       <button class="btn btn-sm" onclick="startFreshQueue()">↺ Rebuild Queue</button>
-      <button class="btn btn-sm" style="color:var(--red)" onclick="if(confirm('Clear queue?')){clearQueue();_renderQueueStatus();}">✕ Clear</button>
+      <button class="btn btn-sm" style="color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Clear queue?', {ok:'Clear', danger:true})){clearQueue();_renderQueueStatus();} })()">✕ Clear</button>
     </div>
     ${usedToday >= DAILY_LIMIT ? '<div style="font-size:11px;color:#f59e0b;margin-top:8px">⏰ Daily limit reached — queue resumes tomorrow</div>' : ''}
     ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ All cards have been refreshed. Rebuild queue to start next cycle.</div>' : ''}
   `;
 }
 
-function startFreshQueue() {
-  if (!confirm('Build a new refresh queue from your current inventory? This resets all progress.')) return;
+async function startFreshQueue() {
+  if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
   const q = buildRefreshQueue();
   saveQueue(q);
   _renderQueueStatus();
@@ -9233,7 +9453,7 @@ async function bulkRefreshPrices(table) {
   if (!hasKeys) { toast('Add API keys first — click 🔑 in top bar'); openApiSettings(); return; }
   const items = DB[table].filter(i => (i.status||'Available') === 'Available');
   if (!items.length) { toast('No available items to refresh'); return; }
-  if (!confirm('Manually refresh all ' + items.length + ' ' + table + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.')) return;
+  if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
   _bulkRefreshRunning = true;
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
   const errorTally = {};
@@ -9449,6 +9669,9 @@ async function enhanceListingWithAI(){
   if (!descBox) return;
   if (!descBox.value.trim()) rebuildListing();
   const status = document.getElementById('lst-status');
+  const btn = document.getElementById('lst-ai-btn');
+  const btnLabel = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; btn.style.cursor = 'wait'; btn.innerHTML = '<span class="kjr-btn-spinner"></span> Enhancing…'; }
   status.textContent = 'AI enhancing…';
   descBox.style.opacity = 0.6;
   // Rewrite only the description; the hashtag lines must survive untouched.
@@ -9466,6 +9689,7 @@ async function enhanceListingWithAI(){
     status.textContent = 'AI failed: ' + e.message;
   } finally {
     descBox.style.opacity = 1;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.innerHTML = btnLabel; }
   }
 }
 
@@ -9575,7 +9799,7 @@ async function searchEbay() {
       const rateNote = 'Rate: US$1 = S$' + r.sgdRate.toFixed(4);
       outEl.innerHTML = `
         <div style="font-size:11px;color:var(--text3);margin-bottom:10px">📈 ${rateNote} (live)</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
           <div style="padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
             <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">PokemonPriceTracker</div>
             <div style="font-size:18px;font-weight:600;margin-top:4px">${r.ppt ? 'US$' + Math.round(r.ppt) : '—'}</div>
@@ -10029,13 +10253,41 @@ async function importData() {
     // No confirm dialog — just proceed silently
   }
 
+  if (!newItems.length) { toast('Nothing to import — all rows were skipped or duplicates'); return; }
+
+  // ── Preview / confirm step (both modes) ──────────────────────
+  // Show up to 10 parsed rows plus the total count. Nothing is written until
+  // the user confirms. Cancel writes nothing.
+  const _previewCols = (type === 'sales')
+    ? [['product','Name'], ['buyer','Buyer'], ['totalCollected','Total'], ['profit','Profit']]
+    : [['name','Name'], ['set','Set'], ['costPrice','Cost'], ['marketPrice','Market']];
+  const _previewRows = newItems.slice(0, 10).map(it => {
+    const cells = _previewCols.map(([k]) => '<td style="padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis">' + esc(it[k] != null && it[k] !== '' ? it[k] : '—') + '</td>').join('');
+    return '<tr>' + cells + '</tr>';
+  }).join('');
+  const _previewHead = _previewCols.map(([,label]) => '<th style="padding:4px 8px;text-align:left;color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border2)">' + label + '</th>').join('');
+  const existingArrForPreview = (type === 'sales' ? DB.sales : DB[type]);
+  const _modeNote = (mode === 'replace' && existingArrForPreview.length)
+    ? '<div style="margin-top:10px;font-size:12px;color:var(--amber)">⚠ Replace mode: this removes all ' + existingArrForPreview.length + ' existing ' + esc(type) + ' record' + (existingArrForPreview.length===1?'':'s') + ' first (cloud rows included). Undo with Ctrl+Z.</div>'
+    : '<div style="margin-top:10px;font-size:12px;color:var(--text3)">Append mode: rows are added to your existing ' + esc(type) + '.</div>';
+  const _previewHtml =
+    '<div style="font-size:13px;margin-bottom:10px">Importing <strong>' + newItems.length + '</strong> ' + esc(type) + ' row' + (newItems.length===1?'':'s') +
+    (dupCount ? ' <span style="color:var(--text3)">(' + dupCount + ' duplicate' + (dupCount===1?'':'s') + ' skipped)</span>' : '') + '</div>' +
+    '<div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)"><table style="width:100%;min-width:0;border-collapse:collapse;font-size:12px"><thead><tr>' + _previewHead + '</tr></thead><tbody>' + _previewRows + '</tbody></table></div>' +
+    (newItems.length > 10 ? '<div style="margin-top:6px;font-size:11px;color:var(--text3)">Showing first 10 of ' + newItems.length + ' rows.</div>' : '') +
+    _modeNote;
+  if (!await kjrConfirm(_previewHtml, {ok:'Import ' + newItems.length + ' row' + (newItems.length===1?'':'s'), danger: (mode === 'replace' && existingArrForPreview.length > 0)})) {
+    toast('Import cancelled');
+    return;
+  }
+
+  const _importBtn = document.getElementById('import-btn');
+  const _importBtnLabel = _importBtn ? _importBtn.innerHTML : '';
+  if (_importBtn) { _importBtn.disabled = true; _importBtn.style.opacity = '0.7'; _importBtn.style.cursor = 'wait'; _importBtn.innerHTML = '<span class="kjr-btn-spinner"></span> Importing…'; }
+  try {
+
   if (mode === 'replace') {
     const existingArr = (type === 'sales' ? DB.sales : DB[type]);
-    const existingCount = existingArr.length;
-    if (existingCount > 0 && !confirm('Replace all ' + existingCount + ' existing ' + type + ' records with ' + count + ' imported records? This cannot be undone without using Undo (Ctrl+Z).\n\nNote: cloud-stored rows that no longer exist locally will also be deleted from Supabase.')) {
-      toast('Import cancelled');
-      return;
-    }
     snapshotForUndo();
     // Capture the old IDs so we can DELETE them from Supabase — otherwise
     // "Replace" leaves orphan rows in the cloud and on the next page load
@@ -10096,6 +10348,9 @@ async function importData() {
     _flushDirtyToSupabase();
   }
   clLog('import', type, count + ' records imported' + (skipped ? ', ' + skipped + ' skipped' : ''));
+  } finally {
+    if (_importBtn) { _importBtn.disabled = false; _importBtn.style.opacity = ''; _importBtn.style.cursor = ''; _importBtn.innerHTML = _importBtnLabel; }
+  }
 }
 
 async function importWithAI() {
@@ -10951,7 +11206,9 @@ function renderCustomChart() {
   if (_cbChart) { _cbChart.destroy(); _cbChart = null; }
 
   const ctx = document.getElementById('customChart').getContext('2d');
-  const axisColor = '#666'; const gridColor = '#2a2a2a';
+  const _cs = getComputedStyle(document.documentElement);
+  const axisColor = _cs.getPropertyValue('--text3').trim() || '#666';
+  const gridColor = _cs.getPropertyValue('--border').trim() || '#2a2a2a';
 
   // Per-measure tick formatters — previously every axis showed "S$" even when
   // the measure was Item Count, Sale Count, Margin %, or USD-denominated.
@@ -10980,7 +11237,7 @@ function renderCustomChart() {
         legend: {
           display: datasets.length > 1 || isRound,
           position: isRound ? 'bottom' : 'top',
-          labels: { color:'#999', font:{size:11}, padding:12, usePointStyle:true }
+          labels: { color:'#999', font:{size:11}, padding:12, usePointStyle:true}
         },
         tooltip: {
           callbacks: {
@@ -11067,23 +11324,67 @@ function saveChartToDashboard() {
   toast('Chart added to dashboard ✓');
 }
 
-function kjrConfirm(msg, onYes, yesLabel) {
-  document.getElementById('kjr-confirm-overlay')?.remove();
-  const ov = document.createElement('div');
-  ov.id = 'kjr-confirm-overlay';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9900;display:flex;align-items:center;justify-content:center';
-  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:20px 22px;max-width:300px;width:88%;box-shadow:0 8px 32px rgba(0,0,0,0.5)">' +
-    '<div style="font-size:13px;color:var(--text);line-height:1.55;margin-bottom:16px">' + msg + '</div>' +
-    '<div style="display:flex;gap:8px;justify-content:flex-end">' +
-    '<button id="kjr-cf-no" class="btn btn-sm" style="font-size:12px">Cancel</button>' +
-    '<button id="kjr-cf-yes" class="btn btn-sm" style="font-size:12px;background:var(--red);color:#fff;border-color:var(--red)">' + (yesLabel||'Delete') + '</button>' +
-    '</div></div>';
-  document.body.appendChild(ov);
-  const close = () => ov.remove();
-  ov.querySelector('#kjr-cf-no').onclick = close;
-  ov.querySelector('#kjr-cf-yes').onclick = () => { close(); onYes(); };
-  ov.addEventListener('click', e => { if (e.target === ov) close(); });
-  ov.querySelector('#kjr-cf-yes').focus();
+// Keep keyboard focus within an open modal: Tab/Shift-Tab cycle its focusable
+// children instead of escaping to the page behind. Re-binds cleanly on each call.
+function trapFocus(el) {
+  if (!el) return;
+  const sel = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  if (el._kjrTrapHandler) el.removeEventListener('keydown', el._kjrTrapHandler);
+  const handler = (e) => {
+    if (e.key !== 'Tab') return;
+    const nodes = Array.from(el.querySelectorAll(sel)).filter(n => n.offsetParent !== null || n === document.activeElement);
+    if (!nodes.length) return;
+    const first = nodes[0], last = nodes[nodes.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  el._kjrTrapHandler = handler;
+  el.addEventListener('keydown', handler);
+}
+
+// Promise-based confirm backed by the single styled <dialog id="kjr-confirm-dialog">.
+// Resolves true on OK, false on Cancel / ESC / backdrop. msg may contain HTML, so
+// callers must escape any user/Supabase strings with esc() before interpolating.
+// opts: { ok, cancel, danger } — danger styles the OK button red for destructive actions.
+function kjrConfirm(msg, opts) {
+  opts = opts || {};
+  const dlg = document.getElementById('kjr-confirm-dialog');
+  if (!dlg || typeof dlg.showModal !== 'function') {
+    return Promise.resolve(window.confirm(String(msg).replace(/<[^>]+>/g, '')));
+  }
+  const msgEl = document.getElementById('kjr-confirm-msg');
+  const okBtn = document.getElementById('kjr-confirm-ok');
+  const cancelBtn = document.getElementById('kjr-confirm-cancel');
+  msgEl.innerHTML = msg;
+  okBtn.textContent = opts.ok || 'OK';
+  cancelBtn.textContent = opts.cancel || 'Cancel';
+  okBtn.classList.toggle('btn-primary', !opts.danger);
+  okBtn.style.background = opts.danger ? 'var(--red)' : '';
+  okBtn.style.color = opts.danger ? '#fff' : '';
+  okBtn.style.borderColor = opts.danger ? 'var(--red)' : '';
+
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      dlg.removeEventListener('close', onClose);
+      dlg.removeEventListener('click', onBackdrop);
+      if (dlg.open) dlg.close();
+      resolve(val);
+    };
+    const onClose = () => finish(false);
+    const onBackdrop = (e) => { if (e.target === dlg) finish(false); };
+    okBtn.onclick = () => finish(true);
+    cancelBtn.onclick = () => finish(false);
+    dlg.addEventListener('close', onClose);
+    dlg.addEventListener('click', onBackdrop);
+    dlg.showModal();
+    trapFocus(dlg);
+    okBtn.focus();
+  });
 }
 
 async function deleteSavedChart(id) {
@@ -11094,7 +11395,7 @@ async function deleteSavedChart(id) {
   // Guard: pinned charts can't be deleted
   if (config.pinned) { toast('📌 This chart is pinned — unpin it first to delete'); return; }
 
-  kjrConfirm('Delete <strong>' + kjrEscape(config.title||'this chart') + '</strong>?<br><span style="font-size:11px;color:var(--text3)">Moved to trash — recoverable within 30 days.</span>', async () => {
+  if (!await kjrConfirm('Delete <strong>' + esc(config.title||'this chart') + '</strong>?<br><span style="font-size:11px;color:var(--text3)">Moved to trash, recoverable within 30 days.</span>', {ok:'Delete', danger:true})) return;
 
   // Send to trash for 30-day recovery
   await sendToTrash('savedChart', config, 'manual');
@@ -11139,11 +11440,10 @@ async function deleteSavedChart(id) {
   undoTimer = setTimeout(() => {
     if (!undone) {
       window._undoDeleteChart = null;
-      t.classList.remove('show');
-      t.innerHTML = '';
+      const _t = document.getElementById('toast');
+      if (_t) { _t.classList.remove('show'); _t.innerHTML = ''; }
     }
   }, 5000);
-  }); // end kjrConfirm callback
 }
 
 function renderAllSavedCharts() {
@@ -11194,7 +11494,7 @@ async function deleteAllSavedCharts() {
   const msg = pinned.length
     ? `Move ${deletable.length} unpinned chart${deletable.length!==1?'s':''} to trash? ${pinned.length} pinned chart${pinned.length!==1?'s':''} will be kept.`
     : `Move all ${deletable.length} saved chart${deletable.length!==1?'s':''} to trash? Restore within 30 days from the Trash tab.`;
-  if (!confirm(msg)) return;
+  if (!await kjrConfirm(msg, {ok:'Move to trash', danger:true})) return;
 
   // Batch send to trash
   for (const c of deletable) {
@@ -11259,7 +11559,7 @@ function _renderOneSavedChart(config) {
       </div>
       <div class="card-body" style="padding:12px 18px">
         <div style="height:260px"><canvas id="sc-canvas-${config.id}"></canvas></div>
-        <div id="sc-summary-${config.id}" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap"></div>
+        <div id="sc-summary-${config.id}" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:16px;flex-wrap:wrap"></div>
       </div>
     </div>
     ${config.pinned
@@ -11319,7 +11619,9 @@ function _drawSavedChart(config) {
     return ds;
   });
 
-  const axisColor = '#666'; const gridColor = '#2a2a2a';
+  const _cs = getComputedStyle(document.documentElement);
+  const axisColor = _cs.getPropertyValue('--text3').trim() || '#666';
+  const gridColor = _cs.getPropertyValue('--border').trim() || '#2a2a2a';
   const yKey1 = config.yFields[0];
   const yKey2 = config.yFields[1];
   const scales = isRound ? {} : {
@@ -11787,7 +12089,7 @@ if ('serviceWorker' in navigator) {
     snapshotForUndo && snapshotForUndo();
     const arr = DB[schema.dbKey] = DB[schema.dbKey] || [];
     if (mode === 'replace') {
-      if (arr.length && !confirm('Replace all ' + arr.length + ' existing ' + type + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.')) {
+      if (arr.length && !await kjrConfirm('Replace all ' + arr.length + ' existing ' + esc(type) + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.', {ok:'Replace', danger:true})) {
         toast('Import cancelled');
         return;
       }
@@ -11871,10 +12173,10 @@ if ('serviceWorker' in navigator) {
   .kjr-modal-x{flex-shrink:0;width:32px;height:32px;border-radius:8px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
   .kjr-modal-x:hover{color:var(--text);background:var(--bg4)}
   .kjr-modal h3{font-size:15px;font-weight:600}
-  #kjr-modal-fields{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 20px}
+  #kjr-modal-fields{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 20px}
   .kjr-modal .lbl{display:block;font-size:11px;color:var(--text3);margin-bottom:4px;margin-top:10px;text-transform:uppercase;letter-spacing:0.4px}
   .kjr-modal .fi{width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;font-family:inherit;box-sizing:border-box}
-  .kjr-modal-actions{display:flex;gap:8px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0}
+  .kjr-modal-actions{display:flex;gap:8px;justify-content:flex-end;padding:16px 20px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0}
   /* Phone: dock to the bottom as a sheet with a drag handle + full-width buttons */
   @media(max-width:768px){
     dialog.kjr-modal-back{align-items:flex-end;padding:0}
@@ -11891,7 +12193,7 @@ if ('serviceWorker' in navigator) {
 <!-- ETBs -->
 <div id="page-etbs" class="page">
   <div class="section-title">ETBs</div>
-  <div style="margin-bottom:14px"></div>
+  <div style="margin-bottom:16px"></div>
   <div class="inv-stats" id="kjr-etb-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="kjr-etb-search" oninput="renderEtbs()" title='Search across product, status, condition, dates, notes. Numbers match ±$1 on price; use &gt;50 / &lt;100 for ranges.'>
@@ -11935,7 +12237,7 @@ if ('serviceWorker' in navigator) {
 <!-- Booster Boxes + Packs (unified) -->
 <div id="page-boosterBoxes" class="page">
   <div class="section-title">Booster Boxes &amp; Packs</div>
-  <div style="margin-bottom:14px"></div>
+  <div style="margin-bottom:16px"></div>
 
   <!-- Combined stats -->
   <div class="inv-stats" id="kjr-bbbp-stats"></div>
@@ -12009,6 +12311,8 @@ if ('serviceWorker' in navigator) {
       <th data-col-key="unitPrice" class="sortable" onclick="kjrSort('boosterPacks','unitPrice')">Unit Price</th>
       <th data-col-key="qty" class="sortable" onclick="kjrSort('boosterPacks','qty')">Qty</th>
       <th data-col-key="totalPrice" class="sortable" onclick="kjrSort('boosterPacks','totalPrice')">Total</th>
+      <th data-col-key="marketPrice" class="sortable" onclick="kjrSort('boosterPacks','marketPrice')">Market</th>
+      <th data-col-key="carousellPrice" class="sortable" onclick="kjrSort('boosterPacks','carousellPrice')">Carousell</th>
       <th data-col-key="status" class="sortable" onclick="kjrSort('boosterPacks','status')">Status</th>
       <th data-col-key="notes">Notes</th>
       <th data-col-key="actions">Actions</th>
@@ -12019,6 +12323,8 @@ if ('serviceWorker' in navigator) {
       <th data-col-key="unitPrice"><input class="col-filter" placeholder=">5 / 10-20" title="Examples: 10 (±$1) · &gt;5 · &lt;20 · 5-15" oninput="renderBoosterPacks()" id="kjr-bp-cf-unit"></th>
       <th data-col-key="qty"><input class="col-filter" placeholder=">2 / 1-5" title="Examples: 3 · &gt;2 · &lt;10 · 1-5" oninput="renderBoosterPacks()" id="kjr-bp-cf-qty"></th>
       <th data-col-key="totalPrice"><input class="col-filter" placeholder=">20 / 50-100" title="Examples: 50 (±$1) · &gt;20 · &lt;100 · 50-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-total"></th>
+      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-mkt"></th>
+      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-list"></th>
       <th data-col-key="status"></th>
       <th data-col-key="notes"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterPacks()" id="kjr-bp-cf-notes"></th>
       <th data-col-key="actions"></th>
@@ -12101,6 +12407,32 @@ if ('serviceWorker' in navigator) {
   </div>
 </div></dialog>
 
+<!-- Shared confirmation dialog (replaces native window.confirm) -->
+<style>
+dialog.kjr-confirm-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
+dialog.kjr-confirm-back[open]{display:flex}
+dialog.kjr-confirm-back::backdrop{background:rgba(0,0,0,0.55)}
+.kjr-confirm-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:min(380px,92vw);max-height:88vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+.kjr-confirm-body{padding:20px 22px;font-size:13px;color:var(--text);line-height:1.55;white-space:pre-line}
+.kjr-confirm-body strong{font-weight:600}
+.kjr-confirm-actions{display:flex;gap:8px;justify-content:flex-end;padding:0 22px 18px}
+@media(max-width:768px){
+  dialog.kjr-confirm-back{align-items:flex-end;padding:0}
+  .kjr-confirm-box{width:100%;max-width:none;border-radius:18px 18px 0 0;padding-bottom:env(safe-area-inset-bottom);animation:sheetUp 0.28s cubic-bezier(0.32,0.72,0,1)}
+  .kjr-confirm-actions{flex-direction:column-reverse}
+  .kjr-confirm-actions .btn{width:100%;justify-content:center}
+}
+</style>
+<dialog class="kjr-confirm-back" id="kjr-confirm-dialog">
+  <div class="kjr-confirm-box">
+    <div class="kjr-confirm-body" id="kjr-confirm-msg"></div>
+    <div class="kjr-confirm-actions">
+      <button type="button" class="btn" id="kjr-confirm-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="kjr-confirm-ok">OK</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- eBay completion confirmation modal -->
 <style>
 dialog.kjr-complete-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
@@ -12110,7 +12442,7 @@ dialog.kjr-complete-back::backdrop{background:rgba(0,0,0,0.7)}
 .kjr-complete-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
 .kjr-complete-head h3{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
 .kjr-complete-body{padding:18px 20px;overflow-y:auto;flex:1}
-.kjr-complete-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;justify-content:flex-end;background:var(--bg2)}
+.kjr-complete-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;justify-content:flex-end;background:var(--bg2)}
 .kjr-complete-header{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
 .kjr-complete-items{margin-top:8px;display:flex;flex-direction:column;gap:8px}
 .kjr-complete-item{display:flex;align-items:flex-start;gap:10px;padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius)}
@@ -12482,7 +12814,7 @@ async function kjrDeleteRow(dbKey, id){
   // Trash like Singles/Slabs/Sales. Recoverable from the Trash tab for 30
   // days; previously was a hard delete only recoverable via Ctrl-Z before
   // the next reload.
-  if (!confirm('Move "' + label + '" to trash? You can restore it within 30 days from the Trash tab.')) return;
+  if (!await kjrConfirm('Move "' + esc(label) + '" to trash? You can restore it within 30 days from the Trash tab.', {ok:'Move to trash', danger:true})) return;
   snapshotForUndo && snapshotForUndo();
   const deletedSnapshot = { ...row };
   DB[dbKey].splice(idx, 1);
@@ -12626,8 +12958,8 @@ function renderEtbs(){
     // Inline-editable market price. Blur or Enter writes through updateField,
     // which routes through markDirty + price-history + cloud sync. Same UX as
     // the Singles/Slabs tabs.
-    '<td data-col-key="marketPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="—" onchange="updateField(\'etbs\',\''+r.id+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="—" onchange="updateField(\'etbs\',\''+r.id+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="—" onchange="updateField(\'etbs\',\''+r.id+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="—" onchange="updateField(\'etbs\',\''+r.id+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="condition">'+kjrEscape(r.condition||'')+'</td>' +
     '<td data-col-key="date" class="num">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -12715,8 +13047,8 @@ function renderBoosterBoxes(){
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
     // Inline market + carousell price — same UX as Singles/Slabs/ETBs.
-    '<td data-col-key="marketPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterBoxes\',\''+r.id+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterBoxes\',\''+r.id+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterBoxes\',\''+r.id+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterBoxes\',\''+r.id+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -13236,10 +13568,10 @@ function kjrEbaySetStatus(id, newStatus){
 // Recovery action for rows with unrecognised status values (e.g. legacy
 // imports that didn't get migrated). Drops them back to the start of the
 // pipeline so the user can advance from there.
-function kjrEbayResetToPaid(id){
+async function kjrEbayResetToPaid(id){
   const p = (DB.ebayPurchases||[]).find(r => r.id === id);
   if (!p) return;
-  if (!confirm('Reset "'+ (p.product||p.tracking||p.id) +'" to "Paid"?\n\nIts current status "'+ (p.status||'(blank)') +'" isn\'t in the pipeline.')) return;
+  if (!await kjrConfirm('Reset "'+ esc(p.product||p.tracking||p.id) +'" to "Paid"?\n\nIts current status "'+ esc(p.status||'(blank)') +'" isn\'t in the pipeline.', {ok:'Reset to Paid'})) return;
   p.status = 'Paid';
   p.lastUpdated = Date.now();
   markDirty('ebayPurchases', p.id);
@@ -13888,7 +14220,7 @@ function _renderCompleteModal(){
         </span>
       </div>
     </div>
-    <div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between">
+    <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between">
       <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Items to push into inventory</div>
       <button class="btn btn-sm" onclick="kjrCompleteAddItem()">+ Add another item</button>
     </div>
@@ -13900,7 +14232,7 @@ function _renderCompleteModal(){
   ctx.items.forEach((_, i) => _renderCompletePreview(i));
 }
 
-function kjrConfirmCompletion(){
+async function kjrConfirmCompletion(){
   if (!_kjrCompleteCtx) return;
   const ctx = _kjrCompleteCtx;
   const p = DB.ebayPurchases.find(r => r.id === ctx.rowId);
@@ -13911,7 +14243,7 @@ function kjrConfirmCompletion(){
   }
   const allocated = ctx.items.reduce((s,i) => s + (parseFloat(i.cost)||0), 0);
   if (Math.abs(allocated - ctx.sgdCost) > 0.5) {
-    if (!confirm('Allocated S$' + Math.round(allocated) + ' but transaction total is S$' + Math.round(ctx.sgdCost) + '. Continue anyway?')) return;
+    if (!await kjrConfirm('Allocated S$' + Math.round(allocated) + ' but transaction total is S$' + Math.round(ctx.sgdCost) + '. Continue anyway?', {ok:'Continue'})) return;
   }
   const today = new Date().toISOString().slice(0,10);
   const norm = (table, raw) => (typeof normalizeRecord === 'function') ? normalizeRecord(table, raw) : raw;
@@ -14054,11 +14386,13 @@ function renderBoosterPacks(){
   const q = _v('kjr-bp-search'), statF = _v('kjr-bp-status');
   const cfDate = _v('kjr-bp-cf-date'), cfProd = _v('kjr-bp-cf-product'), cfNotes = _v('kjr-bp-cf-notes');
   const cfUnit = _v('kjr-bp-cf-unit'), cfQty = _v('kjr-bp-cf-qty'), cfTotal = _v('kjr-bp-cf-total');
+  const cfMkt = _v('kjr-bp-cf-mkt'), cfList = _v('kjr-bp-cf-list');
   const filtered = rows.filter(r =>
     kjrMatchUniversal(q, r, 'boosterPacks') &&
     (!statF || r.status === statF) &&
     kjrMatchDateFilter(cfDate, r.date) && kjrMatchFilter(cfProd, r.product) && kjrMatchFilter(cfNotes, r.notes) &&
-    kjrMatchNumFilter(cfUnit, r.unitPrice) && kjrMatchNumFilter(cfQty, r.qty) && kjrMatchNumFilter(cfTotal, r.totalPrice)
+    kjrMatchNumFilter(cfUnit, r.unitPrice) && kjrMatchNumFilter(cfQty, r.qty) && kjrMatchNumFilter(cfTotal, r.totalPrice) &&
+    kjrMatchNumFilter(cfMkt, r.marketPrice) && kjrMatchNumFilter(cfList, r.carousellPrice)
   );
   const sorted = kjrApplySort(filtered, 'boosterPacks');
   const active   = _pinRecentsToTop(sorted.filter(r => kjrIsActiveStatus('boosterPacks', r.status)), 'boosterPacks');
@@ -14076,6 +14410,9 @@ function renderBoosterPacks(){
     '<td data-col-key="unitPrice" class="num">'+kjrFmt(r.unitPrice)+'</td>' +
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
+    // Inline market + carousell price — same UX as Singles/Slabs/Booster Boxes.
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterPacks\',\''+r.id+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="—" onchange="updateField(\'boosterPacks\',\''+r.id+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -14085,11 +14422,11 @@ function renderBoosterPacks(){
     '</tr>';
   let body = active.map(r => rowHtml(r, false)).join('');
   if (active.length === 0 && inactive.length === 0) {
-    body = '<tr><td colspan="8" style="color:var(--text3);padding:24px;text-align:center">No booster packs match.</td></tr>';
+    body = '<tr><td colspan="10" style="color:var(--text3);padding:24px;text-align:center">No booster packs match.</td></tr>';
   } else if (active.length === 0) {
-    body = '<tr><td colspan="8" style="color:var(--text3);padding:18px;text-align:center">No sealed booster packs.</td></tr>';
+    body = '<tr><td colspan="10" style="color:var(--text3);padding:18px;text-align:center">No sealed booster packs.</td></tr>';
   }
-  body += kjrSoldToggleRow('boosterPacks', inactive.length, 8);
+  body += kjrSoldToggleRow('boosterPacks', inactive.length, 10);
   if (_kjrSoldOpen.boosterPacks) body += inactive.map(r => rowHtml(r, true)).join('');
   document.getElementById('kjr-bp-body').innerHTML = body;
   if (typeof _kjrColApply === 'function')  _kjrColApply('boosterPacks');
@@ -14119,7 +14456,7 @@ async function kjrMigrateBoxesToPacks(){
   const toMove = boxes.filter(b => isPack(b.product || b.name));
   if (!toMove.length) { localStorage.setItem('kjr_packs_migrated_v1', '1'); return; }
 
-  if (!confirm('Found ' + toMove.length + ' row' + (toMove.length===1?'':'s') + ' in Booster Boxes that look like Packs (name contains "BP" or "pack"). Move them to the new Booster Packs tab?')) {
+  if (!await kjrConfirm('Found ' + toMove.length + ' row' + (toMove.length===1?'':'s') + ' in Booster Boxes that look like Packs (name contains "BP" or "pack"). Move them to the new Booster Packs tab?', {ok:'Move to Packs'})) {
     localStorage.setItem('kjr_packs_migrated_v1', 'skipped');
     return;
   }
@@ -14181,13 +14518,14 @@ async function kjrReparseSlabNames(){
     const tail = (parsed.grader || '') + (parsed.grade ? ' ' + parsed.grade : '') +
                  (parsed.certNo ? ' #' + parsed.certNo : '') +
                  (parsed.rank ? ' · ' + parsed.rank : '');
-    return '• "' + row.name + '"\n     → "' + parsed.name + '"  +  ' + tail;
+    return '• "' + esc(row.name) + '"\n     → "' + esc(parsed.name) + '"  +  ' + esc(tail);
   }).join('\n');
   const more = toFix.length > 6 ? '\n…and ' + (toFix.length - 6) + ' more' : '';
-  if (!confirm(
+  if (!await kjrConfirm(
     'Found ' + toFix.length + ' slab row' + (toFix.length === 1 ? '' : 's') +
     ' with grader / grade / cert# still inside the name field.\n\n' +
-    'Auto-split them into the proper columns?\n\n' + preview + more
+    'Auto-split them into the proper columns?\n\n' + preview + more,
+    {ok:'Auto-split'}
   )) {
     localStorage.setItem('kjr_slab_reparse_v1', 'skipped');
     return;
@@ -14694,8 +15032,8 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
     kjrSentryLoad();
   };
 
-  window.kjrSentryDisconnect = function() {
-    if (!confirm('Remove stored Sentry token?')) return;
+  window.kjrSentryDisconnect = async function() {
+    if (!await kjrConfirm('Remove stored Sentry token?', {ok:'Disconnect', danger:true})) return;
     localStorage.removeItem('_sentryToken');
     _orgSlug = null;
     var badge = document.getElementById('sentry-badge');

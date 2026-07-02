@@ -1,10 +1,10 @@
-/* Kujira Collectibles service worker — offline shell + installable PWA.
+/* Kujira Collectibles service worker - offline shell + installable PWA.
    Network-first for the app HTML (so it always updates when you're online),
    cache-first for static assets, and a versioned cache that wipes old copies
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
-   intercepted — they pass straight through to the network.
+   intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v4';
+const CACHE = 'kujira-v5';
 const CORE = ['./', './index.html', './Assets/manifest.webmanifest', './Assets/whale-icon.png'];
 
 self.addEventListener('install', (e) => {

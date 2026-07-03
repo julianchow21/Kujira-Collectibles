@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.2',
+    release: 'kujira-collectibles@3.3',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -1197,7 +1197,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.2 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.3 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -2339,6 +2339,12 @@ const DB_KEY_TO_TABLE = Object.fromEntries(
 function _dbKey(tbl) { return TABLE_TO_DB_KEY[tbl] || tbl; }
 function _tblName(key) { return DB_KEY_TO_TABLE[key] || key; }
 
+// Canonical list of Supabase table names (snake_case, as sbDelete/sbUpsert
+// expect) that sync to the cloud. Used by undoLast/redoLast/restoreVersion to
+// diff which ids disappeared and delete them from Supabase too - otherwise a
+// deletion undoes itself on the next load when the cloud row re-merges (B3).
+const SYNCED_TABLES = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
+
 
 // ── Sync status indicator ─────────────────────────────────────
 let _syncStatus = 'idle';
@@ -2370,31 +2376,43 @@ function hideSyncProgress() {
 }
 
 // ── Supabase: BATCH upsert (single request for all records) ──
+// Returns the single `updated_at` timestamp written for this batch (or null on
+// the preview-guard / empty-input paths) so callers can stamp it back onto the
+// in-memory rows - without this, DB rows keep their stale base _updatedAt and
+// mergeTable later misreads the next local edit as a fake conflict (B1).
 async function sbBatchUpsert(table, items) {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
-  if (!items.length) return;
+  if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
+  if (!items.length) return null;
+  const ts = new Date().toISOString();
   const rows = items.map(item => {
     const { id, ...data } = item;
-    return { id, data, updated_at: new Date().toISOString() };
+    return { id, data, updated_at: ts };
   });
   const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
     method: 'POST',
     headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-    body: JSON.stringify(rows)
+    body: JSON.stringify(rows),
+    signal: AbortSignal.timeout(15000)
   });
   if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
+  return ts;
 }
 
 // ── Supabase: single upsert (for individual edits/adds) ──────
+// Returns the `updated_at` timestamp written (or null if the preview guard
+// skipped the write) - see sbBatchUpsert for why callers must stamp this back.
 async function sbUpsert(table, id, data) {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
+  if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
   try {
+    const ts = new Date().toISOString();
     const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ id, data, updated_at: new Date().toISOString() })
+      body: JSON.stringify({ id, data, updated_at: ts }),
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
+    return ts;
   } catch(e) { setSyncStatus('error', e.message); throw e; }
 }
 
@@ -2424,7 +2442,7 @@ async function flushPendingDeletes() {
   for (const item of list) {
     try {
       const r = await fetch(SB_URL + '/rest/v1/' + item.table + '?id=eq.' + encodeURIComponent(item.id), {
-        method: 'DELETE', headers: SB_HDR
+        method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
       });
       if (!r.ok) throw new Error(await r.text());
     } catch(e) {
@@ -2466,7 +2484,8 @@ async function flushPendingTrash() {
       const r = await fetch(SB_URL + '/rest/v1/trash', {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify(entry)
+        body: JSON.stringify(entry),
+        signal: AbortSignal.timeout(15000)
       });
       if (!r.ok) throw new Error(await r.text());
     } catch(e) {
@@ -2486,7 +2505,7 @@ async function sbDelete(table, id) {
   if (isLocalhostPreview()) { return true; } // never write to prod from a local preview
   try {
     const r = await fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
-      method: 'DELETE', headers: SB_HDR
+      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
     return true;
@@ -2498,24 +2517,36 @@ async function sbDelete(table, id) {
   }
 }
 
-async function sbFetchAll(table) {
-  // Paginate with Range headers. PostgREST silently caps a response at its
-  // max-rows setting (1000 by default), so a single big-limit request would
-  // truncate past that and the initDB merge would then drop the missing rows
-  // from localStorage (silent data loss). Loop until a short page instead.
-  // id.asc tiebreak keeps page boundaries stable if updated_at values collide.
+// Shared limit/offset pagination loop against a PostgREST table. PostgREST
+// silently caps a single response at its max-rows setting (1000 by default),
+// so any endpoint that used a single big `limit=N` (N > 1000) was silently
+// truncating past that cap. Used by sbFetchAll, fetchTrash and the
+// market_prices loader so none of them lose rows past 1000.
+async function sbFetchPaged(table, query, safetyCap) {
   const PAGE = 1000;
+  const cap = safetyCap || 50000;
   const all = [];
   for (let from = 0; ; from += PAGE) {
-    const r = await fetch(SB_URL + '/rest/v1/' + table + '?select=id,data,updated_at&order=updated_at.desc,id.asc', {
-      headers: { ...SB_HDR, 'Range-Unit': 'items', 'Range': from + '-' + (from + PAGE - 1) }
+    const r = await fetch(SB_URL + '/rest/v1/' + table + '?' + query + '&limit=' + PAGE + '&offset=' + from, {
+      headers: SB_HDR,
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
     const rows = await r.json();
     all.push(...rows);
     if (rows.length < PAGE) break;
-    if (from >= 50000) { console.warn('[Cloud] sbFetchAll(' + table + ') stopped at ' + all.length + ' rows (safety cap)'); break; }
+    if (from >= cap) { console.warn('[Cloud] sbFetchPaged(' + table + ') stopped at ' + all.length + ' rows (safety cap)'); break; }
   }
+  return all;
+}
+
+async function sbFetchAll(table) {
+  // Paginate with limit/offset query params (not Range/Range-Unit headers) -
+  // the Cloudflare Worker DB proxy (USE_WORKER_DB) does not forward Range
+  // headers, which blocked flipping that flag. limit/offset works identically
+  // against Supabase direct and through the Worker. id.asc tiebreak keeps page
+  // boundaries stable if updated_at values collide.
+  const all = await sbFetchPaged(table, 'select=id,data,updated_at&order=updated_at.desc,id.asc');
   return all.map(row => ({ id: row.id, ...row.data, _updatedAt: row.updated_at }));
 }
 
@@ -2548,17 +2579,21 @@ function _loadDirtyFromLS() {
     };
   } catch(e) { return { singles: new Set(), slabs: new Set(), sales: new Set(), etbs: new Set(), boosterBoxes: new Set(), boosterPacks: new Set(), ebayPurchases: new Set() }; }
 }
+// Read-merge-write: union the in-memory dirty set with whatever is currently
+// stored, so a concurrent tab's queued-but-not-yet-synced ids are never
+// clobbered by this tab blindly overwriting the whole blob (B2, two-tab safety).
 function _persistDirty() {
   try {
-    localStorage.setItem(DIRTY_LS_KEY, JSON.stringify({
-      singles:       [..._dirty.singles],
-      slabs:         [..._dirty.slabs],
-      sales:         [..._dirty.sales],
-      etbs:          [..._dirty.etbs],
-      boosterBoxes:  [..._dirty.boosterBoxes],
-      boosterPacks:  [..._dirty.boosterPacks],
-      ebayPurchases: [..._dirty.ebayPurchases],
-    }));
+    const raw = localStorage.getItem(DIRTY_LS_KEY);
+    const prev = raw ? JSON.parse(raw) : {};
+    const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
+    const merged = {};
+    for (const k of keys) {
+      const stored = Array.isArray(prev[k]) ? prev[k] : [];
+      const mine = [..._dirty[k]];
+      merged[k] = [...new Set([...stored, ...mine])];
+    }
+    localStorage.setItem(DIRTY_LS_KEY, JSON.stringify(merged));
   } catch(e) {}
 }
 const _dirty = _loadDirtyFromLS();
@@ -2612,11 +2647,22 @@ async function _flushDirtyToSupabase() {
   if (!toSync.length) return;
   setSyncStatus('saving');
   let anyError = false;
+  let anyStamped = false;
   for (const { tbl, key, items, dirtyIds } of toSync) {
     try {
       // Chunk into 200-row batches to stay under Supabase body size limits.
       for (let i = 0; i < items.length; i += 200) {
-        await sbBatchUpsert(tbl, items.slice(i, i + 200));
+        const chunk = items.slice(i, i + 200);
+        const ts = await sbBatchUpsert(tbl, chunk);
+        // Stamp the cloud timestamp back onto the in-memory rows so the next
+        // mergeTable pass sees this edit's real base time, not the stale one -
+        // otherwise a same-row edit right after sync reads as a fake conflict
+        // and gets discarded on the next load (B1).
+        if (ts) {
+          const ids = new Set(chunk.map(r => r.id));
+          for (const row of DB[key]) if (ids.has(row.id)) row._updatedAt = ts;
+          anyStamped = true;
+        }
       }
       // Only clear the IDs we successfully uploaded - new mutations since snapshot stay dirty
       dirtyIds.forEach(id => _dirty[key].delete(id));
@@ -2626,6 +2672,11 @@ async function _flushDirtyToSupabase() {
       console.error('Flush failed for ' + tbl + ':', e);
       // IDs remain in _dirty so next saveData() will retry them
     }
+  }
+  // Persist the stamped timestamps directly - NOT via the debounced saveData(),
+  // which would re-arm _saveTimer and re-enter _flushDirtyToSupabase.
+  if (anyStamped) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
   }
   _persistDirty();
   if (!anyError) setSyncStatus('ok');
@@ -2640,8 +2691,13 @@ async function saveAllToSupabase() {
   if (isLocalhostPreview()) { console.info('[Preview] sync off - saveAllToSupabase skipped'); return; }
   setSyncStatus('saving');
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
-  const total = tables.reduce((s, t) => s + DB[t].length, 0);
+  // NOTE: DB is keyed by camelCase (see TABLE_TO_DB_KEY), so this must go
+  // through _dbKey - indexing DB directly with the snake_case name (e.g.
+  // DB['booster_boxes']) is undefined and throws on .length. Pre-existing bug,
+  // fixed here because it sits directly on this function's only anchor line.
+  const total = tables.reduce((s, t) => s + DB[_dbKey(t)].length, 0);
   let done = 0;
+  let anyStamped = false;
   showSyncProgress(0, total, 'Uploading to cloud…');
   try {
     for (const tbl of tables) {
@@ -2651,10 +2707,21 @@ async function saveAllToSupabase() {
       const chunks = [];
       for (let i = 0; i < DB[key].length; i += 200) chunks.push(DB[key].slice(i, i + 200));
       for (const chunk of chunks) {
-        await sbBatchUpsert(tbl, chunk);
+        const ts = await sbBatchUpsert(tbl, chunk);
+        // Stamp back so a same-row edit right after this bulk sync doesn't
+        // misread as a fake conflict on the next load (see A1 / B1).
+        if (ts) {
+          const ids = new Set(chunk.map(r => r.id));
+          for (const row of DB[key]) if (ids.has(row.id)) row._updatedAt = ts;
+          anyStamped = true;
+        }
         done += chunk.length;
         showSyncProgress(done, total, 'Uploading ' + tbl + ' to cloud…');
       }
+    }
+    // Persist stamped timestamps directly, not via the debounced saveData().
+    if (anyStamped) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
     }
     hideSyncProgress();
     setSyncStatus('ok');
@@ -2932,6 +2999,23 @@ async function initDB() {
       // card X → cloud fetch returns → cloud version of X would otherwise
       // overwrite the in-flight edit. With this merge, dirty IDs win.
       const mergeTable = (cloudRows, localRows, dirtySet, tableKey) => {
+        // Guard against a 200-with-zero-rows response wiping local data (M5).
+        // A genuinely empty cloud table is indistinguishable at the HTTP level
+        // from a transient RLS/schema hiccup that also returns []. If local
+        // has rows the cloud does not, trust local, mark it all dirty so it
+        // re-uploads on the next flush, and warn once instead of silently
+        // discarding the only copy.
+        if ((!cloudRows || cloudRows.length === 0) && localRows && localRows.length > 0) {
+          localRows.forEach(r => dirtySet && dirtySet.add(r.id));
+          if (dirtySet) _persistDirty();
+          const already = mergeTable._warned || (mergeTable._warned = new Set());
+          if (!already.has(tableKey)) {
+            already.add(tableKey);
+            if (typeof toastError === 'function') toastError('Cloud returned no data for "' + tableKey + '" - kept your local copy and queued it to re-upload.');
+            console.warn('[mergeTable] cloud empty for ' + tableKey + ', keeping ' + localRows.length + ' local row(s)');
+          }
+          return localRows;
+        }
         if (!dirtySet || dirtySet.size === 0) return cloudRows;
         const byId = new Map(cloudRows.map(r => [r.id, r]));
         for (const id of [...dirtySet]) {
@@ -2961,19 +3045,6 @@ async function initDB() {
       DB.singles = mergeTable(sbSingles, DB.singles, _dirty.singles, 'singles');
       DB.slabs   = mergeTable(sbSlabs,   DB.slabs,   _dirty.slabs,   'slabs');
       DB.sales   = mergeTable(sbSales,   DB.sales,   _dirty.sales,   'sales');
-      // KJR new tables
-      try {
-        const [sbEtbs, sbBb, sbBp, sbEbay] = await Promise.all([
-          sbFetchAll('etbs').catch(()=>[]),
-          sbFetchAll('booster_boxes').catch(()=>[]),
-          sbFetchAll('booster_packs').catch(()=>[]),
-          sbFetchAll('ebay_purchases').catch(()=>[])
-        ]);
-        DB.etbs          = mergeTable(sbEtbs, DB.etbs || [], _dirty.etbs, 'etbs');
-        DB.boosterBoxes  = mergeTable(sbBb,   DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
-        DB.boosterPacks  = mergeTable(sbBp,   DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
-        DB.ebayPurchases = mergeTable(sbEbay, DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
-      } catch(e) { console.warn('KJR new-tables load failed:', e); }
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {}
       setSyncStatus('ok');
       // Retry any trash writes then deletes that failed in previous
@@ -2987,7 +3058,11 @@ async function initDB() {
     } else if (!shownLocal) {
       // Cloud is empty AND no local cache - this is a genuine first-ever run
       // Do NOT auto-seed from hardcoded data. Show empty state.
-      DB.singles = []; DB.slabs = []; DB.sales = []; DB.etbs = []; DB.boosterBoxes = []; DB.boosterPacks = []; DB.ebayPurchases = [];
+      // NOTE: etbs/boosterBoxes/boosterPacks/ebayPurchases are deliberately
+      // NOT wiped here (M5/A4) - the secondary-tables fetch below now always
+      // runs regardless of which branch the primary tables took, and a fresh
+      // profile whose only cloud data is sealed products must still load it.
+      DB.singles = []; DB.slabs = []; DB.sales = [];
       setSyncStatus('ok');
       showPage('dashboard');
       toast('Welcome! Add your first card to get started.');
@@ -2997,6 +3072,42 @@ async function initDB() {
       console.log('Cloud empty but local has data - pushing local up');
       await saveAllToSupabase();
     }
+
+    // ── KJR sealed/secondary tables: ALWAYS fetch and merge, independent of ──
+    // whether singles/slabs/sales had data (M5/A4). Previously this sat inside
+    // the "primary tables non-empty" branch, so a fresh profile or device whose
+    // only cloud data was sealed products (etbs/booster boxes/packs/eBay) never
+    // loaded it. mergeTable is defined above only when that branch runs, so
+    // guard defensively and fall back to a plain id-union if it is unavailable.
+    try {
+      const [sbEtbs, sbBb, sbBp, sbEbay] = await Promise.all([
+        sbFetchAll('etbs').catch(()=>[]),
+        sbFetchAll('booster_boxes').catch(()=>[]),
+        sbFetchAll('booster_packs').catch(()=>[]),
+        sbFetchAll('ebay_purchases').catch(()=>[])
+      ]);
+      const _mergeSecondary = (typeof mergeTable === 'function') ? mergeTable : (cloudRows, localRows, dirtySet, tableKey) => {
+        if ((!cloudRows || cloudRows.length === 0) && localRows && localRows.length > 0) {
+          localRows.forEach(r => dirtySet && dirtySet.add(r.id));
+          if (dirtySet) _persistDirty();
+          console.warn('[mergeTable-fallback] cloud empty for ' + tableKey + ', keeping ' + localRows.length + ' local row(s)');
+          return localRows;
+        }
+        if (!dirtySet || dirtySet.size === 0) return cloudRows;
+        const byId = new Map(cloudRows.map(r => [r.id, r]));
+        for (const id of [...dirtySet]) { const l = localRows.find(r => r.id === id); if (l) byId.set(id, l); }
+        return [...byId.values()];
+      };
+      DB.etbs          = _mergeSecondary(sbEtbs, DB.etbs || [], _dirty.etbs, 'etbs');
+      DB.boosterBoxes  = _mergeSecondary(sbBb,   DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
+      DB.boosterPacks  = _mergeSecondary(sbBp,   DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
+      DB.ebayPurchases = _mergeSecondary(sbEbay, DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
+      if (typeof renderEtbs === 'function') renderEtbs();
+      if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
+      if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
+      if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
+    } catch(e) { console.warn('KJR new-tables load failed:', e); }
 
     // ── One-time migration: run only if not already done ──
     if (!localStorage.getItem('pokeinv_migrated_v2')) {
@@ -3037,6 +3148,64 @@ async function initDB() {
     }
   }
 }
+
+// ── Two-tab safety net (B2) ───────────────────────────────────
+// Merge an incoming table (from another tab's localStorage write) into this
+// tab's in-memory DB, id-keyed, keeping whichever copy of each row is newer.
+// This is deliberately simpler than initDB's mergeTable (no Changelog entry,
+// no dirty-vs-cloud conflict semantics) because both sides here are just
+// localStorage snapshots of the SAME source of truth, not cloud vs local.
+function _rowTime(row) {
+  const v = row && (row._updatedAt || row.updated);
+  const t = v ? new Date(v).getTime() : 0;
+  return isNaN(t) ? 0 : t;
+}
+function mergeIntoMemory(key, incomingRows) {
+  if (!Array.isArray(incomingRows)) return;
+  const mineById = new Map((DB[key] || []).map(r => [r.id, r]));
+  for (const inRow of incomingRows) {
+    const mine = mineById.get(inRow.id);
+    if (!mine) { mineById.set(inRow.id, inRow); continue; }
+    // Newer of the two wins. Rows still dirty in THIS tab (unsynced local
+    // edits) are protected: only overwrite if the incoming copy is strictly
+    // newer, never on a tie, so we don't discard an in-flight edit for free.
+    if (_rowTime(inRow) > _rowTime(mine)) mineById.set(inRow.id, inRow);
+  }
+  DB[key] = [...mineById.values()];
+}
+
+let _kjrCrossTabToastPending = false;
+function _kjrCrossTabToast() {
+  if (_kjrCrossTabToastPending) return;
+  _kjrCrossTabToastPending = true;
+  setTimeout(() => {
+    _kjrCrossTabToastPending = false;
+    try { toast('Another tab updated the data - merged'); } catch(e){}
+  }, 400); // debounce a burst of storage events into a single toast
+}
+
+// Fires whenever ANOTHER tab/window on the same origin writes localStorage.
+// Without this, tab B's saveData() silently clobbers tab A's in-memory rows
+// and dirty queue on A's next write, permanently losing A's offline edit (B2).
+window.addEventListener('storage', (e) => {
+  try {
+    if (e.key === STORAGE_KEY && e.newValue) {
+      const incoming = JSON.parse(e.newValue);
+      const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
+      for (const k of keys) mergeIntoMemory(k, incoming[k]);
+      // Reload our own dirty set too - _persistDirty's read-merge-write means
+      // the stored blob may now include ids the other tab queued.
+      const reloaded = _loadDirtyFromLS();
+      for (const k of keys) {
+        if (!_dirty[k]) continue;
+        for (const id of reloaded[k]) _dirty[k].add(id);
+      }
+      const name = document.querySelector('.page.active')?.id?.replace('page-', '');
+      if (name && typeof showPage === 'function') showPage(name);
+      _kjrCrossTabToast();
+    }
+  } catch(err) { console.warn('[storage listener] merge failed:', err); }
+});
 
 
 // =========== BULK SELECT ===========
@@ -4634,6 +4803,12 @@ function undoLast() {
   const beforeUndo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   redoStack.push(JSON.stringify(beforeUndo));
   const prev = JSON.parse(undoStack.pop());
+  // Capture id sets BEFORE applying the undo, so any row present now but
+  // absent after can be deleted from Supabase too - otherwise the flush only
+  // ever uploads rows that still exist, and the deleted-cloud row re-merges
+  // back into local state on the next load, undoing the undo (B3).
+  const _before = {};
+  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
   // Diff old vs new so we only mark records that actually changed (or were
   // added/removed) as dirty, instead of re-uploading the entire DB.
   const diffIds = (oldArr, newArr) => {
@@ -4659,6 +4834,13 @@ function undoLast() {
   DB.boosterPacks  = prev.boosterPacks  || DB.boosterPacks;
   DB.ebayPurchases = prev.ebayPurchases || DB.ebayPurchases;
   saveData();
+  // Delete from Supabase any id that existed before the undo but not after -
+  // routed directly through sbDelete (which already queues its own retries),
+  // NOT through the dirty system, since a removed row has nothing to upload.
+  for (const tbl of SYNCED_TABLES) {
+    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
+    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
+  }
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -4672,6 +4854,11 @@ function redoLast() {
   const beforeRedo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   undoStack.push(JSON.stringify(beforeRedo));
   const next = JSON.parse(redoStack.pop());
+  // Same before/after id-diff as undoLast, so a redo that re-deletes a row
+  // (e.g. redoing a delete that a prior undo had restored) removes it from
+  // Supabase too instead of letting the cloud copy silently re-merge (B3).
+  const _before = {};
+  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
   // Same diff approach as undoLast - only sync records that changed.
   const diffIds = (oldArr, newArr) => {
     const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
@@ -4696,6 +4883,10 @@ function redoLast() {
   DB.boosterPacks  = next.boosterPacks  || DB.boosterPacks;
   DB.ebayPurchases = next.ebayPurchases || DB.ebayPurchases;
   saveData();
+  for (const tbl of SYNCED_TABLES) {
+    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
+    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
+  }
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -4712,7 +4903,7 @@ let _versionsCache = null; // in-memory cache for this session
 
 async function sbFetchVersions() {
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,data,updated_at&order=updated_at.desc&limit=50', { headers: SB_HDR });
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,data,updated_at&order=updated_at.desc&limit=50', { headers: SB_HDR, signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error(await r.text());
     const rows = await r.json();
     return rows.map(row => ({ id: row.id, ...row.data, _ts: new Date(row.updated_at).getTime() }));
@@ -4731,7 +4922,8 @@ async function sbSaveVersion(ver) {
     const r = await fetch(SB_URL + '/rest/v1/versions?on_conflict=id', {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
   } catch(e) {
@@ -4744,7 +4936,7 @@ async function sbDeleteVersion(id) {
   if (isLocalhostPreview()) { return; } // never write to prod from a local preview
   try {
     const r = await fetch(SB_URL + '/rest/v1/versions?id=eq.' + encodeURIComponent(id), {
-      method: 'DELETE', headers: SB_HDR
+      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
   } catch(e) { console.warn('Could not delete version from Supabase:', e.message); }
@@ -4889,6 +5081,11 @@ async function restoreVersion(id) {
   versions.unshift(backup);
   _cacheVersions(versions);
   await sbSaveVersion(backup);
+  // Capture id sets BEFORE applying the restore, so any row present now but
+  // absent in the restored snapshot gets deleted from Supabase too - otherwise
+  // it re-merges back in on the next load and the restore doesn't stick (B3).
+  const _before = {};
+  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
   // Apply the restored snapshot. Restore ALL seven tables that the snapshot
   // captures - previously only singles/slabs/sales were applied, so the other
   // four tables stayed at their current state and the version restore was lying.
@@ -4909,6 +5106,13 @@ async function restoreVersion(id) {
   DB.boosterPacks.forEach(i  => markDirty('boosterPacks',  i.id));
   DB.ebayPurchases.forEach(i => markDirty('ebayPurchases', i.id));
   saveData();
+  // Delete from Supabase any id that existed before the restore but is gone
+  // afterwards - routed directly through sbDelete (its own retry queue),
+  // NOT through the dirty system, since a removed row has nothing to upload.
+  for (const tbl of SYNCED_TABLES) {
+    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
+    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
+  }
   renderSingles(); renderSlabs(); renderSales(); renderDashboard();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -6472,7 +6676,8 @@ async function sendToTrash(table, item, reason) {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(trashEntry)
+      body: JSON.stringify(trashEntry),
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
   } catch(e) {
@@ -6491,7 +6696,8 @@ async function sendBatchToTrash(table, items, reason) {
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
       method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(rows)
+      body: JSON.stringify(rows),
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
   } catch(e) {
@@ -6502,9 +6708,10 @@ async function sendBatchToTrash(table, items, reason) {
 
 async function fetchTrash() {
   try {
-    const r = await fetch(SB_URL + '/rest/v1/trash?select=id,data,updated_at&order=updated_at.desc&limit=2000', { headers: SB_HDR });
-    if (!r.ok) throw new Error(await r.text());
-    return await r.json();
+    // Was a single limit=2000 request - PostgREST caps a single response at
+    // 1000 rows regardless of the requested limit, so trash past the first
+    // 1000 silently never loaded. Paginate the same way as sbFetchAll.
+    return await sbFetchPaged('trash', 'select=id,data,updated_at&order=updated_at.desc', 30000);
   } catch(e) {
     console.warn('Fetch trash failed:', e);
     return [];
@@ -6515,7 +6722,7 @@ async function hardDeleteTrashEntry(trashId) {
   if (isLocalhostPreview()) { return; } // never write to prod from a local preview
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash?id=eq.' + encodeURIComponent(trashId), {
-      method: 'DELETE', headers: SB_HDR
+      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
   } catch(e) { console.warn('Hard delete failed:', e); }
@@ -6541,7 +6748,13 @@ async function restoreFromTrash(trashId) {
     markDirty(originalTable, item.id);
     saveData();
     const sbTable = (typeof _tblName === 'function') ? _tblName(originalTable) : originalTable;
-    await sbUpsert(sbTable, item.id, (() => { const { id, ...d } = item; return d; })());
+    const _ts = await sbUpsert(sbTable, item.id, (() => { const { id, ...d } = item; return d; })());
+    // Stamp the cloud timestamp back so the next mergeTable pass doesn't treat
+    // this restored row's stale base timestamp as a fake conflict (see A1).
+    if (_ts) {
+      const _row = DB[originalTable].find(r => r.id === item.id);
+      if (_row) { _row._updatedAt = _ts; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){} }
+    }
     if (originalTable === 'singles') renderSingles();
     if (originalTable === 'slabs')   renderSlabs();
     if (originalTable === 'sales')   renderSales();
@@ -6565,7 +6778,7 @@ async function emptyTrash() {
   if (!await kjrConfirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.', {ok:'Delete all', danger:true})) return;
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash?id=not.is.null', {
-      method: 'DELETE', headers: SB_HDR
+      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
     toast('Trash emptied');
@@ -14713,10 +14926,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadMarketPrices(){
     try {
-      const r = await fetch(SB_URL + '/rest/v1/market_prices?select=*&limit=20000',
-                            { headers: SB_HDR });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const rows = await r.json();
+      // Was a single limit=20000 request - PostgREST caps a single response at
+      // 1000 rows regardless of the requested limit, so cached prices past the
+      // first 1000 silently never loaded. Paginate the same way as sbFetchAll.
+      const rows = await sbFetchPaged('market_prices', 'select=*', 100000);
       const map = {};
       rows.forEach(p => { map[p.source_table + ':' + p.item_id] = p; });
       window._priceLookup = map;

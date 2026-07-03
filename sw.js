@@ -4,7 +4,7 @@
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
    intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v6';
+const CACHE = 'kujira-v7';
 const CORE = ['./', './index.html', './Assets/manifest.webmanifest', './Assets/whale-icon.png'];
 
 self.addEventListener('install', (e) => {

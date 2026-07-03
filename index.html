@@ -13698,7 +13698,7 @@ function renderEbayPurchases(){
     const txtCol= active ? '#fff' : 'var(--text3)';
     const conn  = i > 0 ? `<div style="flex:1;height:2px;background:${allActive.filter(r=>KJR_EBAY_PIPELINE.indexOf(r.status)>=i).length>0&&allActive.filter(r=>KJR_EBAY_PIPELINE.indexOf(r.status)>=i-1).length>0?'var(--accent)':'var(--border2)'};margin-bottom:18px;min-width:6px"></div>` : '';
     const dot   = `<div style="width:24px;height:24px;border-radius:50%;background:${bg};border:2px solid ${border};color:${txtCol};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">${active ? cnt : ''}</div>`;
-    const lbl   = `<div style="font-size:9px;color:${active?'var(--text2)':'var(--text3)'};text-align:center;white-space:nowrap;margin-top:4px;font-weight:${active?600:400}">${SHORT_LABELS[step]||step}</div>`;
+    const lbl   = `<div style="font-size:11px;color:${active?'var(--text2)':'var(--text3)'};text-align:center;white-space:nowrap;margin-top:4px;font-weight:${active?600:400}">${SHORT_LABELS[step]||step}</div>`;
     return conn + `<div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">${dot}${lbl}</div>`;
   }).join('');
   const pipelineCard = `<div class="inv-stat" style="min-width:280px"><div class="inv-stat-label" style="margin-bottom:10px">Pipeline</div><div style="display:flex;align-items:center;width:100%">${pipelineSteps || '<div style="color:var(--text3);font-size:11px">All clear</div>'}</div></div>`;

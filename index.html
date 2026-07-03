@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.4',
+    release: 'kujira-collectibles@3.5',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -484,7 +484,9 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
   @starting-style{dialog.overlay[open] .modal{transform:translateY(100%);opacity:0.7}}
   .overlay .modal-head{padding-top:22px;position:relative;border-radius:18px 18px 0 0}
   .overlay .modal-head::before{content:"";position:absolute;top:8px;left:50%;transform:translateX(-50%);width:38px;height:4px;border-radius:2px;background:var(--border2)}
-  .modal-foot{flex-direction:column-reverse;gap:8px}
+  /* Sticky action footer: on a phone the form is taller than the sheet, so
+     Save/Cancel must stay visible without scrolling to the bottom. */
+  .modal-foot{flex-direction:column-reverse;gap:8px;position:sticky;bottom:0;background:var(--bg2);padding-bottom:max(16px,env(safe-area-inset-bottom));z-index:2}
   .modal-foot .btn{width:100%;justify-content:center;min-height:44px}
   .form-grid,.sell-grid{grid-template-columns:1fr}
   /* Command bar (Quick Entry) sits full width near the top */
@@ -1277,7 +1279,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.4 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.5 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -2132,7 +2134,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 </dialog>
 
 <!-- SMART ADD MODAL -->
-<div class="overlay" id="modal-smart-add">
+<dialog class="overlay" id="modal-smart-add" data-kjr-form="1">
   <div class="modal" style="max-width:780px">
     <div class="modal-head">
       <h3>✦ Smart Add</h3>
@@ -2164,10 +2166,10 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn btn-primary" id="smart-add-save-btn" onclick="kjrGuardSave(this, saveSmartAdd)" disabled>Save All</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- MODALS -->
-<div class="overlay" id="modal-single">
+<dialog class="overlay" id="modal-single" data-kjr-form="1">
   <div class="modal">
     <div class="modal-head">
       <h3 id="modal-single-title">Add Single</h3>
@@ -2202,9 +2204,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSingle)">Save</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div class="overlay" id="modal-slab">
+<dialog class="overlay" id="modal-slab" data-kjr-form="1">
   <div class="modal">
     <div class="modal-head">
       <h3 id="modal-slab-title">Add Slab</h3>
@@ -2238,10 +2240,10 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSlab)">Save</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- TAG 10 Rank helper -->
-<div class="overlay" id="modal-tag-ranks">
+<dialog class="overlay" id="modal-tag-ranks">
   <div class="modal" style="max-width:640px;display:flex;flex-direction:column;max-height:88vh">
     <div class="modal-head">
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;vertical-align:-3px;margin-right:6px"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M7 5H4a2 2 0 0 0 0 4h1"/><path d="M17 5h3a2 2 0 0 1 0 4h-1"/></svg>TAG 10 Card Ranks</h3>
@@ -2255,9 +2257,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn" onclick="closeModal('modal-tag-ranks')">Done</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div class="overlay" id="modal-quick-sell">
+<dialog class="overlay" id="modal-quick-sell" data-kjr-form="1">
   <div class="modal" style="max-width:480px">
     <div class="modal-head">
       <h3>Mark as Sold</h3>
@@ -2286,9 +2288,9 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn btn-primary" onclick="kjrGuardSave(this, confirmQuickSell)">Confirm Sale</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div class="overlay" id="modal-sale">
+<dialog class="overlay" id="modal-sale" data-kjr-form="1">
   <div class="modal">
     <div class="modal-head">
       <h3 id="msa-modal-title">Add Sale</h3>
@@ -2322,7 +2324,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSale)">Save</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <div id="toast" role="alert" aria-live="assertive" aria-atomic="true" popover="manual" onclick="toastDismiss()"><div id="toast-inner"><em id="toast-icon"></em><span id="toast-msg"></span></div><div id="toast-bar"></div></div>
 
@@ -2341,30 +2343,82 @@ const kjrModalCtrl = (() => {
   function open(dialog, triggerEl) {
     const trigger = triggerEl || document.activeElement;
     stack.push({ dialog, trigger });
+    dialog.dataset.dirty = '0'; // reset the unsaved-changes flag for this open cycle
+    // Forms opted in via data-kjr-form get one delegated input/change listener
+    // (attached once, lazily) that flips the dirty flag on any user edit.
+    if (dialog.dataset.kjrForm === '1' && !dialog._kjrDirtyBound) {
+      dialog._kjrDirtyBound = true;
+      const markDirtyFn = () => { dialog.dataset.dirty = '1'; };
+      dialog.addEventListener('input', markDirtyFn);
+      dialog.addEventListener('change', markDirtyFn);
+    }
+    // Bind Esc + backdrop-click once per dialog. Native Esc fires 'cancel'
+    // and would close the dialog directly - bypassing the dirty guard AND
+    // leaving a stale stack entry - so intercept it and route through close().
+    // Backdrop click: the dialog element itself is the full-viewport flex
+    // wrapper, the .modal sits inside it, so a click landing on the dialog
+    // node (not a descendant) is a backdrop click.
+    if (!dialog._kjrCtlBound) {
+      dialog._kjrCtlBound = true;
+      dialog.addEventListener('cancel', (e) => { e.preventDefault(); close(dialog); });
+      dialog.addEventListener('click', (e) => { if (e.target === dialog) close(dialog); });
+    }
     dialog.showModal();
     if (typeof trapFocus === 'function') trapFocus(dialog);
     if (!pushed) { history.pushState({ kjrModal: 1 }, ''); pushed = true; }
     syncScroll();
   }
 
-  function close(dialog) {
+  // Unsaved-changes guard: if the dialog is flagged dirty (data-dirty="1"),
+  // ask for confirmation before actually closing. force=true skips the
+  // prompt (used by save handlers, which clear the flag themselves anyway,
+  // and by closeAll/popstate teardown paths that must not get stuck open).
+  // Returns a Promise<boolean> - true if the dialog was closed.
+  async function close(dialog, force) {
     const idx = stack.findIndex(s => s.dialog === dialog);
-    if (idx === -1) return;
+    if (idx === -1) return true;
+    if (!force && dialog.dataset.dirty === '1' && typeof kjrConfirm === 'function') {
+      const ok = await kjrConfirm('Discard unsaved changes?', { ok: 'Discard', danger: true });
+      if (!ok) return false;
+    }
     const entry = stack.splice(idx, 1)[0];
+    dialog.dataset.dirty = '0';
     if (dialog.open) dialog.close();
     if (stack.length === 0 && pushed && !popping) { pushed = false; history.back(); }
     syncScroll();
     if (entry.trigger && typeof entry.trigger.focus === 'function') {
       requestAnimationFrame(() => { try { entry.trigger.focus(); } catch(_){} });
     }
+    return true;
   }
 
   function closeAll() {
-    while (stack.length) close(stack[stack.length - 1].dialog);
+    // Teardown path (nav away, ESC-stack unwind via popstate, etc.) - never
+    // block on an unsaved-changes prompt here, just force-close everything.
+    while (stack.length) close(stack[stack.length - 1].dialog, true);
   }
 
+  // The back button (popstate) has already consumed the history entry by the
+  // time this fires, so we can't "cancel" the navigation the way we can with
+  // preventDefault() on the dialog's cancel event. Instead: if the top dialog
+  // is dirty, immediately re-push a history entry (putting the back-button
+  // state back the way it was) and run the confirm prompt; only actually
+  // go back + close if the user confirms discarding the changes.
   window.addEventListener('popstate', () => {
-    if (stack.length > 0) { popping = true; pushed = false; closeAll(); popping = false; }
+    if (stack.length === 0) return;
+    const top = stack[stack.length - 1].dialog;
+    if (top.dataset.dirty === '1' && typeof kjrConfirm === 'function') {
+      pushed = true;
+      history.pushState({ kjrModal: 1 }, ''); // restore the entry the back-press just consumed
+      kjrConfirm('Discard unsaved changes?', { ok: 'Discard', danger: true }).then(ok => {
+        if (!ok) return; // stay open, history already restored above
+        popping = true; closeAll(); popping = false;
+        pushed = false;
+        history.back(); // now actually leave the modal state
+      });
+      return;
+    }
+    popping = true; pushed = false; closeAll(); popping = false;
   });
 
   document.addEventListener('closeAllModals', () => {
@@ -4100,7 +4154,7 @@ function saveSmartAdd() {
     }
   });
   saveData();
-  closeModal('modal-smart-add');
+  closeModal('modal-smart-add', true); // force: data is already saved, skip the unsaved-changes prompt
   renderSingles();
   renderSlabs();
   const parts = [];
@@ -5541,7 +5595,7 @@ function confirmQuickSell() {
   markDirty(table, id);           // item status changed to Sold
   markDirty('sales', saleRecord.id); // new sale record
   saveData();
-  closeModal('modal-quick-sell');
+  closeModal('modal-quick-sell', true); // force: data is already saved, skip the unsaved-changes prompt
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   renderSales();
@@ -6454,9 +6508,11 @@ function openModal(id) {
   if (el && el.tagName === 'DIALOG') kjrModalCtrl.open(el);
   else if (el) el.classList.add('open');
 }
-function closeModal(id) {
+// force=true skips the unsaved-changes prompt even if the dialog is dirty -
+// pass it from save handlers, which have just persisted the data for real.
+function closeModal(id, force) {
   const el = document.getElementById(id);
-  if (el && el.tagName === 'DIALOG') kjrModalCtrl.close(el);
+  if (el && el.tagName === 'DIALOG') kjrModalCtrl.close(el, force);
   else if (el) el.classList.remove('open');
 }
 document.querySelectorAll('.overlay').forEach(o => {
@@ -7170,7 +7226,7 @@ function saveSingle() {
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', norm.id);
   }
   markDirty('singles', norm.id);
-  saveData(); closeModal('modal-single'); renderSingles();
+  saveData(); closeModal('modal-single', true); renderSingles(); // force: already saved
   toast(id ? 'Updated!' : 'Added!');
   // Audit: full snapshot on add, field-level diff on edit.
   const extra = id ? (_clDiff('singles', before, norm) || 'no field changes') : _clSummary('singles', norm);
@@ -7453,7 +7509,7 @@ function saveSlab() {
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', norm.id);
   }
   markDirty('slabs', norm.id);
-  saveData(); closeModal('modal-slab'); renderSlabs();
+  saveData(); closeModal('modal-slab', true); renderSlabs(); // force: already saved
   toast(id ? 'Updated!' : 'Added!');
   const extraSlab = id ? (_clDiff('slabs', beforeSlab, norm) || 'no field changes') : _clSummary('slabs', norm);
   clLog(id ? 'edit' : 'add', 'slabs', norm.name, extraSlab);
@@ -7817,7 +7873,7 @@ function saveSale() {
   }
   else { DB.sales.unshift(norm); if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('sales', norm.id); }
   markDirty('sales', norm.id);
-  saveData(); closeModal('modal-sale'); renderSales();
+  saveData(); closeModal('modal-sale', true); renderSales(); // force: already saved
   toast(id ? 'Updated!' : 'Sale recorded!');
   const extraSale = id ? (_clDiff('sales', beforeSale, norm) || 'no field changes') : _clSummary('sales', norm);
   clLog(id ? 'edit' : 'sell', 'sales', product, extraSale);

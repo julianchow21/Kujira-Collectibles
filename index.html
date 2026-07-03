@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.5',
+    release: 'kujira-collectibles@3.6',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -207,7 +207,11 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
 .page{display:none}.page.active{display:block}
 
 /* CARDS */
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:16px}
+/* overflow:clip (not hidden): clips children to the rounded corners exactly
+   like hidden did, but does NOT create a scroll container - hidden silently
+   made every card the sticky containing block, which is why table headers
+   never stuck. clip keeps the viewport as the sticky scrollport. */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:clip;margin-bottom:16px}
 .card-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
 .card-head h3{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
 .card-body{padding:18px}
@@ -225,6 +229,15 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
 
 /* TABLE */
 .tbl-wrap{overflow-x:auto}
+/* Sticky-header enabler: overflow-x:auto implicitly computes overflow-y:auto
+   (CSS spec), which silently makes .tbl-wrap the sticky containing block, so
+   th{position:sticky} never engaged against the page scroll - on ANY width.
+   Desktop tables fit the viewport, so above 1000px drop the scroll container
+   entirely and let headers stick to the viewport below the topbar. Narrow
+   widths keep the horizontal scroller (and give up sticky, as before).
+   Trade-off: with many optional columns enabled a very wide table can now
+   overflow the body horizontally on desktop - acceptable, rare, scrollable. */
+@media(min-width:1001px){.tbl-wrap{overflow-x:visible}}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:800px}
 th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg2);position:sticky;top:calc(56px + env(safe-area-inset-top))}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
@@ -1279,7 +1292,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.5 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.6 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -5821,7 +5834,10 @@ function healthFixDates(){
 
 // Navigate to a tab and focus the source row from a finding-detail click.
 function healthGotoRow(table, id){
-  const old = document.getElementById('health-overlay'); if (old) old.remove();
+  // Close through the controller (not a bare remove) so the modal stack and
+  // scroll lock are released before navigating; the close event removes it.
+  const old = document.getElementById('health-overlay');
+  if (old) { if (old.open) kjrModalCtrl.close(old, true); else old.remove(); }
   const navTo = table === 'singles' ? 'inventory' :
                 table === 'slabs' ? 'slabs' :
                 table === 'sales' ? 'sales' :
@@ -5966,11 +5982,11 @@ function _renderHealthResults(findings){
        </div>`
     : '';
 
-  let html = `<div id="health-overlay" class="overlay open" onclick="if(event.target===this)this.remove()">
+  let html = `<dialog id="health-overlay" class="overlay">
     <div class="modal" style="max-width:760px;max-height:85vh">
       <div class="modal-head">
         <h3 style="display:flex;align-items:center;gap:8px"><span style="color:${overallColor};font-size:18px">${overallIcon}</span> Data Health Check</h3>
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('health-overlay').remove()">✕</button>
+        <button class="btn btn-ghost btn-sm" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">✕</button>
       </div>
       <div class="modal-body">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-radius:8px;background:var(--bg3);border:1px solid var(--border)">
@@ -5991,14 +6007,21 @@ function _renderHealthResults(findings){
         ${hiddenLine}
       </div>
       <div class="modal-foot">
-        <button class="btn" onclick="document.getElementById('health-overlay').remove()">Close</button>
+        <button class="btn" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">Close</button>
         <button class="btn btn-primary" onclick="runHealthCheck()">⟳ Re-run</button>
       </div>
     </div>
-  </div>`;
+  </dialog>`;
+  // Close the previous instance through the controller first (Re-run reinjects
+  // while the old dialog is still open) so the modal stack never holds a
+  // detached node, then swap in the new one and open it properly - dialog +
+  // kjrModalCtrl gives Esc, backdrop click, focus trap and scroll lock.
   const old = document.getElementById('health-overlay');
-  if (old) old.remove();
+  if (old) { if (old.open && typeof kjrModalCtrl !== 'undefined') kjrModalCtrl.close(old, true); old.remove(); }
   document.body.insertAdjacentHTML('beforeend', html);
+  const hEl = document.getElementById('health-overlay');
+  hEl.addEventListener('close', () => hEl.remove(), { once: true });
+  kjrModalCtrl.open(hEl);
 }
 
 // =========== NAV DROPDOWN ===========
@@ -7980,11 +8003,11 @@ function showMarketValueBreakdown() {
   const existing = document.getElementById('mvbreakdown-modal');
   if (existing) existing.remove();
   const html =
-    '<div id="mvbreakdown-modal" class="overlay open" style="z-index:9999">' +
+    '<dialog id="mvbreakdown-modal" class="overlay">' +
       '<div class="modal" style="max-width:780px;width:95vw">' +
         '<div class="modal-head">' +
           '<h3>Total Market Value · breakdown</h3>' +
-          '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'mvbreakdown-modal\').remove()">✕</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="kjrModalCtrl.close(document.getElementById(\'mvbreakdown-modal\'), true)">✕</button>' +
         '</div>' +
         '<div class="modal-body" style="max-height:70vh;overflow-y:auto">' +
           '<div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">' +
@@ -8007,15 +8030,17 @@ function showMarketValueBreakdown() {
         '</div>' +
         '<div class="modal-foot">' +
           '<div style="font-size:11px;color:var(--text3);margin-right:auto">' + contribs.length + ' row' + (contribs.length===1?'':'s') + ' contributing</div>' +
-          '<button class="btn" onclick="document.getElementById(\'mvbreakdown-modal\').remove()">Close</button>' +
+          '<button class="btn" onclick="kjrModalCtrl.close(document.getElementById(\'mvbreakdown-modal\'), true)">Close</button>' +
         '</div>' +
       '</div>' +
-    '</div>';
+    '</dialog>';
   document.body.insertAdjacentHTML('beforeend', html);
-  // Close on backdrop click
-  document.getElementById('mvbreakdown-modal').addEventListener('click', function(e){
-    if (e.target === this) this.remove();
-  });
+  // dialog + kjrModalCtrl: Esc, backdrop click, focus trap and scroll lock all
+  // come from the controller (it binds cancel + backdrop-click on open), and
+  // the node self-removes once closed since it is rebuilt on every open.
+  const mvEl = document.getElementById('mvbreakdown-modal');
+  mvEl.addEventListener('close', () => mvEl.remove(), { once: true });
+  kjrModalCtrl.open(mvEl);
 }
 
 function renderDashboard() {
@@ -12785,6 +12810,10 @@ if ('serviceWorker' in navigator) {
     </select>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenEtbModal()">+ Add ETB</button>
     <button class="btn btn-sm" onclick="kjrExportTsv('etbs')">↓ Export</button>
+    <div class="col-toggle-wrap" id="kjr-ctw-etbs">
+      <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('etbs')">⊞ Columns</button>
+      <div class="col-toggle-dropdown" id="kjr-ctd-etbs"></div>
+    </div>
   </div>
   <div class="card"><div class="tbl-wrap"><table id="kjr-etb-table"><thead>
     <tr>
@@ -12837,6 +12866,10 @@ if ('serviceWorker' in navigator) {
     </select>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBbModal()">+ Add Booster Box</button>
     <button class="btn btn-sm" onclick="kjrExportTsv('boosterBoxes')">↓ Export</button>
+    <div class="col-toggle-wrap" id="kjr-ctw-boosterBoxes">
+      <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('boosterBoxes')">⊞ Columns</button>
+      <div class="col-toggle-dropdown" id="kjr-ctd-boosterBoxes"></div>
+    </div>
   </div>
   <div class="card"><div class="tbl-wrap"><table id="kjr-bb-table"><thead>
     <tr>
@@ -12880,6 +12913,10 @@ if ('serviceWorker' in navigator) {
     </select>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBpModal()">+ Add Pack</button>
     <button class="btn btn-sm" onclick="kjrExportTsv('boosterPacks')">↓ Export</button>
+    <div class="col-toggle-wrap" id="kjr-ctw-boosterPacks">
+      <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('boosterPacks')">⊞ Columns</button>
+      <div class="col-toggle-dropdown" id="kjr-ctd-boosterPacks"></div>
+    </div>
   </div>
   <div class="card"><div class="tbl-wrap"><table id="kjr-bp-table"><thead>
     <tr>
@@ -14370,14 +14407,52 @@ function _kjrColMove(tbl, fromKey, toKey){
 // Tap-based one-slot move, for touch users who can't drag. dir is -1 (up/left)
 // or +1 (down/right) in column order.
 function kjrColMoveStep(tbl, key, dir){
+  // Splice the order directly rather than delegating to _kjrColMove: that
+  // helper inserts BEFORE its target, which makes "move down one" a no-op
+  // (remove key, insert before the element that just shifted into its slot).
+  const cfg = _KJR_GENERIC_TABLES[tbl]; if (!cfg || cfg.locked.has(key)) return;
   const order = _kjrColLoad(tbl);
   const idx = order.indexOf(key);
-  if (idx < 0) return;
-  const targetIdx = idx + dir;
-  if (targetIdx < 0 || targetIdx >= order.length) return;
-  _kjrColMove(tbl, key, order[targetIdx]);
+  const t = idx + dir;
+  if (idx < 0 || t < 0 || t >= order.length) return;
+  if (cfg.locked.has(order[t])) return; // never hop across a locked column (actions stays last)
+  order.splice(idx, 1);
+  order.splice(t, 0, key);
+  _kjrColSave(tbl, order);
+  _kjrColApply(tbl);
   // Refresh the open Columns menu (if any) so the new order is reflected.
   if (typeof _kjrColBuildMenu === 'function') _kjrColBuildMenu(tbl);
+}
+
+// Columns dropdown for the generic kjr tables (ETBs / Booster Boxes / Packs).
+// Reorder-only: visibility is handled by the responsive tiers, so unlike the
+// Singles/Slabs/Sales menu there are no checkboxes, just up/down movers.
+// Labels come from the live thead so they can never drift from the markup.
+// Touch-first: this is the tap fallback the header drag-and-drop lacks.
+function _kjrColBuildMenu(tbl){
+  const cfg = _KJR_GENERIC_TABLES[tbl]; if (!cfg) return;
+  const dd = document.getElementById('kjr-ctd-' + tbl); if (!dd) return;
+  const tableEl = document.getElementById(cfg.tableId); if (!tableEl) return;
+  const labels = {};
+  // First header row only - the filter row beneath it also carries
+  // data-col-key cells (for reorder alignment) but has no label text.
+  tableEl.querySelectorAll('thead tr:first-child th[data-col-key]').forEach(th => { labels[th.dataset.colKey] = th.textContent.trim() || th.dataset.colKey; });
+  const order = _kjrColLoad(tbl);
+  dd.innerHTML = order.map(key => {
+    const locked = cfg.locked.has(key);
+    return '<div class="col-toggle-item">' +
+      '<span style="flex:1">' + kjrEscape(labels[key] || key) + '</span>' +
+      (locked ? '<span style="font-size:11px;color:var(--text3)">fixed</span>' :
+        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move up" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',-1)">↑</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move down" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',1)">↓</button>') +
+      '</div>';
+  }).join('');
+}
+function kjrToggleColMenu(tbl){
+  const wrap = document.getElementById('kjr-ctw-' + tbl); if (!wrap) return;
+  const opening = !wrap.classList.contains('open');
+  document.querySelectorAll('.col-toggle-wrap.open').forEach(w => w.classList.remove('open'));
+  if (opening) { _kjrColBuildMenu(tbl); wrap.classList.add('open'); }
 }
 function _kjrColAttach(tbl){
   const cfg = _KJR_GENERIC_TABLES[tbl]; if (!cfg) return;

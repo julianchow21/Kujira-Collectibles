@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.3',
+    release: 'kujira-collectibles@3.4',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -1277,7 +1277,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.3 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.4 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -8268,13 +8268,13 @@ function renderDashboard() {
         const mainRow = `<div class="exp-row" ${clickAttr}>
           ${caret}
           <span class="exp-legend-dot" style="background:${s.color}"></span>
-          <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt)}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
+          <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt).toLocaleString('en-SG')}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
         </div>`;
         const subHtml = hasSub
           ? `<div id="exp-sub-${s.key}" class="exp-sub" style="display:none">
               ${s.subRows.map(r => `<div class="exp-sub-row">
                 <span style="color:var(--text2)">${r.label}</span>
-                <span style="color:var(--text);font-weight:500">S$${Math.round(r.amt)}</span>
+                <span style="color:var(--text);font-weight:500">S$${Math.round(r.amt).toLocaleString('en-SG')}</span>
                 <span style="color:var(--text3);font-size:12px">(${r.count} units)</span>
               </div>`).join('')}
             </div>`
@@ -13020,8 +13020,8 @@ function kjrMoneyStr(val){
 }
 // Whole-number currency display by default (the app standardised on whole
 // numbers everywhere - cents are noise for a collectibles tracker).
-function kjrFmt(n){ const x=kjrNum(n); return x===0?'':'S$'+Math.round(x).toString(); }
-function fmtUsd(n){ const x=kjrNum(n); return x===0?'':'US$'+Math.round(x).toString(); }
+function kjrFmt(n){ const x=kjrNum(n); return x===0?'':'S$'+Math.round(x).toLocaleString('en-SG'); }
+function fmtUsd(n){ const x=kjrNum(n); return x===0?'':'US$'+Math.round(x).toLocaleString('en-SG'); }
 function kjrPill(s){
   const c = (s||'').toLowerCase(); const v = kjrEscape(s);
   if (c.includes('sold'))                         return '<span class="kjr-status-pill kjr-pill-sold">'+v+'</span>';
@@ -13468,8 +13468,8 @@ function renderEtbs(){
         </div>
       </div>`;
   document.getElementById('kjr-etb-stats').innerHTML =
-    kjrStatCard('Total Cost',   '$'+Math.round(totalCost)) +
-    kjrStatCard('Market Value', '$'+Math.round(totalMarket)) +
+    kjrStatCard('Total Cost',   kjrFmt(totalCost) || 'S$0') +
+    kjrStatCard('Market Value', kjrFmt(totalMarket) || 'S$0') +
     kjrStatCard('Available',    inStock.length) +
     condCard;
 
@@ -13562,7 +13562,7 @@ function renderBoosterBoxes(){
         </div>
       </div>`;
   document.getElementById('kjr-bb-stats').innerHTML =
-    kjrStatCard('Total Cost', '$'+Math.round(sealedVal)) +
+    kjrStatCard('Total Cost', kjrFmt(sealedVal) || 'S$0') +
     kjrStatCard('Sealed Units', totalQty.toString()) +
     kjrStatCard('Unopened Lots', stock.length) +
     splitCard;
@@ -14979,7 +14979,7 @@ function renderBoosterPacks(){
   document.getElementById('kjr-bp-stats').innerHTML =
     kjrStatCard('Sealed Lots', sealed.length, 'Status = Sealed') +
     kjrStatCard('Sealed Packs', totalPacks.toString(), 'Sum of qty for Sealed rows') +
-    kjrStatCard('Sealed Value', '$'+Math.round(sealedVal), 'Sum of totalPrice for Sealed rows');
+    kjrStatCard('Sealed Value', kjrFmt(sealedVal) || 'S$0', 'Sum of totalPrice for Sealed rows');
   const rowHtml = (r, sold) => '<tr' + (sold ? ' class="sold-row"' : '') + '>' +
     '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="product" style="text-align:left">'+kjrEscape(r.product||'')+'</td>' +
@@ -15155,7 +15155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('kjr-bbbp-stats');
     if (!el) return;
     el.innerHTML =
-      kjrStatCard('Total Sealed', '$'+Math.round(boxVal+packVal), 'Combined value of sealed boxes + sealed packs') +
+      kjrStatCard('Total Sealed', kjrFmt(boxVal+packVal) || 'S$0', 'Combined value of sealed boxes + sealed packs') +
       kjrStatCard('Sealed Boxes', boxUnits.toString(),  'Sum of qty across Unopened box rows') +
       kjrStatCard('Sealed Packs', packUnits.toString(), 'Sum of qty across Sealed pack rows');
     // little count badges next to each section header

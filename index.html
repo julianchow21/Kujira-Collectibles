@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.0',
+    release: 'kujira-collectibles@3.1',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -149,9 +149,12 @@ a:hover{text-decoration:underline}
 .logo-name span:last-child{font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text3);-webkit-text-fill-color:var(--text3)}
 html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56,#534AB7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .nav{display:flex;gap:2px;flex:1}
-.nav-btn{padding:8px 16px;border-radius:var(--radius);border:none;background:transparent;cursor:pointer;font-size:13px;color:var(--text2);transition:all 0.15s;font-family:inherit;display:flex;align-items:center;gap:6px;white-space:nowrap}
+/* font-weight is FIXED at 500 for every state: a weight change on .active made
+   the text wider, so the whole tab row shifted on every click (and transition:all
+   animated the reflow). Active is signalled by the pill background + colour only. */
+.nav-btn{padding:8px 16px;border-radius:var(--radius);border:none;background:transparent;cursor:pointer;font-size:13px;font-weight:500;color:var(--text2);transition:background 0.15s,color 0.15s;font-family:inherit;display:flex;align-items:center;gap:6px;white-space:nowrap}
 .nav-btn:hover{background:var(--bg3);color:var(--text)}
-.nav-btn.active{background:var(--bg3);color:var(--text);font-weight:500}.nav-btn svg{width:15px;height:15px;flex-shrink:0}
+.nav-btn.active{background:var(--bg3);color:var(--text)}.nav-btn svg{width:15px;height:15px;flex-shrink:0}
 /* Nav dropdown */
 .nav-dd{position:relative}
 .nav-dd-trigger{display:flex;align-items:center;gap:6px}
@@ -171,7 +174,7 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
 .nav-dd-subitem svg{width:14px;height:14px;flex-shrink:0;color:var(--text3)}
 .nav-dd-item.active svg{color:var(--accent)}
 /* Mark the dropdown trigger itself "active" when its menu owns the current page */
-.nav-dd.contains-active>.nav-dd-trigger{background:var(--bg3);color:var(--text);font-weight:500}
+.nav-dd.contains-active>.nav-dd-trigger{background:var(--bg3);color:var(--text)}
 .topbar-actions{display:flex;align-items:center;gap:6px;margin-left:12px;flex-shrink:0}
 .icon-btn{width:32px;height:32px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text2);transition:all 0.15s;flex-shrink:0}
 .icon-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--border2)}
@@ -1194,7 +1197,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.0 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.1 (3 Jul)</span>
     </div>
   </a>
   <span id="sync-indicator" style="font-size:11px;margin-left:4px;transition:color 0.3s;white-space:nowrap"></span>
@@ -1219,19 +1222,15 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18l-1.5 11a2 2 0 0 1-2 1.7H6.5a2 2 0 0 1-2-1.7L3 7z"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       <span>eBay</span>
     </button>
-    <button class="nav-btn" onclick="showPage('listing')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
-      <span>Listings</span>
-    </button>
-
-    <!-- Sealed dropdown: ETBs / Booster Boxes / Booster Packs -->
-    <div class="nav-dd" data-dd="sealed">
-      <button class="nav-btn nav-dd-trigger" type="button" onclick="toggleNavDD('sealed', event)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8L12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
-        <span>Sealed</span>
+    <!-- More dropdown: Sealed (ETBs, Boxes & Packs) / Listings / Guide / Import / Changelog / Trash -->
+    <div class="nav-dd" data-dd="more">
+      <button class="nav-btn nav-dd-trigger" type="button" onclick="toggleNavDD('more', event)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+        <span>More</span>
         <svg class="nav-dd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:11px;height:11px;margin-left:-2px"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
-      <div class="nav-dd-menu">
+      <div class="nav-dd-menu dd-right">
+        <div style="font-size:10px;letter-spacing:0.6px;font-weight:600;color:var(--text3);text-transform:uppercase;padding:4px 12px 2px">Sealed</div>
         <button class="nav-dd-item" onclick="showPage('etbs');closeNavDD()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="14" rx="1.5"/><path d="M3 10h18"/><path d="M8 6V4h8v2"/></svg>
           ETBs
@@ -1240,17 +1239,15 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8L12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
           Booster Boxes &amp; Packs
         </button>
-      </div>
-    </div>
-
-    <!-- More dropdown: Import / Changelog / Trash -->
-    <div class="nav-dd" data-dd="more">
-      <button class="nav-btn nav-dd-trigger" type="button" onclick="toggleNavDD('more', event)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
-        <span>More</span>
-        <svg class="nav-dd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:11px;height:11px;margin-left:-2px"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <div class="nav-dd-menu">
+        <div style="height:1px;background:var(--border);margin:4px 8px"></div>
+        <button class="nav-dd-item" onclick="showPage('listing');closeNavDD()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
+          Listings
+        </button>
+        <button class="nav-dd-item" onclick="showPage('guide');closeNavDD()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Guide
+        </button>
         <button class="nav-dd-item" onclick="showPage('import');closeNavDD()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Import
@@ -1262,10 +1259,6 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
         <button class="nav-dd-item" onclick="showPage('trash');closeNavDD()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
           Trash
-        </button>
-        <button class="nav-dd-item" onclick="showPage('guide');closeNavDD()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          Guide
         </button>
       </div>
     </div>
@@ -9280,16 +9273,20 @@ async function runRefreshQueue(manual = false) {
   //   'ok'        → priced
   //   'data'      → both sources said "no match" or "no price data"  (burn credit, advance)
   //   'transport' → HTTP error, rate limit, network failure          (don't burn credit, retry)
+  // Sentinels from sources that never actually attempted a request
+  // (PokeTrace is disabled, or a source has no key). Shared by classifyResult
+  // AND tallyErrors - the tally once included them, so the toast read
+  // "2 failed (2× disabled, 1× no match)" with the real trigger (a 429)
+  // pushed out of the top-2 by sentinel noise.
+  const NON_ATTEMPT = /^(disabled|no api key)$/i;
   function classifyResult(r) {
     if (r.maxSgd) return 'ok';
-    // Drop sentinels from sources that never actually attempted a request
-    // (PokeTrace is disabled, or a source has no key). If we don't, a disabled
-    // source's "disabled" string poisons the every(isTransport) check below:
-    // a real PPT "HTTP 403" (key blocked) paired with "disabled" would look
-    // like a mixed result and be miscounted as a permanent "data" miss -
-    // burning a credit, advancing the cursor (card skipped forever), and
-    // skipping the hard-block pause. Only errors from sources that tried count.
-    const NON_ATTEMPT = /^(disabled|no api key)$/i;
+    // Drop non-attempt sentinels. If we don't, a disabled source's "disabled"
+    // string poisons the every(isTransport) check below: a real PPT "HTTP 403"
+    // (key blocked) paired with "disabled" would look like a mixed result and
+    // be miscounted as a permanent "data" miss - burning a credit, advancing
+    // the cursor (card skipped forever), and skipping the hard-block pause.
+    // Only errors from sources that tried count.
     const errs = [r.pptError, r.poketraceError].filter(e => e && !NON_ATTEMPT.test(e));
     if (!errs.length) return 'data'; // no real attempt errors - treat as data
     const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
@@ -9297,7 +9294,7 @@ async function runRefreshQueue(manual = false) {
     return 'data'; // at least one source returned a meaningful "no match"
   }
   function tallyErrors(r) {
-    [r.pptError, r.poketraceError].filter(Boolean).forEach(e => {
+    [r.pptError, r.poketraceError].filter(e => e && !NON_ATTEMPT.test(e)).forEach(e => {
       errorTally[e] = (errorTally[e] || 0) + 1;
     });
   }
@@ -9335,7 +9332,14 @@ async function runRefreshQueue(manual = false) {
       const isHardBlock = [r.pptError, r.poketraceError].some(e => /403|429|blocked|abuse/i.test(e || ''));
       if (isHardBlock || consecTransport >= TRANSPORT_FAIL_PAUSE) {
         const top = Object.entries(errorTally).sort((a,b) => b[1]-a[1])[0];
-        pausedReason = isHardBlock ? 'PPT rate-limited / key blocked - wait 24h' : (top ? top[0] : 'transport');
+        // Carry the actual refusal (e.g. "HTTP 429") into the reason. The old
+        // blanket "rate-limited / key blocked" claimed a key problem on every
+        // single transient 429 - and the settings pill keys off /403|blocked/
+        // in this string, so a 429 must NOT say "blocked". A one-off 429 pause
+        // is the protection working, not a broken key (verified: the key
+        // answered 200 OK the morning after such a pause).
+        const trigger = [r.pptError, r.poketraceError].find(e => /403|429|blocked|abuse/i.test(e || '')) || 'rate limit';
+        pausedReason = isHardBlock ? 'PPT refused (' + trigger.slice(0, 40) + ')' : (top ? top[0] : 'transport');
         // Move remaining (unfetched) items into retryItems so they aren't
         // dropped from the queue.
         for (let j = i + 1; j < batch.length; j++) retryItems.push(batch[j]);
@@ -10074,7 +10078,9 @@ async function callAI(prompt, webSearch) {
   }
   try {
     if (provider === 'anthropic') {
-      const body = { model: 'claude-sonnet-5', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] };
+      // 8192 output tokens: the old 1000 cap silently truncated long answers
+      // ("list every card...") mid-sentence with no error - looked like a hang.
+      const body = { model: 'claude-sonnet-5', max_tokens: 8192, messages: [{ role: 'user', content: prompt }] };
       if (webSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -10084,11 +10090,14 @@ async function callAI(prompt, webSearch) {
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true'
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(90000)
       });
       const d = await r.json();
       if (!r.ok) return 'Error (Anthropic): ' + (d.error?.message || r.status);
-      return d.content.map(b => b.type === 'text' ? b.text : '').join('\n').trim();
+      let txt = d.content.map(b => b.type === 'text' ? b.text : '').join('\n').trim();
+      if (txt && d.stop_reason === 'max_tokens') txt += '\n\n⚠ Answer hit the length cap - ask a narrower question (e.g. "top 20 by loss") for the rest.';
+      return txt;
     }
     if (provider === 'gemini') {
       // Google rotates model names; the "-latest" alias was retired May 2025.
@@ -10102,12 +10111,14 @@ async function callAI(prompt, webSearch) {
         'gemini-pro-latest'
       ];
       const key = getGeminiKey();
-      const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 1024 } };
+      // 8192 output tokens: the old 1024 cap silently truncated long answers
+      // mid-sentence (finishReason MAX_TOKENS was ignored) - looked like a hang.
+      const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 8192 } };
       let lastErr = null;
       for (const model of candidates) {
         try {
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-          const r = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+          const r = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
           const d = await r.json();
           if (!r.ok) {
             // 404 / not-found = try the next model. Auth/quota errors = stop.
@@ -10118,9 +10129,15 @@ async function callAI(prompt, webSearch) {
             }
             return 'Error (Gemini): ' + msg;
           }
-          const txt = d.candidates?.[0]?.content?.parts?.map(p => p.text||'').join('').trim();
+          let txt = d.candidates?.[0]?.content?.parts?.map(p => p.text||'').join('').trim();
+          if (txt && d.candidates?.[0]?.finishReason === 'MAX_TOKENS') txt += '\n\n⚠ Answer hit the length cap - ask a narrower question (e.g. "top 20 by loss") for the rest.';
           return txt || 'Empty response from Gemini.';
-        } catch(e) { lastErr = e.message; }
+        } catch(e) {
+          // A timeout on a working model means the request is slow, not that the
+          // model is missing - don't burn 4 more slow attempts down the chain.
+          if (e.name === 'TimeoutError') return 'Error (Gemini): request timed out after 90s. Try a narrower question.';
+          lastErr = e.message;
+        }
       }
       return 'Error (Gemini): no working model. Last error: ' + (lastErr || 'unknown') +
              '. Run "ListModels" at https://ai.google.dev/api/models to see what your key has access to.';
@@ -10130,11 +10147,14 @@ async function callAI(prompt, webSearch) {
       const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method:'POST',
         headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+getGroqKey() },
-        body: JSON.stringify({ model:'llama-3.1-8b-instant', max_tokens:1024, messages:[{role:'user', content: prompt}] })
+        body: JSON.stringify({ model:'llama-3.1-8b-instant', max_tokens:4096, messages:[{role:'user', content: prompt}] }),
+        signal: AbortSignal.timeout(90000)
       });
       const d = await r.json();
       if (!r.ok) return 'Error (Groq): ' + (d.error?.message || r.status);
-      return d.choices?.[0]?.message?.content?.trim() || 'Empty response from Groq.';
+      let txt = d.choices?.[0]?.message?.content?.trim();
+      if (txt && d.choices?.[0]?.finish_reason === 'length') txt += '\n\n⚠ Answer hit the length cap - ask a narrower question (e.g. "top 20 by loss") for the rest.';
+      return txt || 'Empty response from Groq.';
     }
     if (provider === 'openrouter') {
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -10147,13 +10167,16 @@ async function callAI(prompt, webSearch) {
         },
         body: JSON.stringify({
           model:'meta-llama/llama-3.1-8b-instruct:free',
-          max_tokens:1024,
+          max_tokens:4096,
           messages:[{role:'user', content: prompt}]
-        })
+        }),
+        signal: AbortSignal.timeout(90000)
       });
       const d = await r.json();
       if (!r.ok) return 'Error (OpenRouter): ' + (d.error?.message || r.status);
-      return d.choices?.[0]?.message?.content?.trim() || 'Empty response from OpenRouter.';
+      let txt = d.choices?.[0]?.message?.content?.trim();
+      if (txt && d.choices?.[0]?.finish_reason === 'length') txt += '\n\n⚠ Answer hit the length cap - ask a narrower question (e.g. "top 20 by loss") for the rest.';
+      return txt || 'Empty response from OpenRouter.';
     }
   } catch(e) { return 'Error: ' + e.message; }
   return 'No provider available.';
@@ -11919,10 +11942,6 @@ setTimeout(() => { runRefreshQueue(false); }, 8000); // wait 8s for DB to fully 
     <div class="sheet-title">More</div>
     <div class="sheet-section-label">Browse</div>
     <div class="sheet-grid">
-      <button class="sheet-item" data-page="listing" onclick="moreGo('listing')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
-        Listings
-      </button>
       <button class="sheet-item" data-page="etbs" onclick="moreGo('etbs')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="14" rx="1.5"/><path d="M3 10h18"/><path d="M8 6V4h8v2"/></svg>
         ETBs
@@ -11930,6 +11949,14 @@ setTimeout(() => { runRefreshQueue(false); }, 8000); // wait 8s for DB to fully 
       <button class="sheet-item" data-page="boosterBoxes" onclick="moreGo('boosterBoxes')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8L12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
         Boxes &amp; Packs
+      </button>
+      <button class="sheet-item" data-page="listing" onclick="moreGo('listing')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
+        Listings
+      </button>
+      <button class="sheet-item" data-page="guide" onclick="moreGo('guide')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Guide
       </button>
       <button class="sheet-item" data-page="import" onclick="moreGo('import')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -11942,10 +11969,6 @@ setTimeout(() => { runRefreshQueue(false); }, 8000); // wait 8s for DB to fully 
       <button class="sheet-item" data-page="trash" onclick="moreGo('trash')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         Trash
-      </button>
-      <button class="sheet-item" data-page="guide" onclick="moreGo('guide')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        Guide
       </button>
     </div>
     <div class="sheet-section-label">Tools</div>

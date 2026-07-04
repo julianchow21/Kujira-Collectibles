@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.6',
+    release: 'kujira-collectibles@3.7',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -1292,7 +1292,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.6 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.7 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -2463,7 +2463,7 @@ const LS_VERSION_KEY = 'pokeinventory_version'; // monotonic write counter
 // Docs/Worker DB Proxy Runbook v1 (3 Jun).md. Every DB call below uses
 // SB_URL + '/rest/v1/...' + SB_HDR, so this switch reroutes all of them with
 // no other code changes.
-const USE_WORKER_DB    = false;
+const USE_WORKER_DB    = true; // flipped 03/07/2026 - proxy verified by curl (200 + origin gate 403) before the flip
 const SB_DIRECT_URL    = 'https://eywncywatxtlqtrvxjsi.supabase.co';
 const SB_DB_PROXY_BASE = 'https://kujira-prices.julianchow21.workers.dev/db';
 // Anon key - only sent on the legacy (USE_WORKER_DB=false) path. Remove it once

@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.7',
+    release: 'kujira-collectibles@3.8',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -195,6 +195,12 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
 /* Mark the dropdown trigger itself "active" when its menu owns the current page */
 .nav-dd.contains-active>.nav-dd-trigger{background:var(--bg3);color:var(--text)}
 .topbar-actions{display:flex;align-items:center;gap:6px;margin-left:12px;flex-shrink:0}
+/* Sync indicator: a pill that adapts to whatever colour setSyncStatus() sets
+   via el.style.color (grey/green/red per state), using currentColor so no
+   per-state classes are needed. Hidden entirely when empty (idle / after the
+   3s auto-clear on success) so no empty pill shell lingers. */
+#sync-indicator:not(:empty){padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb, currentColor 35%, transparent);background:color-mix(in srgb, currentColor 12%, transparent);font-weight:500;transition:color 0.3s,background 0.3s,border-color 0.3s}
+#sync-indicator:empty{display:none}
 .icon-btn{width:32px;height:32px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text2);transition:all 0.15s;flex-shrink:0}
 .icon-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--border2)}
 .icon-btn svg{width:15px;height:15px}
@@ -239,7 +245,11 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
    overflow the body horizontally on desktop - acceptable, rare, scrollable. */
 @media(min-width:1001px){.tbl-wrap{overflow-x:visible}}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:800px}
-th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg2);position:sticky;top:calc(56px + env(safe-area-inset-top))}
+th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg2)}
+/* Stick the whole thead as one unit (not per-th): both header rows (labels +
+   filter inputs) stay in normal flow relative to each other so they cannot
+   overlap, and ride along together. Modern Chrome + iOS Safari support this. */
+.tbl-wrap thead{position:sticky;top:calc(56px + env(safe-area-inset-top));z-index:5;background:var(--bg2)}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:var(--bg3);cursor:default}
@@ -1292,7 +1302,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.7 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.8 (3 Jul)</span>
     </div>
   </a>
   <nav class="nav">

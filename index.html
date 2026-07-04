@@ -36,7 +36,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.8',
+    release: 'kujira-collectibles@3.9',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -250,6 +250,11 @@ th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-siz
    filter inputs) stay in normal flow relative to each other so they cannot
    overlap, and ride along together. Modern Chrome + iOS Safari support this. */
 .tbl-wrap thead{position:sticky;top:calc(56px + env(safe-area-inset-top));z-index:5;background:var(--bg2)}
+/* <=1000px the wrap itself is a scroll container (overflow-x auto/hidden), so
+   sticky scopes to the WRAP, not the page: top:56px would shove the header
+   56px down INTO the first rows at rest. Stick to the wrap top instead, which
+   the wrap never scrolls vertically, so the header simply stays in flow. */
+@media(max-width:1000px){.tbl-wrap thead{top:0}}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:var(--bg3);cursor:default}
@@ -356,6 +361,14 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast.toast-warn{border-left-color:#f59e0b}
 #toast.toast-warn #toast-bar{background:#f59e0b}
 @media(max-width:768px){#toast{bottom:calc(56px + env(safe-area-inset-bottom) + 12px);right:12px;left:12px;max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
+
+/* STALE-SHELL UPDATE PILL - sits below the bottom tab bar (z-index 150), own
+   element so a sync toast can never overwrite it. Hidden until a HEAD-probe
+   version mismatch is detected. */
+#kjr-update-pill{display:none;position:fixed;bottom:16px;right:16px;z-index:149;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);font-size:13px;border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);align-items:center;gap:10px;padding:10px 10px 10px 14px;cursor:pointer;user-select:none}
+#kjr-update-pill.show{display:flex}
+#kjr-update-pill-close{flex-shrink:0;background:none;border:none;color:var(--text3);font-size:15px;line-height:1;padding:4px;cursor:pointer}
+@media(max-width:768px){#kjr-update-pill{left:12px;right:12px;bottom:calc(64px + env(safe-area-inset-bottom));justify-content:center}}
 /* ── HIG additions ── */
 .hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:16px;color:var(--text3)}
 .hig-spinner{width:28px;height:28px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:hig-spin 0.75s linear infinite}
@@ -478,6 +491,7 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
 
 /* ── Bottom sheet (shared: More menu + mobile modals) ── */
 dialog.sheet-overlay{border:none;background:transparent;padding:0;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-end;justify-content:center}
+@supports (height:100dvh){dialog.sheet-overlay{height:100dvh}}
 dialog.sheet-overlay[open]{display:flex}
 dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 0.28s ease}
 @starting-style{dialog.sheet-overlay[open]::backdrop{background:rgba(0,0,0,0)}}
@@ -532,6 +546,10 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
 
 /* Hidden on desktop; revealed in the mobile eBay section below */
 .eb-mobile-meta{display:none}
+/* Price pill on the status-label row - hidden by default (desktop keeps its own
+   priceUsd column), revealed for mobile card view in the eBay section below */
+.eb-tl-price{display:none}
+.eb-tl-labelrow{display:flex;align-items:center;justify-content:center;position:relative}
 
 /* ── Tier 5: phones (≤600px) show a compact, fit-to-width TABLE ──
    Every inventory / transaction table keeps its real <table> markup (so
@@ -671,7 +689,7 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
     font-family:inherit;cursor:pointer;min-height:26px;line-height:1;
     transition:opacity 0.12s}
   body:not(.force-tables) #kjr-ebay-table .eb-meta-decl-pill:active{opacity:0.7}
-  body:not(.force-tables) #kjr-ebay-table .eb-meta-usd{color:var(--text2)}
+  body:not(.force-tables) #kjr-ebay-table .eb-tl-price{display:inline;position:absolute;right:0;font-size:11px;font-weight:600;color:var(--text2);white-space:nowrap}
 }
 
 /* ── Tier 5b: Singles + Slabs show EVERY column on phones ──
@@ -1302,7 +1320,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.8 (3 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.9 (4 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -2365,6 +2383,11 @@ const kjrModalCtrl = (() => {
 
   function open(dialog, triggerEl) {
     const trigger = triggerEl || document.activeElement;
+    // iOS WebKit can leave the visual viewport offset after the keyboard was
+    // up, which renders top-layer <dialog> sheets displaced above the screen.
+    // Blurring a still-focused text input before showModal() dismisses the
+    // keyboard first, so the sheet opens against the settled viewport.
+    if (trigger && trigger.matches && trigger.matches('input,select,textarea') && typeof trigger.blur === 'function') trigger.blur();
     stack.push({ dialog, trigger });
     dialog.dataset.dirty = '0'; // reset the unsaved-changes flag for this open cycle
     // Forms opted in via data-kjr-form get one delegated input/change listener
@@ -6235,12 +6258,14 @@ document.addEventListener('keydown', e => {
 });
 
 // =========== NAVIGATION ===========
+let _kjrCurrentPage = null; // tracks the active tab so we only scroll-reset on an actual switch, never on a same-page re-render
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn, .btb-item, .nav-dd-item').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.nav-dd').forEach(d => d.classList.remove('contains-active'));
   const pageEl = document.getElementById('page-' + name);
   if (pageEl) pageEl.classList.add('active');
+  if (name !== _kjrCurrentPage) { window.scrollTo(0, 0); _kjrCurrentPage = name; }
   // Find the nav button or dropdown item whose onclick references this page
   // name and mark it (and its parent dropdown trigger) active.
   document.querySelectorAll('.nav-btn, .btb-item, .nav-dd-item').forEach(b => {
@@ -6289,6 +6314,20 @@ document.addEventListener('focusin', function(e) {
     setTimeout(() => { try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(_){} }, 300);
   }
 });
+
+// iOS keyboard dismiss can leave the visual viewport reporting a stale offset,
+// which is what displaces top-layer sheet dialogs upward off-screen. Re-anchor
+// scroll once the viewport settles (debounced so it fires once, after resize noise stops).
+if (window.visualViewport) {
+  let _kjrVvT;
+  window.visualViewport.addEventListener('resize', () => {
+    clearTimeout(_kjrVvT);
+    _kjrVvT = setTimeout(() => {
+      const ae = document.activeElement;
+      if (!ae || !ae.matches || !ae.matches('input,select,textarea')) window.scrollTo(window.scrollX, window.scrollY);
+    }, 250);
+  });
+}
 
 // ── Tier 5: card-view labelling + layout toggle ─────────────────
 // The phone card view (CSS) shows each cell as "Label: value". The label is
@@ -12553,6 +12592,62 @@ if ('serviceWorker' in navigator) {
 }
 </script>
 
+<!-- ═══════════════════════════════════════════════════════════
+     STALE-SHELL DETECTION - the PWA can sit suspended in the
+     background on an old shell for days. A HEAD request is cheap and
+     bypasses the SW cache (fetch handler returns early on non-GET),
+     so ETag/Last-Modified drift reliably signals a new deploy is live.
+     Never auto-reloads - only surfaces a dismissible pill the user taps.
+     ═══════════════════════════════════════════════════════════ -->
+<script>
+(function() {
+  let _kjrShellBaseline = null;
+  let _kjrShellLastCheck = 0;
+  const KJR_SHELL_CHECK_MS = 30 * 60 * 1000; // throttle: at most once per 30 min
+
+  function kjrEnsureUpdatePill() {
+    let pill = document.getElementById('kjr-update-pill');
+    if (pill) return pill;
+    pill = document.createElement('div');
+    pill.id = 'kjr-update-pill';
+    pill.setAttribute('role', 'status');
+    pill.innerHTML = '<span>Update ready, tap to reload</span>' +
+      '<button id="kjr-update-pill-close" type="button" aria-label="Dismiss">✕</button>';
+    pill.addEventListener('click', (e) => {
+      if (e.target.id === 'kjr-update-pill-close') { e.stopPropagation(); pill.classList.remove('show'); return; }
+      location.reload();
+    });
+    document.body.appendChild(pill);
+    return pill;
+  }
+
+  async function kjrCheckShellVersion() {
+    try {
+      const res = await fetch('./index.html', { method: 'HEAD', cache: 'no-store' });
+      if (!res.ok) return; // silent no-op, e.g. offline
+      const stamp = res.headers.get('ETag') || res.headers.get('Last-Modified');
+      if (!stamp) return; // silent no-op, server doesn't expose either header
+      if (_kjrShellBaseline === null) { _kjrShellBaseline = stamp; return; } // first probe just sets the baseline
+      if (stamp !== _kjrShellBaseline) kjrEnsureUpdatePill().classList.add('show');
+    } catch (_) {
+      // offline or blocked - say nothing, this is a background probe
+    }
+  }
+
+  function kjrMaybeCheckShellVersion() {
+    const now = Date.now();
+    if (now - _kjrShellLastCheck < KJR_SHELL_CHECK_MS) return;
+    _kjrShellLastCheck = now;
+    kjrCheckShellVersion();
+  }
+
+  window.addEventListener('load', kjrMaybeCheckShellVersion);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') kjrMaybeCheckShellVersion();
+  });
+})();
+</script>
+
 
 
 
@@ -14055,6 +14150,10 @@ function renderEbayPurchases(){
     // current step; outline for everything ahead. Click any dot to jump the
     // row directly to that status (faster than the bulk button for one-offs).
     const curIdx = kjrEbayPipelineIndex(r.status);
+    // Price pill rides the right edge of the status-label row (mobile only -
+    // see .eb-tl-price / .eb-tl-labelrow CSS). Desktop already has its own
+    // priceUsd column, so this is purely a mobile-card affordance.
+    const priceSpan = kjrNum(r.priceUsd) > 0 ? '<span class="eb-tl-price">US$' + Math.round(kjrNum(r.priceUsd)) + '</span>' : '';
     const timeline = isCancelled
       ? '<div class="eb-tl-cancel">- Cancelled -</div>'
       : '<div class="eb-tl" title="Click any step to jump this row directly to it">' +
@@ -14066,7 +14165,7 @@ function renderEbayPurchases(){
               (i === curIdx ? '●' : (i < curIdx ? '✓' : '')) +
             '</button>';
         }).join('') +
-        '</div><div class="eb-tl-label">' + kjrEscape(r.status || 'Unknown') + '</div>';
+        '</div><div class="eb-tl-labelrow"><div class="eb-tl-label">' + kjrEscape(r.status || 'Unknown') + '</div>' + priceSpan + '</div>';
 
     const storedSgd = kjrNum(r.totalSgd);
     const sgdCell = storedSgd > 0
@@ -14108,7 +14207,6 @@ function renderEbayPurchases(){
         '<div class="eb-mobile-meta">' +
           (r.tracking ? '<button class="eb-meta-track-chip" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy: '+kjrEscape(r.tracking)+'">#'+kjrEscape(String(r.tracking).slice(-4))+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="10" height="10" style="opacity:0.6;margin-left:2px;flex-shrink:0"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : '') +
           '<button class="eb-meta-decl-pill" style="color:'+declCol+';border-color:'+(declVal==='No'?'var(--amber)':declVal==='Yes'?'var(--green)':'var(--border)')+'" onclick="kjrToggleDeclared(\''+kjrEscape(r.id)+'\')">'+kjrEscape(declVal||'-')+'</button>' +
-          (kjrNum(r.priceUsd) > 0 ? '<span class="eb-meta-usd">US$'+Math.round(kjrNum(r.priceUsd))+'</span>' : '') +
         '</div>' +
       '</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +

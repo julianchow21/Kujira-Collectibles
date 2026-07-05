@@ -534,11 +534,19 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
 /* ── Tier 4: large mobile titles + decluttered topbar ── */
 @media(max-width:768px){
   .section-title{font-size:26px;letter-spacing:-0.5px;margin-bottom:12px;line-height:1.1}
-  .topbar-actions{gap:4px;margin-left:auto}
+  /* .logo pinned to flex-shrink:0 so the brand mark never squashes; all the
+     shrinking needed to fit a long sync string goes to topbar-actions/the
+     pill instead (base rule has flex-shrink:0 on topbar-actions, which is
+     fine on desktop where .nav's flex:1 leaves it plenty of room, but with
+     .nav hidden here it must be allowed to shrink or it overflows the
+     topbar - see the sync-indicator rule below). */
+  .logo{flex-shrink:0}
+  .topbar-actions{gap:4px;margin-left:auto;flex-shrink:1;min-width:0}
   .topbar-actions .icon-btn{display:none}
   /* keep the gear (Settings) and GitHub push reachable on mobile */
   .topbar-actions .nav-dd .icon-btn,
   .topbar-actions #gh-push-btn{display:flex}
+  #sync-indicator{min-width:0}
   .topbar-actions .btn-primary{font-size:0;padding:0 18px;min-height:42px;min-width:64px;display:inline-flex;align-items:center;justify-content:center;gap:0}
   .topbar-actions .btn-primary svg{width:20px;height:20px;margin:0}
   .topbar-actions .btn-primary span{display:none}
@@ -674,6 +682,10 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
   body:not(.force-tables) #kjr-ebay-table [data-col-key="status"]{
     width:60%;min-width:0!important;white-space:normal}
   body:not(.force-tables) #kjr-ebay-table [data-col-key="status"] .eb-tl{flex-wrap:wrap}
+  /* The label row must line up flush-left under the dot track, not centre
+     across the wider column - centering it here left a ~10px rightward
+     drift between the label and its track on every row. */
+  body:not(.force-tables) #kjr-ebay-table .eb-tl-labelrow{justify-content:flex-start}
   body:not(.force-tables) #kjr-ebay-table .eb-mobile-meta{
     display:flex;flex-wrap:wrap;gap:5px;justify-content:center;
     font-size:10px;color:var(--text3);margin-top:4px;align-items:center}
@@ -1320,7 +1332,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.9 (4 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.11 (5 Jul)</span>
     </div>
   </a>
   <nav class="nav">

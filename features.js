@@ -2718,3 +2718,304 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 })();
+
+// =========== EXCEL EXPORT (v3.15) ===========
+// One workbook, one sheet per data tab, house-formatted (Lexend, bold+frozen+
+// filtered headers, SGD/USD currency, dd/mm/yyyy dates, right-aligned numbers).
+// READ-ONLY: this module only ever reads DB.* - it never mutates a row, never
+// calls markDirty/saveAllToSupabase. Sale rows are copied (Object.assign) before
+// the margin field is replaced, so the live DB.sales array is untouched.
+
+// ── Lazy-load ExcelJS on first use, cache the promise so a second click
+// doesn't re-inject the script. Never throws past this - a failed load
+// toasts and the caller aborts.
+let _kjrExcelJsPromise = null;
+function _kjrLoadExcelJs() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  if (_kjrExcelJsPromise) return _kjrExcelJsPromise;
+  _kjrExcelJsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    s.onload = () => {
+      if (window.ExcelJS) resolve(window.ExcelJS);
+      else reject(new Error('ExcelJS did not initialise'));
+    };
+    s.onerror = () => reject(new Error('Failed to load ExcelJS from CDN'));
+    document.head.appendChild(s);
+  }).catch(err => {
+    _kjrExcelJsPromise = null; // allow a retry on the next click
+    throw err;
+  });
+  return _kjrExcelJsPromise;
+}
+
+// ── Header label overrides - camelCase key → house label where a plain
+// title-case split would read wrong (acronyms, currency-tagged fields, etc).
+const _KJR_XLSX_LABEL_OVERRIDES = {
+  ebayUrl: 'eBay URL', carousellUrl: 'Carousell URL', certNo: 'Cert No',
+  priceUsd: 'Price (US$)', freightSgd: 'Freight (S$)', totalSgd: 'Total (S$)',
+  inventoryId: 'Inventory ID', inventoryTable: 'Inventory Table',
+  targetTable: 'Target Table', priceAlert: 'Price Alert',
+  id: 'ID', qty: 'Qty',
+  // Sales sheet's computed replacement for the raw `margin` string field -
+  // header must read "Margin", not the internal key name.
+  marginFraction: 'Margin',
+};
+// camelCase / snake_case key → "Title Case" label, honouring the override map.
+function _kjrXlsxLabel(key) {
+  if (_KJR_XLSX_LABEL_OVERRIDES[key]) return _KJR_XLSX_LABEL_OVERRIDES[key];
+  const spaced = String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return spaced.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
+// ── Column format buckets, matched by field key.
+// NOTE: `declared` is deliberately NOT in this set even though an earlier
+// spec listed it as currency - it's actually the eBay pipeline's "declared on
+// customs form" Yes/No/N/A flag (see kjrOpenEbayModal's declaredOpts / the
+// declared-cycle toggle in renderEbayPurchases), not a money amount anywhere
+// in the data model. Formatting it as "S$"#,##0.00 would silently turn "Yes"
+// into "S$0.00" in the export. It's left as plain text (the default bucket).
+const _KJR_XLSX_SGD_KEYS = new Set(['listPrice','costPrice','marketPrice','totalCollected','shippingCost','profit','fees','totalPrice','unitPrice','freightSgd','totalSgd']);
+const _KJR_XLSX_USD_KEYS = new Set(['priceUsd']);
+const _KJR_XLSX_DATE_KEYS = new Set(['datePurchased','dateListed','dateSold','date']);
+const _KJR_XLSX_INT_KEYS = new Set(['qty','grade']);
+const _KJR_XLSX_PCT_KEYS = new Set(['marginFraction','roiPct']);
+
+// Parse a stored date value into a real Date for Excel, via the app's own
+// date helpers (dateToMs handles the canonical "D MMM YYYY" form and common
+// input variants). Falls back to toDateMmmYyyy→Date, then null for anything
+// genuinely unparseable so the cell stays blank rather than showing "Invalid Date".
+function _kjrXlsxParseDate(val) {
+  if (val == null || val === '') return null;
+  const ms = dateToMs(val);
+  if (ms) return new Date(ms);
+  const alt = new Date(toDateMmmYyyy(val));
+  if (!isNaN(alt.getTime())) return alt;
+  return null;
+}
+
+// Apply per-column number format + alignment, then set the header row's own
+// style AFTER (assigning ws.getColumn(n).font/alignment/numFmt clobbers the
+// header cell in that column, since a column-level style applies to every
+// cell in the column including row 1 - so header bold/fill must be re-applied
+// last, and its numFmt cleared back to General or the header text can round-trip
+// through a numeric format on reopen).
+function _kjrXlsxFormatSheet(ws, keys) {
+  const lexendFont = { name: 'Lexend', size: 11 };
+  keys.forEach((key, idx) => {
+    const col = ws.getColumn(idx + 1);
+    col.font = lexendFont;
+    if (_KJR_XLSX_SGD_KEYS.has(key)) {
+      col.numFmt = '"S$"#,##0.00';
+      col.alignment = { horizontal: 'right' };
+    } else if (_KJR_XLSX_USD_KEYS.has(key)) {
+      col.numFmt = '"US$"#,##0.00';
+      col.alignment = { horizontal: 'right' };
+    } else if (_KJR_XLSX_PCT_KEYS.has(key)) {
+      col.numFmt = '0.0%';
+      col.alignment = { horizontal: 'right' };
+    } else if (_KJR_XLSX_DATE_KEYS.has(key)) {
+      col.numFmt = 'dd/mm/yyyy';
+      col.alignment = { horizontal: 'left' };
+    } else if (_KJR_XLSX_INT_KEYS.has(key)) {
+      // grade can be a half-step (PSA/CGC 9.5) - don't round it to an int
+      col.numFmt = (key === 'grade') ? '0.#' : '0';
+      col.alignment = { horizontal: 'right' };
+    } else {
+      col.alignment = { horizontal: 'left' };
+    }
+    // Auto-size, capped so one long note/URL doesn't blow the sheet out.
+    const headerLen = _kjrXlsxLabel(key).length;
+    let maxLen = headerLen;
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      const cell = row.getCell(idx + 1);
+      const v = cell.value;
+      const len = (v == null) ? 0 : (v instanceof Date ? 10 : String(v.text != null ? v.text : v).length);
+      if (len > maxLen) maxLen = len;
+    });
+    col.width = Math.min(Math.max(maxLen + 2, 10), 40);
+  });
+  // Re-assert header row style AFTER the per-column pass above, which
+  // clobbers row 1 (see comment above _kjrXlsxFormatSheet).
+  const header = ws.getRow(1);
+  header.eachCell(cell => {
+    cell.font = { name: 'Lexend', size: 11, bold: true };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+    cell.numFmt = 'General';
+  });
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: keys.length } };
+}
+
+// Build one sheet from an array of {key,label} column defs and an array of
+// plain row objects. Always writes the header row, even for an empty dataset.
+function _kjrXlsxAddSheet(workbook, sheetName, columns, rows) {
+  const ws = workbook.addWorksheet(sheetName);
+  ws.columns = columns.map(c => ({ header: c.label, key: c.key }));
+  rows.forEach(r => {
+    const rowData = {};
+    columns.forEach(c => {
+      let v = r[c.key];
+      if (_KJR_XLSX_DATE_KEYS.has(c.key)) {
+        rowData[c.key] = _kjrXlsxParseDate(v); // null → genuinely blank cell
+      } else if (_KJR_XLSX_PCT_KEYS.has(c.key)) {
+        rowData[c.key] = (v == null || v === '') ? null : Number(v);
+      } else if (_KJR_XLSX_SGD_KEYS.has(c.key) || _KJR_XLSX_USD_KEYS.has(c.key) || _KJR_XLSX_INT_KEYS.has(c.key)) {
+        rowData[c.key] = (v == null || v === '') ? null : (Number(v) || 0);
+      } else {
+        rowData[c.key] = (v == null) ? '' : v;
+      }
+    });
+    ws.addRow(rowData);
+  });
+  _kjrXlsxFormatSheet(ws, columns.map(c => c.key));
+  return ws;
+}
+
+// ── Column defs per sheet, built from {key,label} pairs so _kjrXlsxAddSheet
+// stays generic. Cross-checked against the current exportCSV()/KJR_*_FIELDS
+// field lists (v3.15 - post pricing-rework): Singles/Slabs additionally carry
+// tcgdexId (the resolved TCGdex card id, added by the Market Price rework) -
+// kept in the export so a re-import can skip the resolve step, same reason
+// exportCSV() already includes it.
+function _kjrXlsxCols(keys) { return keys.map(key => ({ key, label: _kjrXlsxLabel(key) })); }
+
+const _KJR_XLSX_SINGLES_KEYS = ['id','name','set','language','type','condition','qty','listPrice','costPrice','marketPrice','status','datePurchased','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
+const _KJR_XLSX_SLABS_KEYS   = ['id','name','grader','grade','certNo','rank','listPrice','costPrice','marketPrice','dateListed','status','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
+const _KJR_XLSX_SALES_KEYS   = ['id','dateSold','product','buyer','costPrice','totalCollected','shippingCost','profit','marginFraction','inventoryId','inventoryTable','fees'];
+const _KJR_XLSX_EBAY_FALLBACK_KEYS = ['id','date','status','product','tracking','declared','priceUsd','freightSgd','totalSgd','targetTable'];
+
+// eBay pipeline sheet uses the union of keys actually present across every
+// row (rows are a grab-bag of manually-added + AI-imported purchases with
+// varying fields), with id/date/status/product floated to the front so the
+// sheet reads the same way the in-app table does. Falls back to a fixed key
+// list when the array is empty, so the sheet still gets a sensible header row.
+function _kjrXlsxEbayKeys(rows) {
+  if (!rows.length) return _KJR_XLSX_EBAY_FALLBACK_KEYS.slice();
+  const front = ['id', 'date', 'status', 'product'];
+  const seen = new Set(front);
+  const rest = [];
+  rows.forEach(r => {
+    Object.keys(r).forEach(k => {
+      if (!seen.has(k)) { seen.add(k); rest.push(k); }
+    });
+  });
+  return front.concat(rest);
+}
+
+// Sales sheet: replace the raw `margin` string (e.g. "45%") with a computed
+// fraction so Excel can format/sort it as a real percentage. Row is a copy
+// (Object.assign) - the live DB.sales objects are never touched.
+function _kjrXlsxSalesRows() {
+  return (DB.sales || []).map(s => {
+    const totalCollected = parseFloat(s.totalCollected) || 0;
+    const profit = parseFloat(s.profit);
+    const marginFraction = totalCollected > 0 && !isNaN(profit) ? (profit / totalCollected) : null;
+    return Object.assign({}, s, { marginFraction });
+  });
+}
+
+// Summary sheet - destructures computeDashboardStats() (app.js) so it never
+// duplicates Dashboard maths. Currency rows use the SGD format, ROI and the
+// export timestamp are their own rows since they don't share a format bucket
+// with anything else on this sheet.
+function _kjrXlsxAddSummarySheet(workbook) {
+  const stats = computeDashboardStats();
+  const ws = workbook.addWorksheet('Summary');
+  ws.columns = [
+    { header: 'Metric', key: 'metric' },
+    { header: 'Value', key: 'value' },
+  ];
+  const currencyRows = [
+    ['Total Cost Basis', stats.totalInvCost],
+    ['Total Market Value (Singles + Slabs)', stats.totalMktValue],
+    ['Unrealised P/L (Singles + Slabs)', stats.unrealisedPL],
+    ['Realised Profit (All-Time)', stats.allTimeProfit],
+  ];
+  const integerRows = [
+    ['Singles Available', stats.singlesAvail],
+    ['Singles Sold', stats.singlesSold],
+    ['Slabs Available', stats.slabsAvail],
+    ['Slabs Sold', stats.slabsSold],
+    ['Sealed Items In Stock', stats.sealedItemCount],
+    ['Grand Total Items', stats.grandItemCount],
+  ];
+  currencyRows.forEach(([metric, value]) => {
+    const row = ws.addRow({ metric, value });
+    const cell = row.getCell(2);
+    cell.numFmt = '"S$"#,##0.00';
+    cell.alignment = { horizontal: 'right' };
+  });
+  {
+    const row = ws.addRow({ metric: 'Realised ROI', value: stats.roiPct == null ? null : stats.roiPct / 100 });
+    const cell = row.getCell(2);
+    cell.numFmt = '0.0%';
+    cell.alignment = { horizontal: 'right' };
+  }
+  integerRows.forEach(([metric, value]) => {
+    const row = ws.addRow({ metric, value });
+    const cell = row.getCell(2);
+    cell.numFmt = '0';
+    cell.alignment = { horizontal: 'right' };
+  });
+  ws.addRow({ metric: 'Export Generated At', value: new Date().toLocaleString('en-SG') });
+  // Metric column left-aligned text, value column already set per-row above -
+  // apply the header/frozen/filter/font pass without the SGD/date/int auto-
+  // detection (this sheet's formats are set explicitly per row, not by key).
+  ws.getColumn(1).font = { name: 'Lexend', size: 11 };
+  ws.getColumn(1).alignment = { horizontal: 'left' };
+  ws.getColumn(2).font = { name: 'Lexend', size: 11 };
+  let maxLen = 'Metric'.length;
+  ws.eachRow({ includeEmpty: false }, row => {
+    const v = row.getCell(1).value;
+    if (v && String(v).length > maxLen) maxLen = String(v).length;
+  });
+  ws.getColumn(1).width = Math.min(maxLen + 2, 40);
+  ws.getColumn(2).width = 24;
+  const header = ws.getRow(1);
+  header.eachCell(cell => {
+    cell.font = { name: 'Lexend', size: 11, bold: true };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+    cell.numFmt = 'General';
+  });
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 2 } };
+  return ws;
+}
+
+// ── Entrypoint. Reads all live rows straight off DB.* (already trash-free -
+// soft-deletes live in DB.trash, a separate table), builds one workbook with
+// the 8 sheets in a fixed order, and downloads it. Never mutates DB, never
+// calls markDirty/saveAllToSupabase - this is a read-only reporting export.
+async function exportXlsx() {
+  try {
+    const ExcelJS = await _kjrLoadExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Kujira Collectibles';
+    workbook.created = new Date();
+
+    _kjrXlsxAddSummarySheet(workbook);
+    _kjrXlsxAddSheet(workbook, 'Singles', _kjrXlsxCols(_KJR_XLSX_SINGLES_KEYS), DB.singles || []);
+    _kjrXlsxAddSheet(workbook, 'Slabs', _kjrXlsxCols(_KJR_XLSX_SLABS_KEYS), DB.slabs || []);
+    _kjrXlsxAddSheet(workbook, 'Sales', _kjrXlsxCols(_KJR_XLSX_SALES_KEYS), _kjrXlsxSalesRows());
+    {
+      const ebayRows = DB.ebayPurchases || [];
+      _kjrXlsxAddSheet(workbook, 'eBay pipeline', _kjrXlsxCols(_kjrXlsxEbayKeys(ebayRows)), ebayRows);
+    }
+    _kjrXlsxAddSheet(workbook, 'ETBs', KJR_ETB_FIELDS.map(f => ({ key: f.key, label: f.label })), DB.etbs || []);
+    _kjrXlsxAddSheet(workbook, 'Booster Boxes', KJR_BB_FIELDS.map(f => ({ key: f.key, label: f.label })), DB.boosterBoxes || []);
+    _kjrXlsxAddSheet(workbook, 'Booster Packs', KJR_BP_FIELDS.map(f => ({ key: f.key, label: f.label })), DB.boosterPacks || []);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const yyyy = now.getFullYear();
+    dl(`Collectibles Export ${dd}-${mm}-${yyyy}.xlsx`, buffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  } catch (e) {
+    toastError('Excel export failed: ' + (e && e.message ? e.message : e));
+  }
+}

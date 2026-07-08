@@ -5770,7 +5770,12 @@ function showMarketValueBreakdown() {
   kjrModalCtrl.open(mvEl);
 }
 
-function renderDashboard() {
+// Pure stat computations for the Dashboard - no DOM reads/writes, so this can
+// be called from both renderDashboard() and the Excel export (exportXlsx())
+// without touching the page. Extracted from renderDashboard() during the
+// v3.15 Excel-export build; keep every value renderDashboard() destructures
+// below in sync with what this returns, or the live Dashboard throws.
+function computeDashboardStats() {
   // ── Inventory cost - Singles, Slabs, Sealed (ETBs + Booster Boxes + Packs)
   // Multiplies by qty where applicable. Slabs are always qty=1.
   const invCostSingles = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + (parseFloat(i.costPrice)||0)*(parseInt(i.qty)||1), 0);
@@ -5824,6 +5829,9 @@ function renderDashboard() {
   // Singles/Slabs, this is correctly 0 (no more silent padding from
   // sealed cost basis).
   const totalMktValue = mktSingles + mktSlabs;
+  // Unrealised P/L - headline market value less the cost basis actually
+  // driving it (Singles + Slabs only, matching totalMktValue's scope).
+  const unrealisedPL = totalMktValue - (invCostSingles + invCostSlabs);
 
   // ── Sales stats (filtered by date range) ──
   const cutoff = getDateRange();
@@ -5840,6 +5848,11 @@ function renderDashboard() {
   const allTimeSales   = DB.sales;
   const allTimeRevenue = allTimeSales.reduce((s,i) => s + (i.totalCollected||0), 0);
   const allTimeProfit  = allTimeSales.reduce((s,i) => s + (i.profit||0), 0);
+  // Realised ROI = Profit ÷ Cost basis of sold items × 100 (null when there's
+  // nothing sold yet, so callers can render "-" instead of a false 0%).
+  const roiPct = (allTimeSales.length === 0 || allTimeRevenue === 0)
+    ? null
+    : (allTimeProfit / Math.max(1, allTimeRevenue - allTimeProfit)) * 100;
 
   // ── Counts ──
   const singlesAvail = DB.singles.filter(i => (i.status||'Available') === 'Available').length;
@@ -5847,6 +5860,32 @@ function renderDashboard() {
   const slabsAvail   = DB.slabs.filter(i => (i.status||'Available') === 'Available').length;
   const slabsSold    = DB.slabs.filter(i => (i.status||'Available') === 'Sold').length;
   const totalItems   = singlesAvail + slabsAvail;
+
+  // Row 1 - KPIs (now full-portfolio: singles + slabs + sealed)
+  const sealedItemCount = etbInStock.length + bbInStock.reduce((s,r)=>s+(parseInt(r.qty)||1),0) + bpInStock.reduce((s,r)=>s+(parseInt(r.qty)||1),0);
+  const grandItemCount  = singlesAvail + slabsAvail + sealedItemCount;
+
+  return {
+    invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
+    invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
+    mktSingles, mktSlabs, mktEtb, mktBb, mktBp, mktSealed, totalMktValue, unrealisedPL,
+    cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx,
+    allTimeSales, allTimeRevenue, allTimeProfit, roiPct,
+    singlesAvail, singlesSold, slabsAvail, slabsSold, totalItems,
+    sealedItemCount, grandItemCount,
+  };
+}
+
+function renderDashboard() {
+  const {
+    invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
+    invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
+    mktSingles, mktSlabs, mktEtb, mktBb, mktBp, mktSealed, totalMktValue, unrealisedPL,
+    cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx,
+    allTimeSales, allTimeRevenue, allTimeProfit, roiPct,
+    singlesAvail, singlesSold, slabsAvail, slabsSold, totalItems,
+    sealedItemCount, grandItemCount,
+  } = computeDashboardStats();
 
   // Cards show just a centred label + value. The old sub-line is gone; any
   // useful detail now lives in the (i) tooltip. `trust` is optional: when
@@ -5869,9 +5908,8 @@ function renderDashboard() {
 
   const rangeLabel = (document.getElementById('dash-range')?.options[document.getElementById('dash-range')?.selectedIndex]?.text || '');
 
-  // Row 1 - KPIs (now full-portfolio: singles + slabs + sealed)
-  const sealedItemCount = etbInStock.length + bbInStock.reduce((s,r)=>s+(parseInt(r.qty)||1),0) + bpInStock.reduce((s,r)=>s+(parseInt(r.qty)||1),0);
-  const grandItemCount  = singlesAvail + slabsAvail + sealedItemCount;
+  // sealedItemCount / grandItemCount now come from computeDashboardStats()
+  // (destructured above) - was previously recomputed here (Row 1 KPIs).
 
   // ── Market-value data freshness ─────────────────────────────────────
   // Prices on Singles + Slabs come from the two-lane refresh queue (free
@@ -6003,9 +6041,7 @@ function renderDashboard() {
   // Drop the leading "+" on profit - the green colour already signals positive.
   const profitDisplay = allTimeSales.length === 0 ? '-'
     : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG'));
-  const roiPct = (allTimeSales.length === 0 || allTimeRevenue === 0)
-    ? null
-    : (allTimeProfit / Math.max(1, allTimeRevenue - allTimeProfit)) * 100;
+  // roiPct now comes from computeDashboardStats() (destructured above).
   const roiDisplay = roiPct == null ? '-' : Math.round(roiPct) + '%';
   // Trust dot for Total Market Value: the dot colour warns at a glance how
   // trustworthy the figure is (red = low coverage / stale), and the coverage +

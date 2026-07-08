@@ -760,7 +760,7 @@ function normalizeRecord(table, obj) {
   if (table === 'singles' && !out.type) out.type = 'raw';
   if (table === 'slabs') out.type = 'slab';
   // 8. Trim text fields
-  ['name','set','product','buyer','notes','tracking','certNo','rank'].forEach(k => {
+  ['name','set','product','buyer','notes','tracking','certNo','rank','tcgdexId'].forEach(k => {
     if (typeof out[k] === 'string') out[k] = out[k].trim();
   });
   return out;
@@ -3107,17 +3107,12 @@ function pickHigherCostDuplicate(table, item) {
   return candidates[0];
 }
 
-// Best fair-market quote we have for a row: explicit marketPrice, else the
-// live price cache, else listPrice as a last resort. Used to pre-fill sell
-// modals so the user doesn't have to type the obvious number every time.
+// Best fair-market quote we have for a row: explicit marketPrice, else
+// listPrice as a last resort. Used to pre-fill sell modals so the user
+// doesn't have to type the obvious number every time.
 function bestMarketFor(item) {
   const explicit = parseFloat(item.marketPrice);
   if (!isNaN(explicit) && explicit > 0) return explicit;
-  const cache = (typeof window !== 'undefined' && window._priceLookup) ? window._priceLookup : null;
-  if (cache && item.id && cache[item.id]) {
-    const v = parseFloat(cache[item.id]);
-    if (!isNaN(v) && v > 0) return v;
-  }
   const list = parseFloat(item.listPrice);
   if (!isNaN(list) && list > 0) return list;
   return '';
@@ -3757,18 +3752,13 @@ function sortItems(items, table) {
   // Numbers/words containing leading digits should land at the BOTTOM when
   // sorting alphabetically (so "Charizard" comes before "100-card lot").
   const startsWithDigit = v => /^[\s$]*-?\d/.test(String(v||''));
-  // Helper: effective market value. For Singles/Slabs the visible cell may
-  // be a cached price from window._priceLookup even when item.marketPrice is
-  // blank. Sorting must use the same effective number the user sees in the
-  // cell, or "-" rows (with cached fallback) get incorrectly pushed to the
-  // bottom and the column appears not to sort.
+  // Helper: effective market value. Sorting must use the same effective
+  // number the user sees in the cell (explicit marketPrice, else cost as a
+  // last resort), or unpriced rows get incorrectly pushed to the bottom and
+  // the column appears not to sort.
   const effectiveMarket = (i) => {
     const m = parseFloat(i.marketPrice);
     if (!isNaN(m) && m > 0) return m;
-    if ((table === 'singles' || table === 'slabs') && typeof _cachedPriceSgd === 'function') {
-      const c = _cachedPriceSgd(table, i.id);
-      if (!isNaN(c) && c > 0) return c;
-    }
     return NaN;
   };
   return [...items].sort((a, b) => {
@@ -4335,11 +4325,36 @@ function _mktFreshDot(item) {
   if (!hist.length || !item.marketPrice) return '';
   const last = hist[hist.length - 1];
   const d = _parseHistDate(last && last.date);
+  // A 'low' confidence entry (PPT's base-name fallback fired, no card number
+  // matched) is always shown amber regardless of age - the number could be
+  // stale AND wrong, so age-based green never applies to a fuzzy match.
+  const isLow = last && last.confidence === 'low';
   if (!d) return '<span style="width:6px;height:6px;border-radius:50%;background:#444;display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0" title="Price age unknown"></span>';
   const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  const color = days <= 30 ? '#22c55e' : days <= 90 ? '#f59e0b' : '#ef4444';
+  const color = isLow ? '#f59e0b' : (days <= 30 ? '#22c55e' : days <= 90 ? '#f59e0b' : '#ef4444');
   const ago = days === 0 ? 'today' : days === 1 ? '1 day ago' : days + ' days ago';
-  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + (last.date||'') + ' (' + ago + ')"></span>';
+  const sourceNote = last.source ? (' · ' + last.source) : '';
+  const confNote = last.confidence ? (' · ' + last.confidence + ' confidence') : '';
+  const lowNote = isLow ? ' · approx, fuzzy match' : '';
+  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + (last.date||'') + ' (' + ago + ')' + sourceNote + confNote + lowNote + '"></span>';
+}
+
+// Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
+// row. Chinese-language cards have no free source on either vendor (TCGdex
+// nor PPT's typical coverage) - distinct from "unresolved", which the user
+// CAN fix by adding the card number or a TCGdex ID override. Slabs never
+// have a tcgdexId/resolve concept (they're always PPT-lane), so they only
+// ever get the Chinese-language explanation, never "add the card number".
+function _mktEmptyCellTitle(item) {
+  if (item.marketPrice) return ''; // has a price, no explanation needed
+  const lang = (item.language||'EN').toString().trim().toUpperCase();
+  if (lang === 'CN') return 'No free market price source for Chinese cards';
+  const isSlab = !!item.grader;
+  if (!isSlab && !item.tcgdexId) {
+    const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+    if (!hasNameAndNumber) return 'Add the card number for exact pricing';
+  }
+  return '';
 }
 
 // Returns a freshness dot for the Market Price KPI card, based on the oldest
@@ -4379,7 +4394,34 @@ function kjrInvEmptyRow(opts) {
     '</div></td></tr>';
 }
 
+// Session-only dismiss for the unresolved-cards banner - a fresh page load
+// (or hard refresh) shows it again, but re-rendering the table after any
+// edit/filter change within the same session shouldn't keep re-surfacing it
+// once the user has acknowledged it. Deliberately NOT persisted to
+// localStorage: this is a transient nudge, not a permanent setting, and a
+// newly-added unresolved card later in the session should still be visible
+// next time the banner state is recomputed (sessionStorage would carry a
+// stale dismiss across an unrelated reload of the same tab; the in-memory
+// flag resets whenever the page reloads, which is exactly the desired reset
+// point since fresh unresolved counts are worth re-surfacing then).
+let _kjrUnresolvedBannerDismissed = false;
+function _dismissUnresolvedBanner() {
+  _kjrUnresolvedBannerDismissed = true;
+  const el = document.getElementById('singles-unresolved-banner');
+  if (el) el.classList.remove('show');
+}
+function _renderUnresolvedBanner() {
+  const el = document.getElementById('singles-unresolved-banner');
+  if (!el) return;
+  const n = (typeof _kjrUnresolvedSingles === 'function') ? _kjrUnresolvedSingles().length : 0;
+  if (n === 0 || _kjrUnresolvedBannerDismissed) { el.classList.remove('show'); return; }
+  document.getElementById('singles-unresolved-text').textContent =
+    n + ' card' + (n!==1?'s':'') + ' could not be matched automatically. Open a card and add its set code and number, or a TCGdex ID, for exact pricing.';
+  el.classList.add('show');
+}
+
 function renderSingles() {
+  _renderUnresolvedBanner();
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
   const lang = document.getElementById('singles-lang').value;
   const type = document.getElementById('singles-type').value;
@@ -4485,7 +4527,7 @@ function renderSingles() {
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',\'' + safeId + '\',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.marketPrice ? '$' + Math.round(parseFloat(i.marketPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (_mktEmptyCellTitle(i) ? ' title="' + esc(_mktEmptyCellTitle(i)) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.marketPrice ? '$' + Math.round(parseFloat(i.marketPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
@@ -4837,12 +4879,13 @@ async function deleteItem(id, table) {
 function openAddSingle() {
   document.getElementById('ms-id').value = '';
   document.getElementById('modal-single-title').textContent = 'Add Single';
-  ['ms-name','ms-set','ms-cost','ms-market','ms-list','ms-date','ms-notes','ms-alert','ms-ebay-url','ms-carousell-url'].forEach(id => document.getElementById(id).value = '');
+  ['ms-name','ms-set','ms-cost','ms-market','ms-list','ms-date','ms-notes','ms-alert','ms-ebay-url','ms-carousell-url','ms-tcgdexid'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('ms-qty').value = 1;
   document.getElementById('ms-lang').value = 'EN';
   document.getElementById('ms-type').value = 'raw';
   document.getElementById('ms-cond').value = 'Near Mint';
   document.getElementById('ms-status').value = 'Available';
+  document.getElementById('ms-tcgdex-resolved').textContent = '';
   openModal('modal-single');
 }
 
@@ -4866,6 +4909,10 @@ function openEditSingle(id) {
   document.getElementById('ms-alert').value = item.priceAlert||'';
   document.getElementById('ms-ebay-url').value = item.ebayUrl||'';
   document.getElementById('ms-carousell-url').value = item.carousellUrl||'';
+  document.getElementById('ms-tcgdexid').value = item.tcgdexId||'';
+  // Show the auto-resolved card name (if we have one) as a confirm check -
+  // helps the user spot a mis-match without having to trust the id blindly.
+  document.getElementById('ms-tcgdex-resolved').textContent = item._tcgdexResolvedName ? ('Resolved to: ' + item._tcgdexResolvedName) : '';
   openModal('modal-single');
 }
 
@@ -4912,6 +4959,7 @@ function saveSingle() {
     priceAlert: document.getElementById('ms-alert').value,
     ebayUrl: document.getElementById('ms-ebay-url').value,
     carousellUrl: document.getElementById('ms-carousell-url').value,
+    tcgdexId: document.getElementById('ms-tcgdexid').value,
     priceHistory: []
   };
   // Run through the unified normalizer so manual input matches the table
@@ -4920,7 +4968,17 @@ function saveSingle() {
   let before = null;
   if (id) {
     const idx = DB.singles.findIndex(i => i.id === id);
-    if (idx >= 0) { before = { ...DB.singles[idx] }; norm.priceHistory = DB.singles[idx].priceHistory||[]; DB.singles[idx] = norm; }
+    if (idx >= 0) {
+      before = { ...DB.singles[idx] };
+      norm.priceHistory = DB.singles[idx].priceHistory||[];
+      // Keep the resolved-name confirm tooltip only while the id itself is
+      // unchanged - a manual override to a different id invalidates the old
+      // confirm name (it'll re-populate on the next successful fetch), and
+      // clearing the field back to blank drops it too so a future auto-
+      // resolve isn't shown against a stale label.
+      if (norm.tcgdexId && norm.tcgdexId === before.tcgdexId) norm._tcgdexResolvedName = before._tcgdexResolvedName;
+      DB.singles[idx] = norm;
+    }
   } else {
     DB.singles.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', norm.id);
@@ -5089,7 +5147,7 @@ function renderSlabs() {
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'-') + '</td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (_mktEmptyCellTitle(i) ? ' title="' + esc(_mktEmptyCellTitle(i)) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
@@ -5142,10 +5200,11 @@ function renderSlabs() {
 function openAddSlab() {
   document.getElementById('msl-id').value = '';
   document.getElementById('modal-slab-title').textContent = 'Add Slab';
-  ['msl-name','msl-grade','msl-cert','msl-rank','msl-cost','msl-market','msl-list','msl-date','msl-notes','msl-alert','msl-ebay-url','msl-carousell-url'].forEach(id => document.getElementById(id).value = '');
+  ['msl-name','msl-grade','msl-cert','msl-rank','msl-cost','msl-market','msl-list','msl-date','msl-notes','msl-alert','msl-ebay-url','msl-carousell-url','msl-tcgdexid'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('msl-grader').value = 'TAG';
   document.getElementById('msl-lang').value = 'EN';
   document.getElementById('msl-status').value = 'Available';
+  document.getElementById('msl-tcgdex-resolved').textContent = '';
   openModal('modal-slab');
 }
 
@@ -5169,6 +5228,11 @@ function openEditSlab(id) {
   document.getElementById('msl-alert').value = item.priceAlert||'';
   document.getElementById('msl-ebay-url').value = item.ebayUrl||'';
   document.getElementById('msl-carousell-url').value = item.carousellUrl||'';
+  document.getElementById('msl-tcgdexid').value = item.tcgdexId||'';
+  // Slabs price via PPT (eBay graded), not TCGdex, so this rarely populates -
+  // but a raw single that later got re-tagged as a slab could still carry
+  // one, so still show the confirm name when present.
+  document.getElementById('msl-tcgdex-resolved').textContent = item._tcgdexResolvedName ? ('Resolved to: ' + item._tcgdexResolvedName) : '';
   openModal('modal-slab');
 }
 
@@ -5197,13 +5261,20 @@ function saveSlab() {
     priceAlert: document.getElementById('msl-alert').value,
     ebayUrl: document.getElementById('msl-ebay-url').value,
     carousellUrl: document.getElementById('msl-carousell-url').value,
+    tcgdexId: document.getElementById('msl-tcgdexid').value,
     priceHistory: []
   };
   const norm = normalizeRecord('slabs', item);
   let beforeSlab = null;
   if (id) {
     const idx = DB.slabs.findIndex(i => i.id === id);
-    if (idx >= 0) { beforeSlab = { ...DB.slabs[idx] }; norm.priceHistory = DB.slabs[idx].priceHistory||[]; DB.slabs[idx] = norm; }
+    if (idx >= 0) {
+      beforeSlab = { ...DB.slabs[idx] };
+      norm.priceHistory = DB.slabs[idx].priceHistory||[];
+      // Same confirm-name carry-over rule as saveSingle.
+      if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
+      DB.slabs[idx] = norm;
+    }
   } else {
     DB.slabs.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', norm.id);
@@ -5593,40 +5664,18 @@ function getDateRange() {
   return cutoff;
 }
 
-// ── Cached price lookup helper ───────────────────────────────────
-// The market_prices cache is stored at window._priceLookup keyed by
-// "<table>:<id>" (e.g. "singles:s_1234"), with the value being a row object
-// { price_sgd, source, fetched_at, ... } - NOT a raw number.
-// Bug history: renderDashboard's getMkt and freshness chip were reading
-// lookup[i.id] (no table prefix) AND calling parseFloat on the row object,
-// which both yielded NaN. Result: dashboard showed 0% priced + $0 Total
-// Market Value even when 10+ prices were sitting in the cache. The per-row
-// table renderer used the right key but the dashboard read it wrong.
-// This helper centralises the correct lookup so the bug can't recur.
-function _cachedPriceSgd(table, id) {
-  if (!table || !id) return NaN;
-  const lookup = (typeof window !== 'undefined') ? window._priceLookup : null;
-  if (!lookup) return NaN;
-  const row = lookup[table + ':' + id];
-  if (!row) return NaN;
-  const v = parseFloat(row.price_sgd);
-  return (isNaN(v) || v <= 0) ? NaN : v;
-}
-
 // ── Total Market Value breakdown viewer ──────────────────────────
 // Opens a modal that lists every Singles / Slabs row currently contributing
 // to "Total Market Value" - sorted by contribution DESC. Shows the source
-// of each value (explicit marketPrice vs cached _priceLookup) so the user
-// can audit the headline figure without digging through the per-tab tables.
+// of each value (explicit marketPrice vs cost basis) so the user can audit
+// the headline figure without digging through the per-tab tables.
 function showMarketValueBreakdown() {
   const contribs = [];
   (DB.singles||[]).filter(i => (i.status||'Available') === 'Available').forEach(i => {
     const explicit = parseFloat(i.marketPrice);
-    const cached   = _cachedPriceSgd('singles', i.id);
     const qty      = parseInt(i.qty)||1;
     let unit = 0, source = '-';
     if (!isNaN(explicit) && explicit > 0)   { unit = explicit; source = 'marketPrice (manual or API)'; }
-    else if (!isNaN(cached) && cached > 0)  { unit = cached;   source = '_priceLookup cache'; }
     if (unit > 0) {
       contribs.push({
         table: 'singles', name: i.name, meta: [i.set, i.language, i.condition].filter(Boolean).join(' · '),
@@ -5645,10 +5694,8 @@ function showMarketValueBreakdown() {
   });
   (DB.slabs||[]).filter(i => (i.status||'Available') === 'Available').forEach(i => {
     const explicit = parseFloat(i.marketPrice);
-    const cached   = _cachedPriceSgd('slabs', i.id);
     let unit = 0, source = '-';
     if (!isNaN(explicit) && explicit > 0)   { unit = explicit; source = 'marketPrice (manual or API)'; }
-    else if (!isNaN(cached) && cached > 0)  { unit = cached;   source = '_priceLookup cache'; }
     if (unit > 0) {
       contribs.push({
         table: 'slabs', name: i.name, meta: [i.grader, i.grade, i.certNo ? '#'+i.certNo : ''].filter(Boolean).join(' '),
@@ -5743,17 +5790,13 @@ function renderDashboard() {
   // singles + slabs so it agrees with the "% priced · refreshed" chip
   // sitting underneath it. Sealed value is still computed for the
   // exposure breakdown card below.).
-  // getMkt now takes the source table so it can read the market_prices cache
-  // with the correct composite key ("singles:<id>" vs "slabs:<id>"). The
-  // cache stores a row object, so we read .price_sgd via _cachedPriceSgd.
+  // getMkt: explicit marketPrice, else cost so unpriced items don't drag the
+  // headline towards zero. The freshness chip below still shows true live
+  // coverage, and the sealed bucket already uses this same cost fallback.
+  // (table arg kept for call-site compatibility; no longer used internally.)
   const getMkt = (i, table) => {
     const explicit = parseFloat(i.marketPrice);
     if (!isNaN(explicit) && explicit > 0) return explicit;
-    const cached = _cachedPriceSgd(table, i.id);
-    if (!isNaN(cached) && cached > 0) return cached;
-    // No live price yet - fall back to cost so unpriced items don't drag the
-    // headline towards zero. The freshness chip below still shows true live
-    // coverage, and the sealed bucket already uses this same cost fallback.
     return parseFloat(i.costPrice) || 0;
   };
   const mktSingles   = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + getMkt(i, 'singles')*(parseInt(i.qty)||1), 0);
@@ -5828,7 +5871,8 @@ function renderDashboard() {
   const grandItemCount  = singlesAvail + slabsAvail + sealedItemCount;
 
   // ── Market-value data freshness ─────────────────────────────────────
-  // Prices on Singles + Slabs come from the PPT/PokeTrace refresh queue.
+  // Prices on Singles + Slabs come from the two-lane refresh queue (free
+  // TCGdex for raw singles, PPT for slabs and TCGdex misses).
   // Sealed inventory uses manually entered marketPrice and isn't auto-
   // refreshed, so we exclude it from the freshness chip - that's the right
   // semantics for "0% priced" because the queue can't price sealed items.
@@ -5837,14 +5881,12 @@ function renderDashboard() {
   // and (4) whether the auto-refresh queue is even running.
   const pricedItems = [];   // items with any market signal
   const allItems    = [];
-  // collect now takes the table name so it can read the cache with the right
-  // composite key. Previously used bare i.id which never matched, making the
-  // chip always read "0% priced" even when prices were cached.
+  // collect: priced = has a live marketPrice. (table arg kept for call-site
+  // compatibility; no longer used internally now the cache layer is gone.)
   const collect = (i, w, table) => {
     allItems.push({ item: i, weight: w });
     const m = parseFloat(i.marketPrice);
-    const cached = _cachedPriceSgd(table, i.id);
-    if ((!isNaN(m) && m > 0) || (!isNaN(cached) && cached > 0)) pricedItems.push({ item: i, weight: w });
+    if (!isNaN(m) && m > 0) pricedItems.push({ item: i, weight: w });
   };
   DB.singles.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, parseInt(i.qty)||1, 'singles'));
   DB.slabs.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, 1, 'slabs'));
@@ -5854,10 +5896,26 @@ function renderDashboard() {
   // Auto-refresh queue status - surface "queue not built" vs "queue running"
   // so the user knows whether the system is actually trying to price.
   const _queueState = (typeof loadQueue === 'function') ? loadQueue() : null;
-  const _queueToday = _queueState && _queueState.dayCreditsUsed?.[new Date().toISOString().slice(0,10)] || 0;
+  const _todayStr = new Date().toISOString().slice(0,10);
+  const _queueToday = _queueState && _queueState.dayCreditsUsed?.[_todayStr] || 0;
   const _queueExists = !!_queueState;
-  const _queueDone   = _queueState && _queueState.completed;
-  const _queueLeft   = _queueState ? Math.max(0, _queueState.items.length - _queueState.cursor) : 0;
+  const _queueDone   = _queueState && _queueState.completed; // PPT lane only - see buildRefreshQueue/lane split
+  // PPT/Search lane's remaining count. q.items only becomes PPT-lane-only
+  // AFTER the first run of the day splices the tcgdex lane out (see
+  // _runRefreshQueueBody) - filter by lane explicitly rather than assuming
+  // that's already happened, or a freshly built unrun queue would count
+  // tcgdex-lane cards as "PPT cards left" too (same class of bug fixed in
+  // _renderQueueStatus's singlesTotal/singlesDone).
+  const _queueLeft   = _queueState ? Math.max(0, _queueState.items.filter(i => i.lane === 'ppt').length - _queueState.cursor) : 0;
+  // Free lane's own progress - persisted separately since its items don't
+  // stay in q.items after a pass (see _runRefreshQueueBody).
+  const _tcgdexTotal = _queueState?.lastTcgdexTotal || 0;
+  const _tcgdexDone   = _queueState?.lastTcgdexDone  || 0;
+  const _tcgdexRanToday = _queueState?.lastTcgdexPass === _todayStr;
+  // Unresolved / Chinese counts for the tooltip - same definitions as the
+  // Price API Settings panel (_kjrUnresolvedSingles / _kjrChineseUnpriceable).
+  const _unresolvedCount = (typeof _kjrUnresolvedSingles === 'function') ? _kjrUnresolvedSingles().length : 0;
+  const _chineseCount    = (typeof _kjrChineseUnpriceable === 'function') ? _kjrChineseUnpriceable().length : 0;
   // A blocked/rate-limited price API stamps lastPausedReason. Surface it so a
   // stalled "5% priced" reads as "the vendor key is blocked" not "app broken".
   const _queuePaused = _queueState && _queueState.lastPausedReason;
@@ -5892,23 +5950,22 @@ function renderDashboard() {
   const freshSub = totalMktValue > 0
     ? coveragePct + '% covered · ' + freshPct + '% refreshed ≤7d · last ' + agoFromTs(latestTs)
     : 'No market prices set yet';
-  // Tooltip explains the chip in full + the queue state so the user can
-  // diagnose why "refreshed never" if the queue is stalled.
-  const _queueDiag =
-      _queuePaused  ? 'Auto-refresh PAUSED: ' + _queuePaused + '. ' + (_queueKeyBlocked ? 'This is a Price API key problem, not the app - open 🔑 Price API Settings to re-test or rotate the key.' : 'The queue will retry automatically.')
-    : !_queueExists ? 'Auto-refresh queue: not built yet - will bootstrap on next page load.'
-    : _queueDone    ? 'Auto-refresh queue: complete - all priced. Will rebuild when you add inventory.'
-    :                 'Auto-refresh queue: ' + _queueLeft + ' cards left · ' + _queueToday + '/' + DAILY_LIMIT + ' fetched today (limit resets at midnight).';
-  const freshTip = 'How accurate this number is right now:\n' +
-                   '• ' + coveragePct + '% of available Singles+Slabs have a price (manual or auto-fetched)\n' +
-                   '• ' + freshPct + '% of those refreshed in the last 7 days\n' +
-                   '• Most recent batch: ' + agoFromTs(latestTs) + '\n\n' +
-                   _queueDiag + '\n\n' +
-                   'Sealed inventory (ETBs / Booster Boxes / Packs) is priced manually - not counted here.';
+  // Tooltip explains the chip in full so the user can diagnose why
+  // "refreshed never" if the queue is stalled. Two lanes now: Exact (TCGdex)
+  // is free and runs a full pass once a day; Search (PPT) is capped at
+  // DAILY_LIMIT/day and covers slabs plus any TCGdex miss - the per-lane
+  // wording is built into _chipText/_laneNote below (kept as one flowing
+  // sentence rather than a separate paragraph, since the tooltip span this
+  // feeds renders as plain white-space:normal HTML - see the note there).
+  // Appended (not a separate paragraph) to the trust-dot tooltip below -
+  // that tooltip renders as a single raw HTML span with white-space:normal
+  // (see dashMetric()/.inv-stat-tooltip in styles.css), so a literal "\n"
+  // collapses to nothing visible. <br> is used instead where a line break
+  // is genuinely wanted; these two are short enough to just flow as extra
+  // clauses onto the existing one-line chip text.
+  const _unresolvedDiag = _unresolvedCount > 0 ? (' · ' + _unresolvedCount + ' unresolved, add the card number for exact pricing') : '';
+  const _chineseDiag = _chineseCount > 0 ? (' · ' + _chineseCount + ' Chinese card' + (_chineseCount!==1?'s':'') + ' have no free price source') : '';
 
-  // Cleaner freshness chip - single line, no double-emoji, no "·"-stuffed
-  // sub-text. Hover the chip for the full breakdown.
-  //
   // Show coverage + queue status WHENEVER there is Singles/Slabs inventory
   // to price - even when nothing is priced yet (totalMktValue == 0). The
   // chip is most useful precisely in that "0% priced" state, because it
@@ -5928,20 +5985,18 @@ function renderDashboard() {
     _chipClass = ''; // amber
   }
   const freshDot   = _chipClass === 'pos' ? 'var(--green)' : (_chipClass === 'neg' ? 'var(--red)' : 'var(--amber)');
-  const _chipText = _queuePaused
+  // Compact TCGdex-lane note appended to the one-line chip tooltip below.
+  const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending'));
+  const _chipText = (_queuePaused
     ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · ' + (_queueKeyBlocked ? '⚠ price API key blocked' : '⏸ paused, will retry')
     : (!_queueExists
         ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · auto-refresh starting'
         : (_queueDone
-            ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · queue complete'
+            ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) complete'
             : (latestTs === 0
-                ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · queue ' + _queueToday + '/' + DAILY_LIMIT + ' today'
-                : coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · refreshed ' + agoFromTs(latestTs))));
-  const freshChip  = hasPriceableInventory
-    ? `<span class="freshness-chip" title="${freshTip.replace(/"/g,'&quot;')}">
-        <span class="freshness-dot" style="background:${freshDot}"></span>${_chipText}
-       </span>`
-    : `<span class="freshness-chip" style="opacity:0.6">No Singles or Slabs to price</span>`;
+                ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) ' + _queueToday + '/' + DAILY_LIMIT + ' today, ' + _queueLeft + ' left'
+                : coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · refreshed ' + agoFromTs(latestTs))))
+    ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _chineseDiag;
   // Drop the leading "+" on profit - the green colour already signals positive.
   const profitDisplay = allTimeSales.length === 0 ? '-'
     : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG'));
@@ -6596,14 +6651,9 @@ function openListingFor(table, id) {
     if (resEl) resEl.style.display = 'none';
   }
   // Pre-fill at 130% of market price (the user-requested markup), with
-  // graceful fallbacks: marketPrice → cached lookup → listPrice → blank.
+  // graceful fallbacks: marketPrice → listPrice → blank.
   if (item) {
     let market = parseFloat(item.marketPrice);
-    if (isNaN(market) || market <= 0) {
-      // Read cache via _cachedPriceSgd - keyed "table:id" with row object value.
-      const cached = _cachedPriceSgd(table, id);
-      if (!isNaN(cached) && cached > 0) market = cached;
-    }
     if (isNaN(market) || market <= 0) market = parseFloat(item.listPrice) || 0;
     document.getElementById('lst-market').value = market > 0 ? 'S$' + Math.round(market) : '-';
     document.getElementById('lst-price').value = market > 0 ? Math.round(market * 1.30) : '';
@@ -6732,50 +6782,134 @@ function onListingItemChanged(){
 }
 
 // =========== EXTERNAL PRICE APIS ===========
-// PokemonPriceTracker (PPT) is the live price source. PokeTrace was originally
-// a secondary source for cross-checks, but their public API endpoint returns
-// 404 and they don't accept browser-origin calls, so it's disabled below.
-//
-// All PPT calls now route through a Cloudflare Worker proxy that holds the
-// API key server-side. Browsers can't reach PPT directly (CORS preflight
-// blocked); the proxy adds Authorization + permissive CORS headers.
+// PokemonPriceTracker (PPT) is the eBay-graded-sold source for slabs (and the
+// fallback for any raw single TCGdex can't price). All PPT calls route
+// through a Cloudflare Worker proxy that holds the API key server-side -
+// browsers can't reach PPT directly (CORS preflight blocked); the proxy adds
+// Authorization + permissive CORS headers.
 // See Docs/Worker Deploy Guide v1 (18 May).md for the Worker setup.
 
 const PPT_KEY_STORAGE  = 'pokeinv_ppt_apikey';
-const POKETRACE_KEY_STORAGE = 'pokeinv_poketrace_apikey';
 
 // Cloudflare Worker proxy. The Worker holds the real keys as secrets - the
 // browser never sees them. Setting this to a falsy value falls back to the
 // direct (CORS-blocked) call, which is useful for local-file testing only.
 const PRICE_PROXY_BASE = 'https://kujira-prices.julianchow21.workers.dev';
 
-// Feature flag: PokeTrace disabled because (1) their /api/v1/cards endpoint
-// returns 404 and (2) they don't support browser CORS. Set true again if you
-// confirm a working alternate endpoint and route it through the proxy.
-const POKETRACE_ENABLED = false;
+// =========== TCGDEX (raw singles, browser-direct, free, no key) ===========
+// Free, no API key, CORS-open - called straight from the browser, no Worker
+// hop needed. Used for raw singles only (TCGdex has no graded/eBay prices,
+// slabs stay on PPT). Verified live 07/07/2026: resolve-by-name+number then
+// fetch-by-id, see fetchPriceFromTcgdex below for the price-picking rule.
+const TCGDEX_BASE = 'https://api.tcgdex.net/v2';
+
+// Map the item's stored language tag to a TCGdex language path segment.
+// Blank/unknown defaults to English - most of the collection is EN and an
+// empty language field has always meant EN elsewhere in this file.
+function _tcgdexLang(language) {
+  const L = (language || '').toString().trim().toUpperCase();
+  if (L === 'JP') return 'ja';
+  if (L === 'CN') return 'zh-tw'; // zh-cn returns empty; zh-tw is metadata-only too (no free CN pricing) but keeps card names resolvable
+  return 'en';
+}
+
+// Resolve an item to a TCGdex card id ("setcode-number", e.g. "sv03-223").
+// Auto-accept ONLY when the query returns exactly one candidate - this is
+// the data-safety guard that keeps a wrong guess from ever being silently
+// priced. Zero or many results return null (unresolved), the caller falls
+// back to PPT. Caches the resolved id (+ matched name) onto the item so
+// repeat lookups skip the resolve round-trip.
+async function resolveTcgdexId(item) {
+  if (item.tcgdexId) return item.tcgdexId;
+  const name = _baseCardName(item.name);
+  const num  = _tcgdexNumber(item.name);
+  if (!name || !num) return null; // nothing to resolve against
+  const lang = _tcgdexLang(item.language);
+  try {
+    const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
+    const r = await fetch(url);
+    if (!r.ok) return null; // transport failure - treat as unresolved, PPT fallback picks it up
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length !== 1) return null; // zero or many - unresolved, never guess
+    const card = data[0];
+    if (!card || !card.id) return null;
+    item.tcgdexId = card.id;
+    if (card.name) item._tcgdexResolvedName = card.name; // for a confirm tooltip in the edit modal
+    return card.id;
+  } catch (e) { return null; } // network error - unresolved, not a thrown exception
+}
+
+// Fetch a raw single's market price from TCGdex. Price source by language
+// (verified live 07/07/2026):
+//   EN → pricing.tcgplayer.{holofoil|normal|reverse-holofoil}.marketPrice USD
+//        (precedence: holofoil, then normal, then reverse-holofoil),
+//        fallback pricing.cardmarket.avg EUR if tcgplayer is absent
+//   JP/CN → pricing.cardmarket.avg EUR (tcgplayer is always null for JP;
+//           CN has no free price source at all on either vendor)
+// Cheaper commons sometimes carry no pricing block at all - that's a clean
+// miss, never a fabricated number. Any unexpected response shape is also
+// treated as "not found" rather than thrown, so a malformed/unknown payload
+// falls through to PPT instead of crashing the caller.
+async function fetchPriceFromTcgdex(item) {
+  try {
+    const id = await resolveTcgdexId(item);
+    if (!id) return { error: 'not found' };
+    const lang = _tcgdexLang(item.language);
+    const r = await fetch(TCGDEX_BASE + '/' + lang + '/cards/' + encodeURIComponent(id));
+    if (r.status === 404) return { error: 'not found' };
+    if (!r.ok) return { error: 'HTTP ' + r.status };
+    const data = await r.json();
+    if (!data || !data.pricing) return { error: 'not found' };
+    const pricing = data.pricing;
+
+    const isJpCn = lang === 'ja' || lang === 'zh-tw';
+    if (!isJpCn) {
+      // EN: TCGplayer USD first, variant precedence holofoil → normal → reverse-holofoil.
+      const tp = pricing.tcgplayer;
+      const variant = tp && (tp.holofoil || tp.normal || tp['reverse-holofoil']);
+      const marketUsd = variant && typeof variant.marketPrice === 'number' ? variant.marketPrice : null;
+      if (marketUsd && marketUsd > 0) {
+        return { priceUsd: marketUsd, unit: 'USD', source: 'TCGdex (TCGplayer)', confidence: 'high', creditsUsed: 0 };
+      }
+      // Fallback: Cardmarket EUR when TCGplayer has nothing.
+      const cmAvg = pricing.cardmarket && typeof pricing.cardmarket.avg === 'number' ? pricing.cardmarket.avg : null;
+      if (cmAvg && cmAvg > 0) {
+        return { priceEur: cmAvg, unit: 'EUR', source: 'TCGdex (Cardmarket)', confidence: 'high', creditsUsed: 0 };
+      }
+      return { error: 'not found' };
+    } else {
+      // JP/CN: Cardmarket EUR only (tcgplayer is null for JP; CN has neither).
+      const cmAvg = pricing.cardmarket && typeof pricing.cardmarket.avg === 'number' ? pricing.cardmarket.avg : null;
+      if (cmAvg && cmAvg > 0) {
+        return { priceEur: cmAvg, unit: 'EUR', source: 'TCGdex (Cardmarket)', confidence: 'high', creditsUsed: 0 };
+      }
+      return { error: 'not found' };
+    }
+  } catch (e) { return { error: 'not found' }; } // never throw - unknown shape/network error is a clean miss
+}
 
 (function() {
   // Pre-populate localStorage for backward compat - but the proxy is the
   // authoritative path now, and the proxy uses Cloudflare-side secrets, not
-  // these values. Once you fully cut over, you can delete these literals.
+  // these values. Once you fully cut over, you can delete this literal.
   if (!localStorage.getItem(PPT_KEY_STORAGE))  localStorage.setItem(PPT_KEY_STORAGE,  '');
-  if (!localStorage.getItem(POKETRACE_KEY_STORAGE)) localStorage.setItem(POKETRACE_KEY_STORAGE, '');
   if (!window._kjrKeyWarnShown && !PRICE_PROXY_BASE) {
     console.warn('[Kujira] Price-API keys are baked into source. See TODO comment above. Rotate + proxy via Cloudflare Worker before public deploy.');
     window._kjrKeyWarnShown = true;
   }
 })();
 
+// Single key source now (PPT). The `which` param is kept for call-site
+// compatibility rather than collapsing every caller to a no-arg call.
 function getApiKey(which) {
-  return localStorage.getItem(which === 'ppt' ? PPT_KEY_STORAGE : POKETRACE_KEY_STORAGE) || '';
+  return localStorage.getItem(PPT_KEY_STORAGE) || '';
 }
 function setApiKey(which, val) {
-  localStorage.setItem(which === 'ppt' ? PPT_KEY_STORAGE : POKETRACE_KEY_STORAGE, val.trim());
+  localStorage.setItem(PPT_KEY_STORAGE, val.trim());
 }
 
 function openApiSettings() {
   const ppt = getApiKey('ppt');
-  const pkt = getApiKey('poketrace');
   const anth = getAnthropicKey();
   // Remove any existing instance first
   document.getElementById('api-key-modal')?.remove();
@@ -6789,7 +6923,7 @@ function openApiSettings() {
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
 
           <div style="font-size:12px;color:var(--text3);line-height:1.6;padding:10px;background:var(--bg3);border-radius:8px">
-            Fetches real eBay sold data from <strong style="color:var(--text)">PokemonPriceTracker</strong> + <strong style="color:var(--text)">PokeTrace</strong>. Takes the <strong style="color:var(--text)">max</strong> of both sources, converts USD → SGD automatically.
+            Raw singles are priced free from <strong style="color:var(--text)">TCGplayer</strong> / <strong style="color:var(--text)">Cardmarket</strong> via <strong style="color:var(--text)">TCGdex</strong>, matched by card number and language - no key needed. Slabs are priced from real eBay sold data via <strong style="color:var(--text)">PokemonPriceTracker</strong>, ${DAILY_LIMIT} lookups a day. Both convert to SGD automatically, refreshed daily.
           </div>
 
           <div>
@@ -6797,14 +6931,6 @@ function openApiSettings() {
             <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
               <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free lookups/day
-            </div>
-          </div>
-
-          <div>
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokeTrace API Key</div>
-            <input type="password" id="poketrace-key-input" class="fi" placeholder="pc_..." value="${pkt}" style="font-family:monospace;font-size:12px">
-            <div style="font-size:11px;color:var(--text3);margin-top:4px">
-              <a href="https://poketrace.com/developers" target="_blank" style="color:var(--accent)">poketrace.com/developers</a>
             </div>
           </div>
 
@@ -6864,9 +6990,10 @@ function openApiSettings() {
           <div style="border-top:1px solid var(--border);padding-top:16px">
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">📅 Scheduled Refresh Queue</div>
             <div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg3);border-radius:8px">
-              <strong style="color:var(--text)">Priority:</strong> Slabs first (high cost → low) → Singles (high cost → low)<br>
+              <strong style="color:var(--text)">Exact (TCGdex):</strong> free, unthrottled, runs a full pass on every raw single once a day<br>
+              <strong style="color:var(--text)">Search (PPT):</strong> slabs, plus any TCGdex miss, high cost → low, capped at ${DAILY_LIMIT}/day<br>
               <strong style="color:var(--text)">Deduplication:</strong> Same card name = fetch once, copy to all duplicates<br>
-              <strong style="color:var(--text)">Daily limit:</strong> ${DAILY_LIMIT} lookups/day · Auto-runs when you open the app
+              <strong style="color:var(--text)">Auto-runs</strong> when you open the app
             </div>
             <div id="queue-status-panel" style="margin-bottom:12px"></div>
             <button class="btn btn-sm" onclick="startFreshQueue()" style="width:100%;justify-content:center">
@@ -6903,7 +7030,6 @@ function openApiSettings() {
 
 function saveApiKeys() {
   setApiKey('ppt', document.getElementById('ppt-key-input').value);
-  setApiKey('poketrace', document.getElementById('poketrace-key-input').value);
   const anthEl = document.getElementById('anthropic-key-input');
   if (anthEl) setAnthropicKey(anthEl.value);
   const geminiEl = document.getElementById('gemini-key-input');
@@ -6924,14 +7050,17 @@ async function testApiKeys() {
   status.innerHTML = '<span style="color:var(--text3)">Testing...</span>';
   // Save first so test uses what's in the inputs
   setApiKey('ppt', document.getElementById('ppt-key-input').value);
-  setApiKey('poketrace', document.getElementById('poketrace-key-input').value);
-  // Test with Charizard Base Set
-  const result = await fetchMarketPrice('Charizard', null, null);
+  // Test with a known-resolvable EN card (Charizard ex 223/197, sv03-223).
+  const result = await fetchMarketPrice({ name: 'Charizard ex 223/197', grader: null, grade: null, language: 'EN' });
   let html = '';
-  if (result.ppt)       html += '<div>✓ <strong>PokemonPriceTracker:</strong> US$' + Math.round(result.ppt) + ' → S$' + Math.round(result.ppt * (_sgdRate||1.27)) + '</div>';
-  else                  html += '<div style="color:var(--red)">✗ PokemonPriceTracker: ' + (result.pptError || 'no result') + '</div>';
-  if (result.poketrace) html += '<div>✓ <strong>PokeTrace:</strong> US$' + Math.round(result.poketrace) + ' → S$' + Math.round(result.poketrace * (_sgdRate||1.27)) + '</div>';
-  else                  html += '<div style="color:var(--red)">✗ PokeTrace: ' + (result.poketraceError || 'no result') + '</div>';
+  if (result.maxUsd || result.maxEur) {
+    const usdPart = result.maxUsd ? 'US$' + Math.round(result.maxUsd) : 'EUR' + result.maxEur.toFixed(2);
+    html += '<div>✓ <strong>TCGdex:</strong> ' + usdPart + ' → S$' + Math.round(result.maxSgd) + ' (' + result.source + ')</div>';
+  } else {
+    html += '<div style="color:var(--red)">✗ TCGdex: ' + (result.tcgdexError || 'no result') + '</div>';
+  }
+  if (result.source && /^PPT/.test(result.source)) html += '<div style="font-size:11px;color:var(--text3)">(TCGdex missed, PPT fallback served this test)</div>';
+  else html += '<div style="color:var(--red)">✗ PokemonPriceTracker (slab fallback): ' + (result.pptError || 'not tried - TCGdex succeeded') + '</div>';
   status.innerHTML = html;
 }
 
@@ -6970,6 +7099,31 @@ function _cardNumberTokens(str) {
   const out = new Set();
   (String(str || '').match(/\d{1,5}/g) || []).forEach(n => out.add(n.replace(/^0+(?=\d)/, '')));
   return out;
+}
+
+// Extract the TCGdex set number (their "localId") from a free-text card
+// name, for the resolve query. Two shapes to handle:
+//   - plain numeric, optionally with a "/total" suffix: "223/197" → "223"
+//   - alpha-prefixed (promos, Trainer/Galarian Gallery etc): "TG11/TG30" →
+//     "TG11" - _cardNumberTokens wrongly splits this into a bare "11"
+//     because its regex only matches digits, so it can't be reused here.
+// Alpha prefix is preserved verbatim (case + digit count), TCGdex's own
+// localId is exact-match including zero-padding (verified live: "TG3" 404s,
+// "TG03" resolves) - we don't guess at padding, just pass through what's
+// actually in the name.
+function _tcgdexNumber(name) {
+  const tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const tok = tokens[i];
+    // Alpha-prefixed set number (needs ≥1 digit, so "ex"/"GX"/"VMAX" type
+    // suffixes never match this branch and fall through untouched).
+    const alphaNum = tok.match(/^([A-Za-z]{1,5}\d{1,4})(?:\/[A-Za-z]{0,5}\d{1,4})?$/);
+    if (alphaNum) return alphaNum[1].toUpperCase();
+    // Plain numeric card number, optional "/total" suffix.
+    const plainNum = tok.match(/^#?(\d{1,4})(?:\/\d{1,4})?$/);
+    if (plainNum) return plainNum[1];
+  }
+  return '';
 }
 
 // Pick the highest-similarity card from a results list. Returns null if no
@@ -7076,17 +7230,20 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // widen the limit so the right numbered print is in range.
     // "Gardevoir ex 93" → search "Gardevoir ex"; "Squirtle 1 CLK" → "Squirtle".
     // The number/set-code still drive the pick via _pickBestMatch's number
-    // bonus, so the broader search doesn't cost precision.
+    // bonus, so the broader search doesn't cost precision. usedFallback is
+    // surfaced to the caller (fetchMarketPrice) so it can mark the result
+    // 'medium' confidence (card-number matched) vs 'low' (base-name guess).
+    let usedFallback = false;
     if (res.empty) {
       const base = _baseCardName(name);
       if (base && base.toLowerCase() !== String(name).trim().toLowerCase()) {
         const fbQ = langWord ? (base + ' ' + langWord) : base;
         const res2 = await search(fbQ, 10);
         if (res2.transport) return { error: res2.transport, _ppt_requests: reqCount };
-        if (res2.card) res = res2;
+        if (res2.card) { res = res2; usedFallback = true; }
       }
     }
-    if (!res.card) return { error: 'no match', _ppt_requests: reqCount };
+    if (!res.card) return { error: 'no match', _ppt_requests: reqCount, usedFallback };
     const card = res.card;
 
     let priceUsd = null;
@@ -7104,114 +7261,152 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
       // No grader requested → NM market price is fine.
       priceUsd = card.prices?.market || card.prices?.NEAR_MINT?.avg || card.tcgplayer?.NEAR_MINT?.avg || card.ebay?.NEAR_MINT?.avg;
     }
-    if (!priceUsd) return { error: grader ? 'no ' + grader + ' ' + grade + ' price' : 'no price data', _ppt_requests: reqCount };
-    return { priceUsd, source: priceSource, cardName: card.name, _ppt_requests: reqCount };
-  } catch(e) { return { error: e.message, _ppt_requests: 0 }; }
+    if (!priceUsd) return { error: grader ? 'no ' + grader + ' ' + grade + ' price' : 'no price data', _ppt_requests: reqCount, usedFallback };
+    return { priceUsd, source: priceSource, cardName: card.name, _ppt_requests: reqCount, usedFallback };
+  } catch(e) { return { error: e.message, _ppt_requests: 0, usedFallback: false }; }
 }
 
-// ── PokeTrace: fetch single card USD price ──
-async function fetchPriceFromPokeTrace(name, grader, grade, language) {
-  // Short-circuit: PokeTrace is disabled (their /api/v1/cards endpoint
-  // returns 404 + they don't support browser CORS). The combiner below
-  // treats a returned "error" as "skip this source", so we just bail.
-  // Re-enable by flipping POKETRACE_ENABLED and adding a /poketrace/ route
-  // through the Worker once a working endpoint is confirmed.
-  if (!POKETRACE_ENABLED) return { error: 'disabled' };
-  const key = getApiKey('poketrace');
-  if (!key) return { error: 'no API key' };
-  try {
-    const url = PRICE_PROXY_BASE
-      ? PRICE_PROXY_BASE + '/poketrace/cards?search=' + encodeURIComponent(name) + '&limit=3'
-      : 'https://poketrace.com/api/v1/cards?search=' + encodeURIComponent(name) + '&limit=3';
-    const headers = PRICE_PROXY_BASE ? {} : { 'Authorization': 'Bearer ' + key };
-    const r = await fetch(url, { headers });
-    if (!r.ok) return { error: 'HTTP ' + r.status };
-    const data = await r.json();
-    if (!data.data || !data.data.length) return { error: 'no match' };
-    const card = _pickBestMatch(data.data, name);
-    if (!card) return { error: 'no name match' };
-    let priceUsd = null;
-    if (grader && grade) {
-      const gradeKey = grader.toLowerCase() + grade.replace('.','');
-      priceUsd = card.prices?.ebay?.[gradeKey]?.avg;
-    }
-    if (!priceUsd) {
-      priceUsd = card.prices?.ebay?.NEAR_MINT?.avg || card.prices?.tcgplayer?.NEAR_MINT?.avg;
-    }
-    if (!priceUsd) return { error: 'no price data' };
-    return { priceUsd, source: 'PokeTrace', cardName: card.name };
-  } catch(e) { return { error: e.message }; }
-}
+// ── Router: TCGdex first for raw singles, PPT for slabs and TCGdex misses ──
+// Takes one descriptor { name, grader, grade, language, tcgdexId } so every
+// caller passes the same shape regardless of which lane ends up serving it.
+//   RAW  (no grader): try TCGdex first (exact id match, free, high
+//        confidence). A "not found" or no-price result falls through to PPT.
+//   SLAB (has grader): PPT's eBay graded lane, unchanged behaviour - TCGdex
+//        has no graded prices at all.
+// Returns { maxUsd|maxEur, maxSgd, source, confidence, creditsUsed,
+//   tcgdexError, pptError, resolvedTcgdexId, resolvedCardName }. classifyResult/
+// tallyErrors (in the refresh queue) read the tcgdexError/pptError pair with
+// the NON_ATTEMPT sentinel-stripping rule below - keep that intact whenever
+// this shape changes.
+async function fetchMarketPrice(descriptor) {
+  const { name, grader, grade, language, tcgdexId } = descriptor || {};
+  const isSlab = !!(grader && grade);
 
-// ── Combined: fetch both, return max + source breakdown ──
-async function fetchMarketPrice(name, grader, grade, language) {
-  const [pptRes, pktRes] = await Promise.all([
-    fetchPriceFromPPT(name, grader, grade, language),
-    fetchPriceFromPokeTrace(name, grader, grade, language)
-  ]);
-  const rate = await getSgdRate();
-  const result = {
-    ppt: pptRes.priceUsd || null,
-    poketrace: pktRes.priceUsd || null,
-    pptError: pptRes.error,
-    poketraceError: pktRes.error,
-    sgdRate: rate,
-    // Real PPT data-returning requests this lookup consumed (0/1/2). PPT is
-    // the only metered source (PokeTrace is disabled). The queue bills this
-    // against DAILY_LIMIT so the fallback search can't overrun PPT's quota.
-    creditsUsed: pptRes._ppt_requests || 0
-  };
-  const valid = [result.ppt, result.poketrace].filter(v => typeof v === 'number');
-  if (!valid.length) {
-    result.maxUsd = null;
-    result.maxSgd = null;
-    result.confidence = 'none';
-  } else {
-    result.maxUsd = Math.max(...valid);
-    result.maxSgd = result.maxUsd * rate;
-    if (valid.length === 2) {
-      const diffPct = Math.abs(result.ppt - result.poketrace) / Math.min(result.ppt, result.poketrace) * 100;
-      result.confidence = diffPct > 30 ? 'low' : 'high';
-      result.divergencePct = diffPct;
-    } else {
-      result.confidence = 'medium'; // only one source
+  if (!isSlab) {
+    // RAW lane: TCGdex first. Build a minimal item-shaped object so the
+    // Phase 2 helpers (which read/write item.tcgdexId, item.name,
+    // item.language) can run without needing the caller's live DB row -
+    // the resolved id/name are handed back in the result for the caller to
+    // persist onto its own item, keeping this router side-effect-free on
+    // objects it doesn't own.
+    const pseudoItem = { name, language, tcgdexId };
+    const tcgdexRes = await fetchPriceFromTcgdex(pseudoItem);
+    if (!tcgdexRes.error) {
+      const rate = tcgdexRes.unit === 'EUR' ? await getEurSgdRate() : await getSgdRate();
+      const maxUsd = tcgdexRes.unit === 'USD' ? tcgdexRes.priceUsd : null;
+      const maxEur = tcgdexRes.unit === 'EUR' ? tcgdexRes.priceEur : null;
+      const maxSgd = tcgdexRes.unit === 'USD' ? tcgdexRes.priceUsd * rate : tcgdexRes.priceEur * rate;
+      return {
+        maxUsd, maxEur, maxSgd,
+        source: tcgdexRes.source,
+        confidence: tcgdexRes.confidence,
+        creditsUsed: 0,
+        tcgdexError: null,
+        pptError: 'not applicable', // PPT was never tried - RAW lane succeeded on TCGdex
+        resolvedTcgdexId: pseudoItem.tcgdexId || null,
+        resolvedCardName: pseudoItem._tcgdexResolvedName || null,
+        sgdRate: rate
+      };
     }
+    // TCGdex missed (unresolved, no price, or transport failure) - fall
+    // through to PPT exactly like the SLAB lane below, just without a grader.
+    const pptRes = await fetchPriceFromPPT(name, null, null, language);
+    const rate = await getSgdRate();
+    if (pptRes.priceUsd) {
+      return {
+        maxUsd: pptRes.priceUsd, maxEur: null, maxSgd: pptRes.priceUsd * rate,
+        source: pptRes.source,
+        // medium when the card-number-bearing primary search matched, low
+        // when only the base-name fallback fired (a looser guess).
+        confidence: pptRes.usedFallback ? 'low' : 'medium',
+        creditsUsed: pptRes._ppt_requests || 0,
+        tcgdexError: tcgdexRes.error,
+        pptError: null,
+        resolvedTcgdexId: pseudoItem.tcgdexId || null,
+        resolvedCardName: pseudoItem._tcgdexResolvedName || null,
+        sgdRate: rate
+      };
+    }
+    return {
+      maxUsd: null, maxEur: null, maxSgd: null,
+      source: null, confidence: 'none',
+      creditsUsed: pptRes._ppt_requests || 0,
+      tcgdexError: tcgdexRes.error,
+      pptError: pptRes.error,
+      resolvedTcgdexId: pseudoItem.tcgdexId || null,
+      resolvedCardName: pseudoItem._tcgdexResolvedName || null,
+      sgdRate: rate
+    };
   }
-  return result;
+
+  // SLAB lane: PPT eBay graded price only, TCGdex has no graded data at all.
+  const pptRes = await fetchPriceFromPPT(name, grader, grade, language);
+  const rate = await getSgdRate();
+  if (pptRes.priceUsd) {
+    return {
+      maxUsd: pptRes.priceUsd, maxEur: null, maxSgd: pptRes.priceUsd * rate,
+      source: pptRes.source,
+      confidence: pptRes.usedFallback ? 'low' : 'medium',
+      creditsUsed: pptRes._ppt_requests || 0,
+      tcgdexError: 'not applicable', // TCGdex never applies to graded slabs
+      pptError: null,
+      resolvedTcgdexId: null, resolvedCardName: null,
+      sgdRate: rate
+    };
+  }
+  return {
+    maxUsd: null, maxEur: null, maxSgd: null,
+    source: null, confidence: 'none',
+    creditsUsed: pptRes._ppt_requests || 0,
+    tcgdexError: 'not applicable',
+    pptError: pptRes.error,
+    resolvedTcgdexId: null, resolvedCardName: null,
+    sgdRate: rate
+  };
 }
 
 // ── Refresh single price using real APIs (fallback to AI if no keys) ──
 async function refreshPrice(id, table) {
   const item = DB[table].find(i => i.id === id);
   if (!item) return;
-  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
-  if (!hasKeys) {
+  // TCGdex needs no key (free, CORS-open); PPT does. Only block when neither
+  // path can possibly work - a raw single can still price via TCGdex alone.
+  const hasKeys = getApiKey('ppt');
+  const isRaw = item.type !== 'slab';
+  if (!hasKeys && !isRaw) {
     toast('Add API keys first - click 🔑 in top bar');
     return;
   }
   toast('Fetching market price...');
   const grader = item.type === 'slab' ? (item.grader||null) : null;
   const grade  = item.type === 'slab' ? (item.grade||null) : null;
-  const r = await fetchMarketPrice(item.name, grader, grade, item.language||null);
+  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null });
+  // Persist a freshly-resolved TCGdex id (and matched name) even when this
+  // call itself missed - so the NEXT refresh skips the resolve round-trip.
+  if (r.resolvedTcgdexId && !item.tcgdexId) {
+    item.tcgdexId = r.resolvedTcgdexId;
+    if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
+  }
   if (r.maxSgd) {
     item.marketPrice = r.maxSgd.toFixed(0);
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({
       date: new Date().toISOString().slice(0,10),
       price: r.maxSgd,
-      source: r.ppt && r.poketrace ? 'max(PPT,PokeTrace)' : (r.ppt ? 'PPT' : 'PokeTrace'),
-      ppt: r.ppt,
-      poketrace: r.poketrace
+      unit: r.maxUsd ? 'USD' : 'EUR',
+      source: r.source,
+      confidence: r.confidence
     });
     if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
     markDirty(table, id);
     saveData();
     if (table === 'singles') renderSingles();
     if (table === 'slabs') renderSlabs();
-    const detail = (r.ppt ? 'PPT US$' + r.ppt.toFixed(0) : '-') + ' / ' + (r.poketrace ? 'PokeTrace US$' + r.poketrace.toFixed(0) : '-');
-    toast('Updated S$' + r.maxSgd.toFixed(0) + ' (' + detail + ')');
+    toast('Updated S$' + r.maxSgd.toFixed(0) + ' (' + r.source + ')');
   } else {
-    toastError('No price found · PPT: ' + (r.pptError||'?') + ' · PokeTrace: ' + (r.poketraceError||'?'));
+    markDirty(table, id); // a resolved tcgdexId may still need to sync even on a miss
+    saveData();
+    toastError('No price found · TCGdex: ' + (r.tcgdexError||'?') + ' · PPT: ' + (r.pptError||'?'));
   }
 }
 
@@ -7239,6 +7434,22 @@ function loadQueue()  { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) 
 function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) {} }
 function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY); }
 
+// Which lane will price this queue item? Slabs (graded) never have a TCGdex
+// price at all, so they're always 'ppt'. A raw single goes to the free
+// 'tcgdex' lane only when it's actually resolvable there: a name + card
+// number we can extract (resolveTcgdexId needs both), in a language TCGdex
+// prices for free (EN/JP - CN has no free source on either vendor per
+// fetchPriceFromTcgdex). Everything else (unresolvable name, or CN) still
+// needs the PPT lane, so it's queued there rather than silently dropped.
+function _queueLaneFor(item) {
+  if (item.grader) return 'ppt'; // slab - TCGdex has no graded prices
+  if (item.tcgdexId) return 'tcgdex'; // already resolved, skip straight to the free lane
+  const lang = (item.language || 'EN').toString().trim().toUpperCase();
+  const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+  const isFreeLang = lang === 'EN' || lang === 'JP' || lang === '';
+  return (hasNameAndNumber && isFreeLang) ? 'tcgdex' : 'ppt';
+}
+
 // Build a fresh queue from current DB state
 function buildRefreshQueue() {
   // Slabs: sorted by costPrice desc. Carry language so the API search can
@@ -7247,13 +7458,13 @@ function buildRefreshQueue() {
   const slabs = DB.slabs
     .filter(i => (i.status||'Available') === 'Available')
     .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
-    .map(i => ({ id: i.id, table: 'slabs', name: i.name, grader: i.grader||null, grade: i.grade||null, language: i.language||null, costPrice: parseFloat(i.costPrice)||0 }));
+    .map(i => ({ id: i.id, table: 'slabs', name: i.name, grader: i.grader||null, grade: i.grade||null, language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0 }));
 
   // Singles: sorted by costPrice desc
   const singles = DB.singles
     .filter(i => (i.status||'Available') === 'Available')
     .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
-    .map(i => ({ id: i.id, table: 'singles', name: i.name, grader: null, grade: null, language: i.language||null, costPrice: parseFloat(i.costPrice)||0 }));
+    .map(i => ({ id: i.id, table: 'singles', name: i.name, grader: null, grade: null, language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0 }));
 
   // Combine: slabs first, then singles
   const all = [...slabs, ...singles];
@@ -7275,7 +7486,7 @@ function buildRefreshQueue() {
       (item.grade  ? '|' + item.grade  : '');
     if (!seen.has(key)) {
       seen.set(key, item.id);
-      queue.push({ ...item, isPrimary: true, copyTargets: [], uniqueKey: key });
+      queue.push({ ...item, isPrimary: true, copyTargets: [], uniqueKey: key, lane: _queueLaneFor(item) });
     } else {
       // Find the primary entry and add this as a copy target
       const primary = queue.find(q => q.id === seen.get(key));
@@ -7283,14 +7494,25 @@ function buildRefreshQueue() {
     }
   }
 
+  // Two-lane ordering: free TCGdex singles first (unthrottled, run the whole
+  // lane every pass), then the capped PPT lane - slabs by cost desc, then
+  // PPT-bound singles by cost desc. Each sub-group already arrived cost-desc
+  // from the slabs/singles builders above, so a stable sort by lane preserves
+  // that ordering within each bucket.
+  const tcgdexItems = queue.filter(i => i.lane === 'tcgdex');
+  const pptSlabItems = queue.filter(i => i.lane === 'ppt' && i.table === 'slabs');
+  const pptSingleItems = queue.filter(i => i.lane === 'ppt' && i.table === 'singles');
+  const ordered = [...tcgdexItems, ...pptSlabItems, ...pptSingleItems];
+
   return {
-    items: queue,          // only primaries, each with copyTargets[]
-    cursor: 0,             // index of next item to fetch
-    totalItems: queue.length,
+    items: ordered,        // only primaries, each with copyTargets[]
+    cursor: 0,             // index of next PPT-lane item to fetch (tcgdex lane runs independently, see _runRefreshQueueBody)
+    totalItems: ordered.length,
     totalRows: all.length, // including duplicates
     createdAt: new Date().toISOString(),
     doneToday: 0,
     dayCreditsUsed: {},    // { 'YYYY-MM-DD': N }
+    lastTcgdexPass: null,  // 'YYYY-MM-DD' of the last completed free-lane pass, for auto-run polite caching
     completed: false
   };
 }
@@ -7306,14 +7528,9 @@ function getQueueStatus() {
 }
 
 // Apply a fetched price to a primary item and all its copy targets
-function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, ppt, poketrace) {
+function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit, source, confidence, resolvedTcgdexId) {
   const today = new Date().toISOString().slice(0,10);
-  const histEntry = {
-    date: today,
-    price: priceSgd,
-    source: ppt && poketrace ? 'max(PPT,PokeTrace)' : (ppt ? 'PPT' : 'PokeTrace'),
-    ppt, poketrace
-  };
+  const histEntry = { date: today, price: priceSgd, unit, source, confidence };
 
   const applyToItem = (id, table) => {
     const item = DB[table]?.find(i => i.id === id);
@@ -7322,6 +7539,10 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, ppt, 
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push(histEntry);
     if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
+    // Copy targets are exact duplicates of the same card - the resolved
+    // TCGdex id applies to them too, so a future refresh of one of the
+    // copies (e.g. after a manual split) skips the resolve round-trip.
+    if (resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = resolvedTcgdexId;
     markDirty(table, id);
     if (item.priceAlert && priceSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification('🔔 ' + item.name, { body: 'S$' + priceSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
@@ -7357,7 +7578,7 @@ async function runRefreshQueue(manual = false) {
   // misleading - could fail even when the Worker has valid keys). Only
   // require a local key when proxy is disabled.
   if (!PRICE_PROXY_BASE) {
-    const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
+    const hasKeys = getApiKey('ppt');
     if (!hasKeys) { if (manual) { toast('Add API keys first'); openApiSettings(); } return; }
   }
   // Clear yesterday's "paused" sticky state on every manual run so the
@@ -7390,6 +7611,8 @@ async function runRefreshQueue(manual = false) {
     saveQueue(q);
     if (manual) toast('Built queue: ' + q.totalItems + ' unique cards · starting first batch');
   }
+  const today = new Date().toISOString().slice(0,10);
+
   // If the queue is complete but inventory has changed since (new items
   // added), rebuild it automatically so the auto-refresh keeps pricing
   // freshly added rows instead of stalling forever.
@@ -7400,18 +7623,45 @@ async function runRefreshQueue(manual = false) {
       q = buildRefreshQueue();
       saveQueue(q);
       if (manual) toast('Inventory grew - rebuilt queue (' + q.totalItems + ' cards)');
+    } else if (manual || q.lastTcgdexPass !== today) {
+      // The PPT lane is fully drained and there's nothing new to add it to,
+      // but the free TCGdex lane still gets its own daily pass - it doesn't
+      // compete for PPT credits, so "queue complete" for PPT shouldn't mean
+      // "stop pricing the free lane too". Only actually skip when even
+      // TCGdex has already run today (auto) or the user explicitly asked
+      // (manual always re-runs it).
+      _queueRunning = true;
+      try {
+        await _runRefreshQueueBody(q, 0, manual, today, q.dayCreditsUsed?.[today] || 0);
+      } finally {
+        _queueRunning = false;
+        hideSyncProgress();
+      }
+      return;
     } else {
       if (manual) toast('Queue complete - reset to start a new cycle');
       return;
     }
   }
 
-  const today = new Date().toISOString().slice(0,10);
   const usedToday = q.dayCreditsUsed?.[today] || 0;
   const creditsLeft = DAILY_LIMIT - usedToday;
 
   if (creditsLeft <= 0) {
-    if (manual) toast('Daily limit reached (' + DAILY_LIMIT + ' lookups). Resumes tomorrow automatically.');
+    // PPT's daily budget is spent, but TCGdex is free and independent of it -
+    // still give the tcgdex lane its pass instead of returning early and
+    // starving it every time PPT happens to be capped out for the day.
+    // _runRefreshQueueBody's own empty-ppt-batch branch handles the manual
+    // toast (it already distinguishes "genuinely complete" from "just capped
+    // for today" and reports the tcgdex outcome), so nothing further to do
+    // here beyond the run itself.
+    _queueRunning = true;
+    try {
+      await _runRefreshQueueBody(q, 0, manual, today, usedToday);
+    } finally {
+      _queueRunning = false;
+      hideSyncProgress();
+    }
     return;
   }
 
@@ -7432,12 +7682,105 @@ async function runRefreshQueue(manual = false) {
   }
 }
 
+// TCGDEX_GAP_MS - TCGdex is free and unthrottled (no documented rate limit),
+// but a small gap is still polite to their infra and avoids hammering it in
+// a tight loop. Nowhere near PPT's 6s spacing since there's no abuse
+// detector to trip here.
+const TCGDEX_GAP_MS = 250;
+
+// Free-lane full pass: every not-yet-priced-today TCGdex-lane item in the
+// queue, in one go, no credit accounting (TCGdex is free). Runs BEFORE the
+// PPT lane and is entirely decoupled from its cap/pause logic, so a PPT
+// hard-block or daily-limit hit never stops TCGdex items from running - the
+// two lanes only share the same queue array and the same "advance past
+// resolved items" bookkeeping.
+// Auto runs (page load) skip this pass once already completed today
+// (q.lastTcgdexPass === today) - polite caching, since re-querying free but
+// unresolved-price commons on every page load is still wasted traffic for
+// no new information. Manual "run now" always re-runs it, so the user isn't
+// stuck waiting until tomorrow after e.g. fixing a card's number.
+async function _runTcgdexLane(q, manual, today) {
+  const alreadyPassedToday = q.lastTcgdexPass === today;
+  if (!manual && alreadyPassedToday) {
+    return { done: 0, failedData: 0, ran: false };
+  }
+  const laneItems = q.items.filter(i => i.lane === 'tcgdex');
+  let done = 0, failedData = 0;
+  const errorTally = {};
+  for (let i = 0; i < laneItems.length; i++) {
+    const item = laneItems[i];
+    showSyncProgress(i, laneItems.length, 'Exact (TCGdex): ' + (i+1) + '/' + laneItems.length);
+    const r = await fetchMarketPrice({ name: item.name, grader: null, grade: null, language: item.language, tcgdexId: item.tcgdexId||null });
+    if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
+    if (r.maxSgd) {
+      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.maxUsd ? 'USD' : 'EUR', r.source, r.confidence, r.resolvedTcgdexId);
+      done++;
+    } else {
+      // A TCGdex-lane miss (unresolved name/number, or a genuine no-price
+      // common) is a data outcome, never a credit-burning transport retry -
+      // TCGdex costs nothing, so there's no budget to protect by deferring
+      // it. It just stays unresolved until the card is fixed or re-tried
+      // tomorrow's pass.
+      failedData++;
+      if (r.tcgdexError) errorTally[r.tcgdexError] = (errorTally[r.tcgdexError]||0) + 1;
+    }
+    saveData();
+    if (i < laneItems.length - 1) await new Promise(res => setTimeout(res, TCGDEX_GAP_MS));
+  }
+  q.lastTcgdexPass = today;
+  return { done, failedData, ran: true, errorTally, total: laneItems.length };
+}
+
 async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
+  // Free lane first, full pass, decoupled from PPT's cap/pause below. Every
+  // tcgdex-lane item gets a definitive outcome this pass (priced, or a clean
+  // "no price" data miss - TCGdex is free, so there's no transport-failure/
+  // retry-tomorrow concept to preserve for it). Once run, splice the whole
+  // lane out of q.items: it isn't part of the PPT cursor's retry bookkeeping,
+  // and buildRefreshQueue re-derives fresh tcgdex-lane items on every rebuild
+  // anyway, so nothing is lost by not keeping them parked in the array.
+  // q.cursor is adjusted by however many already-passed items sat before it,
+  // so PPT-lane progress made on earlier runs today is preserved exactly.
+  const tcgdexResult = await _runTcgdexLane(q, manual, today);
+  if (tcgdexResult.ran) {
+    // Stash the outcome on the queue itself before splicing the lane's items
+    // out of q.items below - the status panel and dashboard chip read these
+    // persisted counts (they can't just count q.items after a run, since the
+    // whole tcgdex lane is gone from that array by the time they render).
+    q.lastTcgdexTotal = tcgdexResult.total;
+    q.lastTcgdexDone  = tcgdexResult.done;
+    const beforeCursor = q.items.slice(0, q.cursor).filter(i => i.lane === 'tcgdex').length;
+    q.items = q.items.filter(i => i.lane !== 'tcgdex');
+    q.cursor = Math.max(0, q.cursor - beforeCursor);
+    q.totalItems = q.items.length;
+  }
+  saveQueue(q); // persist lastTcgdexPass + splice + any resolved tcgdexId/prices immediately
+
+  // PPT lane: unchanged cursor/credit mechanics - q.items is now purely the
+  // ppt-lane array (slabs, then PPT-bound singles), so no other change needed
+  // to the batch-slice/tail-rebuild logic below.
+  // NOTE: an empty batch here has two different causes that must NOT be
+  // conflated - (a) q.cursor has genuinely walked past every ppt-lane item
+  // (real completion), vs (b) creditsLeft is 0 because today's PPT budget is
+  // already spent but ppt-lane items remain (called with creditsLeft=0 so
+  // the free tcgdex lane above still gets to run). Only (a) is "complete";
+  // marking (b) complete would wrongly stop future PPT runs today AND
+  // tomorrow until a manual rebuild, because q.completed short-circuits
+  // runRefreshQueue before it ever reaches this function.
   const batch = q.items.slice(q.cursor, q.cursor + creditsLeft);
   if (!batch.length) {
-    q.completed = true;
+    const pptLaneExhausted = q.cursor >= q.items.length; // (a) - genuinely nothing left
+    if (pptLaneExhausted) q.completed = true;
     saveQueue(q);
-    if (manual) toast('All cards refreshed! Reset queue to start a new cycle.');
+    // The free lane may have priced cards even when the PPT lane has nothing
+    // left to do today (either cause), so re-render + report its outcome
+    // rather than going silent just because the capped lane is empty.
+    if (tcgdexResult.ran && (tcgdexResult.done || tcgdexResult.failedData)) { renderSingles(); renderSlabs(); }
+    const tcgdexNote = tcgdexResult.ran ? ' · Exact (TCGdex): ' + tcgdexResult.done + '/' + tcgdexResult.total + ' priced' : '';
+    if (manual) {
+      if (pptLaneExhausted) toast('All cards refreshed!' + tcgdexNote + ' Reset queue to start a new cycle.');
+      else toast('PPT daily limit reached.' + tcgdexNote + ' PPT resumes tomorrow.');
+    }
     return;
   }
 
@@ -7464,12 +7807,16 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   //   'ok'        → priced
   //   'data'      → both sources said "no match" or "no price data"  (burn credit, advance)
   //   'transport' → HTTP error, rate limit, network failure          (don't burn credit, retry)
-  // Sentinels from sources that never actually attempted a request
-  // (PokeTrace is disabled, or a source has no key). Shared by classifyResult
-  // AND tallyErrors - the tally once included them, so the toast read
-  // "2 failed (2× disabled, 1× no match)" with the real trigger (a 429)
-  // pushed out of the top-2 by sentinel noise.
-  const NON_ATTEMPT = /^(disabled|no api key)$/i;
+  // Sentinels from sources that never actually attempted a request: a
+  // disabled/no-key source, OR a lane where that source flatly doesn't apply
+  // - TCGdex is never tried for slabs, PPT is never consulted again once
+  // TCGdex already succeeded. Shared by classifyResult AND tallyErrors - the
+  // tally once included them, so the toast read "2 failed (2× disabled, 1×
+  // no match)" with the real trigger (a 429) pushed out of the top-2 by
+  // sentinel noise. CRITICAL: 'not applicable' must stay in this list, or a
+  // slab's "TCGdex never tried" sentinel poisons the every(isTransport)
+  // check below exactly like the old 'disabled' bug.
+  const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
   function classifyResult(r) {
     if (r.maxSgd) return 'ok';
     // Drop non-attempt sentinels. If we don't, a disabled source's "disabled"
@@ -7478,14 +7825,14 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
     // be miscounted as a permanent "data" miss - burning a credit, advancing
     // the cursor (card skipped forever), and skipping the hard-block pause.
     // Only errors from sources that tried count.
-    const errs = [r.pptError, r.poketraceError].filter(e => e && !NON_ATTEMPT.test(e));
+    const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
     if (!errs.length) return 'data'; // no real attempt errors - treat as data
     const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
     if (errs.every(isTransport)) return 'transport';
     return 'data'; // at least one source returned a meaningful "no match"
   }
   function tallyErrors(r) {
-    [r.pptError, r.poketraceError].filter(e => e && !NON_ATTEMPT.test(e)).forEach(e => {
+    [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e)).forEach(e => {
       errorTally[e] = (errorTally[e] || 0) + 1;
     });
   }
@@ -7496,11 +7843,14 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
       'Queue: ' + (q.cursor + done + failedData + failedTransport + 1) + '/' + q.totalItems +
       ' · Day credit ' + Math.min(usedToday + creditsSpent + 1, DAILY_LIMIT) + '/' + DAILY_LIMIT);
 
-    const r = await fetchMarketPrice(item.name, item.grader, item.grade, item.language);
+    const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: item.tcgdexId||null });
     creditsSpent += r.creditsUsed || 0; // bill real PPT requests, not cards
+    // Persist a freshly-resolved id on the queue's own item copy so a
+    // requeue (retry/tomorrow) skips the resolve round-trip next time.
+    if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
     const kind = classifyResult(r);
     if (kind === 'ok') {
-      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.ppt, r.poketrace);
+      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.maxUsd ? 'USD' : 'EUR', r.source, r.confidence, r.resolvedTcgdexId);
       copied += item.copyTargets?.length || 0;
       done++;
       consecTransport = 0;
@@ -7520,7 +7870,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
       // the block lasts 24h. Burning more requests against a blocked key
       // only deepens the block. Previously we waited for 5 consecutive
       // failures, which was 5× too many on the way to a 24h lockout.
-      const isHardBlock = [r.pptError, r.poketraceError].some(e => /403|429|blocked|abuse/i.test(e || ''));
+      const isHardBlock = [r.pptError, r.tcgdexError].some(e => /403|429|blocked|abuse/i.test(e || ''));
       if (isHardBlock || consecTransport >= TRANSPORT_FAIL_PAUSE) {
         const top = Object.entries(errorTally).sort((a,b) => b[1]-a[1])[0];
         // Carry the actual refusal (e.g. "HTTP 429") into the reason. The old
@@ -7529,7 +7879,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
         // in this string, so a 429 must NOT say "blocked". A one-off 429 pause
         // is the protection working, not a broken key (verified: the key
         // answered 200 OK the morning after such a pause).
-        const trigger = [r.pptError, r.poketraceError].find(e => /403|429|blocked|abuse/i.test(e || '')) || 'rate limit';
+        const trigger = [r.pptError, r.tcgdexError].find(e => /403|429|blocked|abuse/i.test(e || '')) || 'rate limit';
         pausedReason = isHardBlock ? 'PPT refused (' + trigger.slice(0, 40) + ')' : (top ? top[0] : 'transport');
         // Move remaining (unfetched) items into retryItems so they aren't
         // dropped from the queue.
@@ -7593,7 +7943,10 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
                                             ? ' · ⚠ key invalid - check 🔑 settings'
     : /429|rate/i.test(errSummary)          ? ' · ⏰ rate-limited - slows down'
     : '';
-  const msg = 'Queue: ' + done + ' fetched' +
+  const tcgdexNote = tcgdexResult.ran
+    ? ' · Exact (TCGdex): ' + tcgdexResult.done + '/' + tcgdexResult.total + ' priced'
+    : '';
+  const msg = 'Queue: ' + done + ' fetched' + tcgdexNote +
     (copied ? ', ' + copied + ' copies updated' : '') +
     (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') +
     diagHint +
@@ -7606,6 +7959,29 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
 
+// Raw singles that are Available, have no resolved TCGdex id, and are in a
+// language TCGdex can't price at all (CN) - separate from "unresolved" below
+// because there's genuinely no fix available (adding the number won't help),
+// vs unresolved which the user CAN fix by correcting the name/number.
+function _kjrChineseUnpriceable() {
+  return (DB.singles || []).filter(i => (i.status||'Available') === 'Available'
+    && (i.language||'').toString().trim().toUpperCase() === 'CN');
+}
+
+// Raw singles that are Available, in a free-lane language (EN/JP/blank), but
+// have no resolved tcgdexId and no extractable name+number to resolve one -
+// these will never auto-price until the user adds the card number or an
+// override TCGdex ID. Mirrors _queueLaneFor's resolvability check.
+function _kjrUnresolvedSingles() {
+  return (DB.singles || []).filter(i => {
+    if ((i.status||'Available') !== 'Available') return false;
+    if (i.tcgdexId) return false; // already resolved
+    const lang = (i.language||'EN').toString().trim().toUpperCase();
+    if (lang === 'CN') return false; // counted separately, not "fixable" by adding a number
+    return !(_baseCardName(i.name) && _tcgdexNumber(i.name));
+  });
+}
+
 function _renderQueueStatus() {
   const el = document.getElementById('queue-status-panel');
   if (!el) return;
@@ -7615,38 +7991,63 @@ function _renderQueueStatus() {
     return;
   }
   const { q, usedToday, remaining, daysLeft, today } = s;
-  const pct = Math.round((q.cursor / q.totalItems) * 100);
+  // q.items only becomes PPT-lane-only AFTER the first run of the day (the
+  // tcgdex lane is spliced out post-pass, see _runRefreshQueueBody) - a
+  // freshly built queue that has never run yet still has BOTH lanes mixed
+  // together in q.items. Slabs are always lane==='ppt' (no tcgdex-eligible
+  // slab exists), so filtering by table==='slabs' alone is always safe. A
+  // single can be EITHER lane though, so "Singles (PPT)" must also require
+  // lane==='ppt' or it would double-count a tcgdex-lane single as PPT work
+  // before the first splice ever happens (verified live: a freshly built
+  // queue with 1 tcgdex single + 1 ppt single showed "Singles (PPT): 0/2"
+  // instead of the correct 0/1).
+  const pct = q.totalItems > 0 ? Math.round((q.cursor / q.totalItems) * 100) : 100;
   const slabsDone   = q.items.slice(0, q.cursor).filter(i => i.table === 'slabs').length;
   const slabsTotal  = q.items.filter(i => i.table === 'slabs').length;
-  const singlesDone = q.items.slice(0, q.cursor).filter(i => i.table === 'singles').length;
-  const singlesTotal= q.items.filter(i => i.table === 'singles').length;
+  const singlesDone = q.items.slice(0, q.cursor).filter(i => i.table === 'singles' && i.lane === 'ppt').length;
+  const singlesTotal= q.items.filter(i => i.table === 'singles' && i.lane === 'ppt').length;
+  const tcgdexTotal = q.lastTcgdexTotal || 0;
+  const tcgdexDone  = q.lastTcgdexDone  || 0;
+  const tcgdexRanToday = q.lastTcgdexPass === today;
+
+  const unresolvedCount = _kjrUnresolvedSingles().length;
+  const chineseCount    = _kjrChineseUnpriceable().length;
 
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
-      <span style="font-weight:600">${q.completed ? '✅ Complete' : 'In progress'}</span>
-      <span style="color:var(--text3)">${q.cursor}/${q.totalItems} unique · ${q.totalRows} total rows</span>
+      <span style="font-weight:600">${q.completed ? '✅ PPT lane complete' : 'In progress'}</span>
+      <span style="color:var(--text3)">${q.totalRows} total rows</span>
     </div>
     <div style="height:6px;background:var(--bg3);border-radius:3px;margin-bottom:10px">
       <div style="height:6px;width:${pct}%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:10px">
-      <div style="padding:8px;background:var(--bg3);border-radius:6px">
-        <div style="color:var(--text3);margin-bottom:2px">Slabs</div>
-        <div style="font-weight:600">${slabsDone}/${slabsTotal} done</div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Raw singles priced free via TCGdex (TCGplayer/Cardmarket), matched by card number and language. Runs a full pass once a day.">
+        <div style="color:var(--text3);margin-bottom:2px">Exact (TCGdex)</div>
+        <div style="font-weight:600">${tcgdexRanToday ? tcgdexDone + '/' + tcgdexTotal + ' today' : (tcgdexTotal ? tcgdexDone + '/' + tcgdexTotal + ' (last run)' : 'not run yet')}</div>
       </div>
-      <div style="padding:8px;background:var(--bg3);border-radius:6px">
-        <div style="color:var(--text3);margin-bottom:2px">Singles</div>
-        <div style="font-weight:600">${singlesDone}/${singlesTotal} done</div>
-      </div>
-      <div style="padding:8px;background:var(--bg3);border-radius:6px">
-        <div style="color:var(--text3);margin-bottom:2px">Used today (${today})</div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Slabs (always) and TCGdex misses, priced via PokemonPriceTracker eBay sold data. Capped at ${DAILY_LIMIT}/day.">
+        <div style="color:var(--text3);margin-bottom:2px">Search (PPT)</div>
         <div style="font-weight:600">${usedToday}/${DAILY_LIMIT} credits</div>
       </div>
       <div style="padding:8px;background:var(--bg3);border-radius:6px">
-        <div style="color:var(--text3);margin-bottom:2px">Est. days remaining</div>
+        <div style="color:var(--text3);margin-bottom:2px">Slabs (PPT)</div>
+        <div style="font-weight:600">${slabsDone}/${slabsTotal} done</div>
+      </div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px">
+        <div style="color:var(--text3);margin-bottom:2px">Singles (PPT)</div>
+        <div style="font-weight:600">${singlesDone}/${singlesTotal} done</div>
+      </div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px;grid-column:1 / -1">
+        <div style="color:var(--text3);margin-bottom:2px">Est. days remaining (PPT lane)</div>
         <div style="font-weight:600">${q.completed ? '0' : daysLeft}</div>
       </div>
     </div>
+    ${(unresolvedCount > 0 || chineseCount > 0) ? `<div style="font-size:11px;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:10px;line-height:1.5">
+      ${unresolvedCount > 0 ? unresolvedCount + ' card' + (unresolvedCount!==1?'s':'') + ' unresolved, add the card number for exact pricing.' : ''}
+      ${unresolvedCount > 0 && chineseCount > 0 ? '<br>' : ''}
+      ${chineseCount > 0 ? chineseCount + ' Chinese card' + (chineseCount!==1?'s':'') + ' have no free price source.' : ''}
+    </div>` : ''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
       Queue built ${new Date(q.createdAt).toLocaleDateString()} ·
       ${q.items.filter(i=>i.copyTargets?.length).length} cards will copy price to duplicates
@@ -7672,15 +8073,24 @@ function _renderQueueStatus() {
         ${advice ? '<br>' + advice : ''}
       </div>`;
     })()}
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-primary btn-sm" onclick="runRefreshQueue(true)" ${q.completed||usedToday>=DAILY_LIMIT?'disabled':''}>
+    ${(() => {
+      // Manual run stays enabled while EITHER lane has work: PPT (cursor not
+      // at the end, or credits are available) OR TCGdex (manual always
+      // re-runs it regardless of lastTcgdexPass, so it's only truly out of
+      // work when the PPT lane is complete AND there are zero TCGdex-lane-
+      // eligible cards - i.e. a fresh empty/all-CN/all-slabs collection).
+      const pptHasWork = !q.completed || usedToday < DAILY_LIMIT;
+      const nothingLeft = q.completed && tcgdexTotal === 0;
+      return `<div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" onclick="runRefreshQueue(true)" ${nothingLeft?'disabled':''}>
         ▶ Run Today's Batch
       </button>
       <button class="btn btn-sm" onclick="startFreshQueue()">↺ Rebuild Queue</button>
       <button class="btn btn-sm" style="color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Clear queue?', {ok:'Clear', danger:true})){clearQueue();_renderQueueStatus();} })()">✕ Clear</button>
-    </div>
-    ${usedToday >= DAILY_LIMIT ? '<div style="font-size:11px;color:#f59e0b;margin-top:8px">⏰ Daily limit reached - queue resumes tomorrow</div>' : ''}
-    ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ All cards have been refreshed. Rebuild queue to start next cycle.</div>' : ''}
+    </div>`;
+    })()}
+    ${usedToday >= DAILY_LIMIT ? '<div style="font-size:11px;color:#f59e0b;margin-top:8px">⏰ PPT daily limit reached - Search lane resumes tomorrow (Exact/TCGdex lane is unaffected)</div>' : ''}
+    ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ PPT lane fully refreshed. Rebuild queue to start next cycle.</div>' : ''}
   `;
 }
 
@@ -7689,7 +8099,9 @@ async function startFreshQueue() {
   const q = buildRefreshQueue();
   saveQueue(q);
   _renderQueueStatus();
-  toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Slabs: ' + q.items.filter(i=>i.table==='slabs').length + ' · Singles: ' + q.items.filter(i=>i.table==='singles').length);
+  const tcgdexCount = q.items.filter(i=>i.lane==='tcgdex').length;
+  const pptCount = q.items.filter(i=>i.lane==='ppt').length;
+  toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Exact (TCGdex): ' + tcgdexCount + ' · Search (PPT): ' + pptCount);
 }
 
 // Old bulkRefreshPrices kept for per-table manual use (bypasses queue).
@@ -7699,8 +8111,10 @@ async function startFreshQueue() {
 let _bulkRefreshRunning = false;
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
-  const hasKeys = getApiKey('ppt') || getApiKey('poketrace');
-  if (!hasKeys) { toast('Add API keys first - click 🔑 in top bar'); openApiSettings(); return; }
+  // TCGdex needs no key; only block when the table can't reach ANY free
+  // lane - a slab table has no TCGdex-free option, so it still needs PPT.
+  const hasKeys = getApiKey('ppt');
+  if (!hasKeys && table === 'slabs') { toast('Add API keys first - click 🔑 in top bar'); openApiSettings(); return; }
   const items = DB[table].filter(i => (i.status||'Available') === 'Available');
   if (!items.length) { toast('No available items to refresh'); return; }
   if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
@@ -7708,14 +8122,23 @@ async function bulkRefreshPrices(table) {
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
   const errorTally = {};
   let aborted = false;
-  const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors/i.test(e);
+  // Same NON_ATTEMPT sentinel-stripping as the queue's classifyResult -
+  // 'not applicable'/'disabled' must not poison the transport check, or a
+  // slab (TCGdex never tried) or a TCGdex-hit raw single (PPT never tried)
+  // gets miscounted as a real data failure.
+  const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
+  const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
   for (const item of items) {
     showSyncProgress(done + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
-    const r = await fetchMarketPrice(item.name, item.grader||null, item.grade||null, item.language||null);
+    const r = await fetchMarketPrice({ name: item.name, grader: item.grader||null, grade: item.grade||null, language: item.language||null, tcgdexId: item.tcgdexId||null });
+    if (r.resolvedTcgdexId && !item.tcgdexId) {
+      item.tcgdexId = r.resolvedTcgdexId;
+      if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
+    }
     if (r.maxSgd) {
       item.marketPrice = r.maxSgd.toFixed(0);
       if (!item.priceHistory) item.priceHistory = [];
-      item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, source: r.ppt && r.poketrace ? 'max(PPT,PokeTrace)' : (r.ppt ? 'PPT' : 'PokeTrace'), ppt: r.ppt, poketrace: r.poketrace });
+      item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, unit: r.maxUsd ? 'USD' : 'EUR', source: r.source, confidence: r.confidence });
       if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
       if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
@@ -7724,11 +8147,12 @@ async function bulkRefreshPrices(table) {
       done++;
       consecTransport = 0;
     } else {
-      const errs = [r.pptError, r.poketraceError].filter(Boolean);
+      const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
       errs.forEach(e => { errorTally[e] = (errorTally[e]||0) + 1; });
       const transport = errs.length && errs.every(isTransport);
       if (transport) { failedTransport++; consecTransport++; }
       else            { failedData++;       consecTransport = 0; }
+      markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
       // Auto-pause if the API is clearly unhappy - saves time and credits.
       if (consecTransport >= 5) { aborted = true; break; }
     }
@@ -8030,90 +8454,54 @@ async function searchEbay() {
   outEl.style.display = 'block';
   outEl.innerHTML = '<span class="ai-status">Searching…</span>';
 
-  // Real sold-price path is available when EITHER a client key is set OR the
-  // Cloudflare Worker proxy is configured (the Worker holds the key
-  // server-side, so no client key is needed). Without this, a fresh browser
-  // with no local key would skip the Worker and fall to the AI estimate.
-  const hasRealSource = getApiKey('ppt') || getApiKey('poketrace') || PRICE_PROXY_BASE;
-  if (hasRealSource) {
-    // Use real APIs
-    outEl.innerHTML = '<span class="ai-status">Fetching from PokemonPriceTracker + PokeTrace...</span>';
-    let r;
-    try {
-      r = await fetchMarketPrice(q, null, null);
-    } catch(err) {
-      outEl.innerHTML = '<div style="color:var(--red)">Price lookup threw: ' + esc(err.message || String(err)) + '<br><span style="font-size:11px;color:var(--text3)">This usually means the price API is unreachable from your browser (CORS, network, or rate limit). Click 🔑 to rotate the keys.</span></div>';
-      return;
-    }
-    if (r.maxUsd) {
-      const rateNote = 'Rate: US$1 = S$' + r.sgdRate.toFixed(4);
-      outEl.innerHTML = `
-        <div style="font-size:11px;color:var(--text3);margin-bottom:10px">📈 ${rateNote} (live)</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-          <div style="padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">PokemonPriceTracker</div>
-            <div style="font-size:18px;font-weight:600;margin-top:4px">${r.ppt ? 'US$' + Math.round(r.ppt) : '-'}</div>
-            <div style="font-size:12px;color:var(--text2)">${r.ppt ? 'S$' + (r.ppt * r.sgdRate).toFixed(0) : (r.pptError || '')}</div>
-          </div>
-          <div style="padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">PokeTrace</div>
-            <div style="font-size:18px;font-weight:600;margin-top:4px">${r.poketrace ? 'US$' + Math.round(r.poketrace) : '-'}</div>
-            <div style="font-size:12px;color:var(--text2)">${r.poketrace ? 'S$' + (r.poketrace * r.sgdRate).toFixed(0) : (r.poketraceError || '')}</div>
-          </div>
-        </div>
-        <div style="padding:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:6px">
-          <div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px">Market Price (max of both, US market reference)</div>
-          <div style="font-size:24px;font-weight:600;margin-top:4px">S$${r.maxSgd.toFixed(0)}</div>
-          <div style="font-size:12px;color:var(--text2);margin-top:4px">US$${Math.round(r.maxUsd)} · Confidence: ${r.confidence}${r.divergencePct !== undefined ? ' · Sources differ by ' + Math.round(r.divergencePct) + '%' : ''}</div>
-          ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Sources disagree significantly - manually verify</div>' : ''}
-
-        </div>`;
-    } else if (/HTTP 429/.test(r.pptError || '')) {
-      // PPT free tier is 100 lookups/day and resets at 00:00 UTC (08:00 SGT).
-      // PokeTrace is disabled, so a 429 means no source is available until reset.
-      outEl.innerHTML = '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
-        '<strong>⏳ Daily price-lookup limit reached</strong>' +
-        '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' +
-          'PokemonPriceTracker allows 100 lookups per day on the free tier, and that is used up. It resets at 08:00 SGT (midnight UTC).' +
-        '</div>' +
-        '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
-          'Try again after the reset, or clear your keys in 🔑 Settings to use the AI estimate in the meantime.' +
-        '</div>' +
-        '</div>';
-    } else {
-      outEl.innerHTML = '<div style="padding:10px;background:var(--red-soft);border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:13px">' +
-        '<strong>No price found for "' + esc(q) + '"</strong>' +
-        '<div style="margin-top:6px;font-size:11px;color:var(--text2)">' +
-          'PPT: ' + esc(r.pptError||'no result') + '<br>' +
-          'PokeTrace: ' + esc(r.poketraceError||'no result') +
-        '</div>' +
-        '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
-          'Try a simpler query (e.g. just the card name without language/grade), or use the AI fallback by clearing your PPT and PokeTrace keys in 🔑 Settings.' +
-        '</div>' +
-        '</div>';
-    }
+  // TCGdex needs no key at all (free, CORS-open), so this always has a real
+  // source to try - raw singles resolve via TCGdex first, falling back to
+  // PPT (client key OR Worker proxy) on a TCGdex miss. The AI-estimate
+  // fallback this function used to have when neither source was configured
+  // is gone: it became unreachable once TCGdex removed the "no source at
+  // all" case entirely (Market Price rework, Phase 6 UI-honesty pass).
+  outEl.innerHTML = '<span class="ai-status">Fetching from TCGdex + PokemonPriceTracker...</span>';
+  let r;
+  try {
+    r = await fetchMarketPrice({ name: q, grader: null, grade: null, language: null });
+  } catch(err) {
+    outEl.innerHTML = '<div style="color:var(--red)">Price lookup threw: ' + esc(err.message || String(err)) + '<br><span style="font-size:11px;color:var(--text3)">This usually means the price API is unreachable from your browser (CORS, network, or rate limit). Click 🔑 to rotate the keys.</span></div>';
     return;
   }
-
-  // Fallback when no PPT/PokeTrace keys are configured. Only Anthropic
-  // supports the web_search tool - other free providers (Gemini / Groq /
-  // OpenRouter) can't actually look up live sold data, so warn the user
-  // their answer is best-effort.
-  const provider = (typeof _resolveAIProvider === 'function') ? _resolveAIProvider() : null;
-  if (!provider) {
+  if (r.maxSgd) {
+    const rateNote = 'Rate: ' + (r.maxUsd ? 'US$1 = S$' : 'EUR1 = S$') + r.sgdRate.toFixed(4);
+    const usdOrEur = r.maxUsd ? 'US$' + Math.round(r.maxUsd) : 'EUR' + r.maxEur.toFixed(2);
+    outEl.innerHTML = `
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px">📈 ${rateNote} (live)</div>
+      <div style="padding:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:6px">
+        <div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px">Market Price (${esc(r.source||'')})</div>
+        <div style="font-size:24px;font-weight:600;margin-top:4px">S$${r.maxSgd.toFixed(0)}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px">${usdOrEur} · Confidence: ${r.confidence}</div>
+        ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Low confidence - card matched on name only, manually verify</div>' : ''}
+      </div>`;
+  } else if (/HTTP 429/.test(r.pptError || '')) {
+    // PPT free tier is 100 lookups/day and resets at 00:00 UTC (08:00 SGT).
     outEl.innerHTML = '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
-      '<strong>No price source configured.</strong> Click 🔑 to add a PokemonPriceTracker / PokeTrace key (real sold-price data), or any AI key (best-effort estimate).' +
+      '<strong>⏳ Daily price-lookup limit reached</strong>' +
+      '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' +
+        'PokemonPriceTracker allows 100 lookups per day on the free tier, and that is used up. It resets at 08:00 SGT (midnight UTC).' +
+      '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
+        'Try again after the reset, or add the card number so TCGdex can price it for free instead.' +
+      '</div>' +
       '</div>';
-    return;
+  } else {
+    outEl.innerHTML = '<div style="padding:10px;background:var(--red-soft);border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:13px">' +
+      '<strong>No price found for "' + esc(q) + '"</strong>' +
+      '<div style="margin-top:6px;font-size:11px;color:var(--text2)">' +
+        'TCGdex: ' + esc(r.tcgdexError||'no result') + '<br>' +
+        'PPT: ' + esc(r.pptError||'no result') +
+      '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
+        'Try a simpler query (e.g. just the card name plus its number).' +
+      '</div>' +
+      '</div>';
   }
-  const rate = await getSgdRate();
-  const rateNote = 'Live rate: US$1 = S$' + rate.toFixed(4) + ' (fetched today)';
-  outEl.innerHTML = '<span class="ai-status">No PPT/PokeTrace keys - asking ' + esc(provider) + ' (' + (provider === 'anthropic' ? 'with web search' : 'estimate only, no live data') + ')…</span>';
-  const result = await callAI(
-    'Search eBay completed/sold listings for: "' + q + '". Provide:\n1. Most recent sold price in USD, then convert to SGD using ' + rateNote + '\n2. Average of last 3-5 sold prices (USD and SGD)\n3. Price trend (rising/falling/stable)\n4. Date range of sales found\n5. Any notable variants or condition differences affecting price\nBe specific and useful for a reseller based in Singapore. Always show both USD and SGD prices.',
-    provider === 'anthropic'
-  );
-  outEl.innerHTML = '<div style="font-size:11px;color:var(--text3);margin-bottom:8px">📈 ' + esc(rateNote) + (provider !== 'anthropic' ? ' · ⚠ AI estimate only - not live sold data' : '') + '</div>' + esc(result).replace(/\n/g, '<br>');
 }
 
 // =========== SGD/USD EXCHANGE RATE (dynamic, cached daily) ===========
@@ -8191,6 +8579,68 @@ getSgdRate().then(rate => {
 
 function usdToSgd(usd) {
   return usd * (_sgdRate || 1.27);
+}
+
+// ── EUR/SGD rate (Cardmarket prices are EUR) - same daily-cache waterfall
+// as getSgdRate, direct EUR base rather than a USD cross-rate so a single
+// source outage on one leg can't compound into a worse error on the other.
+let _eurSgdRate = null; // SGD per 1 EUR
+const FALLBACK_EUR_RATE = 1.45; // approx EUR/SGD, last-resort only
+
+async function getEurSgdRate() {
+  const cacheKey = 'pokeinv_fxrate_eur';
+  const cached = (() => { try { return JSON.parse(localStorage.getItem(cacheKey)); } catch(e) { return null; } })();
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (cached && cached.date === today && cached.rate) {
+    _eurSgdRate = cached.rate;
+    return cached.rate;
+  }
+
+  const sources = [
+    async () => {
+      const r = await fetch('https://api.frankfurter.app/latest?from=EUR&to=SGD', { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      return d.rates?.SGD;
+    },
+    async () => {
+      const r = await fetch('https://open.er-api.com/v6/latest/EUR', { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      return d.rates?.SGD;
+    },
+    async () => {
+      const r = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/eur.json', { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      return d.eur?.sgd;
+    }
+  ];
+
+  for (const source of sources) {
+    try {
+      const rate = await source();
+      // Sanity band: EUR/SGD has sat roughly 1.3-1.7 for years - wide guard
+      // so a stressed-market rate is accepted rather than silently discarded.
+      if (rate && typeof rate === 'number' && rate > 1.0 && rate < 2.5) {
+        _eurSgdRate = rate;
+        localStorage.setItem(cacheKey, JSON.stringify({ date: today, rate }));
+        return rate;
+      }
+    } catch(e) { /* try next */ }
+  }
+
+  if (cached && cached.rate) {
+    _eurSgdRate = cached.rate;
+    console.warn('All EUR/SGD FX sources failed - using stale cached rate:', cached.rate, 'from', cached.date);
+    return cached.rate;
+  }
+
+  _eurSgdRate = FALLBACK_EUR_RATE;
+  console.warn('All EUR/SGD FX sources failed - using hardcoded fallback:', FALLBACK_EUR_RATE);
+  return FALLBACK_EUR_RATE;
+}
+
+function eurToSgd(eur) {
+  return eur * (_eurSgdRate || FALLBACK_EUR_RATE);
 }
 
 // =========== AI API ===========
@@ -8407,6 +8857,11 @@ async function importData() {
     { field:'qty',            match: h => h === 'qty' || h === 'quantity' || h === 'count' || h === 'stock' },
     { field:'condition',      match: h => h === 'condition' || h === 'cond' },
     { field:'type',           match: h => h === 'type' || h === 'category' || h === 'format' },
+    // Without this rule the generic "keep raw header name" fallback below
+    // would store the export's lowercased "tcgdexid" header verbatim, but
+    // every reader in the app expects the camelCase item.tcgdexId - a silent
+    // field-name mismatch that would make a re-imported override vanish.
+    { field:'tcgdexId',       match: h => h === 'tcgdexid' },
     { field:'notes',          match: h => h === 'notes' || h === 'note' || h === 'comment' || h === 'remarks' || h === 'copypasteto' || h === 'copypastetocarousell' || h === 'carousell' || h.startsWith('httpsmytaggrading') || h.startsWith('httpsmy') },
     { field:'buyer',          match: h => h === 'buyer' || h === 'customer' },
     { field:'totalCollected', match: h => ['totalcollected','total','revenue','soldprice','totalpricecollected'].some(v => h === v) },
@@ -8687,11 +9142,12 @@ function exportCSV(type) {
   if (type === 'singles') {
     data = DB.singles; filename = 'singles.csv';
     // Include datePurchased / priceAlert / ebayUrl / carousellUrl so a CSV
-    // round-trip preserves alerts and listing links.
-    fields = ['id','name','set','language','type','condition','qty','listPrice','costPrice','marketPrice','status','datePurchased','priceAlert','ebayUrl','carousellUrl','notes'];
+    // round-trip preserves alerts and listing links. tcgdexId round-trips
+    // the resolved/overridden card id so a re-import skips the resolve step.
+    fields = ['id','name','set','language','type','condition','qty','listPrice','costPrice','marketPrice','status','datePurchased','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
   } else if (type === 'slabs') {
     data = DB.slabs; filename = 'slabs.csv';
-    fields = ['id','name','grader','grade','certNo','rank','listPrice','costPrice','marketPrice','dateListed','status','priceAlert','ebayUrl','carousellUrl','notes'];
+    fields = ['id','name','grader','grade','certNo','rank','listPrice','costPrice','marketPrice','dateListed','status','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
   } else {
     data = DB.sales; filename = 'sales.csv';
     // Keep inventoryId/inventoryTable so the "↗ source" link survives an
@@ -8802,6 +9258,13 @@ function resetCurrentView() {
   }
   localStorage.setItem(flag, '1');
 })();
+
+// One-time cleanup: the orphaned market_prices cache (window._priceLookup,
+// persisted at 'kjr_price_cache') has been removed - it read a Supabase
+// table that was never written by any code, so it only ever served 10 stale
+// hand-seeded rows. Drop any local copy so it can't linger or confuse a
+// future debugging session.
+try { localStorage.removeItem('kjr_price_cache'); } catch(e){}
 
 // Slabs column-order reset - REMOVED. This was a one-time migration to
 // put "grade" before "name" after a schema change, but it was never gated

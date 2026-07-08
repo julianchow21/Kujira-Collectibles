@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.12">
+<link rel="stylesheet" href="styles.css?v=3.13">
 </head>
 <body>
 
@@ -84,7 +84,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.12 (6 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.13 (7 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -172,13 +172,9 @@
       </button>
       <div class="nav-dd-menu dd-right">
         <div class="nav-dd-section">Prices</div>
-        <button class="nav-dd-subitem" onclick="openApiSettings();closeNavDD()" title="PokemonPriceTracker + PokeTrace">
+        <button class="nav-dd-subitem" onclick="openApiSettings();closeNavDD()" title="TCGdex (free) + PokemonPriceTracker">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
           API settings
-        </button>
-        <button class="nav-dd-subitem" onclick="loadMarketPrices();toast('Reloading cached prices…');closeNavDD()" title="Reload cached market prices from Supabase">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><polyline points="21 3 21 8 16 8"/></svg>
-          Refresh
         </button>
 
         <div class="nav-dd-section">Diagnostics</div>
@@ -215,6 +211,11 @@
 <!-- INVENTORY PAGE -->
 <div id="page-inventory" class="page">
   <div class="section-title">Singles Inventory</div>
+  <div class="unresolved-banner" id="singles-unresolved-banner">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span id="singles-unresolved-text"></span>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="_dismissUnresolvedBanner()" aria-label="Dismiss">✕</button>
+  </div>
   <div class="inv-stats" id="singles-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="singles-search" oninput="renderSingles()" title='Search across name, set, language, type, condition, status, notes, dates. Numbers match ±$1 on any price; use &gt;50, &lt;100, &gt;=20 for ranges.'>
@@ -1001,6 +1002,7 @@
         <div class="form-group"><label class="lbl">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" min="0" placeholder="e.g. 150" step="0.01"></div>
         <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="ms-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
         <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="ms-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
+        <div class="form-group full"><label class="lbl">TCGdex ID</label><input class="fi" id="ms-tcgdexid" placeholder="sv03-223"><div id="ms-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched.</div></div>
         <div class="form-group full"><label class="lbl">Notes</label><textarea class="fi" id="ms-notes" rows="2"></textarea></div>
       </div>
     </div>
@@ -1037,6 +1039,7 @@
         <div class="form-group"><label class="lbl">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" min="0" placeholder="e.g. 500" step="0.01"></div>
         <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="msl-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
         <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="msl-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
+        <div class="form-group full"><label class="lbl">TCGdex ID</label><input class="fi" id="msl-tcgdexid" placeholder="sv03-223"><div id="msl-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched. Slabs are priced via PPT (eBay graded sales), so this rarely applies.</div></div>
         <div class="form-group full"><label class="lbl">TAG URL / Notes</label><textarea class="fi" id="msl-notes" rows="2"></textarea></div>
       </div>
     </div>
@@ -1572,7 +1575,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.12"></script>
-<script src="features.js?v=3.12"></script>
+<script src="app.js?v=3.13"></script>
+<script src="features.js?v=3.13"></script>
 </body>
 </html>

@@ -4340,19 +4340,22 @@ function _mktFreshDot(item) {
 }
 
 // Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
-// row. Chinese-language cards have no free source on either vendor (TCGdex
-// nor PPT's typical coverage) - distinct from "unresolved", which the user
-// CAN fix by adding the card number or a TCGdex ID override. Slabs never
-// have a tcgdexId/resolve concept (they're always PPT-lane), so they only
-// ever get the Chinese-language explanation, never "add the card number".
+// row. English-only auto-pricing (see _queueLaneFor): a non-EN raw single
+// (JP/CN/ID/KR/...) is manual by product design, not a per-card data problem -
+// distinct from an EN "unresolved" card, which the user CAN fix by adding
+// the card number, fixing it, or setting a TCGdex ID override. Slabs are
+// always PPT-lane regardless of language (they have a grader, TCGdex has no
+// graded prices at all - the language rule doesn't apply to them), so a
+// non-EN slab never gets the manual-language title, only raw singles do.
 function _mktEmptyCellTitle(item) {
   if (item.marketPrice) return ''; // has a price, no explanation needed
-  const lang = (item.language||'EN').toString().trim().toUpperCase();
-  if (lang === 'CN') return 'No free market price source for Chinese cards';
   const isSlab = !!item.grader;
+  const lang = (item.language||'EN').toString().trim().toUpperCase();
+  const isEnglish = lang === 'EN' || lang === '';
+  if (!isSlab && !isEnglish) return 'Manual price, no free source for this language';
   if (!isSlab && !item.tcgdexId) {
     const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
-    if (!hasNameAndNumber) return 'Add the card number for exact pricing';
+    if (!hasNameAndNumber || item._tcgdexMissDate) return 'Add or fix the card number for exact pricing';
   }
   return '';
 }
@@ -5912,10 +5915,10 @@ function renderDashboard() {
   const _tcgdexTotal = _queueState?.lastTcgdexTotal || 0;
   const _tcgdexDone   = _queueState?.lastTcgdexDone  || 0;
   const _tcgdexRanToday = _queueState?.lastTcgdexPass === _todayStr;
-  // Unresolved / Chinese counts for the tooltip - same definitions as the
-  // Price API Settings panel (_kjrUnresolvedSingles / _kjrChineseUnpriceable).
+  // Unresolved / manual-language counts for the tooltip - same definitions
+  // as the Price API Settings panel (_kjrUnresolvedSingles / _kjrManualLangCards).
   const _unresolvedCount = (typeof _kjrUnresolvedSingles === 'function') ? _kjrUnresolvedSingles().length : 0;
-  const _chineseCount    = (typeof _kjrChineseUnpriceable === 'function') ? _kjrChineseUnpriceable().length : 0;
+  const _manualLangCount = (typeof _kjrManualLangCards === 'function') ? _kjrManualLangCards().length : 0;
   // A blocked/rate-limited price API stamps lastPausedReason. Surface it so a
   // stalled "5% priced" reads as "the vendor key is blocked" not "app broken".
   const _queuePaused = _queueState && _queueState.lastPausedReason;
@@ -5964,7 +5967,7 @@ function renderDashboard() {
   // is genuinely wanted; these two are short enough to just flow as extra
   // clauses onto the existing one-line chip text.
   const _unresolvedDiag = _unresolvedCount > 0 ? (' · ' + _unresolvedCount + ' unresolved, add the card number for exact pricing') : '';
-  const _chineseDiag = _chineseCount > 0 ? (' · ' + _chineseCount + ' Chinese card' + (_chineseCount!==1?'s':'') + ' have no free price source') : '';
+  const _manualLangDiag = _manualLangCount > 0 ? (' · ' + _manualLangCount + ' non-English card' + (_manualLangCount!==1?'s':'') + ' priced manually') : '';
 
   // Show coverage + queue status WHENEVER there is Singles/Slabs inventory
   // to price - even when nothing is priced yet (totalMktValue == 0). The
@@ -5996,7 +5999,7 @@ function renderDashboard() {
             : (latestTs === 0
                 ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) ' + _queueToday + '/' + DAILY_LIMIT + ' today, ' + _queueLeft + ' left'
                 : coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · refreshed ' + agoFromTs(latestTs))))
-    ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _chineseDiag;
+    ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _manualLangDiag;
   // Drop the leading "+" on profit - the green colour already signals positive.
   const profitDisplay = allTimeSales.length === 0 ? '-'
     : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG'));
@@ -6813,12 +6816,72 @@ function _tcgdexLang(language) {
   return 'en';
 }
 
+// Set-name token → TCGdex set id, for the multi-candidate disambiguation in
+// resolveTcgdexId below. Only unambiguous phrases are listed - a bare word
+// that TCGdex itself splits across several sets (e.g. "Neo" → Neo Genesis/
+// Discovery/Revelation/Destiny, "Gym" → Gym Heroes/Challenge, "Legendary" →
+// Legendary Collection/Treasures, "Base" → Base Set/Base Set 2) is
+// deliberately left OUT so it can never resolve to the wrong one of several
+// candidates that all happen to match "contains Neo" - the full two-word
+// set name is required for those instead, matching TCGdex's own set list
+// (verified live against GET /en/sets 08/07/2026). Checked longest-phrase-
+// first by the caller so "Team Rocket Returns" never gets short-circuited
+// by the shorter "Team Rocket" entry. Extend this table as more ambiguous
+// cards surface - it only needs entries for sets that actually cause a
+// multi-candidate TCGdex result in practice.
+const _TCGDEX_SET_TOKENS = [
+  ['team rocket returns', 'ex7'],
+  ['team rocket', 'base5'],
+  ['jungle', 'base2'],
+  ['fossil', 'base3'],
+  ['base set 2', 'base4'],
+  ['base set', 'base1'],
+  ['neo genesis', 'neo1'],
+  ['neo discovery', 'neo2'],
+  ['neo revelation', 'neo3'],
+  ['neo destiny', 'neo4'],
+  ['gym heroes', 'gym1'],
+  ['gym challenge', 'gym2'],
+  ['legendary collection', 'lc'],
+  ['legendary treasures', 'bw11'],
+  ['expedition', 'ecard1'],
+  ['aquapolis', 'ecard2'],
+  ['skyridge', 'ecard3']
+];
+
+// Given a card's free-text name and a list of TCGdex candidates (each
+// {id: "<setId>-<localId>", ...}), find the ONE candidate whose set id
+// matches a set-name token present in the name. Returns that candidate, or
+// null if zero or more-than-one candidates match (still ambiguous - never
+// guess). Case-insensitive; checks _TCGDEX_SET_TOKENS in its declared
+// (longest-phrase-first) order so a multi-word set name is matched before a
+// shorter one that's a substring of it.
+function _disambiguateBySetName(name, candidates) {
+  const lowerName = String(name || '').toLowerCase();
+  for (const [token, setId] of _TCGDEX_SET_TOKENS) {
+    if (!lowerName.includes(token)) continue;
+    const matches = candidates.filter(c => c && typeof c.id === 'string' && c.id.startsWith(setId + '-'));
+    if (matches.length === 1) return matches[0]; // exactly one candidate in this set - confident
+    // 0 or 2+ matches for this token - fall through and try the next token
+    // (rare, but a name could mention two set words); if nothing yields a
+    // single match the caller's null return keeps the card unresolved.
+  }
+  return null;
+}
+
 // Resolve an item to a TCGdex card id ("setcode-number", e.g. "sv03-223").
-// Auto-accept ONLY when the query returns exactly one candidate - this is
-// the data-safety guard that keeps a wrong guess from ever being silently
-// priced. Zero or many results return null (unresolved), the caller falls
-// back to PPT. Caches the resolved id (+ matched name) onto the item so
-// repeat lookups skip the resolve round-trip.
+// Auto-accept ONLY when the query returns exactly one candidate outright, OR
+// when it returns several and the card's stored name mentions a set the
+// candidates disambiguate to exactly one of (_disambiguateBySetName above,
+// e.g. "Gyarados 21" alone is ambiguous across 3 sets, but "Gyarados 21
+// Jungle" isn't) - this is the data-safety guard that keeps a wrong guess
+// from ever being silently priced, it just moves the "exactly one" test to
+// after a set-name filter instead of skipping straight to unresolved. Zero
+// results, or several results that still don't disambiguate to one, return
+// null (unresolved), the caller falls back to PPT. Caches the resolved id
+// (+ matched name) onto the item so repeat lookups skip the resolve
+// round-trip. Does not touch item.name itself - the stored name (set words,
+// "RH", "(Sealed)" etc.) is read-only input here, never rewritten.
 async function resolveTcgdexId(item) {
   if (item.tcgdexId) return item.tcgdexId;
   const name = _baseCardName(item.name);
@@ -6830,19 +6893,34 @@ async function resolveTcgdexId(item) {
     const r = await fetch(url);
     if (!r.ok) return null; // transport failure - treat as unresolved, PPT fallback picks it up
     const data = await r.json();
-    if (!Array.isArray(data) || data.length !== 1) return null; // zero or many - unresolved, never guess
-    const card = data[0];
-    if (!card || !card.id) return null;
+    if (!Array.isArray(data) || !data.length) return null; // zero results - unresolved, never guess
+    let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data);
+    if (!card) return null; // several candidates and the set name didn't narrow it to one - still ambiguous
+    if (!card.id) return null;
     item.tcgdexId = card.id;
     if (card.name) item._tcgdexResolvedName = card.name; // for a confirm tooltip in the edit modal
     return card.id;
   } catch (e) { return null; } // network error - unresolved, not a thrown exception
 }
 
+// Does the card's stored name mark it as a reverse-holo printing? Checked
+// case-insensitively against a few common shorthands collectors use in a
+// catalogued name - " RH" (needs the leading space so it doesn't false-hit
+// inside an unrelated word), "reverse", "rev holo". Read-only: this never
+// rewrites item.name, it only steers which TCGplayer variant price
+// fetchPriceFromTcgdex prefers below.
+function _isReverseHoloName(name) {
+  return / rh\b|reverse|rev holo/i.test(String(name || ''));
+}
+
 // Fetch a raw single's market price from TCGdex. Price source by language
 // (verified live 07/07/2026):
 //   EN → pricing.tcgplayer.{holofoil|normal|reverse-holofoil}.marketPrice USD
-//        (precedence: holofoil, then normal, then reverse-holofoil),
+//        (precedence: holofoil, then normal, then reverse-holofoil, UNLESS
+//        the card's name marks it reverse-holo - _isReverseHoloName above -
+//        in which case reverse-holofoil is tried FIRST, before falling back
+//        to the normal holofoil→normal→reverse-holofoil order if the
+//        pricing block doesn't actually have a reverse-holofoil entry),
 //        fallback pricing.cardmarket.avg EUR if tcgplayer is absent
 //   JP/CN → pricing.cardmarket.avg EUR (tcgplayer is always null for JP;
 //           CN has no free price source at all on either vendor)
@@ -6864,9 +6942,17 @@ async function fetchPriceFromTcgdex(item) {
 
     const isJpCn = lang === 'ja' || lang === 'zh-tw';
     if (!isJpCn) {
-      // EN: TCGplayer USD first, variant precedence holofoil → normal → reverse-holofoil.
+      // EN: TCGplayer USD first. Normal precedence is holofoil → normal →
+      // reverse-holofoil; a name flagged reverse-holo swaps in
+      // reverse-holofoil ahead of that chain, but only when the pricing
+      // block actually carries one - it's never invented, and a card
+      // without a genuine reverse-holo print just falls through to the
+      // same normal precedence as before.
       const tp = pricing.tcgplayer;
-      const variant = tp && (tp.holofoil || tp.normal || tp['reverse-holofoil']);
+      const isRH = _isReverseHoloName(item.name);
+      const variant = tp && (isRH && tp['reverse-holofoil']
+        ? tp['reverse-holofoil']
+        : (tp.holofoil || tp.normal || tp['reverse-holofoil']));
       const marketUsd = variant && typeof variant.marketPrice === 'number' ? variant.marketPrice : null;
       if (marketUsd && marketUsd > 0) {
         return { priceUsd: marketUsd, unit: 'USD', source: 'TCGdex (TCGplayer)', confidence: 'high', creditsUsed: 0 };
@@ -7073,24 +7159,53 @@ function _nameSimilarity(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
-// ── Broaden a card name for a fallback search ──
-// Strips trailing card-number and set-code tokens so a search that returned
-// zero results (PPT indexes by name, with number/set as separate fields) can
-// be retried with just the catalogued name. "Gardevoir ex 93" → "Gardevoir ex";
-// "Squirtle 1 CLK" → "Squirtle". Card-type suffixes (ex/GX/V/VMAX/VSTAR) are
-// kept because PPT catalogues them as part of the name. Always keeps the first
-// token so we never search an empty string.
+// Card-type suffixes (ex/GX/V/VMAX/VSTAR) are never mistaken for a card
+// number by either function below - PPT and TCGdex both catalogue these as
+// part of the name, not the number.
 const _TYPE_SUFFIX = /^(ex|gx|v|vmax|vstar|vunion|break|prime|legend|lvx|lv)$/i;
-function _baseCardName(name) {
-  let tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
-  // up to 3 passes handles both "Name 93" and "Name 1 CLK" orderings
-  for (let pass = 0; pass < 3 && tokens.length > 1; pass++) {
-    const last = tokens[tokens.length - 1];
-    const isNum  = /^#?\d+(\/\d+)?$/.test(last);                         // 93, 1, 93/198
-    const isCode = /^[A-Z]{2,5}\d{0,3}$/.test(last) && !_TYPE_SUFFIX.test(last); // CLK, SVP, SWSH284 - not EX/GX/V
-    if (isNum || isCode) tokens.pop(); else break;
+
+// The shape of a card-number token, wherever it sits in the free-text name:
+// an optional 0-5 letter set-code prefix (SWSH/SVP/TG/GG/XY/promo codes...),
+// 1-5 digits, an optional single trailing letter (variant suffix, e.g. the
+// "a" in "67a"). Shared by _tcgdexNumber (which reads the match) and
+// _baseCardName (which just needs to know where to cut) so the two can never
+// disagree about which token is "the number".
+const _NUM_TOKEN = /^([A-Za-z]{0,5})(\d{1,5})([A-Za-z]?)$/;
+
+// Scan a free-text card name for the first token that looks like a card
+// number, ANYWHERE after the leading Pokemon-name token (never token 0 -
+// that's the name, not the number). Strips "()" wrapping (a parenthetical
+// aside like "(Sealed)") and a trailing "/total" fraction before testing
+// each token, and skips ex/GX/V/VMAX/... type suffixes so they never
+// misfire as the number. Returns { index, value } for the matched token, or
+// null if nothing in the name looks like a card number.
+function _findNumToken(tokens) {
+  for (let i = 1; i < tokens.length; i++) {
+    let tok = tokens[i].replace(/^[(]+|[)]+$/g, '');
+    if (!tok) continue;
+    tok = tok.split('/')[0];
+    if (!tok || _TYPE_SUFFIX.test(tok)) continue;
+    const m = tok.match(_NUM_TOKEN);
+    if (m) return { index: i, prefix: m[1], digits: m[2], suffix: m[3] };
   }
-  return tokens.join(' ');
+  return null;
+}
+
+// ── Broaden a card name for a fallback search ──
+// Strips the card-number token (found anywhere via _findNumToken, not just
+// trailing) and everything from it onward, so a search that returned zero
+// results (PPT indexes by name, with number/set as separate fields) can be
+// retried with just the catalogued name, and so resolveTcgdexId's name+number
+// query below has a clean name half. "Gardevoir ex 93" → "Gardevoir ex";
+// "Zapdos 42 RH" → "Zapdos"; "Riolu 10 (Pokemon Centre) (Sealed)" → "Riolu".
+// Falls back to the whole trimmed name when no number token is found (e.g.
+// "Umbreon Custom Card"), never returns an empty string for a non-empty name.
+function _baseCardName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const hit = _findNumToken(tokens);
+  return hit ? tokens.slice(0, hit.index).join(' ') : raw;
 }
 
 // Numeric card-number tokens in a string, leading zeros stripped, as a Set.
@@ -7102,28 +7217,19 @@ function _cardNumberTokens(str) {
 }
 
 // Extract the TCGdex set number (their "localId") from a free-text card
-// name, for the resolve query. Two shapes to handle:
-//   - plain numeric, optionally with a "/total" suffix: "223/197" → "223"
-//   - alpha-prefixed (promos, Trainer/Galarian Gallery etc): "TG11/TG30" →
-//     "TG11" - _cardNumberTokens wrongly splits this into a bare "11"
-//     because its regex only matches digits, so it can't be reused here.
+// name, for the resolve query. Reads the token _findNumToken locates -
+// anywhere in the name, not just the trailing token, so "Zapdos 42 RH" and
+// "Riolu 10 (Pokemon Centre) (Sealed)" resolve exactly like "Eevee 173" did.
+// Two shapes: plain numeric ("223/197" → "223") and alpha-prefixed (promos,
+// Trainer/Galarian Gallery etc, "TG11/TG30" → "TG11", "SWSH291" → "SWSH291").
 // Alpha prefix is preserved verbatim (case + digit count), TCGdex's own
 // localId is exact-match including zero-padding (verified live: "TG3" 404s,
 // "TG03" resolves) - we don't guess at padding, just pass through what's
 // actually in the name.
 function _tcgdexNumber(name) {
   const tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const tok = tokens[i];
-    // Alpha-prefixed set number (needs ≥1 digit, so "ex"/"GX"/"VMAX" type
-    // suffixes never match this branch and fall through untouched).
-    const alphaNum = tok.match(/^([A-Za-z]{1,5}\d{1,4})(?:\/[A-Za-z]{0,5}\d{1,4})?$/);
-    if (alphaNum) return alphaNum[1].toUpperCase();
-    // Plain numeric card number, optional "/total" suffix.
-    const plainNum = tok.match(/^#?(\d{1,4})(?:\/\d{1,4})?$/);
-    if (plainNum) return plainNum[1];
-  }
-  return '';
+  const hit = _findNumToken(tokens);
+  return hit ? (hit.prefix + hit.digits + hit.suffix).toUpperCase() : '';
 }
 
 // Pick the highest-similarity card from a results list. Returns null if no
@@ -7267,19 +7373,27 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
 }
 
 // ── Router: TCGdex first for raw singles, PPT for slabs and TCGdex misses ──
-// Takes one descriptor { name, grader, grade, language, tcgdexId } so every
-// caller passes the same shape regardless of which lane ends up serving it.
+// Takes one descriptor { name, grader, grade, language, tcgdexId, tcgdexOnly }
+// so every caller passes the same shape regardless of which lane ends up
+// serving it.
 //   RAW  (no grader): try TCGdex first (exact id match, free, high
-//        confidence). A "not found" or no-price result falls through to PPT.
+//        confidence). A "not found" or no-price result falls through to PPT -
+//        UNLESS tcgdexOnly is set, in which case it's a clean unpriced miss,
+//        zero PPT calls, zero credits. tcgdexOnly is set by the free-lane
+//        queue runner (_runTcgdexLane) - that lane must NEVER trigger a real
+//        (billed) PPT request, or it silently overruns PPT's daily/rate-limit
+//        envelope every time TCGdex misses (verified: this is what tripped
+//        PPT into a 403 before the English-only rework - _runTcgdexLane was
+//        calling this router unrestricted and discarding creditsUsed).
 //   SLAB (has grader): PPT's eBay graded lane, unchanged behaviour - TCGdex
-//        has no graded prices at all.
+//        has no graded prices at all. tcgdexOnly has no effect here.
 // Returns { maxUsd|maxEur, maxSgd, source, confidence, creditsUsed,
 //   tcgdexError, pptError, resolvedTcgdexId, resolvedCardName }. classifyResult/
 // tallyErrors (in the refresh queue) read the tcgdexError/pptError pair with
 // the NON_ATTEMPT sentinel-stripping rule below - keep that intact whenever
 // this shape changes.
 async function fetchMarketPrice(descriptor) {
-  const { name, grader, grade, language, tcgdexId } = descriptor || {};
+  const { name, grader, grade, language, tcgdexId, tcgdexOnly } = descriptor || {};
   const isSlab = !!(grader && grade);
 
   if (!isSlab) {
@@ -7306,6 +7420,21 @@ async function fetchMarketPrice(descriptor) {
         resolvedTcgdexId: pseudoItem.tcgdexId || null,
         resolvedCardName: pseudoItem._tcgdexResolvedName || null,
         sgdRate: rate
+      };
+    }
+    if (tcgdexOnly) {
+      // Free-lane caller: TCGdex missed and PPT must NOT be tried. Return a
+      // clean unpriced result - zero PPT calls, zero credits, card stays
+      // flagged unresolved/unpriced until fixed or re-tried.
+      return {
+        maxUsd: null, maxEur: null, maxSgd: null,
+        source: null, confidence: 'none',
+        creditsUsed: 0,
+        tcgdexError: tcgdexRes.error,
+        pptError: 'not applicable', // PPT deliberately never tried - tcgdexOnly
+        resolvedTcgdexId: pseudoItem.tcgdexId || null,
+        resolvedCardName: pseudoItem._tcgdexResolvedName || null,
+        sgdRate: null
       };
     }
     // TCGdex missed (unresolved, no price, or transport failure) - fall
@@ -7429,25 +7558,70 @@ const DAILY_LIMIT     = 30;
 // REQUEST_GAP_MS - pause between requests inside a batch. PPT's free plan
 // rate-limits individual requests; spacing them out prevents 429s entirely.
 const REQUEST_GAP_MS  = 6000;
+// Bump whenever a change to buildRefreshQueue/_queueLaneFor/the tcgdex lane's
+// per-card fields would leave an already-persisted queue in a stale or
+// inconsistent shape (new lane values, new per-item fields the runner now
+// depends on, changed lane-routing rules). loadQueue() below discards and
+// silently rebuilds on a mismatch, rather than resuming a queue built under
+// the old rules - this is the fix for a real production incident: the
+// English-only rework changed _queueLaneFor's routing (JP no longer gets a
+// tcgdex lane) and added the _tcgdexMissDate self-heal field, but a queue
+// built by the OLD v3.13 code had already stamped a bad lastTcgdexPass after
+// a run that only priced ~2 cards - every subsequent auto run silently
+// no-op'd forever because the stale stamp matched "today" and the old
+// whole-lane skip gate trusted it blindly. Bumping this version for the fix
+// forces every existing user's stale queue to discard and rebuild fresh on
+// their next load, recovering them without any manual "Rebuild Queue" click.
+const QUEUE_SCHEMA_VERSION = 2;
 
-function loadQueue()  { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); } catch(e) { return null; } }
+// Discards and returns null for a queue built under an old schema version
+// (or with no version stamp at all, i.e. any queue from before this constant
+// existed) - see QUEUE_SCHEMA_VERSION above for why this matters. The caller
+// (runRefreshQueue) treats a null return exactly like "no queue yet" and
+// silently builds a fresh one, so this recovery is invisible to the user
+// beyond a one-off rebuild (their progress-so-far, which lives on the actual
+// DB rows' marketPrice/priceHistory, is never touched - only the queue's own
+// bookkeeping is discarded).
+function loadQueue() {
+  let q;
+  try { q = JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); } catch(e) { return null; }
+  if (!q) return null;
+  if (q.schemaVersion !== QUEUE_SCHEMA_VERSION) {
+    localStorage.removeItem(QUEUE_KEY);
+    return null;
+  }
+  return q;
+}
 function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) {} }
 function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY); }
 
 // Which lane will price this queue item? Slabs (graded) never have a TCGdex
-// price at all, so they're always 'ppt'. A raw single goes to the free
-// 'tcgdex' lane only when it's actually resolvable there: a name + card
-// number we can extract (resolveTcgdexId needs both), in a language TCGdex
-// prices for free (EN/JP - CN has no free source on either vendor per
-// fetchPriceFromTcgdex). Everything else (unresolvable name, or CN) still
-// needs the PPT lane, so it's queued there rather than silently dropped.
+// price at all, so they're always 'ppt' (their PokemonPriceTracker graded
+// lane, unaffected by the language rule below). A raw single goes to the
+// free 'tcgdex' lane only when it's BOTH resolvable there (a name + card
+// number we can extract, resolveTcgdexId needs both) AND English/blank -
+// English-only auto-pricing is a deliberate product decision (owner call),
+// not a data-availability one: TCGdex's JP/CN pricing exists but is not
+// free-tier-safe to hammer at scale, so non-EN raw singles never
+// enter ANY auto-pricing lane (no tcgdex, no ppt) - they stay fully manual,
+// costing zero API calls of either kind. An EN/blank single with NO
+// extractable card number is ALSO 'manual', not a PPT fallback - fuzzy
+// name-only PPT search is the inaccurate matching this rework moved away
+// from, and a numberless EN name is often a custom/joke card with no real
+// market at all ("Umbreon Custom Card"), so sending it to PPT would waste
+// the 30/day slab budget on an unmatchable search. After this rule the
+// 'ppt' lane contains ONLY slabs - every raw single is either 'tcgdex' or
+// 'manual'. A numberless EN card is still surfaced to the user though (see
+// _kjrUnresolvedSingles), since adding a card number is a real fix that
+// moves it into the tcgdex lane.
 function _queueLaneFor(item) {
-  if (item.grader) return 'ppt'; // slab - TCGdex has no graded prices
-  if (item.tcgdexId) return 'tcgdex'; // already resolved, skip straight to the free lane
+  if (item.grader) return 'ppt'; // slab - TCGdex has no graded prices, language rule doesn't apply
   const lang = (item.language || 'EN').toString().trim().toUpperCase();
+  const isEnglish = lang === 'EN' || lang === '';
+  if (!isEnglish) return 'manual'; // JP/CN/ID/KR/anything non-EN - never auto-priced, zero API calls
+  if (item.tcgdexId) return 'tcgdex'; // already resolved, skip straight to the free lane
   const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
-  const isFreeLang = lang === 'EN' || lang === 'JP' || lang === '';
-  return (hasNameAndNumber && isFreeLang) ? 'tcgdex' : 'ppt';
+  return hasNameAndNumber ? 'tcgdex' : 'manual'; // no number - manual, not a PPT fuzzy-search fallback
 }
 
 // Build a fresh queue from current DB state
@@ -7505,6 +7679,7 @@ function buildRefreshQueue() {
   const ordered = [...tcgdexItems, ...pptSlabItems, ...pptSingleItems];
 
   return {
+    schemaVersion: QUEUE_SCHEMA_VERSION, // loadQueue() discards+rebuilds on a mismatch - see the constant's comment
     items: ordered,        // only primaries, each with copyTargets[]
     cursor: 0,             // index of next PPT-lane item to fetch (tcgdex lane runs independently, see _runRefreshQueueBody)
     totalItems: ordered.length,
@@ -7623,13 +7798,16 @@ async function runRefreshQueue(manual = false) {
       q = buildRefreshQueue();
       saveQueue(q);
       if (manual) toast('Inventory grew - rebuilt queue (' + q.totalItems + ' cards)');
-    } else if (manual || q.lastTcgdexPass !== today) {
+    } else if (manual || _tcgdexLaneHasWork(q, today)) {
       // The PPT lane is fully drained and there's nothing new to add it to,
       // but the free TCGdex lane still gets its own daily pass - it doesn't
       // compete for PPT credits, so "queue complete" for PPT shouldn't mean
-      // "stop pricing the free lane too". Only actually skip when even
-      // TCGdex has already run today (auto) or the user explicitly asked
-      // (manual always re-runs it).
+      // "stop pricing the free lane too". Self-heal: check actual per-card
+      // work remaining (_tcgdexLaneHasWork), not just whether the stamp says
+      // today - an interrupted pass can leave cards unattempted even though
+      // lastTcgdexPass already matches today, and this must still re-enter on
+      // the next auto (page-load) run to finish them, not wait for tomorrow.
+      // Manual "run now" always re-enters regardless.
       _queueRunning = true;
       try {
         await _runRefreshQueueBody(q, 0, manual, today, q.dayCreditsUsed?.[today] || 0);
@@ -7688,47 +7866,112 @@ async function runRefreshQueue(manual = false) {
 // detector to trip here.
 const TCGDEX_GAP_MS = 250;
 
-// Free-lane full pass: every not-yet-priced-today TCGdex-lane item in the
-// queue, in one go, no credit accounting (TCGdex is free). Runs BEFORE the
-// PPT lane and is entirely decoupled from its cap/pause logic, so a PPT
-// hard-block or daily-limit hit never stops TCGdex items from running - the
-// two lanes only share the same queue array and the same "advance past
-// resolved items" bookkeeping.
-// Auto runs (page load) skip this pass once already completed today
-// (q.lastTcgdexPass === today) - polite caching, since re-querying free but
-// unresolved-price commons on every page load is still wasted traffic for
-// no new information. Manual "run now" always re-runs it, so the user isn't
-// stuck waiting until tomorrow after e.g. fixing a card's number.
+// Shared per-card "is this tcgdex-lane item done for today" predicate - a
+// card counts as done once its live DB row carries a price fetched today
+// (checked via priceHistory, not the queue's own stale copy, so a card
+// priced earlier in an interrupted-then-resumed pass is correctly recognised
+// as done). Used by both _runTcgdexLane (to build today's todo list) and
+// _tcgdexLaneHasWork (the outer runRefreshQueue gate, so an auto run on page
+// load can tell "genuinely nothing left today" apart from "stamp says today
+// but an interrupted pass left cards unattempted").
+function _tcgdexPricedToday(item, today) {
+  const row = DB[item.table]?.find(i => i.id === item.id);
+  if (!row || !row.marketPrice) return false;
+  const hist = Array.isArray(row.priceHistory) ? row.priceHistory : [];
+  const last = hist[hist.length - 1];
+  return !!(last && last.date === today);
+}
+
+// True when at least one tcgdex-lane item still needs an attempt today (not
+// yet priced today, and didn't already miss today). Lets the outer
+// runRefreshQueue gate distinguish "lastTcgdexPass stamp says today but an
+// interrupted pass left cards unattempted" (self-heal: still has work, must
+// re-enter even on an auto/page-load run) from "genuinely fully done today"
+// (no work, safe to skip until tomorrow).
+function _tcgdexLaneHasWork(q, today) {
+  return q.items.some(i => i.lane === 'tcgdex' && !_tcgdexPricedToday(i, today) && i._tcgdexMissDate !== today);
+}
+
+// Free-lane pass: every TCGdex-lane item that still needs an attempt today,
+// in one go, no credit accounting (TCGdex is free, tcgdexOnly:true on the
+// fetchMarketPrice call below means this lane NEVER triggers a PPT request -
+// see fetchMarketPrice's tcgdexOnly branch). Runs BEFORE the PPT lane and is
+// entirely decoupled from its cap/pause logic, so a PPT hard-block or
+// daily-limit hit never stops TCGdex items from running - the two lanes only
+// share the same queue array and the same "advance past resolved items"
+// bookkeeping.
+//
+// Self-heal, per-card (not per-lane): the old version stamped
+// q.lastTcgdexPass=today after the loop REGARDLESS of outcome and the auto
+// run skipped the WHOLE lane once that stamp matched today - so an
+// interrupted pass (tab closed mid-loop, page reload) that had priced only a
+// couple of cards would stamp "done for today" and go silent on the rest
+// until tomorrow. Now each card is judged individually every time this runs
+// (via _tcgdexPricedToday):
+//   - SKIP a card only if (a) it already has a fresh (today's) price on its
+//     live DB row, or (b) it already missed today (item._tcgdexMissDate ===
+//     today, a per-card marker so a known miss isn't re-requested more than
+//     once per day).
+//   - PROCESS everything else: never-attempted cards (including ones added
+//     mid-pass or left over from an interrupted run) get tried every time
+//     this lane runs, auto or manual, until they're priced or miss today.
+// Once every resolvable EN card is priced (or missed) for today, a re-run
+// finds nothing left to skip-check-fail on and the lane idles near-instantly
+// (all skip, zero fetches) - so re-running is always safe and cheap.
 async function _runTcgdexLane(q, manual, today) {
-  const alreadyPassedToday = q.lastTcgdexPass === today;
-  if (!manual && alreadyPassedToday) {
-    return { done: 0, failedData: 0, ran: false };
-  }
   const laneItems = q.items.filter(i => i.lane === 'tcgdex');
-  let done = 0, failedData = 0;
+  // Manual "run now" always retries known misses too (e.g. the user just
+  // fixed a card's number and wants it re-attempted immediately, not
+  // deferred until tomorrow's pass) - clear today's miss markers first so
+  // the todo filter below picks them back up. Auto (page-load) runs leave
+  // the markers alone: a known miss stays deferred to tomorrow, only
+  // genuinely never-attempted cards self-heal on an auto run.
+  // _tcgdexMissDate is stamped on the queue item (for the skip/todo logic
+  // above) AND mirrored onto the live DB row (for _kjrUnresolvedSingles /
+  // the unresolved banner, which read DB.singles directly and have no
+  // reason to know the queue's internal shape) - same pattern as tcgdexId
+  // already being written to both places. Missing this mirror would leave
+  // _kjrUnresolvedSingles blind to "had a number, TCGdex found no unique
+  // match today" and only ever catch "no number at all".
+  const setMissDate = (item, val) => {
+    item._tcgdexMissDate = val;
+    const row = DB[item.table]?.find(i => i.id === item.id);
+    if (row) row._tcgdexMissDate = val;
+  };
+  if (manual) laneItems.forEach(item => { if (item._tcgdexMissDate === today) setMissDate(item, null); });
+  const todo = laneItems.filter(item => !_tcgdexPricedToday(item, today) && item._tcgdexMissDate !== today);
+  let done = 0, failedData = 0, skipped = laneItems.length - todo.length;
   const errorTally = {};
-  for (let i = 0; i < laneItems.length; i++) {
-    const item = laneItems[i];
-    showSyncProgress(i, laneItems.length, 'Exact (TCGdex): ' + (i+1) + '/' + laneItems.length);
-    const r = await fetchMarketPrice({ name: item.name, grader: null, grade: null, language: item.language, tcgdexId: item.tcgdexId||null });
+  for (let i = 0; i < todo.length; i++) {
+    const item = todo[i];
+    showSyncProgress(i, todo.length, 'Exact (TCGdex): ' + (i+1) + '/' + todo.length);
+    const r = await fetchMarketPrice({ name: item.name, grader: null, grade: null, language: item.language, tcgdexId: item.tcgdexId||null, tcgdexOnly: true });
     if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
     if (r.maxSgd) {
       applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.maxUsd ? 'USD' : 'EUR', r.source, r.confidence, r.resolvedTcgdexId);
+      setMissDate(item, null); // clear any stale miss marker now it's priced
       done++;
     } else {
       // A TCGdex-lane miss (unresolved name/number, or a genuine no-price
       // common) is a data outcome, never a credit-burning transport retry -
       // TCGdex costs nothing, so there's no budget to protect by deferring
-      // it. It just stays unresolved until the card is fixed or re-tried
-      // tomorrow's pass.
+      // it. Stamp today's date so this same card isn't re-requested again
+      // today (self-heal only retries NEW/unattempted cards within a day;
+      // a known miss waits for tomorrow's pass, or the user fixing the card
+      // triggers a manual re-run which always re-attempts everything).
+      setMissDate(item, today);
       failedData++;
       if (r.tcgdexError) errorTally[r.tcgdexError] = (errorTally[r.tcgdexError]||0) + 1;
     }
     saveData();
-    if (i < laneItems.length - 1) await new Promise(res => setTimeout(res, TCGDEX_GAP_MS));
+    if (i < todo.length - 1) await new Promise(res => setTimeout(res, TCGDEX_GAP_MS));
   }
   q.lastTcgdexPass = today;
-  return { done, failedData, ran: true, errorTally, total: laneItems.length };
+  // ran:true whenever there was lane work to consider (even if every card was
+  // skipped) so the caller still reports/persists an outcome for the status
+  // panel - "ran but nothing to do" is a real, reportable state, distinct
+  // from "no tcgdex-lane items exist at all" (laneItems.length === 0).
+  return { done, failedData, skipped, ran: laneItems.length > 0, errorTally, total: laneItems.length };
 }
 
 async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
@@ -7959,25 +8202,37 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
 
-// Raw singles that are Available, have no resolved TCGdex id, and are in a
-// language TCGdex can't price at all (CN) - separate from "unresolved" below
-// because there's genuinely no fix available (adding the number won't help),
-// vs unresolved which the user CAN fix by correcting the name/number.
-function _kjrChineseUnpriceable() {
-  return (DB.singles || []).filter(i => (i.status||'Available') === 'Available'
-    && (i.language||'').toString().trim().toUpperCase() === 'CN');
+// Raw singles that are Available and in a manual-only language (anything
+// non-English: JP/CN/ID/KR/...) - separate from "unresolved" below because
+// there's no fix available on the pricing side at all, by product design
+// (English-only auto-pricing, see _queueLaneFor) rather than a per-card data
+// problem. Named for what it actually checks now (every non-EN language,
+// matching _queueLaneFor's 'manual' lane exactly) - was briefly
+// "_kjrChineseUnpriceable" mid-rework when the check was CN-only, renamed
+// once it broadened so a JP/ID/KR card never surfaces as "Chinese" in the UI.
+function _kjrManualLangCards() {
+  return (DB.singles || []).filter(i => {
+    if ((i.status||'Available') !== 'Available') return false;
+    const lang = (i.language||'EN').toString().trim().toUpperCase();
+    return lang !== 'EN' && lang !== '';
+  });
 }
 
-// Raw singles that are Available, in a free-lane language (EN/JP/blank), but
-// have no resolved tcgdexId and no extractable name+number to resolve one -
-// these will never auto-price until the user adds the card number or an
-// override TCGdex ID. Mirrors _queueLaneFor's resolvability check.
+// Raw singles that are Available, English (or blank, which defaults to EN -
+// see _queueLaneFor), but could not be auto-priced: either no extractable
+// name+number to resolve a TCGdex id at all, or a number WAS extracted but
+// today's TCGdex lookup found no unique match (_tcgdexMissDate stamped by
+// _runTcgdexLane's self-heal loop, cleared automatically once the card is
+// priced or the date rolls over). Never counts JP/CN/ID/KR cards - those are
+// manual by design (_kjrManualLangCards above), not "unresolved". Mirrors
+// _queueLaneFor's resolvability check for the no-number case.
 function _kjrUnresolvedSingles() {
   return (DB.singles || []).filter(i => {
     if ((i.status||'Available') !== 'Available') return false;
     if (i.tcgdexId) return false; // already resolved
     const lang = (i.language||'EN').toString().trim().toUpperCase();
-    if (lang === 'CN') return false; // counted separately, not "fixable" by adding a number
+    if (lang !== 'EN' && lang !== '') return false; // manual language, not "fixable" by adding a number
+    if (i._tcgdexMissDate) return true; // had a number, TCGdex tried today and found no unique match
     return !(_baseCardName(i.name) && _tcgdexNumber(i.name));
   });
 }
@@ -8011,7 +8266,7 @@ function _renderQueueStatus() {
   const tcgdexRanToday = q.lastTcgdexPass === today;
 
   const unresolvedCount = _kjrUnresolvedSingles().length;
-  const chineseCount    = _kjrChineseUnpriceable().length;
+  const manualLangCount = _kjrManualLangCards().length;
 
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
@@ -8043,10 +8298,10 @@ function _renderQueueStatus() {
         <div style="font-weight:600">${q.completed ? '0' : daysLeft}</div>
       </div>
     </div>
-    ${(unresolvedCount > 0 || chineseCount > 0) ? `<div style="font-size:11px;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:10px;line-height:1.5">
+    ${(unresolvedCount > 0 || manualLangCount > 0) ? `<div style="font-size:11px;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:10px;line-height:1.5">
       ${unresolvedCount > 0 ? unresolvedCount + ' card' + (unresolvedCount!==1?'s':'') + ' unresolved, add the card number for exact pricing.' : ''}
-      ${unresolvedCount > 0 && chineseCount > 0 ? '<br>' : ''}
-      ${chineseCount > 0 ? chineseCount + ' Chinese card' + (chineseCount!==1?'s':'') + ' have no free price source.' : ''}
+      ${unresolvedCount > 0 && manualLangCount > 0 ? '<br>' : ''}
+      ${manualLangCount > 0 ? manualLangCount + ' non-English card' + (manualLangCount!==1?'s':'') + ' priced manually, no free source for that language.' : ''}
     </div>` : ''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
       Queue built ${new Date(q.createdAt).toLocaleDateString()} ·

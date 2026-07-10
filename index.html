@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.16">
+<link rel="stylesheet" href="styles.css?v=3.17">
 </head>
 <body>
 
@@ -84,7 +84,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.16 (10 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.17 (10 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -156,7 +156,7 @@
          its width changing never moves nav's left-aligned tabs (it used to sit
          between the logo and <nav>, and collapsing to '' after 3s shifted the
          entire tab row left by the text's width). Do not move it back. -->
-    <span id="sync-indicator" style="font-size:11px;transition:color 0.3s;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis"></span>
+    <span id="sync-indicator" style="font-size:11px;transition:color 0.3s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
     <button class="btn btn-primary btn-sm" onclick="openCmdBar()" title="Quick add / log sale (⌘K)" style="gap:6px;padding:6px 12px">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:13px;height:13px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Quick Entry <span style="font-size:10px;opacity:0.7;font-weight:400">⌘K</span>
@@ -289,13 +289,13 @@
           </tr>
           <tr class="filter-row">
             <th data-col-key="_cb" class="cb-col"></th>
-            <th data-col-key="name"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-name"></th>
-            <th data-col-key="costPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSingles()" id="sf-cost"></th>
-            <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSingles()" id="sf-mkt"></th>
-            <th data-col-key="listPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSingles()" id="sf-list"></th>
-            <th data-col-key="language"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-lang"></th>
-            <th data-col-key="type"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-type"></th>
-            <th data-col-key="datePurchased"><input class="col-filter" placeholder="Filter..." oninput="renderSingles()" id="sf-date"></th>
+            <th data-col-key="name"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Card" oninput="renderSingles()" id="sf-name"></th>
+            <th data-col-key="costPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Cost" oninput="renderSingles()" id="sf-cost"></th>
+            <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Market" oninput="renderSingles()" id="sf-mkt"></th>
+            <th data-col-key="listPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Carousell" oninput="renderSingles()" id="sf-list"></th>
+            <th data-col-key="language"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Language" oninput="renderSingles()" id="sf-lang"></th>
+            <th data-col-key="type"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Type" oninput="renderSingles()" id="sf-type"></th>
+            <th data-col-key="datePurchased"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderSingles()" id="sf-date"></th>
             <th data-col-key="actions"></th>
           </tr>
         </thead>
@@ -382,15 +382,15 @@
           </tr>
           <tr class="filter-row">
             <th data-col-key="_cb" class="cb-col"></th>
-            <th data-col-key="name"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-name"></th>
-            <th data-col-key="_grade"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-grade"></th>
-            <th data-col-key="certNo"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-cert"></th>
-            <th data-col-key="rank"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-rank"></th>
-            <th data-col-key="dateListed"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-date"></th>
-            <th data-col-key="language"><input class="col-filter" placeholder="Filter..." oninput="renderSlabs()" id="slbf-lang"></th>
-            <th data-col-key="costPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSlabs()" id="slbf-cost"></th>
-            <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSlabs()" id="slbf-mkt"></th>
-            <th data-col-key="listPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderSlabs()" id="slbf-list"></th>
+            <th data-col-key="name"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Card" oninput="renderSlabs()" id="slbf-name"></th>
+            <th data-col-key="_grade"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Grade" oninput="renderSlabs()" id="slbf-grade"></th>
+            <th data-col-key="certNo"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Cert #" oninput="renderSlabs()" id="slbf-cert"></th>
+            <th data-col-key="rank"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Rank" oninput="renderSlabs()" id="slbf-rank"></th>
+            <th data-col-key="dateListed"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderSlabs()" id="slbf-date"></th>
+            <th data-col-key="language"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Language" oninput="renderSlabs()" id="slbf-lang"></th>
+            <th data-col-key="costPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Cost" oninput="renderSlabs()" id="slbf-cost"></th>
+            <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Market" oninput="renderSlabs()" id="slbf-mkt"></th>
+            <th data-col-key="listPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Carousell" oninput="renderSlabs()" id="slbf-list"></th>
             <th data-col-key="actions"></th>
           </tr>
         </thead>
@@ -461,9 +461,9 @@
           </tr>
           <tr class="filter-row">
             <th data-col-key="_cb" class="cb-col"></th>
-            <th data-col-key="dateSold"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-date"></th>
-            <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-product"></th>
-            <th data-col-key="buyer"><input class="col-filter" placeholder="Filter..." oninput="renderSales()" id="slf-buyer"></th>
+            <th data-col-key="dateSold"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderSales()" id="slf-date"></th>
+            <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderSales()" id="slf-product"></th>
+            <th data-col-key="buyer"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Buyer" oninput="renderSales()" id="slf-buyer"></th>
             <th data-col-key="costPrice"></th><th data-col-key="totalCollected"></th><th data-col-key="shippingCost"></th><th data-col-key="fees"></th><th data-col-key="channel"></th><th data-col-key="daysHeld"></th><th data-col-key="profit"></th><th data-col-key="margin"></th><th data-col-key="actions"></th>
           </tr>
         </thead>
@@ -1299,12 +1299,12 @@
     </tr>
     <tr class="filter-row">
       <th data-col-key="status"></th>
-      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderEtbs()" id="kjr-etb-cf-product"></th>
-      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderEtbs()" id="kjr-etb-cf-cost"></th>
-      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderEtbs()" id="kjr-etb-cf-mkt"></th>
-      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderEtbs()" id="kjr-etb-cf-list"></th>
-      <th data-col-key="condition"><input class="col-filter" placeholder="Filter..." oninput="renderEtbs()" id="kjr-etb-cf-cond"></th>
-      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." oninput="renderEtbs()" id="kjr-etb-cf-date"></th>
+      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderEtbs()" id="kjr-etb-cf-product"></th>
+      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Cost" oninput="renderEtbs()" id="kjr-etb-cf-cost"></th>
+      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Market" oninput="renderEtbs()" id="kjr-etb-cf-mkt"></th>
+      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Carousell" oninput="renderEtbs()" id="kjr-etb-cf-list"></th>
+      <th data-col-key="condition"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Condition" oninput="renderEtbs()" id="kjr-etb-cf-cond"></th>
+      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderEtbs()" id="kjr-etb-cf-date"></th>
       <th data-col-key="actions"></th>
     </tr>
   </thead><tbody id="kjr-etb-body"></tbody></table></div></div>
@@ -1356,15 +1356,15 @@
       <th data-col-key="actions">Actions</th>
     </tr>
     <tr class="filter-row">
-      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterBoxes()" id="kjr-bb-cf-date"></th>
-      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterBoxes()" id="kjr-bb-cf-product"></th>
-      <th data-col-key="unitPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterBoxes()" id="kjr-bb-cf-unit"></th>
-      <th data-col-key="qty"><input class="col-filter" placeholder=">2 / 1-5" title="Examples: 3 (exact) · &gt;2 · &lt;5 · 1-10" oninput="renderBoosterBoxes()" id="kjr-bb-cf-qty"></th>
-      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">100 / 200-500" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterBoxes()" id="kjr-bb-cf-total"></th>
-      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterBoxes()" id="kjr-bb-cf-mkt"></th>
-      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterBoxes()" id="kjr-bb-cf-list"></th>
+      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderBoosterBoxes()" id="kjr-bb-cf-date"></th>
+      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderBoosterBoxes()" id="kjr-bb-cf-product"></th>
+      <th data-col-key="unitPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Unit Price" oninput="renderBoosterBoxes()" id="kjr-bb-cf-unit"></th>
+      <th data-col-key="qty"><input class="col-filter" placeholder=">2 / 1-5" title="Examples: 3 (exact) · &gt;2 · &lt;5 · 1-10" aria-label="Filter by Qty" oninput="renderBoosterBoxes()" id="kjr-bb-cf-qty"></th>
+      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">100 / 200-500" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Total" oninput="renderBoosterBoxes()" id="kjr-bb-cf-total"></th>
+      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Market" oninput="renderBoosterBoxes()" id="kjr-bb-cf-mkt"></th>
+      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Carousell" oninput="renderBoosterBoxes()" id="kjr-bb-cf-list"></th>
       <th data-col-key="status"></th>
-      <th data-col-key="notes"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterBoxes()" id="kjr-bb-cf-notes"></th>
+      <th data-col-key="notes"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Notes" oninput="renderBoosterBoxes()" id="kjr-bb-cf-notes"></th>
       <th data-col-key="actions"></th>
     </tr>
   </thead><tbody id="kjr-bb-body"></tbody></table></div></div>
@@ -1403,15 +1403,15 @@
       <th data-col-key="actions">Actions</th>
     </tr>
     <tr class="filter-row">
-      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterPacks()" id="kjr-bp-cf-date"></th>
-      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterPacks()" id="kjr-bp-cf-product"></th>
-      <th data-col-key="unitPrice"><input class="col-filter" placeholder=">5 / 10-20" title="Examples: 10 (±$1) · &gt;5 · &lt;20 · 5-15" oninput="renderBoosterPacks()" id="kjr-bp-cf-unit"></th>
-      <th data-col-key="qty"><input class="col-filter" placeholder=">2 / 1-5" title="Examples: 3 · &gt;2 · &lt;10 · 1-5" oninput="renderBoosterPacks()" id="kjr-bp-cf-qty"></th>
-      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">20 / 50-100" title="Examples: 50 (±$1) · &gt;20 · &lt;100 · 50-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-total"></th>
-      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-mkt"></th>
-      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" oninput="renderBoosterPacks()" id="kjr-bp-cf-list"></th>
+      <th data-col-key="date"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderBoosterPacks()" id="kjr-bp-cf-date"></th>
+      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderBoosterPacks()" id="kjr-bp-cf-product"></th>
+      <th data-col-key="unitPrice"><input class="col-filter" placeholder=">5 / 10-20" title="Examples: 10 (±$1) · &gt;5 · &lt;20 · 5-15" aria-label="Filter by Unit Price" oninput="renderBoosterPacks()" id="kjr-bp-cf-unit"></th>
+      <th data-col-key="qty"><input class="col-filter" placeholder=">2 / 1-5" title="Examples: 3 · &gt;2 · &lt;10 · 1-5" aria-label="Filter by Qty" oninput="renderBoosterPacks()" id="kjr-bp-cf-qty"></th>
+      <th data-col-key="totalPrice"><input class="col-filter" placeholder=">20 / 50-100" title="Examples: 50 (±$1) · &gt;20 · &lt;100 · 50-200" aria-label="Filter by Total" oninput="renderBoosterPacks()" id="kjr-bp-cf-total"></th>
+      <th data-col-key="marketPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Market" oninput="renderBoosterPacks()" id="kjr-bp-cf-mkt"></th>
+      <th data-col-key="carousellPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Carousell" oninput="renderBoosterPacks()" id="kjr-bp-cf-list"></th>
       <th data-col-key="status"></th>
-      <th data-col-key="notes"><input class="col-filter" placeholder="Filter..." oninput="renderBoosterPacks()" id="kjr-bp-cf-notes"></th>
+      <th data-col-key="notes"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Notes" oninput="renderBoosterPacks()" id="kjr-bp-cf-notes"></th>
       <th data-col-key="actions"></th>
     </tr>
   </thead><tbody id="kjr-bp-body"></tbody></table></div></div>
@@ -1464,14 +1464,14 @@
     </tr>
     <tr class="filter-row">
       <th data-col-key="_cb" class="cb-col"></th>
-      <th data-col-key="date"><input class="col-filter" placeholder="Filter - month, year…" oninput="renderEbayPurchases()" id="kjr-ebay-cf-date"></th>
-      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." oninput="renderEbayPurchases()" id="kjr-ebay-cf-product"></th>
+      <th data-col-key="date"><input class="col-filter" placeholder="Filter - month, year…" aria-label="Filter by Date" oninput="renderEbayPurchases()" id="kjr-ebay-cf-date"></th>
+      <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderEbayPurchases()" id="kjr-ebay-cf-product"></th>
       <th data-col-key="status"></th>
-      <th data-col-key="tracking"><input class="col-filter" placeholder="Filter..." oninput="renderEbayPurchases()" id="kjr-ebay-cf-tracking"></th>
-      <th data-col-key="declared"><input class="col-filter" placeholder="Yes / No…" oninput="renderEbayPurchases()" id="kjr-ebay-cf-declared"></th>
-      <th data-col-key="priceUsd"><input class="col-filter" placeholder=">20 / 50-100" title="USD - Examples: 50 (±$1) · &gt;20 · &lt;100 · 20-80" oninput="renderEbayPurchases()" id="kjr-ebay-cf-usd"></th>
-      <th data-col-key="freightSgd"><input class="col-filter" placeholder=">5 / 10-20" title="SGD freight - Examples: 10 (±$1) · &gt;5 · &lt;20" oninput="renderEbayPurchases()" id="kjr-ebay-cf-freight"></th>
-      <th data-col-key="totalSgd"><input class="col-filter" placeholder=">50 / 100-300" title="Total SGD - Examples: 100 (±$1) · &gt;50 · &lt;300 · 100-500" oninput="renderEbayPurchases()" id="kjr-ebay-cf-sgd"></th>
+      <th data-col-key="tracking"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Tracking" oninput="renderEbayPurchases()" id="kjr-ebay-cf-tracking"></th>
+      <th data-col-key="declared"><input class="col-filter" placeholder="Yes / No…" aria-label="Filter by Declared" oninput="renderEbayPurchases()" id="kjr-ebay-cf-declared"></th>
+      <th data-col-key="priceUsd"><input class="col-filter" placeholder=">20 / 50-100" title="USD - Examples: 50 (±$1) · &gt;20 · &lt;100 · 20-80" aria-label="Filter by USD" oninput="renderEbayPurchases()" id="kjr-ebay-cf-usd"></th>
+      <th data-col-key="freightSgd"><input class="col-filter" placeholder=">5 / 10-20" title="SGD freight - Examples: 10 (±$1) · &gt;5 · &lt;20" aria-label="Filter by Freight" oninput="renderEbayPurchases()" id="kjr-ebay-cf-freight"></th>
+      <th data-col-key="totalSgd"><input class="col-filter" placeholder=">50 / 100-300" title="Total SGD - Examples: 100 (±$1) · &gt;50 · &lt;300 · 100-500" aria-label="Filter by SGD" oninput="renderEbayPurchases()" id="kjr-ebay-cf-sgd"></th>
       <th data-col-key="lastUpdated"></th>
       <th data-col-key="actions"></th>
     </tr>
@@ -1576,7 +1576,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.16"></script>
-<script src="features.js?v=3.16"></script>
+<script src="app.js?v=3.17"></script>
+<script src="features.js?v=3.17"></script>
 </body>
 </html>

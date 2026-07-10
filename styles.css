@@ -125,6 +125,11 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
    via el.style.color (grey/green/red per state), using currentColor so no
    per-state classes are needed. Hidden entirely when empty (idle / after the
    3s auto-clear on success) so no empty pill shell lingers. */
+/* flex-shrink:0 + max-width live here (not inline) so the mobile override
+   at max-width:768px below can actually win - an inline style attribute
+   otherwise always beats an external stylesheet rule, which is what let the
+   pill get squeezed to ~52px ("⚠ S…") on 375px before this fix (Finding 3). */
+#sync-indicator{flex-shrink:0;max-width:220px}
 #sync-indicator:not(:empty){padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb, currentColor 35%, transparent);background:color-mix(in srgb, currentColor 12%, transparent);font-weight:500;transition:color 0.3s,background 0.3s,border-color 0.3s}
 #sync-indicator:empty{display:none}
 .icon-btn{width:32px;height:32px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text2);transition:all 0.15s;flex-shrink:0}
@@ -466,14 +471,31 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
      fine on desktop where .nav's flex:1 leaves it plenty of room, but with
      .nav hidden here it must be allowed to shrink or it overflows the
      topbar - see the sync-indicator rule below). */
-  .logo{flex-shrink:0}
+  /* margin-right:0 reclaims the 32px gap the base .logo rule reserves for
+     .nav (which is display:none here) - that dead space was the real reason
+     the topbar overflowed at 375px once the sync pill got flex-shrink:0
+     protection above (Finding 3): the gear/settings icon-btn was being pushed
+     off the right edge with ~20-28px to spare that this margin was wasting. */
+  .logo{flex-shrink:0;margin-right:0}
   .topbar-actions{gap:4px;margin-left:auto;flex-shrink:1;min-width:0}
   .topbar-actions .icon-btn{display:none}
   /* keep the gear (Settings) and GitHub push reachable on mobile */
   .topbar-actions .nav-dd .icon-btn,
   .topbar-actions #gh-push-btn{display:flex}
-  #sync-indicator{min-width:0}
-  .topbar-actions .btn-primary{font-size:0;padding:0 18px;min-height:42px;min-width:64px;display:inline-flex;align-items:center;justify-content:center;gap:0}
+  /* Sync pill text is short at mobile widths ("Syncing...", "Synced",
+     "⚠ Sync error" - see setSyncStatus), so protect it with flex-shrink:0 and
+     a fitting max-width instead of letting it get squeezed toward 0 by its
+     siblings (was rendering "⚠ S…" at 52px before this fix). It still
+     collapses to width 0 when empty (#sync-indicator:empty rule), so this
+     does not reserve dead space during the idle state. */
+  #sync-indicator{flex-shrink:0;min-width:0;max-width:130px}
+  /* padding trimmed from 18px to 12px each side (was 64px wide total incl.
+     the 20px icon) - the icon-only button doesn't need that much horizontal
+     padding, and the saved ~12px keeps the topbar from overflowing at 375px
+     now that the sync pill is protected with flex-shrink:0 above (Finding 3) -
+     without this the settings gear got pushed off the right edge of the
+     viewport. min-width dropped to match so it can actually shrink that far. */
+  .topbar-actions .btn-primary{font-size:0;padding:0 12px;min-height:42px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;gap:0}
   .topbar-actions .btn-primary svg{width:20px;height:20px;margin:0}
   .topbar-actions .btn-primary span{display:none}
 }

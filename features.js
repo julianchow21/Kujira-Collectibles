@@ -736,9 +736,19 @@ function renderEtbs(){
 
   // Stats use only In Stock so sold/traded don't inflate exposure totals.
   const totalCost   = inStock.reduce((s,r) => s + kjrNum(r.totalPrice), 0);
-  const totalMarket = inStock.reduce((s,r) => s + (kjrNum(r.marketPrice) || kjrNum(r.totalPrice)), 0);
-  const profit      = totalMarket - totalCost;
+  // Market Value must never substitute cost when marketPrice is unset (Julian:
+  // "leave it blank and not corrupt the data by giving the cost price"). Sum
+  // over priced rows only, matching the zero-fallback convention renderSingles
+  // uses for its own Market Price stat card.
+  const pricedEtbs  = inStock.filter(r => kjrNum(r.marketPrice) > 0);
+  const totalMarket = pricedEtbs.reduce((s,r) => s + kjrNum(r.marketPrice), 0);
+  // Profit compares priced rows' own market against their own cost only - never
+  // partial market against full cost across the whole In-Stock set.
+  const pricedCost  = pricedEtbs.reduce((s,r) => s + kjrNum(r.totalPrice), 0);
+  const profit      = totalMarket - pricedCost;
   const profitSign  = profit >= 0 ? '+' : '';
+  const pricedCaption = inStock.length > 0 && pricedEtbs.length < inStock.length
+    ? '<div style="font-size:10px;color:var(--text3);margin-top:2px">' + pricedEtbs.length + ' of ' + inStock.length + ' priced</div>' : '';
   // Condition split - Mint vs everything else
   const cnd = c => (c||'').toString().trim().toLowerCase();
   const mintCount = inStock.filter(r => cnd(r.condition) === 'mint').length;
@@ -759,7 +769,7 @@ function renderEtbs(){
       </div>`;
   document.getElementById('kjr-etb-stats').innerHTML =
     kjrStatCard('Total Cost',   kjrFmt(totalCost) || 'S$0') +
-    kjrStatCard('Market Value', kjrFmt(totalMarket) || 'S$0') +
+    kjrStatCard('Market Value', (pricedEtbs.length > 0 ? kjrFmt(totalMarket) || 'S$0' : '-') + pricedCaption) +
     kjrStatCard('Available',    inStock.length) +
     condCard;
 

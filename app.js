@@ -178,9 +178,18 @@ function setSyncStatus(s, msg) {
   _syncStatus = s;
   const el = document.getElementById('sync-indicator');
   if (!el) return;
-  if (s === 'saving') { el.textContent = '⟳ Syncing...'; el.style.color = 'var(--text3)'; }
-  else if (s === 'ok') { el.textContent = '✓ Synced'; el.style.color = 'var(--green)'; setTimeout(() => { if (_syncStatus === 'ok') el.textContent = ''; }, 3000); }
-  else if (s === 'error') { el.textContent = '⚠ Sync failed - check connection'; el.style.color = 'var(--red)'; if (msg) console.error('Sync error:', msg); }
+  // title always carries the FULL message so a tap-and-hold (mobile) or hover
+  // (desktop) reveals it even when the visible text is short/truncated - see
+  // the narrow-width CSS below for why the visible copy differs at mobile.
+  if (s === 'saving') { el.textContent = '⟳ Syncing...'; el.title = 'Syncing...'; el.style.color = 'var(--text3)'; }
+  else if (s === 'ok') {
+    el.textContent = '✓ Synced'; el.title = 'Synced'; el.style.color = 'var(--green)';
+    setTimeout(() => { if (_syncStatus === 'ok') { el.textContent = ''; el.title = ''; } }, 3000);
+  }
+  else if (s === 'error') {
+    el.textContent = '⚠ Sync error'; el.title = 'Sync failed - check connection';
+    el.style.color = 'var(--red)'; if (msg) console.error('Sync error:', msg);
+  }
 }
 
 // ── Import progress bar ───────────────────────────────────────
@@ -561,7 +570,24 @@ async function saveAllToSupabase() {
 
 
 // DB is populated async by initDB() called at bottom of page
-let DB = { singles: [], slabs: [], sales: [], etbs: [], boosterBoxes: [], boosterPacks: [], ebayPurchases: [] };
+let DB = { singles: [], slabs: [], sales: [], etbs: [], boosterBoxes: [], boosterPacks: [], ebayPurchases: [], trash: [] };
+
+// Local-only trash store, used exclusively on localhost preview (see Gotchas).
+// The Supabase write guard must never be bypassed, so a localhost delete keeps
+// its 30-day-restore snapshot entirely in localStorage instead of the cloud
+// 'trash' table. Entry shape mirrors the cloud trashEntry (id/data/updated_at)
+// so renderTrash()/restoreFromTrash() work unchanged either way.
+const LOCAL_TRASH_KEY = '_kjrLocalTrash';
+
+function _loadLocalTrash() {
+  try { return JSON.parse(localStorage.getItem(LOCAL_TRASH_KEY) || '[]'); }
+  catch(e) { return []; }
+}
+
+function _saveLocalTrash() {
+  try { localStorage.setItem(LOCAL_TRASH_KEY, JSON.stringify(DB.trash)); }
+  catch(e) { console.warn('Local trash save failed:', e); }
+}
 
 function genId(prefix) { return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
 
@@ -845,6 +871,11 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
 
 async function initDB() {
   const main = document.getElementById('main-content');
+
+  // Local trash only ever applies on localhost (see LOCAL_TRASH_KEY above);
+  // load it regardless so a page that toggles isLocalhostPreview() mid-session
+  // (rare, but cheap to guard) still sees any prior local trash entries.
+  DB.trash = _loadLocalTrash();
 
   // ── Always fetch from Supabase first - it is the source of truth ──
   // Show cached localStorage instantly while cloud loads (no count-based decisions)
@@ -4699,7 +4730,14 @@ async function sendToTrash(table, item, reason) {
     },
     updated_at: new Date().toISOString()
   };
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
+  if (isLocalhostPreview()) {
+    // Never write to prod from a local preview - keep the snapshot entirely
+    // local instead (DB.trash + localStorage) so the Trash tab and restore
+    // still work on localhost. See LOCAL_TRASH_KEY above.
+    DB.trash.push(trashEntry);
+    _saveLocalTrash();
+    return;
+  }
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
       method: 'POST',
@@ -4715,12 +4753,18 @@ async function sendToTrash(table, item, reason) {
 }
 
 async function sendBatchToTrash(table, items, reason) {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
   const rows = items.map(item => ({
     id: 'trash_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) + '_' + item.id.slice(-4),
     data: { originalTable: table, originalId: item.id, item, reason: reason || 'bulk', deletedAt: new Date().toISOString() },
     updated_at: new Date().toISOString()
   }));
+  if (isLocalhostPreview()) {
+    // Never write to prod from a local preview - keep the snapshots entirely
+    // local instead (DB.trash + localStorage), same treatment as sendToTrash.
+    DB.trash.push(...rows);
+    _saveLocalTrash();
+    return;
+  }
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
       method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
@@ -4735,6 +4779,12 @@ async function sendBatchToTrash(table, items, reason) {
 }
 
 async function fetchTrash() {
+  if (isLocalhostPreview()) {
+    // Cloud reads fail outright on localhost by design (no network path to
+    // the DB proxy) - serve the local-only trash store instead, newest first,
+    // same shape sbFetchPaged would return.
+    return [...DB.trash].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  }
   try {
     // Was a single limit=2000 request - PostgREST caps a single response at
     // 1000 rows regardless of the requested limit, so trash past the first
@@ -4747,7 +4797,12 @@ async function fetchTrash() {
 }
 
 async function hardDeleteTrashEntry(trashId) {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
+  if (isLocalhostPreview()) {
+    // Never write to prod from a local preview - remove the local-only entry.
+    DB.trash = DB.trash.filter(e => e.id !== trashId);
+    _saveLocalTrash();
+    return;
+  }
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash?id=eq.' + encodeURIComponent(trashId), {
       method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
@@ -6488,8 +6543,16 @@ function _buildAnalystSnapshot(){
   // Previously slabs were sorted by market value and capped at 100, which
   // meant a high-ROI but low-priced slab (e.g. an Eevee TAG 10 bought
   // cheap) could fall out of the AI's view entirely.
+  // Sort only - falling back to cost here just orders unpriced rows
+  // sensibly, it never reaches the payload as a market figure.
   const bySgdValue = arr => [...arr].sort((a,b) => num(b.marketPrice||b.totalPrice) - num(a.marketPrice||a.totalPrice));
   const TOP = { singles: 200, sealed: 60 };
+  // Sealed market value must never fall back to cost (Julian: "if it cannot
+  // find the current market price, it should leave it blank and not corrupt
+  // the data by giving the cost price"). null means genuinely unpriced, kept
+  // out of the AI's totals rather than silently counted at cost.
+  const sealedMarket = r => kjrNum(r.marketPrice) > 0 ? round(r.marketPrice) : null;
+  const sealedRoi = r => kjrNum(r.marketPrice) > 0 ? inventoryRoi(r.totalPrice, r.marketPrice) : null;
 
   const singles = bySgdValue(singlesAll).slice(0, TOP.singles).map(i => ({
     name: trim(i.name, 60), set: i.set, language: i.language, type: i.type,
@@ -6521,13 +6584,19 @@ function _buildAnalystSnapshot(){
     roi_on_cost_pct:    saleRoi(s.costPrice, s.profit)
   }));
   const sealed = [
-    ...bySgdValue(etbsAll).slice(0, TOP.sealed).map(r => ({ type:'ETB', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: round(r.marketPrice||r.totalPrice), roi_on_cost_pct: inventoryRoi(r.totalPrice, r.marketPrice||r.totalPrice) })),
-    ...bySgdValue(bbAll).slice(0, TOP.sealed).map(r => ({ type:'Booster Box', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: round(r.marketPrice||r.totalPrice), roi_on_cost_pct: inventoryRoi(r.totalPrice, r.marketPrice||r.totalPrice) })),
-    ...bySgdValue(bpAll).slice(0, TOP.sealed).map(r => ({ type:'Booster Pack', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: round(r.marketPrice||r.totalPrice), roi_on_cost_pct: inventoryRoi(r.totalPrice, r.marketPrice||r.totalPrice) })),
+    ...bySgdValue(etbsAll).slice(0, TOP.sealed).map(r => ({ type:'ETB', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: sealedMarket(r), roi_on_cost_pct: sealedRoi(r) })),
+    ...bySgdValue(bbAll).slice(0, TOP.sealed).map(r => ({ type:'Booster Box', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: sealedMarket(r), roi_on_cost_pct: sealedRoi(r) })),
+    ...bySgdValue(bpAll).slice(0, TOP.sealed).map(r => ({ type:'Booster Pack', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: sealedMarket(r), roi_on_cost_pct: sealedRoi(r) })),
   ];
-  // Totals computed from the FULL dataset, not the top-N slice
+  // Totals computed from the FULL dataset, not the top-N slice.
+  // sumMarket keeps the cost fallback for singles/slabs (their own market
+  // fields are separately zero-guarded elsewhere) but sealed totals below
+  // are summed over priced rows only - see sumSealedMarket.
   const sumCost   = arr => arr.reduce((s,i) => s + (num(i.costPrice||i.totalPrice) * (parseInt(i.qty)||1)), 0);
   const sumMarket = arr => arr.reduce((s,i) => s + (num(i.marketPrice||i.totalPrice) * (parseInt(i.qty)||1)), 0);
+  // Sealed-only: sum market over priced rows, never fall back to cost.
+  const sumSealedMarket = arr => arr.reduce((s,r) => s + (kjrNum(r.marketPrice) > 0 ? kjrNum(r.marketPrice) * (parseInt(r.qty)||1) : 0), 0);
+  const countSealedPriced = arr => arr.filter(r => kjrNum(r.marketPrice) > 0).length;
   const sumProfit = arr => arr.reduce((s,i) => s + num(i.profit), 0);
   const sumRevenue= arr => arr.reduce((s,i) => s + num(i.totalCollected), 0);
   const totalRealisedCost   = sumCost(salesAll);
@@ -6542,6 +6611,11 @@ function _buildAnalystSnapshot(){
     cost_sealed_sgd:  round(sumCost(etbsAll) + sumCost(bbAll) + sumCost(bpAll)),
     market_singles_sgd: round(sumMarket(singlesAll)),
     market_slabs_sgd:   round(sumMarket(slabsAll)),
+    // Sealed market value: priced rows only, no cost fallback (see sumSealedMarket).
+    // sealed_priced_count / sealed_count together give the model "N of M priced"
+    // context instead of silently treating unpriced sealed stock as valued at cost.
+    market_sealed_sgd:  round(sumSealedMarket(etbsAll) + sumSealedMarket(bbAll) + sumSealedMarket(bpAll)),
+    sealed_priced_count: countSealedPriced(etbsAll) + countSealedPriced(bbAll) + countSealedPriced(bpAll),
     realised_revenue_sgd: round(sumRevenue(salesAll)),
     realised_profit_sgd:  round(totalRealisedProfit),
     realised_roi_on_cost_pct: totalRealisedCost > 0 ? r1((totalRealisedProfit/totalRealisedCost)*100) : null,
@@ -6558,7 +6632,9 @@ function _buildAnalystSnapshot(){
       glossary: {
         roi_on_cost_pct:   'Profit / Cost x 100. ROI from the buyer\'s point of view. Held inventory uses (Market − Cost). Sales use realised profit.',
         gross_margin_pct:  'Profit / Revenue x 100. The fraction of the sale price that is profit. Sales only.',
-        unrealised_pnl_sgd:'Market value minus cost on a still-held item.'
+        unrealised_pnl_sgd:'Market value minus cost on a still-held item.',
+        market_sgd_null:   'null on a sealed row (ETB/Booster Box/Booster Pack) means no market price has been entered yet - treat as unpriced, never assume it equals cost.',
+        sealed_priced_count: 'How many of sealed_count sealed items have a market price set. Compare against sealed_count before stating a total sealed market value.'
       }
     } };
 }
@@ -6604,6 +6680,7 @@ async function sendAiAnalyst() {
     '  • roi_on_cost_pct  = Profit ÷ Cost × 100 (use this when the user asks for ROI or "return on investment")',
     '  • gross_margin_pct = Profit ÷ Revenue × 100 (use this when the user asks for "margin %" on a sale)',
     '  • unrealised_pnl_sgd = Market − Cost for held inventory',
+    '  • On sealed items (ETB/Booster Box/Booster Pack), market_sgd:null means unpriced - never assume it equals cost_sgd, say it is unpriced instead.',
     '',
     'RANKING RULES:',
     '  • "Most profitable sale" → sort by profit_sgd DESC.',

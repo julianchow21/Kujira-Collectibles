@@ -200,9 +200,21 @@ if ('serviceWorker' in navigator) {
         return;
       }
       // Delete the old IDs in Supabase too - otherwise the cloud keeps the
-      // orphans and they merge back in on next load.
+      // orphans and they merge back in on next load. Awaited (not
+      // fire-and-forget) so a failed delete cannot silently resurrect: sbDelete
+      // already catches network/HTTP failures internally and queues them onto
+      // the pending-delete retry queue (PENDING_DEL_KEY / flushPendingDeletes),
+      // but the caller still needs to wait for that to happen and warn the
+      // user, otherwise the row keeps existing in Supabase this entire session
+      // and the finding's resurrection risk is unchanged (FINDING A2).
       const sbTable = (typeof _tblName === 'function') ? _tblName(schema.dbKey) : schema.dbKey;
-      arr.forEach(r => { if (typeof sbDelete === 'function') sbDelete(sbTable, r.id).catch(()=>{}); });
+      if (typeof sbDelete === 'function') {
+        const results = await Promise.allSettled(arr.map(r => sbDelete(sbTable, r.id)));
+        const failCount = results.filter(res => res.status === 'rejected' || res.value === false).length;
+        if (failCount > 0 && typeof toastError === 'function') {
+          toastError(failCount + ' cloud delete(s) failed and were queued to retry automatically - they will not reappear.');
+        }
+      }
       DB[schema.dbKey] = newItems;
     } else {
       newItems.forEach(it => arr.push(it));
@@ -570,9 +582,15 @@ function kjrSaveModal(){
   }
   // For eBay rows, also persist the live SGD computation if the user didn't
   // manually override - keeps the table totalSgd in sync with USD×rate+freight.
+  // A manual override is persisted onto the row itself (totalSgdManual) so
+  // later inline edits (freight/price) know not to clobber it - see
+  // kjrEbayInlineEdit, which is the only other totalSgd write path.
   if (dbKey === 'ebayPurchases' && typeof kjrEbayComputeSgd === 'function') {
     const userSetSgd = !!_kjrEbUserEditedSgd;
-    if (!userSetSgd) {
+    if (userSetSgd) {
+      target.totalSgdManual = true;
+    } else {
+      target.totalSgdManual = false; // explicit "use auto-calc" reset clears any prior manual flag
       const c = kjrEbayComputeSgd(target.priceUsd, target.freightSgd, '');
       if (c.computed > 0) target.totalSgd = c.computed;
     }
@@ -648,9 +666,15 @@ const KJR_ETB_FIELDS = [
   { key:'condition',   label:'Condition',    type:'select', options:['Mint','Dented','Damaged','Sealed'] },
   { key:'date',        label:'Date',         type:'date' },
 ];
-function kjrOpenEtbModal(item){
-  const isNew = !item;
+function kjrOpenEtbModal(idOrItem){
+  const isNew = !idOrItem;
+  // Edit buttons pass the row id (not the row JSON, which broke on fields
+  // containing '&#39;' when inlined into an onclick attribute) - resolve to
+  // the live DB record here. A plain object is still accepted defensively.
+  let item;
   if (isNew) item = { id: kjrId('etb'), status:'In Stock', condition:'Mint', date:new Date().toISOString().slice(0,10) };
+  else if (typeof idOrItem === 'string') item = (DB.etbs || []).find(r => r.id === idOrItem) || { id: idOrItem };
+  else item = idOrItem;
   kjrOpenModal({ dbKey:'etbs', singular:'ETB', fields:KJR_ETB_FIELDS, item, isNew, after:renderEtbs });
 }
 // Shared helpers for kjr Available/Sold sectioning so every kjr-style tab
@@ -663,8 +687,11 @@ function kjrIsActiveStatus(table, status){
   if (table === 'boosterBoxes')  return /unopened|reserved/.test(s);
   if (table === 'boosterPacks')  return /sealed|reserved/.test(s);
   // eBay "active" = anywhere along the pipeline EXCEPT the terminal states
-  // Completed (already delivered/pushed) and Cancelled.
-  if (table === 'ebayPurchases') return !/^completed$|^cancelled$|received/.test(s);
+  // Completed (already delivered/pushed) and Cancelled. "Received" (exact,
+  // legacy pre-migration value) is also terminal, but only an EXACT match -
+  // "Partially Received" is still mid-pipeline and must stay active, so this
+  // must NOT be a bare substring test against "received".
+  if (table === 'ebayPurchases') return !/^completed$|^cancelled$|^received$/.test(s);
   return s !== 'sold' && s !== 'traded';
 }
 function kjrToggleSoldSection(table){
@@ -748,7 +775,7 @@ function renderEtbs(){
     '<td data-col-key="condition">'+kjrEscape(r.condition||'')+'</td>' +
     '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick=\'kjrOpenEtbModal('+JSON.stringify(r).replace(/'/g,'&#39;')+')\'>Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEtbModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
       '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'etbs\',\''+kjrEscape(r.id)+'\')">×</button>' +
     '</span></td>' +
     '</tr>';
@@ -781,9 +808,15 @@ const KJR_BB_FIELDS = [
   { key:'status',     label:'Status',       type:'select', options:['Unopened Stock','Opened','Sold','Reserved'] },
   { key:'notes',      label:'Notes',        type:'textarea' },
 ];
-function kjrOpenBbModal(item){
-  const isNew = !item;
+function kjrOpenBbModal(idOrItem){
+  const isNew = !idOrItem;
+  // Edit buttons pass the row id (not the row JSON, which broke on fields
+  // containing '&#39;' when inlined into an onclick attribute) - resolve to
+  // the live DB record here. A plain object is still accepted defensively.
+  let item;
   if (isNew) item = { id: kjrId('bb'), status:'Unopened Stock', date:new Date().toISOString().slice(0,10), qty:1 };
+  else if (typeof idOrItem === 'string') item = (DB.boosterBoxes || []).find(r => r.id === idOrItem) || { id: idOrItem };
+  else item = idOrItem;
   kjrOpenModal({ dbKey:'boosterBoxes', singular:'Booster Box', fields:KJR_BB_FIELDS, item, isNew, after:renderBoosterBoxes });
 }
 function renderBoosterBoxes(){
@@ -841,7 +874,7 @@ function renderBoosterBoxes(){
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick=\'kjrOpenBbModal('+JSON.stringify(r).replace(/'/g,'&#39;')+')\'>Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBbModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
       '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterBoxes\',\''+kjrEscape(r.id)+'\')">×</button>' +
     '</span></td>' +
     '</tr>';
@@ -879,8 +912,11 @@ const KJR_EBAY_PIPELINE = ['Paid','Shipping to Buyandship','At Buyandship','Read
   if (localStorage.getItem(flag)) return;
   let changed = 0;
   (DB.ebayPurchases || []).forEach(r => {
-    if (r.status === 'Ordered') { r.status = 'Paid'; markDirty('ebayPurchases', r.id); changed++; }
-    if (r.status === 'Received' || r.status === 'Completed') {
+    // Case-insensitive exact match so legacy imports like "received" or
+    // "COMPLETED" (not just the exact-cased "Received"/"Completed") are
+    // caught too - matches kjrIsActiveStatus's own case-insensitive check.
+    if (/^ordered$/i.test(r.status || '')) { r.status = 'Paid'; markDirty('ebayPurchases', r.id); changed++; }
+    if (/^received$/i.test(r.status || '') || /^completed$/i.test(r.status || '')) {
       // Existing rows already classified as completed/received are historical
       // - already counted in inventory. Mark them so the completion modal
       // doesn't re-prompt for them, and standardise on "Completed".
@@ -1022,11 +1058,16 @@ function kjrParseMultiItemProduct(text){
   return items;
 }
 
-function kjrOpenEbayModal(item){
-  const isNew = !item;
+function kjrOpenEbayModal(idOrItem){
+  const isNew = !idOrItem;
+  // Edit buttons pass the row id (not the row JSON, which broke on fields
+  // containing '&#39;' when inlined into an onclick attribute). A plain
+  // object is still accepted defensively (e.g. any future caller).
+  let item;
   if (isNew) item = { id: kjrId('eb'), status:'Paid', date:new Date().toISOString().slice(0,10), declared:'No' };
-  // Resolve to the live DB record on edit so changes persist (the row's JSON
-  // is inlined into the onclick handler, giving us a clone).
+  else if (typeof idOrItem === 'string') item = { id: idOrItem };
+  else item = idOrItem;
+  // Resolve to the live DB record on edit so changes persist.
   const target = isNew ? item : (DB.ebayPurchases.find(r => r.id === item.id) || item);
   _kjrModalCtx = { dbKey:'ebayPurchases', singular:'Purchase', item: target, isNew, after: renderEbayPurchases };
   document.getElementById('kjr-modal-title').textContent = (isNew ? 'Add ' : 'Edit ') + 'Purchase';
@@ -1097,7 +1138,12 @@ function kjrOpenEbayModal(item){
     : fDate + fStatus + fProduct + fTracking + fDeclared + fPriceUsd + fFreight + fTotal + fPush;
   document.getElementById('kjr-modal-fields').innerHTML = `<div class="form-grid">${fields}</div>`;
   kjrModalCtrl.open(document.getElementById('kjr-modal-back'));
-  _kjrEbUserEditedSgd = !!(target.totalSgd && target.totalSgd !== '');
+  // Prefer the persisted per-row flag (set by this fix's save path onward) so
+  // an unrelated edit (date, tracking, status...) doesn't silently re-stamp
+  // totalSgdManual on a row whose total was only ever auto-computed. Rows
+  // saved before this change carry no totalSgdManual, so they fall back to
+  // the old presence-of-total heuristic to preserve their existing behaviour.
+  _kjrEbUserEditedSgd = (target.totalSgdManual !== undefined) ? !!target.totalSgdManual : !!(target.totalSgd && target.totalSgd !== '');
   kjrEbayRecalc(); // initial render of breakdown
   // Run auto-detection once on open so a freshly-typed (or pre-filled) product
   // populates the target field. Respects an existing user pick (above flag).
@@ -1126,9 +1172,15 @@ function kjrEbayAutoTarget(){
     if (hintEl) hintEl.textContent = '- ' + multi.length + ' items detected, target set per-item on push-to-complete';
     return;
   }
+  // Never clobber an existing non-empty selection (auto-detected earlier, or
+  // picked by the user without triggering onchange e.g. programmatically) -
+  // only auto-fill while the field is still blank.
+  if (tgtEl.value) return;
   const detected = kjrDetectTargetTable(productStr);
-  tgtEl.value = detected || '';
-  if (hintEl) hintEl.textContent = detected ? '- auto-detected from product' : '';
+  if (detected) {
+    tgtEl.value = detected;
+    if (hintEl) hintEl.textContent = '- auto-detected from product';
+  }
 }
 function kjrEbayUserEditedSgd(){
   _kjrEbUserEditedSgd = true;
@@ -1176,14 +1228,17 @@ function renderEbayPurchases(){
     kjrMatchNumFilter(cfUsd, r.priceUsd) && kjrMatchNumFilter(cfFreight, r.freightSgd) && kjrMatchNumFilter(cfSgd, r.totalSgd)
   );
   const sorted = kjrApplySort(filtered, 'ebayPurchases');
-  const inTransit = filtered.filter(r => !['Completed','Cancelled'].includes(r.status));
+  // Stat cards are deliberately GLOBAL - they summarise the whole pipeline,
+  // not just what the search/column filters currently narrow the table to.
+  // Both "Transit Exposure" and "Shipment Count" and the pipeline breakdown
+  // below all derive from this same unfiltered active set so the cards never
+  // disagree with each other while the user is filtering the table.
+  const allActive = (DB.ebayPurchases || []).filter(r => !['Completed','Cancelled'].includes(r.status));
   // Resolve each row's effective SGD total - uses stored value if present,
   // otherwise the computed USD×rate + freight fallback.
   const effectiveSgd = r => kjrNum(r.totalSgd) > 0 ? kjrNum(r.totalSgd) : kjrEbayComputeSgd(r.priceUsd, r.freightSgd, '').computed;
-  // Stat cards: keep only the three the user actually needs.
-  const sgdInTransit = inTransit.reduce((s,r) => s + effectiveSgd(r), 0);
+  const sgdInTransitGlobal = allActive.reduce((s,r) => s + effectiveSgd(r), 0);
   // Pipeline breakdown card - one row per active stage, with a dot indicator
-  const allActive = (DB.ebayPurchases || []).filter(r => !['Completed','Cancelled'].includes(r.status));
   const ACTIVE_STAGES = KJR_EBAY_PIPELINE.filter(s => s !== 'Completed');
   const SHORT_LABELS = {'Paid':'Paid','Shipping to Buyandship':'→ BaS','At Buyandship':'At BaS','Ready to Consolidate':'Consol.','Shipping to Singapore':'→ SG','Completed':'Done'};
   const pipelineSteps = ACTIVE_STAGES.map((step, i) => {
@@ -1199,8 +1254,8 @@ function renderEbayPurchases(){
   }).join('');
   const pipelineCard = `<div class="inv-stat" style="min-width:280px"><div class="inv-stat-label" style="margin-bottom:10px">Pipeline</div><div style="display:flex;align-items:center;width:100%">${pipelineSteps || '<div style="color:var(--text3);font-size:11px">All clear</div>'}</div></div>`;
   document.getElementById('kjr-ebay-stats').innerHTML =
-    kjrStatCard('Transit Exposure', 'S$'+Math.round(sgdInTransit), 'Total SGD value of shipments not yet Completed or Cancelled') +
-    kjrStatCard('Shipment Count', inTransit.length, 'Number of shipments not yet Completed or Cancelled') +
+    kjrStatCard('Transit Exposure', 'S$'+Math.round(sgdInTransitGlobal), 'Total SGD value of shipments not yet Completed or Cancelled') +
+    kjrStatCard('Shipment Count', allActive.length, 'Number of shipments not yet Completed or Cancelled') +
     pipelineCard;
   const active   = _pinRecentsToTop(sorted.filter(r => kjrIsActiveStatus('ebayPurchases', r.status)), 'ebayPurchases');
   const inactive = sorted.filter(r => !kjrIsActiveStatus('ebayPurchases', r.status));
@@ -1284,7 +1339,7 @@ function renderEbayPurchases(){
       sgdCell +
       updatedCell +
       '<td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px">' +
-        '<button class="btn btn-ghost btn-sm" onclick=\'kjrOpenEbayModal('+JSON.stringify(r).replace(/'/g,'&#39;')+')\'>Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
         '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'ebayPurchases\',\''+kjrEscape(r.id)+'\')">×</button>' +
       '</span></td>' +
       '</tr>';
@@ -1435,9 +1490,13 @@ function kjrEbayInlineEdit(id, field, value){
   if (!p) return;
   const v = parseFloat(value);
   p[field] = isNaN(v) ? '' : v;
-  // Auto-recompute totalSgd from priceUsd + new freight unless the user has
-  // explicitly overridden it elsewhere.
-  if (field === 'freightSgd' && typeof kjrEbayComputeSgd === 'function') {
+  // If the user is editing the total SGD field directly inline, that's an
+  // explicit manual override - flag it so freight/price edits stop clobbering it.
+  if (field === 'totalSgd') p.totalSgdManual = true;
+  // Auto-recompute totalSgd from priceUsd + new freight, but never when the
+  // user has set totalSgd manually (modal or inline), and never from a blank
+  // freight (parseFloat('') is NaN, which would otherwise wipe the total).
+  if (field === 'freightSgd' && !p.totalSgdManual && value !== '' && typeof kjrEbayComputeSgd === 'function') {
     const c = kjrEbayComputeSgd(p.priceUsd, p.freightSgd, '');
     if (c.computed > 0) p.totalSgd = c.computed;
   }
@@ -1909,19 +1968,38 @@ function kjrOpenCompleteModal(id){
 
   _kjrCompleteCtx = { rowId: id, sgdCost, items };
   _renderCompleteModal();
-  kjrModalCtrl.open(document.getElementById('kjr-complete-back'));
+  // The queue-advance logic runs as kjrModalCtrl's onClose hook, so ESC,
+  // backdrop click AND the explicit close/cancel button (which all route
+  // through kjrModalCtrl.close()) advance the bulk-complete queue identically
+  // (FINDING B). Previously ESC/backdrop bypassed kjrCloseCompleteModal
+  // entirely (it was only wired to the explicit button's onclick), silently
+  // abandoning the rest of the batch. The hook is the single source of the
+  // advance - kjrModalCtrl.close() clears it before invoking, so there is no
+  // double-advance risk even though the button's onclick also calls close().
+  kjrModalCtrl.open(document.getElementById('kjr-complete-back'), { onClose: _kjrAdvanceCompleteQueue });
 }
 
-function kjrCloseCompleteModal(){
-  const back = document.getElementById('kjr-complete-back');
-  if (back) kjrModalCtrl.close(back);
+// Single source of truth for what happens when the complete modal closes,
+// by whatever path (button, ESC, backdrop). Registered as kjrModalCtrl's
+// onClose hook in kjrOpenCompleteModal - do not call this directly from
+// anywhere except that hook, or the queue could double-advance.
+function _kjrAdvanceCompleteQueue(){
   _kjrCompleteCtx = null;
-  // If a bulk-complete queue is in progress, ask whether to continue with the
-  // next pending row.
+  // If a bulk-complete queue is in progress, continue with the next pending row.
   if (_kjrCompleteQueue.length) {
     const next = _kjrCompleteQueue.shift();
     setTimeout(() => kjrOpenCompleteModal(next), 50);
   }
+}
+
+// Explicit close/cancel entry point (button onclick in index.html, and the
+// post-push-to-inventory success path). Just closes the dialog - the actual
+// queue-advance happens once, via the onClose hook above, no matter how the
+// dialog ends up closing.
+function kjrCloseCompleteModal(){
+  const back = document.getElementById('kjr-complete-back');
+  if (back) kjrModalCtrl.close(back);
+  else _kjrAdvanceCompleteQueue(); // dialog missing from DOM - hook never fires, advance manually
 }
 
 function kjrCompleteAddItem(){
@@ -2245,9 +2323,15 @@ const KJR_BP_FIELDS = [
   { key:'status',     label:'Status',       type:'select', options:['Sealed','Opened','Sold','Reserved'] },
   { key:'notes',      label:'Notes',        type:'textarea' },
 ];
-function kjrOpenBpModal(item){
-  const isNew = !item;
+function kjrOpenBpModal(idOrItem){
+  const isNew = !idOrItem;
+  // Edit buttons pass the row id (not the row JSON, which broke on fields
+  // containing '&#39;' when inlined into an onclick attribute) - resolve to
+  // the live DB record here. A plain object is still accepted defensively.
+  let item;
   if (isNew) item = { id: kjrId('bp'), status:'Sealed', date:new Date().toISOString().slice(0,10), qty:1 };
+  else if (typeof idOrItem === 'string') item = (DB.boosterPacks || []).find(r => r.id === idOrItem) || { id: idOrItem };
+  else item = idOrItem;
   kjrOpenModal({ dbKey:'boosterPacks', singular:'Booster Pack', fields:KJR_BP_FIELDS, item, isNew, after:renderBoosterPacks });
 }
 function renderBoosterPacks(){
@@ -2285,7 +2369,7 @@ function renderBoosterPacks(){
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick=\'kjrOpenBpModal('+JSON.stringify(r).replace(/'/g,'&#39;')+')\'>Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBpModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
       '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterPacks\',\''+kjrEscape(r.id)+'\')">×</button>' +
     '</span></td>' +
     '</tr>';

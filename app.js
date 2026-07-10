@@ -12,14 +12,22 @@ const kjrModalCtrl = (() => {
     document.body.style.overflow = (stack.length > 0 || sentryOpen) ? 'hidden' : '';
   }
 
-  function open(dialog, triggerEl) {
-    const trigger = triggerEl || document.activeElement;
+  // opts is optional: { trigger, onClose }. onClose (if given) is stored per
+  // dialog and invoked by close() on EVERY close path (explicit close/cancel
+  // button, ESC/'cancel' event, backdrop click) so callers that need to run
+  // logic on close (e.g. advancing a queue) get it regardless of how the
+  // dialog was dismissed - previously ESC/backdrop bypassed any wrapper
+  // function a caller used to close the dialog "properly" (FINDING B).
+  function open(dialog, opts) {
+    opts = opts || {};
+    const trigger = opts.trigger || document.activeElement;
     // iOS WebKit can leave the visual viewport offset after the keyboard was
     // up, which renders top-layer <dialog> sheets displaced above the screen.
     // Blurring a still-focused text input before showModal() dismisses the
     // keyboard first, so the sheet opens against the settled viewport.
     if (trigger && trigger.matches && trigger.matches('input,select,textarea') && typeof trigger.blur === 'function') trigger.blur();
     stack.push({ dialog, trigger });
+    dialog._kjrOnClose = (typeof opts.onClose === 'function') ? opts.onClose : null;
     dialog.dataset.dirty = '0'; // reset the unsaved-changes flag for this open cycle
     // Forms opted in via data-kjr-form get one delegated input/change listener
     // (attached once, lazily) that flips the dirty flag on any user edit.
@@ -63,6 +71,16 @@ const kjrModalCtrl = (() => {
     if (dialog.open) dialog.close();
     if (stack.length === 0 && pushed && !popping) { pushed = false; history.back(); }
     syncScroll();
+    // Run the per-dialog onClose hook (if one was registered at open()) on
+    // every close path - explicit button, ESC/'cancel', and backdrop click
+    // all funnel through this one close() function. Reentry guard: a caller
+    // whose own "proper close" wrapper both runs its own advance logic AND
+    // calls ctrl.close() would otherwise double-fire; _kjrOnClose is cleared
+    // before invoking so a second close() on the same dialog (or a hook that
+    // itself calls close() again) is a no-op.
+    const onClose = dialog._kjrOnClose;
+    dialog._kjrOnClose = null;
+    if (onClose) { try { onClose(); } catch(e) { console.error('[kjrModalCtrl] onClose hook failed:', e); } }
     if (entry.trigger && typeof entry.trigger.focus === 'function') {
       requestAnimationFrame(() => { try { entry.trigger.focus(); } catch(_){} });
     }
@@ -631,11 +649,16 @@ function _monthIdxFromString(str){
   // Exact match
   let i = MONTHS_LOWER.indexOf(s.slice(0,3));
   if (i >= 0) return i;
-  // Fuzzy - first letter must match, then look for closest by Levenshtein-ish
-  // similarity over the first 4 chars (handles "aung"→"aug", "setp"→"sep",
-  // "marc"→"mar", "februa"→"feb").
-  const cand = MONTHS_LOWER.find(m => m[0] === s[0] && (s.includes(m) || m.includes(s.slice(0,3))));
-  return cand ? MONTHS_LOWER.indexOf(cand) : -1;
+  // Unambiguous prefix only - the candidate month name must start with the
+  // full input token, and the token must be at least 3 chars. Accepts longer
+  // spellings ("june", "sept") but rejects short/ambiguous fragments like
+  // "ju" (jun or jul?) that used to silently resolve to whichever month
+  // happened to come first in the array.
+  if (s.length >= 3) {
+    const cand = MONTHS_LOWER.find(m => m.startsWith(s));
+    if (cand) return MONTHS_LOWER.indexOf(cand);
+  }
+  return -1;
 }
 function toDateMmmYyyy(val){
   if (val == null) return '';
@@ -766,6 +789,60 @@ function normalizeRecord(table, obj) {
   return out;
 }
 
+// ── Cloud/local row merge, shared by every table (primary and secondary) ──
+// Hoisted to module scope (was a const declared inside initDB's "cloud has
+// data" if-block) so the secondary-table merge below (etbs/boosterBoxes/
+// boosterPacks/ebayPurchases) genuinely reuses this, instead of a
+// `typeof mergeTable === 'function'` check that was always false because the
+// const was out of scope there - secondary tables were silently getting a
+// simplified fallback with no conflict/Changelog handling (FINDING A1).
+// No closure dependencies on anything block-local: only its own params plus
+// module-level _persistDirty, toastError, clLog, _clDiff.
+function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
+  // Guard against a 200-with-zero-rows response wiping local data (M5).
+  // A genuinely empty cloud table is indistinguishable at the HTTP level
+  // from a transient RLS/schema hiccup that also returns []. If local
+  // has rows the cloud does not, trust local, mark it all dirty so it
+  // re-uploads on the next flush, and warn once instead of silently
+  // discarding the only copy.
+  if ((!cloudRows || cloudRows.length === 0) && localRows && localRows.length > 0) {
+    localRows.forEach(r => dirtySet && dirtySet.add(r.id));
+    if (dirtySet) _persistDirty();
+    const already = mergeTable._warned || (mergeTable._warned = new Set());
+    if (!already.has(tableKey)) {
+      already.add(tableKey);
+      if (typeof toastError === 'function') toastError('Cloud returned no data for "' + tableKey + '" - kept your local copy and queued it to re-upload.');
+      console.warn('[mergeTable] cloud empty for ' + tableKey + ', keeping ' + localRows.length + ' local row(s)');
+    }
+    return localRows;
+  }
+  if (!dirtySet || dirtySet.size === 0) return cloudRows;
+  const byId = new Map(cloudRows.map(r => [r.id, r]));
+  for (const id of [...dirtySet]) {
+    const localRow = localRows.find(r => r.id === id);
+    if (!localRow) continue;
+    // Conflict check: _updatedAt on the local row is the cloud timestamp
+    // its edit was based on (the server refreshes it on every fetch). If
+    // the cloud copy is strictly newer, another device wrote after our
+    // unsynced edit. Keep the newer cloud copy rather than silently
+    // overwriting it on the next flush, and surface what was discarded.
+    const cloudRow = byId.get(id);
+    const cloudMs = cloudRow && cloudRow._updatedAt ? new Date(cloudRow._updatedAt).getTime() : 0;
+    const baseMs  = localRow._updatedAt ? new Date(localRow._updatedAt).getTime() : 0;
+    if (cloudRow && baseMs && cloudMs > baseMs) {
+      dirtySet.delete(id);
+      const label = localRow.name || localRow.product || id;
+      const diff = (typeof _clDiff === 'function') ? _clDiff(tableKey, cloudRow, localRow) : '';
+      if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + (diff || 'no tracked-field differences'));
+      if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
+      continue;
+    }
+    byId.set(id, localRow);
+  }
+  _persistDirty();
+  return [...byId.values()];
+}
+
 async function initDB() {
   const main = document.getElementById('main-content');
 
@@ -796,6 +873,17 @@ async function initDB() {
 
   setSyncStatus('saving');
   try {
+    // Flush any deletes/trash writes that failed and got queued in a
+    // previous session BEFORE fetching from cloud. If this ran after the
+    // fetch/merge below, a row whose delete failed last session (still sat
+    // in Supabase, unreachable at the time) would be fetched, merged back
+    // into DB, and rendered - resurrecting a row the user already deleted
+    // (FINDING A2). Trash first so the snapshot exists before its source
+    // row is deleted. Awaited (not fire-and-forget) so the fetch below
+    // genuinely runs after Supabase reflects the deletes.
+    await flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e));
+    await flushPendingDeletes().catch(e => console.warn('flushPendingDeletes failed:', e));
+
     const [sbSingles, sbSlabs, sbSales] = await Promise.all([
       sbFetchAll('singles'), sbFetchAll('slabs'), sbFetchAll('sales')
     ]);
@@ -806,61 +894,15 @@ async function initDB() {
       // This closes a race: user opens app → quick-render from local → edits
       // card X → cloud fetch returns → cloud version of X would otherwise
       // overwrite the in-flight edit. With this merge, dirty IDs win.
-      const mergeTable = (cloudRows, localRows, dirtySet, tableKey) => {
-        // Guard against a 200-with-zero-rows response wiping local data (M5).
-        // A genuinely empty cloud table is indistinguishable at the HTTP level
-        // from a transient RLS/schema hiccup that also returns []. If local
-        // has rows the cloud does not, trust local, mark it all dirty so it
-        // re-uploads on the next flush, and warn once instead of silently
-        // discarding the only copy.
-        if ((!cloudRows || cloudRows.length === 0) && localRows && localRows.length > 0) {
-          localRows.forEach(r => dirtySet && dirtySet.add(r.id));
-          if (dirtySet) _persistDirty();
-          const already = mergeTable._warned || (mergeTable._warned = new Set());
-          if (!already.has(tableKey)) {
-            already.add(tableKey);
-            if (typeof toastError === 'function') toastError('Cloud returned no data for "' + tableKey + '" - kept your local copy and queued it to re-upload.');
-            console.warn('[mergeTable] cloud empty for ' + tableKey + ', keeping ' + localRows.length + ' local row(s)');
-          }
-          return localRows;
-        }
-        if (!dirtySet || dirtySet.size === 0) return cloudRows;
-        const byId = new Map(cloudRows.map(r => [r.id, r]));
-        for (const id of [...dirtySet]) {
-          const localRow = localRows.find(r => r.id === id);
-          if (!localRow) continue;
-          // Conflict check: _updatedAt on the local row is the cloud timestamp
-          // its edit was based on (the server refreshes it on every fetch). If
-          // the cloud copy is strictly newer, another device wrote after our
-          // unsynced edit. Keep the newer cloud copy rather than silently
-          // overwriting it on the next flush, and surface what was discarded.
-          const cloudRow = byId.get(id);
-          const cloudMs = cloudRow && cloudRow._updatedAt ? new Date(cloudRow._updatedAt).getTime() : 0;
-          const baseMs  = localRow._updatedAt ? new Date(localRow._updatedAt).getTime() : 0;
-          if (cloudRow && baseMs && cloudMs > baseMs) {
-            dirtySet.delete(id);
-            const label = localRow.name || localRow.product || id;
-            const diff = (typeof _clDiff === 'function') ? _clDiff(tableKey, cloudRow, localRow) : '';
-            if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + (diff || 'no tracked-field differences'));
-            if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
-            continue;
-          }
-          byId.set(id, localRow);
-        }
-        _persistDirty();
-        return [...byId.values()];
-      };
+      // mergeTable is now hoisted to module scope (above initDB) so the
+      // secondary-table merge below shares this exact implementation.
       DB.singles = mergeTable(sbSingles, DB.singles, _dirty.singles, 'singles');
       DB.slabs   = mergeTable(sbSlabs,   DB.slabs,   _dirty.slabs,   'slabs');
       DB.sales   = mergeTable(sbSales,   DB.sales,   _dirty.sales,   'sales');
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {}
       setSyncStatus('ok');
-      // Retry any trash writes then deletes that failed in previous
-      // session(s). Trash first so the snapshot exists before its source
-      // row is deleted; pending deletes also stop orphan cloud rows from
-      // re-merging into local state on next load.
-      flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
-        .then(() => flushPendingDeletes()).catch(e => console.warn('flushPendingDeletes failed:', e));
+      // Pending trash/delete retry now runs BEFORE the cloud fetch above
+      // (see comment there) so it isn't repeated here.
       if (!shownLocal) showPage('dashboard');
       else { renderDashboard(); renderSingles(); renderSlabs(); renderSales(); }
     } else if (!shownLocal) {
@@ -885,8 +927,12 @@ async function initDB() {
     // whether singles/slabs/sales had data (M5/A4). Previously this sat inside
     // the "primary tables non-empty" branch, so a fresh profile or device whose
     // only cloud data was sealed products (etbs/booster boxes/packs/eBay) never
-    // loaded it. mergeTable is defined above only when that branch runs, so
-    // guard defensively and fall back to a plain id-union if it is unavailable.
+    // loaded it. mergeTable is a module-level function (hoisted above initDB),
+    // always in scope here, so these tables now get the same conflict/Changelog
+    // handling as the primary tables (FINDING A1 - previously a
+    // `typeof mergeTable === 'function'` check that was always false because
+    // mergeTable used to be a block-local const, silently downgrading these
+    // four tables to a simplified fallback with no conflict detection).
     try {
       const [sbEtbs, sbBb, sbBp, sbEbay] = await Promise.all([
         sbFetchAll('etbs').catch(()=>[]),
@@ -894,22 +940,10 @@ async function initDB() {
         sbFetchAll('booster_packs').catch(()=>[]),
         sbFetchAll('ebay_purchases').catch(()=>[])
       ]);
-      const _mergeSecondary = (typeof mergeTable === 'function') ? mergeTable : (cloudRows, localRows, dirtySet, tableKey) => {
-        if ((!cloudRows || cloudRows.length === 0) && localRows && localRows.length > 0) {
-          localRows.forEach(r => dirtySet && dirtySet.add(r.id));
-          if (dirtySet) _persistDirty();
-          console.warn('[mergeTable-fallback] cloud empty for ' + tableKey + ', keeping ' + localRows.length + ' local row(s)');
-          return localRows;
-        }
-        if (!dirtySet || dirtySet.size === 0) return cloudRows;
-        const byId = new Map(cloudRows.map(r => [r.id, r]));
-        for (const id of [...dirtySet]) { const l = localRows.find(r => r.id === id); if (l) byId.set(id, l); }
-        return [...byId.values()];
-      };
-      DB.etbs          = _mergeSecondary(sbEtbs, DB.etbs || [], _dirty.etbs, 'etbs');
-      DB.boosterBoxes  = _mergeSecondary(sbBb,   DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
-      DB.boosterPacks  = _mergeSecondary(sbBp,   DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
-      DB.ebayPurchases = _mergeSecondary(sbEbay, DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
+      DB.etbs          = mergeTable(sbEtbs, DB.etbs || [], _dirty.etbs, 'etbs');
+      DB.boosterBoxes  = mergeTable(sbBb,   DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
+      DB.boosterPacks  = mergeTable(sbBp,   DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
+      DB.ebayPurchases = mergeTable(sbEbay, DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
       if (typeof renderEtbs === 'function') renderEtbs();
       if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -2210,7 +2244,11 @@ function cmdSellSetQty(id, delta) {
 function cmdSellSetPrice(id, val) {
   const line = cmdSellCart.find(l => l.id === id);
   if (!line) return;
-  line.price = parseFloat(val) || 0;
+  // Keep blank distinct from an explicit 0 (a real giveaway/trade disposal) -
+  // parseFloat(val) || 0 used to collapse both to the same value, which is
+  // what let cmdConfirmSell wave through a cart with no price entered at all.
+  const trimmed = (val == null) ? '' : String(val).trim();
+  line.price = trimmed === '' ? '' : (parseFloat(trimmed) || 0);
   // Recompute totals only - don't rebuild the list (would drop input focus).
   cmdCalcProfit();
 }
@@ -2322,6 +2360,13 @@ function cmdCalcProfit() {
 function cmdConfirmSell() {
   if (cmdSellCart.length === 0) { toast('Add at least one item to the sale'); return; }
 
+  // A blank price entry stays blocked (still l.price === '' from add-to-cart
+  // or cmdSellSetPrice), but an explicitly entered 0 is a real disposal
+  // (giveaway/trade) and must be allowed through, even for the whole cart.
+  if (cmdSellCart.some(l => l.price === '' || l.price === null || l.price === undefined)) {
+    toast('Enter a sold price for the items'); return;
+  }
+
   // Resolve every cart line into a flat list of per-unit sales, reading CURRENT
   // inventory so a row that changed under us can't cause a half-applied sale.
   // Grouped singles allocate their units across matching lots most-expensive-
@@ -2383,7 +2428,9 @@ function cmdConfirmSell() {
   const totalUnits = planned.length;
   let totalRev = 0;
   planned.forEach(p => { totalRev += p.price; });
-  if (totalRev <= 0) { toast('Enter a sold price for the items'); return; }
+  // Blank entries are already blocked above, so an all-zero cart (explicit
+  // S$0 disposals) is a legitimate sale here - only negative revenue blocks.
+  if (totalRev < 0) { toast('Enter a sold price for the items'); return; }
 
   snapshotForUndo();
 
@@ -2952,7 +2999,16 @@ async function restoreVersion(id) {
   // Apply the restored snapshot. Restore ALL seven tables that the snapshot
   // captures - previously only singles/slabs/sales were applied, so the other
   // four tables stayed at their current state and the version restore was lying.
-  const restored = JSON.parse(ver.data);
+  // The auto-backup above has already run at this point (that's fine, it's a
+  // harmless extra save) - but a corrupt/truncated snapshot must not reach any
+  // DB mutation below, so guard the parse and bail out cleanly.
+  let restored;
+  try {
+    restored = JSON.parse(ver.data);
+  } catch(e) {
+    toast('⚠ This version\'s snapshot is unreadable - restore cancelled');
+    return;
+  }
   DB.singles       = restored.singles       || [];
   DB.slabs         = restored.slabs         || [];
   DB.sales         = restored.sales         || [];
@@ -3214,8 +3270,13 @@ function calcQsProfit() {
 function confirmQuickSell() {
   const table = document.getElementById('qs-table').value;
   const id    = document.getElementById('qs-id').value;
-  const total = kjrNum(document.getElementById('qs-total').value);
-  if (!total) { toast('Enter the sold price'); return; }
+  const totalRaw = document.getElementById('qs-total').value;
+  const total = kjrNum(totalRaw);
+  // Blank/whitespace stays blocked, but an explicitly entered 0 is a real
+  // disposal (giveaway/trade) and must go through. Only the raw string can
+  // tell blank apart from zero - kjrNum('') and kjrNum('0') both return 0.
+  if (totalRaw == null || String(totalRaw).trim() === '') { toast('Enter the sold price'); return; }
+  if (total < 0) { toast('Enter the sold price'); return; }
 
   snapshotForUndo();
 
@@ -4608,7 +4669,7 @@ function updateField(table, id, field, val) {
   if (field === 'marketPrice' && val && !isNaN(parseFloat(val))) {
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: parseFloat(val), source: 'manual' });
-    if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
+    if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
   }
   markDirty(table, id);
   saveData();
@@ -4711,11 +4772,31 @@ async function restoreFromTrash(trashId) {
     // sbUpsert needs the snake_case table name (etbs / booster_boxes /
     // ebay_purchases / booster_packs); pass it through _tblName.
     if (!DB[originalTable]) { toastError('Unknown table: ' + originalTable); return; }
+    // Guard against a double-click (or a retry after a prior failed cloud
+    // push) re-inserting a row that's already back in DB - would duplicate it.
+    const alreadyRestored = DB[originalTable].some(r => r.id === item.id);
+    if (alreadyRestored) {
+      await hardDeleteTrashEntry(trashId);
+      toast('Already restored');
+      renderTrash();
+      return;
+    }
     DB[originalTable].push(item);
     markDirty(originalTable, item.id);
     saveData();
-    const sbTable = (typeof _tblName === 'function') ? _tblName(originalTable) : originalTable;
-    const _ts = await sbUpsert(sbTable, item.id, (() => { const { id, ...d } = item; return d; })());
+    // sbUpsert re-throws on failure (network down, 5xx). If it does, don't
+    // abort here - markDirty + saveData already queued this row for the next
+    // dirty flush, so fall through to the local completion path (clear the
+    // trash entry, refresh the list) and tell the user cloud sync will retry.
+    let _ts = null;
+    let _cloudFailed = false;
+    try {
+      const sbTable = (typeof _tblName === 'function') ? _tblName(originalTable) : originalTable;
+      _ts = await sbUpsert(sbTable, item.id, (() => { const { id, ...d } = item; return d; })());
+    } catch(e) {
+      _cloudFailed = true;
+      console.warn('Restore cloud push failed, will retry via dirty queue:', e);
+    }
     // Stamp the cloud timestamp back so the next mergeTable pass doesn't treat
     // this restored row's stale base timestamp as a fake conflict (see A1).
     if (_ts) {
@@ -4729,6 +4810,14 @@ async function restoreFromTrash(trashId) {
     if (originalTable === 'boosterBoxes'  && typeof renderBoosterBoxes === 'function')  renderBoosterBoxes();
     if (originalTable === 'boosterPacks'  && typeof renderBoosterPacks === 'function')  renderBoosterPacks();
     if (originalTable === 'ebayPurchases' && typeof renderEbayPurchases === 'function') renderEbayPurchases();
+    if (_cloudFailed) {
+      await hardDeleteTrashEntry(trashId);
+      const extra = _clSummary(originalTable, item) || 'restored from trash';
+      clLog('restore', originalTable, item.name || item.product || item.title || item.id, extra);
+      toast('Restored locally - cloud sync will retry');
+      renderTrash();
+      return;
+    }
   }
   await hardDeleteTrashEntry(trashId);
   const restoreExtra = originalTable === 'savedChart'
@@ -6941,12 +7030,14 @@ async function resolveTcgdexId(item) {
 
 // Does the card's stored name mark it as a reverse-holo printing? Checked
 // case-insensitively against a few common shorthands collectors use in a
-// catalogued name - " RH" (needs the leading space so it doesn't false-hit
-// inside an unrelated word), "reverse", "rev holo". Read-only: this never
+// catalogued name - "RH" at a token boundary (start, or preceded by a
+// non-letter like space/'('/'-'/'/', and NOT followed by more letters, so
+// "Rhydon"/"Rhyhorn"/"Rhyperior" don't false-hit on the "Rh" prefix),
+// "reverse", "rev holo"/"rev-holo"/"revholo". Read-only: this never
 // rewrites item.name, it only steers which TCGplayer variant price
 // fetchPriceFromTcgdex prefers below.
 function _isReverseHoloName(name) {
-  return / rh\b|reverse|rev holo/i.test(String(name || ''));
+  return /(?:^|[^a-z])rh(?![a-z])|reverse|rev[\s-]?holo/i.test(String(name || ''));
 }
 
 // Fetch a raw single's market price from TCGdex. Price source by language
@@ -7562,7 +7653,7 @@ async function refreshPrice(id, table) {
       source: r.source,
       confidence: r.confidence
     });
-    if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
+    if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
     markDirty(table, id);
     saveData();
     if (table === 'singles') renderSingles();
@@ -7586,6 +7677,10 @@ async function refreshPrice(id, table) {
 
 const QUEUE_KEY       = 'pokeinv_refresh_queue';
 const QUEUE_DATE_KEY  = 'pokeinv_refresh_queue_date';
+// PRICE_HISTORY_MAX - each item's priceHistory array is capped to this many
+// entries to keep localStorage well under quota across the whole inventory.
+// 365 covers a year of daily refreshes per card.
+const PRICE_HISTORY_MAX = 365;
 // DAILY_LIMIT - capped to PPT free-plan's safe envelope. Hitting 100/day at
 // 1.1s spacing tripped their abuse detector (50 429s in 5min = key block for
 // 24h). 30/day with 6s spacing is well under the free-plan rate limit and
@@ -7749,7 +7844,7 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
     item.marketPrice = priceSgd.toFixed(0);
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push(histEntry);
-    if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
+    if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
     // Copy targets are exact duplicates of the same card - the resolved
     // TCGdex id applies to them too, so a future refresh of one of the
     // copies (e.g. after a manual split) skips the resolve round-trip.
@@ -8386,6 +8481,10 @@ function _renderQueueStatus() {
 }
 
 async function startFreshQueue() {
+  // A refresh pass in flight saves the queue via saveQueue() at multiple
+  // points as it progresses (raw last-write-wins). Rebuilding here while
+  // that's running would get silently clobbered by the next in-flight save.
+  if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
   if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
   const q = buildRefreshQueue();
   saveQueue(q);
@@ -8430,7 +8529,7 @@ async function bulkRefreshPrices(table) {
       item.marketPrice = r.maxSgd.toFixed(0);
       if (!item.priceHistory) item.priceHistory = [];
       item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, unit: r.maxUsd ? 'USD' : 'EUR', source: r.source, confidence: r.confidence });
-      if (item.priceHistory.length > 100) item.priceHistory = item.priceHistory.slice(-100);
+      if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
       if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
       }
@@ -9446,7 +9545,9 @@ function exportCSV(type) {
     fields = ['id','dateSold','product','buyer','costPrice','totalCollected','shippingCost','profit','margin','inventoryId','inventoryTable'];
   }
   const rows = [fields.join(',')];
-  data.forEach(item => rows.push(fields.map(f => JSON.stringify(item[f]||'')).join(',')));
+  // ?? not || - a genuine 0 (e.g. costPrice/shippingCost) or false is a real
+  // value and must round-trip, only null/undefined should export as empty.
+  data.forEach(item => rows.push(fields.map(f => JSON.stringify(item[f] ?? '')).join(',')));
   dl(filename, rows.join('\n'), 'text/csv');
 }
 

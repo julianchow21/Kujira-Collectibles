@@ -74,9 +74,20 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.17">
+<link rel="stylesheet" href="styles.css?v=3.18">
 </head>
 <body>
+
+<!-- Launch intro (v3.18): critical inline style so the brand gradient paints
+     before styles.css loads (same pattern as the theme bootstrap above).
+     This div plus its styles.css rules is the fallback greeting if the 3D
+     scene never runs (kill-switch, reduced-motion, no WebGL, import fail).
+     Controller lives in features.js. Removed from the DOM on teardown. -->
+<div id="intro" style="position:fixed;inset:0;z-index:100000;background:linear-gradient(160deg,#12101F 0%,#2E2752 100%);display:flex;align-items:center;justify-content:center;overflow:hidden">
+  <div id="intro-stage"></div>
+  <div id="intro-word">Kujira Collectibles</div>
+  <div id="intro-skip">tap to skip</div>
+</div>
 
 <div class="topbar">
   <a class="logo" role="button" tabindex="0" onclick="showPage('dashboard');return false">
@@ -84,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.17 (10 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.18 (11 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -200,6 +211,11 @@
           <svg id="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           <svg id="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           Toggle theme
+        </button>
+        <button class="nav-dd-item" id="intro-toggle-btn" onclick="kjrToggleIntroSetting()" title="Play the launch intro on next load">
+          <svg id="intro-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z"/></svg>
+          <svg id="intro-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+          Launch intro
         </button>
       </div>
     </div>
@@ -1576,7 +1592,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.17"></script>
-<script src="features.js?v=3.17"></script>
+<script src="app.js?v=3.18"></script>
+<script src="features.js?v=3.18"></script>
 </body>
 </html>

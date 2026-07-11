@@ -3113,3 +3113,544 @@ async function exportXlsx() {
     toastError('Excel export failed: ' + (e && e.message ? e.message : e));
   }
 }
+
+/* ===== Launch intro (v3.18) =====
+   Self-contained IIFE, does not touch app.js. Plays a Three.js greeting on
+   every launch while initDB() and cloud sync run behind it (never blocks
+   the app). The #intro div and its critical inline style (index.html) plus
+   the CSS in styles.css are the fallback greeting on their own - everything
+   below is a progressive enhancement over that, and any failure here just
+   falls back to the CSS layer already on screen.
+   Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
+   three.js import failure. A kill-switched run shows the CSS greeting for
+   about 1.2s then dissolves. Hard ceiling: force-removed by 4s no matter
+   what. Tap/click/keydown anywhere skips at any time (about 250ms dissolve).
+   Debug: window.__introDebug.info() (safe before and after teardown). */
+(function () {
+  var INTRO_KEY = 'kujira_intro_enabled';
+  var DEX_KEY = 'kujira_intro_dex';
+  var CARD_TOTAL = 40;
+  var MAX_REAL_CARDS = 8;
+  var GREETER_TARGET = 3;
+  var GREETER_MAX_ATTEMPTS = 6;
+  var REVEAL_AT = 2.6;
+  var REVEAL_DURATION = 0.6;
+  var KILLSWITCH_FADE_MS = 1200;
+  var DISSOLVE_MS = 260;
+  var HARD_CEILING_MS = 4000;
+  var VARIANT_TOKENS = { ex: 1, gx: 1, v: 1, vmax: 1, vstar: 1, 'break': 1, radiant: 1, shiny: 1, rh: 1, holo: 1, reverse: 1, promo: 1 };
+
+  var introState = 'idle';
+  var introKillSwitch = null;
+  var introGreeterNames = [];
+  var _renderer = null, _scene = null, _camera = null, _raf = null;
+  var _introTimers = [];
+  var _introObjectUrls = [];
+  var _onPointerMove = null, _onResize = null;
+  var _ending = false;
+  var _removed = false;
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - the reveal timer
+  // is measured from here, not from THREE.Clock/scene-build time, so slow
+  // asset loading (e.g. the empty-DB fallback chain) can't eat into the
+  // reveal window and leave the 4s hard ceiling doing the natural completion's job.
+
+  // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
+  function kjrIntroEnabled() {
+    try { return localStorage.getItem(INTRO_KEY) !== 'false'; } catch (e) { return true; }
+  }
+  function kjrApplyIntroToggleIcon(enabled) {
+    var on = document.getElementById('intro-icon-on');
+    var off = document.getElementById('intro-icon-off');
+    if (on) on.style.display = enabled ? '' : 'none';
+    if (off) off.style.display = enabled ? 'none' : '';
+  }
+  window.kjrToggleIntroSetting = function () {
+    var next = !kjrIntroEnabled();
+    try { localStorage.setItem(INTRO_KEY, next ? 'true' : 'false'); } catch (e) { /* private mode - setting just won't persist */ }
+    kjrApplyIntroToggleIcon(next);
+  };
+  kjrApplyIntroToggleIcon(kjrIntroEnabled());
+
+  // ── Debug hook, always safe to call ──
+  window.__introDebug = {
+    get state() { return introState; },
+    info: function () {
+      return {
+        state: introState,
+        killSwitch: introKillSwitch,
+        greeters: introGreeterNames.slice(),
+        drawCalls: _renderer ? _renderer.info.render.calls : 0,
+        geometries: _renderer ? _renderer.info.memory.geometries : 0,
+        textures: _renderer ? _renderer.info.memory.textures : 0,
+        removed: _removed
+      };
+    }
+  };
+
+  // ── DB access. DB is declared `let DB = {...}` at the top level of
+  // app.js - a classic-script top-level `let` is visible to features.js as
+  // the bare identifier (both scripts share one global lexical scope) but
+  // is NOT a property of window. window.DB is attempted first per spec,
+  // the bare identifier is the real path that actually finds data today. ──
+  function kjrIntroDB() {
+    if (window.DB && (window.DB.singles || window.DB.slabs)) return window.DB;
+    try { if (typeof DB !== 'undefined' && DB) return DB; } catch (e) { /* DB not declared yet - fall through to fallbacks */ }
+    return null;
+  }
+
+  // ── Species parsing: leading words before the first digit-bearing token,
+  // strip known TCG variant suffixes, then slugify to a PokeAPI-shaped id. ──
+  function kjrIntroSlug(raw) {
+    var s = String(raw || '').trim();
+    s = s.replace(/♀/g, '-f').replace(/♂/g, '-m');
+    s = s.toLowerCase().replace(/[.']/g, '').replace(/\s+/g, '-');
+    s = s.replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+    return s;
+  }
+  function kjrIntroSpecies(name) {
+    var tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
+    var leading = [];
+    for (var i = 0; i < tokens.length; i++) {
+      if (/\d/.test(tokens[i])) break;
+      leading.push(tokens[i]);
+    }
+    var kept = leading.filter(function (t) { return !VARIANT_TOKENS[t.toLowerCase()]; });
+    return kjrIntroSlug(kept.join(' '));
+  }
+
+  // ── Memoised slug -> artwork URL, plus the last successful greeter set
+  // (both live in the one kujira_intro_dex key: names and URLs only). ──
+  function kjrIntroLoadDex() {
+    try {
+      var parsed = JSON.parse(localStorage.getItem(DEX_KEY) || 'null');
+      if (parsed && typeof parsed === 'object') {
+        if (!parsed.dex) parsed.dex = {};
+        if (!Array.isArray(parsed.lastGreeters)) parsed.lastGreeters = [];
+        return parsed;
+      }
+    } catch (e) { /* corrupt/missing - start fresh */ }
+    return { dex: {}, lastGreeters: [] };
+  }
+  function kjrIntroSaveDex(store) {
+    try { localStorage.setItem(DEX_KEY, JSON.stringify(store)); } catch (e) { /* quota/private mode - non-fatal, just skip memoisation */ }
+  }
+
+  async function kjrIntroFetchArtwork(slug) {
+    var res = await fetch('https://pokeapi.co/api/v2/pokemon/' + encodeURIComponent(slug));
+    if (!res.ok) return null;
+    var data = await res.json();
+    var art = data && data.sprites && data.sprites.other && data.sprites.other['official-artwork'];
+    return (art && art.front_default) || null;
+  }
+
+  // Own-collection greeters (sorted by marketPrice desc, deduped species,
+  // capped attempts), then cached-greeters, then a random dex id, per the
+  // fallback chain. May resolve to fewer than 3, or zero - scene tolerates it.
+  async function kjrIntroBuildGreeters() {
+    var store = kjrIntroLoadDex();
+    var greeters = [];
+    var tried = {};
+    var attempts = 0;
+    try {
+      var db = kjrIntroDB();
+      var pool = [].concat((db && db.singles) || [], (db && db.slabs) || []);
+      pool.sort(function (a, b) { return (parseFloat(b && b.marketPrice) || 0) - (parseFloat(a && a.marketPrice) || 0); });
+      for (var i = 0; i < pool.length && greeters.length < GREETER_TARGET && attempts < GREETER_MAX_ATTEMPTS; i++) {
+        var slug = kjrIntroSpecies(pool[i] && pool[i].name);
+        if (!slug || tried[slug]) continue;
+        tried[slug] = true;
+        attempts++;
+        var url = store.dex[slug];
+        if (url === undefined) {
+          try {
+            url = await kjrIntroFetchArtwork(slug);
+            store.dex[slug] = url || null; // confirmed hit, or a real miss (response arrived, not ok) - safe to memoise forever
+          } catch (e) {
+            url = null; // transient failure (offline/DNS/abort) - leave unmemoised so it retries next launch, not blacklisted
+          }
+        }
+        if (url) greeters.push({ name: slug, url: url });
+      }
+    } catch (e) { /* own-collection pipeline failed - fall through to cached/random */ }
+
+    if (greeters.length < GREETER_TARGET) {
+      for (var j = 0; j < store.lastGreeters.length && greeters.length < GREETER_TARGET; j++) {
+        var g = store.lastGreeters[j];
+        if (g && g.url && g.name && !tried[g.name]) { tried[g.name] = true; greeters.push(g); }
+      }
+    }
+
+    var randomAttempts = 0;
+    while (greeters.length < GREETER_TARGET && randomAttempts < 5) {
+      randomAttempts++;
+      var id = 1 + Math.floor(Math.random() * 1025);
+      var key = 'dex-' + id;
+      if (tried[key]) continue;
+      tried[key] = true;
+      greeters.push({ name: key, url: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/' + id + '.png' });
+    }
+
+    if (greeters.length) { store.lastGreeters = greeters; kjrIntroSaveDex(store); }
+    introGreeterNames = greeters.map(function (g) { return g.name; });
+    return greeters;
+  }
+
+  // ── Real card scans, max 8, records with a non-empty tcgdexId only. ──
+  async function kjrIntroBuildCardTextures(THREE) {
+    var db = kjrIntroDB();
+    var pool = [].concat((db && db.singles) || [], (db && db.slabs) || []).filter(function (r) { return r && r.tcgdexId; });
+    pool.sort(function (a, b) { return (parseFloat(b.marketPrice) || 0) - (parseFloat(a.marketPrice) || 0); });
+    var picked = pool.slice(0, MAX_REAL_CARDS);
+    var results = await Promise.all(picked.map(async function (rec) {
+      try {
+        var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(rec.language) : (rec.language || 'en').toString().toLowerCase() || 'en';
+        var res = await fetch('https://api.tcgdex.net/v2/' + encodeURIComponent(lang) + '/cards/' + encodeURIComponent(rec.tcgdexId));
+        if (!res.ok) return null;
+        var data = await res.json();
+        if (!data || !data.image) return null;
+        var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
+        return await kjrIntroLoadTexture(THREE, objUrl);
+      } catch (e) { return null; } // procedural back fills the slot instead
+    }));
+    return results.filter(Boolean);
+  }
+
+  // ── Every remote image goes through this cache bucket (match first, put
+  // after fetch), never image data in localStorage. ──
+  async function kjrIntroCachedImage(url) {
+    try {
+      var cache = await caches.open('kujira-intro-art');
+      var res = await cache.match(url);
+      if (!res) {
+        var fresh = await fetch(url, { mode: 'cors' });
+        if (!fresh || !fresh.ok) return null;
+        await cache.put(url, fresh.clone());
+        res = fresh;
+      }
+      var blob = await res.blob();
+      var objUrl = URL.createObjectURL(blob);
+      _introObjectUrls.push(objUrl);
+      return objUrl;
+    } catch (e) { return null; }
+  }
+  function kjrIntroLoadTexture(THREE, objectUrl) {
+    return new Promise(function (resolve) {
+      if (!objectUrl) { resolve(null); return; }
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var tex = new THREE.Texture(img);
+          if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+          tex.needsUpdate = true;
+          resolve(tex);
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = function () { resolve(null); };
+      img.src = objectUrl;
+    });
+  }
+
+  function kjrIntroHasWebGL() {
+    try {
+      var c = document.createElement('canvas');
+      return !!(window.WebGLRenderingContext && (c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl')));
+    } catch (e) { return false; }
+  }
+
+  // ── Procedural assets (brand-toned, never the official card back design) ──
+  function kjrIntroCardBackTexture(THREE) {
+    var w = 256, h = 358;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    var grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#241E42'); grad.addColorStop(0.5, '#3A2F6E'); grad.addColorStop(1, '#2E2752');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(139,124,240,0.12)'; ctx.lineWidth = 10;
+    for (var i = -h; i < w + h; i += 26) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + h, h); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    var r = 22;
+    ctx.strokeStyle = 'rgba(234,231,245,0.5)'; ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(r, 3); ctx.arcTo(w - 3, 3, w - 3, h - 3, r); ctx.arcTo(w - 3, h - 3, 3, h - 3, r);
+    ctx.arcTo(3, h - 3, 3, 3, r); ctx.arcTo(3, 3, w - 3, 3, r); ctx.closePath(); ctx.stroke();
+    ctx.fillStyle = 'rgba(234,231,245,0.85)';
+    ctx.font = '700 26px Lexend, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('K', w / 2, h / 2);
+    return new THREE.CanvasTexture(c);
+  }
+  function kjrIntroMoteTexture(THREE) {
+    var s = 64;
+    var c = document.createElement('canvas');
+    c.width = c.height = s;
+    var ctx = c.getContext('2d');
+    var g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.4, 'rgba(200,190,255,0.6)'); g.addColorStop(1, 'rgba(139,124,240,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+    return new THREE.CanvasTexture(c);
+  }
+  function kjrIntroGlowTexture(THREE) {
+    var s = 128;
+    var c = document.createElement('canvas');
+    c.width = c.height = s;
+    var ctx = c.getContext('2d');
+    var g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, 'rgba(139,124,240,0.55)'); g.addColorStop(1, 'rgba(139,124,240,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+    return new THREE.CanvasTexture(c);
+  }
+
+  // ── Scene build + animate + reveal. Throws bubble to kjrIntroMain's catch. ──
+  async function kjrIntroBuildScene(THREE, stageEl) {
+    var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+    var pair = await Promise.all([
+      kjrIntroBuildGreeters().catch(function () { return []; }),
+      kjrIntroBuildCardTextures(THREE).catch(function () { return []; })
+    ]);
+    var greeterData = pair[0], realCardTextures = pair[1];
+
+    var greeterTextures = [];
+    for (var gi = 0; gi < greeterData.length; gi++) {
+      try {
+        var objUrl = await kjrIntroCachedImage(greeterData[gi].url);
+        var tex = await kjrIntroLoadTexture(THREE, objUrl);
+        if (tex) greeterTextures.push(tex);
+      } catch (e) { /* skip this greeter */ }
+    }
+
+    if (_ending) return; // user skipped while assets were loading - do not build anything else
+
+    var scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x12101F, 8, 42);
+    var camera = new THREE.PerspectiveCamera(55, Math.max(1, stageEl.clientWidth) / Math.max(1, stageEl.clientHeight), 0.1, 100);
+    camera.position.set(0, 0, 8);
+    var renderer = new THREE.WebGLRenderer({ antialias: !coarsePointer, alpha: true, powerPreference: 'low-power' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    renderer.setSize(stageEl.clientWidth, stageEl.clientHeight);
+    stageEl.appendChild(renderer.domElement);
+    _renderer = renderer; _scene = scene; _camera = camera;
+
+    // Card field: one InstancedMesh for the procedural-back majority, plus
+    // up to 8 individual meshes for real scans (each needs its own texture).
+    var cardGeo = new THREE.PlaneGeometry(1, 1.4);
+    var cardBackTex = kjrIntroCardBackTexture(THREE);
+    var instancedCount = Math.max(0, CARD_TOTAL - realCardTextures.length);
+    var dummy = new THREE.Object3D();
+    if (instancedCount > 0) {
+      var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
+      var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, instancedCount);
+      for (var ci = 0; ci < instancedCount; ci++) {
+        dummy.position.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 11, -Math.random() * 40 - 4);
+        dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        var s1 = 0.6 + Math.random() * 0.9;
+        dummy.scale.set(s1, s1, s1);
+        dummy.updateMatrix();
+        instMesh.setMatrixAt(ci, dummy.matrix);
+      }
+      instMesh.instanceMatrix.needsUpdate = true;
+      scene.add(instMesh);
+    }
+    var realCards = [];
+    realCardTextures.forEach(function (tex) {
+      var mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
+      var mesh = new THREE.Mesh(cardGeo, mat);
+      mesh.position.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 8, -Math.random() * 30 - 4);
+      mesh.rotation.set((Math.random() - 0.5) * 0.6, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
+      var s2 = 1.0 + Math.random() * 0.5;
+      mesh.scale.set(s2, s2, s2);
+      scene.add(mesh);
+      realCards.push({ mesh: mesh, spin: (Math.random() - 0.5) * 0.1 });
+    });
+
+    // Motes
+    var moteCount = coarsePointer ? 400 : 800;
+    var positions = new Float32Array(moteCount * 3);
+    for (var mi = 0; mi < moteCount; mi++) {
+      positions[mi * 3] = (Math.random() - 0.5) * 30;
+      positions[mi * 3 + 1] = (Math.random() - 0.5) * 18;
+      positions[mi * 3 + 2] = -Math.random() * 45;
+    }
+    var moteGeo = new THREE.BufferGeometry();
+    moteGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    var moteMat = new THREE.PointsMaterial({ size: 0.14, map: kjrIntroMoteTexture(THREE), transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x8B7CF0, sizeAttenuation: true });
+    var motes = new THREE.Points(moteGeo, moteMat);
+    scene.add(motes);
+
+    // Greeters: plane + additive glow sprite behind each
+    var glowTex = kjrIntroGlowTexture(THREE);
+    var greeterMeshes = [];
+    for (var pi = 0; pi < greeterTextures.length; pi++) {
+      var gTex = greeterTextures[pi];
+      var aspect = (gTex.image && gTex.image.width && gTex.image.height) ? gTex.image.width / gTex.image.height : 1;
+      var gh = 3.2, gw = gh * aspect;
+      var gmat = new THREE.MeshBasicMaterial({ map: gTex, transparent: true, depthWrite: false, fog: true });
+      var gmesh = new THREE.Mesh(new THREE.PlaneGeometry(gw, gh), gmat);
+      var gx = (pi - (greeterTextures.length - 1) / 2) * 3.4;
+      gmesh.position.set(gx, 0, -6 - pi * 0.6);
+      scene.add(gmesh);
+      var glowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0 });
+      var glow = new THREE.Sprite(glowMat);
+      glow.scale.set(gw * 2.1, gh * 2.1, 1);
+      glow.position.set(gx, 0, -6.05 - pi * 0.6);
+      scene.add(glow);
+      greeterMeshes.push({ mesh: gmesh, glow: glow, phase: Math.random() * Math.PI * 2 });
+    }
+
+    // ── Animate ──
+    var lastT = 0;
+    var pointerTX = 0, pointerTY = 0, pointerX = 0, pointerY = 0;
+    var revealing = false, revealStart = 0, canvasFadedIn = false;
+    var fogTarget = new THREE.Color(0x8B7CF0);
+    var fogBase = new THREE.Color(0x12101F);
+
+    function onPointerMove(e) {
+      if (coarsePointer) return;
+      pointerTX = (e.clientX / window.innerWidth) * 2 - 1;
+      pointerTY = (e.clientY / window.innerHeight) * 2 - 1;
+    }
+    function onResize() {
+      if (!_renderer || !_camera) return;
+      var w = stageEl.clientWidth, h = stageEl.clientHeight;
+      if (!w || !h) return;
+      _camera.aspect = w / h;
+      _camera.updateProjectionMatrix();
+      _renderer.setSize(w, h);
+    }
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('resize', onResize);
+    _onPointerMove = onPointerMove;
+    _onResize = onResize;
+
+    function tick() {
+      _raf = requestAnimationFrame(tick);
+      try {
+        var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared, not since the scene finished loading
+        var dt = Math.max(0, t - lastT); lastT = t;
+
+        if (coarsePointer) {
+          pointerX = Math.sin(t * 0.3) * 0.4;
+          pointerY = Math.cos(t * 0.24) * 0.2;
+        } else {
+          pointerX += (pointerTX - pointerX) * 0.04;
+          pointerY += (pointerTY - pointerY) * 0.04;
+        }
+        camera.position.x = pointerX * 1.1;
+        camera.position.y = -pointerY * 0.7;
+        camera.position.z -= (revealing ? 9 : 0.9) * dt;
+
+        realCards.forEach(function (rc) { rc.mesh.rotation.y += rc.spin * 0.02; });
+        motes.rotation.y = t * 0.01;
+        greeterMeshes.forEach(function (g) {
+          var bob = Math.sin(t * 1.1 + g.phase) * 0.12;
+          var breathe = 1 + Math.sin(t * 0.8 + g.phase) * 0.03;
+          g.mesh.position.y = bob;
+          g.mesh.scale.set(breathe, breathe, 1);
+          g.glow.position.y = bob;
+        });
+
+        if (!revealing && t >= REVEAL_AT) { revealing = true; revealStart = t; introState = 'revealing'; }
+        if (revealing) {
+          var k = Math.min(1, (t - revealStart) / REVEAL_DURATION);
+          scene.fog.color.copy(fogBase).lerp(fogTarget, k * 0.4);
+          if (k >= 1 && !_ending) kjrIntroDissolve();
+        }
+
+        renderer.render(scene, camera);
+        if (!canvasFadedIn) { canvasFadedIn = true; renderer.domElement.classList.add('kjr-in'); }
+      } catch (e) {
+        kjrIntroForceRemove(e);
+      }
+    }
+    introState = 'scene';
+    tick();
+  }
+
+  function kjrIntroSkip() {
+    if (_ending) return;
+    introState = 'skipped';
+    kjrIntroDissolve();
+  }
+
+  function kjrIntroDissolve() {
+    if (_ending) return;
+    _ending = true;
+    var el = document.getElementById('intro');
+    if (el) el.classList.add('kjr-intro-out');
+    _introTimers.push(setTimeout(kjrIntroTeardown, DISSOLVE_MS));
+  }
+
+  function kjrIntroForceRemove(err) {
+    if (err) { try { console.warn('[intro] stopped:', err); } catch (e2) {} }
+    _ending = true;
+    kjrIntroTeardown();
+  }
+
+  function kjrIntroTeardown() {
+    if (_removed) return;
+    _removed = true;
+    introState = 'done';
+    _introTimers.forEach(function (id) { clearTimeout(id); });
+    _introTimers.length = 0;
+    if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+    if (_onPointerMove) { window.removeEventListener('pointermove', _onPointerMove); _onPointerMove = null; }
+    if (_onResize) { window.removeEventListener('resize', _onResize); _onResize = null; }
+    window.removeEventListener('pointerdown', kjrIntroSkip);
+    window.removeEventListener('keydown', kjrIntroSkip);
+    try {
+      if (_scene) {
+        _scene.traverse(function (obj) {
+          if (obj.isInstancedMesh && typeof obj.dispose === 'function') obj.dispose(); // frees the per-instance matrix buffer
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            mats.forEach(function (m) { if (m.map) m.map.dispose(); m.dispose(); });
+          }
+        });
+      }
+      if (_renderer) {
+        _renderer.dispose();
+        if (_renderer.forceContextLoss) _renderer.forceContextLoss();
+        if (_renderer.domElement && _renderer.domElement.parentNode) _renderer.domElement.parentNode.removeChild(_renderer.domElement);
+      }
+    } catch (e3) { /* best-effort disposal, never block removal */ }
+    _introObjectUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e4) {} });
+    _introObjectUrls.length = 0;
+    var el = document.getElementById('intro');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    _scene = null; _camera = null; _renderer = null;
+  }
+
+  async function kjrIntroMain() {
+    _introStartTime = performance.now();
+    var introEl = document.getElementById('intro');
+    if (!introEl) return; // markup missing - nothing to control
+    var stageEl = document.getElementById('intro-stage');
+
+    introState = 'css';
+    window.addEventListener('pointerdown', kjrIntroSkip, { passive: true });
+    window.addEventListener('keydown', kjrIntroSkip);
+    _introTimers.push(setTimeout(function () { kjrIntroForceRemove(); }, HARD_CEILING_MS));
+
+    if (!kjrIntroEnabled()) { introKillSwitch = 'settings-off'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { introKillSwitch = 'reduced-motion'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+    if (!kjrIntroHasWebGL()) { introKillSwitch = 'no-webgl'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+
+    var THREE;
+    try {
+      THREE = await import('./Assets/lib/three.module.js?v=3.18');
+    } catch (e) {
+      introKillSwitch = 'import-failed';
+      _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS));
+      return;
+    }
+    if (_ending) return; // skipped during the import
+
+    await kjrIntroBuildScene(THREE, stageEl);
+  }
+
+  kjrIntroMain().catch(function (e) { introKillSwitch = introKillSwitch || 'error'; kjrIntroForceRemove(e); });
+})();

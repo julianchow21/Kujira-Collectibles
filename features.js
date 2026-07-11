@@ -3114,45 +3114,82 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.18) =====
-   Self-contained IIFE, does not touch app.js. Plays a Three.js greeting on
-   every launch while initDB() and cloud sync run behind it (never blocks
-   the app). The #intro div and its critical inline style (index.html) plus
-   the CSS in styles.css are the fallback greeting on their own - everything
-   below is a progressive enhancement over that, and any failure here just
-   falls back to the CSS layer already on screen.
+/* ===== Launch intro (v3.19) =====
+   Self-contained IIFE, does not touch app.js. Plays a Three.js corridor
+   journey on every launch while initDB() and cloud sync run behind it
+   (never blocks the app). The #intro div and its critical inline style
+   (index.html) plus the CSS in styles.css are the fallback greeting on
+   their own - everything below is a progressive enhancement over that,
+   and any failure here just falls back to the CSS layer already on screen.
+   Cast is fixed (not collection-derived): eight official-artwork planes
+   staged as a slalom corridor, camera dollies through in order. The card
+   field behind them is still collection-derived (real TCGdex scans for
+   records with a tcgdexId, procedural backs otherwise) - unchanged.
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting for
-   about 1.2s then dissolves. Hard ceiling: force-removed by 4s no matter
-   what. Tap/click/keydown anywhere skips at any time (about 250ms dissolve).
+   about 1.2s then dissolves. Hard ceiling: force-removed by 12s no matter
+   what. Pointer movement is parallax-only and never touches pacing - only
+   a click/tap/keydown ends the intro early, and it does so by triggering
+   an accelerated version of the reveal itself (camera rushes the remaining
+   corridor, fog brightens over ~600ms, short dissolve tail) rather than a
+   flat cut, so a skip feels like fast-forwarding the ending. During the
+   CSS-only phase or asset loading (no camera yet) a skip is a flat ~260ms
+   dissolve, same as before, since there's no corridor to rush through.
    Debug: window.__introDebug.info() (safe before and after teardown). */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
-  var DEX_KEY = 'kujira_intro_dex';
   var CARD_TOTAL = 40;
   var MAX_REAL_CARDS = 8;
-  var GREETER_TARGET = 3;
-  var GREETER_MAX_ATTEMPTS = 6;
-  var REVEAL_AT = 2.6;
-  var REVEAL_DURATION = 0.6;
+  var REVEAL_AT = 9.4;            // seconds since true intro start - natural corridor-traversal target
+  var REVEAL_DURATION = 0.6;      // fog-brighten/rush window, both natural and accelerated reveal
+  var BASE_REVEAL_SPEED = 22;     // units/sec floor for the reveal rush (natural case, ~0 remaining distance)
   var KILLSWITCH_FADE_MS = 1200;
-  var DISSOLVE_MS = 260;
-  var HARD_CEILING_MS = 4000;
-  var VARIANT_TOKENS = { ex: 1, gx: 1, v: 1, vmax: 1, vstar: 1, 'break': 1, radiant: 1, shiny: 1, rh: 1, holo: 1, reverse: 1, promo: 1 };
+  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural reveal's tail)
+  var ACCEL_DISSOLVE_MS = 40;     // short tail after an accelerated (click-triggered) reveal, tuned so
+  // rush (REVEAL_DURATION, ~600ms) + tail lands the whole click-to-dashboard sequence around 600-750ms
+  var HARD_CEILING_MS = 12000;
+
+  var CORRIDOR_SPACING = 8;
+  var CORRIDOR_START_Z = -6;
+  var FADE_IN_AT = 10;    // full opacity once a member is this many units ahead of the camera (emerges
+  // through the fog well before the pass, rather than just as it's about to leave frame)
+  var FADE_IN_SPAN = 14;  // opacity ramps 0->1 over this many units, ending at FADE_IN_AT
+  var FADE_OUT_SPAN = 6;  // opacity ramps back 1->0 over this many units once the camera has passed
+  var YAW_MAX_RAD = Math.PI / 20; // ~9 degrees - camera yaw cap toward the next unpassed cast member
+
+  // Fixed cast, in corridor order (starters open, legends build, Mew last
+  // before the reveal). Direct official-artwork URLs by dex id - no PokeAPI
+  // JSON lookups needed. x/y are the slalom offsets, tightened to stay inside
+  // the 55-degree-FOV frustum on approach; wailord sits further off the path
+  // (plus a scale multiplier and a higher y) so it reads as a big flyby.
+  var CAST = [
+    { name: 'totodile',  id: 158, x: -1.8, y:  0.3 },
+    { name: 'cyndaquil', id: 155, x:  1.7, y: -0.4 },
+    { name: 'arcanine',  id: 59,  x: -2.0, y:  0.2 },
+    { name: 'deoxys',    id: 386, x:  1.9, y:  0.5 },
+    { name: 'lugia',     id: 249, x: -1.9, y: -0.3 },
+    { name: 'wailord',   id: 321, x:  2.8, y:  0.7, scale: 2.75 },
+    { name: 'mewtwo',    id: 150, x: -1.8, y:  0.4 },
+    { name: 'mew',       id: 151, x:  1.7, y: -0.2 }
+  ];
+  var CORRIDOR_END_Z = CORRIDOR_START_Z - (CAST.length - 1) * CORRIDOR_SPACING - 4; // 4-unit buffer past Mew
 
   var introState = 'idle';
   var introKillSwitch = null;
-  var introGreeterNames = [];
+  var introCastNames = [];
+  var introCastLoaded = 0;
   var _renderer = null, _scene = null, _camera = null, _raf = null;
   var _introTimers = [];
   var _introObjectUrls = [];
   var _onPointerMove = null, _onResize = null;
   var _ending = false;
   var _removed = false;
-  var _introStartTime = 0; // performance.now() at kjrIntroMain start - the reveal timer
-  // is measured from here, not from THREE.Clock/scene-build time, so slow
-  // asset loading (e.g. the empty-DB fallback chain) can't eat into the
-  // reveal window and leave the 4s hard ceiling doing the natural completion's job.
+  var _revealing = false;
+  var _revealStart = 0;
+  var _revealSpeed = 0;
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (corridor pace, reveal
+  // target, hard ceiling) is measured from here, not from THREE.Clock/scene-build time, so slow asset
+  // loading compresses the journey into whatever time remains instead of truncating it.
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
   function kjrIntroEnabled() {
@@ -3178,7 +3215,11 @@ async function exportXlsx() {
       return {
         state: introState,
         killSwitch: introKillSwitch,
-        greeters: introGreeterNames.slice(),
+        cast: introCastNames.slice(),
+        castLoaded: introCastLoaded,
+        revealing: _revealing,
+        introStartTime: _introStartTime || null,
+        cameraZ: _camera ? _camera.position.z : null,
         drawCalls: _renderer ? _renderer.info.render.calls : 0,
         geometries: _renderer ? _renderer.info.memory.geometries : 0,
         textures: _renderer ? _renderer.info.memory.textures : 0,
@@ -3187,112 +3228,28 @@ async function exportXlsx() {
     }
   };
 
-  // ── DB access. DB is declared `let DB = {...}` at the top level of
+  // ── DB access, still used for the collection-derived card field (real
+  // TCGdex scans). DB is declared `let DB = {...}` at the top level of
   // app.js - a classic-script top-level `let` is visible to features.js as
   // the bare identifier (both scripts share one global lexical scope) but
   // is NOT a property of window. window.DB is attempted first per spec,
   // the bare identifier is the real path that actually finds data today. ──
   function kjrIntroDB() {
     if (window.DB && (window.DB.singles || window.DB.slabs)) return window.DB;
-    try { if (typeof DB !== 'undefined' && DB) return DB; } catch (e) { /* DB not declared yet - fall through to fallbacks */ }
+    try { if (typeof DB !== 'undefined' && DB) return DB; } catch (e) { /* DB not declared yet - fall through */ }
     return null;
   }
 
-  // ── Species parsing: leading words before the first digit-bearing token,
-  // strip known TCG variant suffixes, then slugify to a PokeAPI-shaped id. ──
-  function kjrIntroSlug(raw) {
-    var s = String(raw || '').trim();
-    s = s.replace(/♀/g, '-f').replace(/♂/g, '-m');
-    s = s.toLowerCase().replace(/[.']/g, '').replace(/\s+/g, '-');
-    s = s.replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
-    return s;
-  }
-  function kjrIntroSpecies(name) {
-    var tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
-    var leading = [];
-    for (var i = 0; i < tokens.length; i++) {
-      if (/\d/.test(tokens[i])) break;
-      leading.push(tokens[i]);
-    }
-    var kept = leading.filter(function (t) { return !VARIANT_TOKENS[t.toLowerCase()]; });
-    return kjrIntroSlug(kept.join(' '));
-  }
-
-  // ── Memoised slug -> artwork URL, plus the last successful greeter set
-  // (both live in the one kujira_intro_dex key: names and URLs only). ──
-  function kjrIntroLoadDex() {
-    try {
-      var parsed = JSON.parse(localStorage.getItem(DEX_KEY) || 'null');
-      if (parsed && typeof parsed === 'object') {
-        if (!parsed.dex) parsed.dex = {};
-        if (!Array.isArray(parsed.lastGreeters)) parsed.lastGreeters = [];
-        return parsed;
-      }
-    } catch (e) { /* corrupt/missing - start fresh */ }
-    return { dex: {}, lastGreeters: [] };
-  }
-  function kjrIntroSaveDex(store) {
-    try { localStorage.setItem(DEX_KEY, JSON.stringify(store)); } catch (e) { /* quota/private mode - non-fatal, just skip memoisation */ }
-  }
-
-  async function kjrIntroFetchArtwork(slug) {
-    var res = await fetch('https://pokeapi.co/api/v2/pokemon/' + encodeURIComponent(slug));
-    if (!res.ok) return null;
-    var data = await res.json();
-    var art = data && data.sprites && data.sprites.other && data.sprites.other['official-artwork'];
-    return (art && art.front_default) || null;
-  }
-
-  // Own-collection greeters (sorted by marketPrice desc, deduped species,
-  // capped attempts), then cached-greeters, then a random dex id, per the
-  // fallback chain. May resolve to fewer than 3, or zero - scene tolerates it.
-  async function kjrIntroBuildGreeters() {
-    var store = kjrIntroLoadDex();
-    var greeters = [];
-    var tried = {};
-    var attempts = 0;
-    try {
-      var db = kjrIntroDB();
-      var pool = [].concat((db && db.singles) || [], (db && db.slabs) || []);
-      pool.sort(function (a, b) { return (parseFloat(b && b.marketPrice) || 0) - (parseFloat(a && a.marketPrice) || 0); });
-      for (var i = 0; i < pool.length && greeters.length < GREETER_TARGET && attempts < GREETER_MAX_ATTEMPTS; i++) {
-        var slug = kjrIntroSpecies(pool[i] && pool[i].name);
-        if (!slug || tried[slug]) continue;
-        tried[slug] = true;
-        attempts++;
-        var url = store.dex[slug];
-        if (url === undefined) {
-          try {
-            url = await kjrIntroFetchArtwork(slug);
-            store.dex[slug] = url || null; // confirmed hit, or a real miss (response arrived, not ok) - safe to memoise forever
-          } catch (e) {
-            url = null; // transient failure (offline/DNS/abort) - leave unmemoised so it retries next launch, not blacklisted
-          }
-        }
-        if (url) greeters.push({ name: slug, url: url });
-      }
-    } catch (e) { /* own-collection pipeline failed - fall through to cached/random */ }
-
-    if (greeters.length < GREETER_TARGET) {
-      for (var j = 0; j < store.lastGreeters.length && greeters.length < GREETER_TARGET; j++) {
-        var g = store.lastGreeters[j];
-        if (g && g.url && g.name && !tried[g.name]) { tried[g.name] = true; greeters.push(g); }
-      }
-    }
-
-    var randomAttempts = 0;
-    while (greeters.length < GREETER_TARGET && randomAttempts < 5) {
-      randomAttempts++;
-      var id = 1 + Math.floor(Math.random() * 1025);
-      var key = 'dex-' + id;
-      if (tried[key]) continue;
-      tried[key] = true;
-      greeters.push({ name: key, url: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/' + id + '.png' });
-    }
-
-    if (greeters.length) { store.lastGreeters = greeters; kjrIntroSaveDex(store); }
-    introGreeterNames = greeters.map(function (g) { return g.name; });
-    return greeters;
+  // ── Fixed cast artwork, direct by dex id, no PokeAPI JSON round trip. ──
+  async function kjrIntroBuildCast(THREE) {
+    return Promise.all(CAST.map(async function (c) {
+      var url = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/' + c.id + '.png';
+      try {
+        var objUrl = await kjrIntroCachedImage(url);
+        var tex = await kjrIntroLoadTexture(THREE, objUrl);
+        return { name: c.name, texture: tex };
+      } catch (e) { return { name: c.name, texture: null }; } // corridor just has a gap at this slot
+    }));
   }
 
   // ── Real card scans, max 8, records with a non-empty tcgdexId only. ──
@@ -3408,19 +3365,12 @@ async function exportXlsx() {
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     var pair = await Promise.all([
-      kjrIntroBuildGreeters().catch(function () { return []; }),
+      kjrIntroBuildCast(THREE).catch(function () { return []; }),
       kjrIntroBuildCardTextures(THREE).catch(function () { return []; })
     ]);
-    var greeterData = pair[0], realCardTextures = pair[1];
-
-    var greeterTextures = [];
-    for (var gi = 0; gi < greeterData.length; gi++) {
-      try {
-        var objUrl = await kjrIntroCachedImage(greeterData[gi].url);
-        var tex = await kjrIntroLoadTexture(THREE, objUrl);
-        if (tex) greeterTextures.push(tex);
-      } catch (e) { /* skip this greeter */ }
-    }
+    var castData = pair[0], realCardTextures = pair[1];
+    introCastNames = castData.filter(function (c) { return c.texture; }).map(function (c) { return c.name; });
+    introCastLoaded = introCastNames.length;
 
     if (_ending) return; // user skipped while assets were loading - do not build anything else
 
@@ -3436,6 +3386,8 @@ async function exportXlsx() {
 
     // Card field: one InstancedMesh for the procedural-back majority, plus
     // up to 8 individual meshes for real scans (each needs its own texture).
+    // Spread extended to cover the whole corridor depth (was tuned for a
+    // much shorter ~4s field) so the camera never outruns the ambient field.
     var cardGeo = new THREE.PlaneGeometry(1, 1.4);
     var cardBackTex = kjrIntroCardBackTexture(THREE);
     var instancedCount = Math.max(0, CARD_TOTAL - realCardTextures.length);
@@ -3444,7 +3396,7 @@ async function exportXlsx() {
       var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
       var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, instancedCount);
       for (var ci = 0; ci < instancedCount; ci++) {
-        dummy.position.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 11, -Math.random() * 40 - 4);
+        dummy.position.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 11, -Math.random() * 80 - 4);
         dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         var s1 = 0.6 + Math.random() * 0.9;
         dummy.scale.set(s1, s1, s1);
@@ -3458,7 +3410,7 @@ async function exportXlsx() {
     realCardTextures.forEach(function (tex) {
       var mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
       var mesh = new THREE.Mesh(cardGeo, mat);
-      mesh.position.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 8, -Math.random() * 30 - 4);
+      mesh.position.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 8, -Math.random() * 70 - 4);
       mesh.rotation.set((Math.random() - 0.5) * 0.6, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
       var s2 = 1.0 + Math.random() * 0.5;
       mesh.scale.set(s2, s2, s2);
@@ -3472,7 +3424,7 @@ async function exportXlsx() {
     for (var mi = 0; mi < moteCount; mi++) {
       positions[mi * 3] = (Math.random() - 0.5) * 30;
       positions[mi * 3 + 1] = (Math.random() - 0.5) * 18;
-      positions[mi * 3 + 2] = -Math.random() * 45;
+      positions[mi * 3 + 2] = -Math.random() * 85;
     }
     var moteGeo = new THREE.BufferGeometry();
     moteGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -3480,33 +3432,44 @@ async function exportXlsx() {
     var motes = new THREE.Points(moteGeo, moteMat);
     scene.add(motes);
 
-    // Greeters: plane + additive glow sprite behind each
+    // Cast: slalom corridor, plane + additive glow sprite behind each,
+    // starts fully transparent and fades in as the camera approaches
+    // (see the fade calc in tick() below). Wailord's plane is scaled
+    // 2.75x and sits further off the path so it reads as a huge flyby.
     var glowTex = kjrIntroGlowTexture(THREE);
-    var greeterMeshes = [];
-    for (var pi = 0; pi < greeterTextures.length; pi++) {
-      var gTex = greeterTextures[pi];
-      var aspect = (gTex.image && gTex.image.width && gTex.image.height) ? gTex.image.width / gTex.image.height : 1;
-      var gh = 3.2, gw = gh * aspect;
-      var gmat = new THREE.MeshBasicMaterial({ map: gTex, transparent: true, depthWrite: false, fog: true });
-      var gmesh = new THREE.Mesh(new THREE.PlaneGeometry(gw, gh), gmat);
-      var gx = (pi - (greeterTextures.length - 1) / 2) * 3.4;
-      gmesh.position.set(gx, 0, -6 - pi * 0.6);
-      scene.add(gmesh);
-      var glowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0 });
-      var glow = new THREE.Sprite(glowMat);
-      glow.scale.set(gw * 2.1, gh * 2.1, 1);
-      glow.position.set(gx, 0, -6.05 - pi * 0.6);
-      scene.add(glow);
-      greeterMeshes.push({ mesh: gmesh, glow: glow, phase: Math.random() * Math.PI * 2 });
+    var castMeshes = [];
+    for (var ki = 0; ki < CAST.length; ki++) {
+      var cEntry = CAST[ki];
+      var cTex = castData[ki] && castData[ki].texture;
+      if (!cTex) continue; // failed to load - corridor just has a gap at this slot, never a crash
+      var cZ = CORRIDOR_START_Z - ki * CORRIDOR_SPACING;
+      var aspect = (cTex.image && cTex.image.width && cTex.image.height) ? cTex.image.width / cTex.image.height : 1;
+      var baseH = 3.2 * (cEntry.scale || 1);
+      var baseW = baseH * aspect;
+      var cMat = new THREE.MeshBasicMaterial({ map: cTex, transparent: true, depthWrite: false, fog: true, opacity: 0 });
+      var cMesh = new THREE.Mesh(new THREE.PlaneGeometry(baseW, baseH), cMat);
+      cMesh.position.set(cEntry.x, cEntry.y, cZ);
+      scene.add(cMesh);
+      var cGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0 });
+      var cGlow = new THREE.Sprite(cGlowMat);
+      cGlow.scale.set(baseW * 2.1, baseH * 2.1, 1);
+      cGlow.position.set(cEntry.x, cEntry.y, cZ - 0.05);
+      scene.add(cGlow);
+      castMeshes.push({ mesh: cMesh, glow: cGlow, mat: cMat, glowMat: cGlowMat, z: cZ, x: cEntry.x, baseY: cEntry.y, phase: ki * 0.9 });
     }
 
     // ── Animate ──
     var lastT = 0;
     var pointerTX = 0, pointerTY = 0, pointerX = 0, pointerY = 0;
-    var revealing = false, revealStart = 0, canvasFadedIn = false;
+    var camYaw = 0;
+    var canvasFadedIn = false;
     var fogTarget = new THREE.Color(0x8B7CF0);
     var fogBase = new THREE.Color(0x12101F);
 
+    // Pointer movement only ever feeds pointerX/pointerY below, which only
+    // ever touch camera.position.x/y (parallax). It never reaches the z-axis
+    // dolly/reveal-speed logic - hovering cannot affect pace, only a click
+    // (kjrIntroSkip, wired in kjrIntroMain) can, via kjrIntroTriggerReveal.
     function onPointerMove(e) {
       if (coarsePointer) return;
       pointerTX = (e.clientX / window.innerWidth) * 2 - 1;
@@ -3528,7 +3491,7 @@ async function exportXlsx() {
     function tick() {
       _raf = requestAnimationFrame(tick);
       try {
-        var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared, not since the scene finished loading
+        var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared
         var dt = Math.max(0, t - lastT); lastT = t;
 
         if (coarsePointer) {
@@ -3540,24 +3503,58 @@ async function exportXlsx() {
         }
         camera.position.x = pointerX * 1.1;
         camera.position.y = -pointerY * 0.7;
-        camera.position.z -= (revealing ? 9 : 0.9) * dt;
+
+        if (!_revealing && t >= REVEAL_AT) kjrIntroTriggerReveal(false);
+
+        if (_revealing) {
+          camera.position.z -= _revealSpeed * dt;
+          var k = Math.min(1, (t - _revealStart) / REVEAL_DURATION);
+          scene.fog.color.copy(fogBase).lerp(fogTarget, k * 0.4);
+        } else {
+          // Adaptive corridor speed: remaining distance over remaining time to REVEAL_AT, recomputed
+          // every frame. A slow first-run asset load eats into "remaining time" before this ever runs,
+          // so the resulting speed is higher and the corridor still completes on schedule - it never
+          // gets cut short, it just compresses into whatever time is actually left.
+          var remainingTime = Math.max(0.4, REVEAL_AT - t);
+          var remainingDistance = Math.max(0, camera.position.z - CORRIDOR_END_Z);
+          camera.position.z -= (remainingDistance / remainingTime) * dt;
+        }
 
         realCards.forEach(function (rc) { rc.mesh.rotation.y += rc.spin * 0.02; });
         motes.rotation.y = t * 0.01;
-        greeterMeshes.forEach(function (g) {
-          var bob = Math.sin(t * 1.1 + g.phase) * 0.12;
-          var breathe = 1 + Math.sin(t * 0.8 + g.phase) * 0.03;
-          g.mesh.position.y = bob;
-          g.mesh.scale.set(breathe, breathe, 1);
-          g.glow.position.y = bob;
-        });
 
-        if (!revealing && t >= REVEAL_AT) { revealing = true; revealStart = t; introState = 'revealing'; }
-        if (revealing) {
-          var k = Math.min(1, (t - revealStart) / REVEAL_DURATION);
-          scene.fog.color.copy(fogBase).lerp(fogTarget, k * 0.4);
-          if (k >= 1 && !_ending) kjrIntroDissolve();
+        // Yaw toward the next unpassed cast member (capped, eased), so each subject composes
+        // toward centre on approach instead of drifting to the frustum edge; recentres once
+        // nothing is left ahead. Rotation only - pointer parallax above stays position-only.
+        // Hands off to the next member a couple of units before the exact pass (aheadZ<=2, not
+        // 0) so a slalom-side flip has a head start converging before the following approach.
+        var desiredYaw = 0;
+        for (var yi = 0; yi < castMeshes.length; yi++) {
+          var aheadZ = camera.position.z - castMeshes[yi].z;
+          if (aheadZ <= 2) continue; // passed or about to be - look to the next member early
+          desiredYaw = Math.atan2(castMeshes[yi].x - camera.position.x, aheadZ);
+          break;
         }
+        desiredYaw = Math.max(-YAW_MAX_RAD, Math.min(YAW_MAX_RAD, desiredYaw));
+        camYaw += (desiredYaw - camYaw) * 0.14;
+        camera.rotation.y = -camYaw;
+
+        castMeshes.forEach(function (c) {
+          var bob = Math.sin(t * 1.1 + c.phase) * 0.12;
+          var breathe = 1 + Math.sin(t * 0.8 + c.phase) * 0.03;
+          c.mesh.position.y = c.baseY + bob;
+          c.mesh.scale.set(breathe, breathe, 1);
+          c.glow.position.y = c.baseY + bob;
+          // Signed distance: fades in on approach (full by FADE_IN_AT), holds through the pass,
+          // fades out after (mostly moot in practice - the plane backface-culls once passed anyway).
+          var delta = camera.position.z - c.z;
+          var fade;
+          if (delta > FADE_IN_AT) fade = 1 - Math.min(1, (delta - FADE_IN_AT) / FADE_IN_SPAN);
+          else if (delta >= 0) fade = 1;
+          else fade = Math.max(0, 1 + delta / FADE_OUT_SPAN);
+          c.mat.opacity = fade;
+          c.glowMat.opacity = fade;
+        });
 
         renderer.render(scene, camera);
         if (!canvasFadedIn) { canvasFadedIn = true; renderer.domElement.classList.add('kjr-in'); }
@@ -3569,18 +3566,42 @@ async function exportXlsx() {
     tick();
   }
 
-  function kjrIntroSkip() {
-    if (_ending) return;
-    introState = 'skipped';
-    kjrIntroDissolve();
+  // Begins the reveal (fog brighten + faster forward motion), natural or
+  // accelerated. Idempotent via _revealing - a click during an
+  // already-revealing run (natural or a prior click) is a no-op here, the
+  // teardown it already scheduled is imminent either way.
+  function kjrIntroTriggerReveal(accelerated) {
+    if (_revealing) return;
+    _revealing = true;
+    introState = 'revealing';
+    var t = (performance.now() - _introStartTime) / 1000;
+    _revealStart = t;
+    var remaining = _camera ? Math.max(0, _camera.position.z - CORRIDOR_END_Z) : 0;
+    _revealSpeed = accelerated ? Math.max(BASE_REVEAL_SPEED, remaining / REVEAL_DURATION) : BASE_REVEAL_SPEED;
+    var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
+    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, REVEAL_DURATION * 1000));
   }
 
-  function kjrIntroDissolve() {
+  function kjrIntroSkip() {
+    // _revealing guards a second click/key during the accelerated rush (kjrIntroTriggerReveal
+    // already sets it synchronously) - deliberately NOT setting _ending here, that belongs to
+    // kjrIntroDissolve alone, or its deferred call from kjrIntroTriggerReveal would find _ending
+    // already true and silently no-op, and teardown would never fire.
+    if (_ending || _revealing) return;
+    introState = 'skipped';
+    if (_scene && _camera) {
+      kjrIntroTriggerReveal(true); // rush the remaining corridor, then a short dissolve tail
+    } else {
+      kjrIntroDissolve(); // CSS-only phase or asset loading - no camera yet, flat ~260ms fade
+    }
+  }
+
+  function kjrIntroDissolve(ms) {
     if (_ending) return;
     _ending = true;
     var el = document.getElementById('intro');
     if (el) el.classList.add('kjr-intro-out');
-    _introTimers.push(setTimeout(kjrIntroTeardown, DISSOLVE_MS));
+    _introTimers.push(setTimeout(kjrIntroTeardown, ms || DISSOLVE_MS));
   }
 
   function kjrIntroForceRemove(err) {
@@ -3641,7 +3662,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.18');
+      THREE = await import('./Assets/lib/three.module.js?v=3.19');
     } catch (e) {
       introKillSwitch = 'import-failed';
       _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS));

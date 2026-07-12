@@ -3114,65 +3114,83 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.19) =====
-   Self-contained IIFE, does not touch app.js. Plays a Three.js corridor
-   journey on every launch while initDB() and cloud sync run behind it
+/* ===== Launch intro (v3.20) =====
+   Self-contained IIFE, does not touch app.js. Plays a Three.js ambient
+   tableau on every launch while initDB() and cloud sync run behind it
    (never blocks the app). The #intro div and its critical inline style
    (index.html) plus the CSS in styles.css are the fallback greeting on
    their own - everything below is a progressive enhancement over that,
    and any failure here just falls back to the CSS layer already on screen.
    Cast is fixed (not collection-derived): eight official-artwork planes
-   staged as a slalom corridor, camera dollies through in order. The card
-   field behind them is still collection-derived (real TCGdex scans for
-   records with a tcgdexId, procedural backs otherwise) - unchanged.
+   spread across one static frame (no corridor, no per-member camera yaw).
+   The card field behind them is still collection-derived (real TCGdex
+   scans for records with a tcgdexId, procedural backs otherwise), weighted
+   to Julian's repeat purchases (qty-desc, capped copies per card).
+   Choreography: cast fades in from the fog (by ~1.5s), a slow constant
+   camera drift over the tableau, then the camera eases into an upward
+   pan/pitch onto a brand lockup (whale mark + wordmark) floating above the
+   scene, holds while the fog brightens, then dissolves into the app.
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting for
-   about 1.2s then dissolves. Hard ceiling: force-removed by 12s no matter
+   about 1.2s then dissolves. Hard ceiling: force-removed by 8s no matter
    what. Pointer movement is parallax-only and never touches pacing - only
-   a click/tap/keydown ends the intro early, and it does so by triggering
-   an accelerated version of the reveal itself (camera rushes the remaining
-   corridor, fog brightens over ~600ms, short dissolve tail) rather than a
-   flat cut, so a skip feels like fast-forwarding the ending. During the
-   CSS-only phase or asset loading (no camera yet) a skip is a flat ~260ms
-   dissolve, same as before, since there's no corridor to rush through.
+   a click/tap/keydown ends the intro early, and it does so by triggering a
+   compressed version of the brand pan/hold/dissolve (~600-750ms total)
+   rather than a flat cut, so a skip still lands the brand beat. During the
+   CSS-only phase or asset loading (no scene yet) a skip is a flat ~260ms
+   dissolve, same as before, since there's nothing to pan to yet.
    Debug: window.__introDebug.info() (safe before and after teardown). */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
-  var CARD_TOTAL = 40;
-  var MAX_REAL_CARDS = 8;
-  var REVEAL_AT = 9.4;            // seconds since true intro start - natural corridor-traversal target
-  var REVEAL_DURATION = 0.6;      // fog-brighten/rush window, both natural and accelerated reveal
-  var BASE_REVEAL_SPEED = 22;     // units/sec floor for the reveal rush (natural case, ~0 remaining distance)
+  var PROCEDURAL_CARD_COUNT = 25;
+  var MAX_REAL_CARDS = 14;
+  var REAL_CARD_MAX_COPIES = 3;    // per-record cap, so a repeat purchase visibly recurs without flooding the scene
+  var REAL_CARD_INSTANCE_CAP = 10; // total real-card meshes across all records - each costs 2 draw calls (transparent
+  // DoubleSide, needed so a slowly-spinning card doesn't backface-cull), so this keeps the fixed ~22 (cast, motes,
+  // procedural field, brand) plus up to 20 comfortably under the 45 draw-call budget even at worst-case qty load
+  var PAN_START_AT = 4.75;    // seconds since true intro start - tableau drift ends, upward pan begins
+  var PAN_DURATION = 1.0;     // natural ease into the brand-framing pan
+  var HOLD_DURATION = 0.85;   // natural hold on the brand lockup while fog brightens
+  var PAN_DURATION_ACCEL = 0.28;  // compressed pan for a click-triggered skip
+  var HOLD_DURATION_ACCEL = 0.17; // compressed hold for a click-triggered skip
   var KILLSWITCH_FADE_MS = 1200;
-  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural reveal's tail)
-  var ACCEL_DISSOLVE_MS = 40;     // short tail after an accelerated (click-triggered) reveal, tuned so
-  // rush (REVEAL_DURATION, ~600ms) + tail lands the whole click-to-dashboard sequence around 600-750ms
-  var HARD_CEILING_MS = 12000;
+  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural pan/hold's tail)
+  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) pan/hold, tuned so
+  // pan (~280ms) + hold (~170ms) + tail (~200ms) lands the whole click-to-dashboard sequence around 650ms
+  var HARD_CEILING_MS = 8000;
+  var DOLLY_SPEED = 0.65;         // units/sec, constant gentle drift over the tableau (no adaptive pacing needed)
+  var CAST_FADE_STAGGER = 0.1;    // seconds between each member's fade-in start
+  var CAST_FADE_DURATION = 0.55;  // seconds for one member's own fade, last member still lands well inside ~1.5s
 
-  var CORRIDOR_SPACING = 8;
-  var CORRIDOR_START_Z = -6;
-  var FADE_IN_AT = 10;    // full opacity once a member is this many units ahead of the camera (emerges
-  // through the fog well before the pass, rather than just as it's about to leave frame)
-  var FADE_IN_SPAN = 14;  // opacity ramps 0->1 over this many units, ending at FADE_IN_AT
-  var FADE_OUT_SPAN = 6;  // opacity ramps back 1->0 over this many units once the camera has passed
-  var YAW_MAX_RAD = Math.PI / 20; // ~9 degrees - camera yaw cap toward the next unpassed cast member
-
-  // Fixed cast, in corridor order (starters open, legends build, Mew last
-  // before the reveal). Direct official-artwork URLs by dex id - no PokeAPI
-  // JSON lookups needed. x/y are the slalom offsets, tightened to stay inside
-  // the 55-degree-FOV frustum on approach; wailord sits further off the path
-  // (plus a scale multiplier and a higher y) so it reads as a big flyby.
+  // Fixed cast, composed as one static tableau (no corridor, no camera yaw).
+  // Direct official-artwork URLs by dex id - no PokeAPI JSON lookups needed.
+  // x/y/z are hand-placed so all eight read in one view with no bad overlap;
+  // wailord sits deepest and highest (plus a scale multiplier) so it looms
+  // behind the group without blocking anyone in front of it.
+  // Round-2 composition fix: mid-depth members pushed wider with depth
+  // compensation (checked against the 55-degree vertical FOV at both 16:10
+  // desktop and the narrower iPhone portrait frustum, worst case right
+  // before the pan begins) so the frame reads as filled, not huddled
+  // centrally. Lugia moved off wailord's angular span (was reading
+  // white-on-pale-blue); mew and arcanine given more x/y/z separation.
   var CAST = [
-    { name: 'totodile',  id: 158, x: -1.8, y:  0.3 },
-    { name: 'cyndaquil', id: 155, x:  1.7, y: -0.4 },
-    { name: 'arcanine',  id: 59,  x: -2.0, y:  0.2 },
-    { name: 'deoxys',    id: 386, x:  1.9, y:  0.5 },
-    { name: 'lugia',     id: 249, x: -1.9, y: -0.3 },
-    { name: 'wailord',   id: 321, x:  2.8, y:  0.7, scale: 2.75 },
-    { name: 'mewtwo',    id: 150, x: -1.8, y:  0.4 },
-    { name: 'mew',       id: 151, x:  1.7, y: -0.2 }
+    { name: 'totodile',  id: 158, x: -3.4, y: -1.6, z: -9 },
+    { name: 'cyndaquil', id: 155, x:  3.3, y: -1.4, z: -10.5 },
+    { name: 'arcanine',  id: 59,  x: -5.0, y:  0.6, z: -17 },
+    { name: 'deoxys',    id: 386, x:  5.2, y:  0.8, z: -18 },
+    { name: 'mew',       id: 151, x: -1.8, y: -1.0, z: -11.5, scale: 0.7 },
+    { name: 'mewtwo',    id: 150, x:  3.6, y:  2.2, z: -12, scale: 0.75 },
+    { name: 'lugia',     id: 249, x: -3.2, y:  2.2, z: -15 },
+    { name: 'wailord',   id: 321, x:  1.2, y:  1.6, z: -25, scale: 2.75 }
   ];
-  var CORRIDOR_END_Z = CORRIDOR_START_Z - (CAST.length - 1) * CORRIDOR_SPACING - 4; // 4-unit buffer past Mew
+
+  // Brand lockup (whale mark + wordmark), floating above and behind the
+  // tableau, out of the initial frame - the camera pans up onto it at the end.
+  // y=14 clears the 55-degree-FOV frustum's vertical half-height (~10.9 units
+  // at this depth, even at the closest approach right before the pan begins)
+  // with margin, so it stays genuinely out of view until the camera looks up.
+  var LOCKUP_POS = { x: 0, y: 14, z: -16 }; // validated at real viewports (Playwright 1280x800 + iPhone): out of frame for the whole tableau. A 0-size-at-boot viewport (headless/preview panes) renders aspect-1 and can displace it into view - not a real-device case, do not re-tune y for it
+  var LOCKUP_SCALE = 2.6; // round-2 fix: was reading as a smudge at the hold, calibrated against a measured screenshot to land ~20-22% of frame height
 
   var introState = 'idle';
   var introKillSwitch = null;
@@ -3184,12 +3202,12 @@ async function exportXlsx() {
   var _onPointerMove = null, _onResize = null;
   var _ending = false;
   var _removed = false;
-  var _revealing = false;
-  var _revealStart = 0;
-  var _revealSpeed = 0;
-  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (corridor pace, reveal
-  // target, hard ceiling) is measured from here, not from THREE.Clock/scene-build time, so slow asset
-  // loading compresses the journey into whatever time remains instead of truncating it.
+  var _panning = false;
+  var _accelerated = false;
+  var _panStart = 0;
+  var _introRealCardCount = 0; // real-scan card meshes actually rendered, after the per-card and total caps
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (tableau pace, pan
+  // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
   function kjrIntroEnabled() {
@@ -3217,7 +3235,9 @@ async function exportXlsx() {
         killSwitch: introKillSwitch,
         cast: introCastNames.slice(),
         castLoaded: introCastLoaded,
-        revealing: _revealing,
+        panning: _panning,
+        accelerated: _accelerated,
+        realCards: _introRealCardCount,
         introStartTime: _introStartTime || null,
         cameraZ: _camera ? _camera.position.z : null,
         drawCalls: _renderer ? _renderer.info.render.calls : 0,
@@ -3252,11 +3272,22 @@ async function exportXlsx() {
     }));
   }
 
-  // ── Real card scans, max 8, records with a non-empty tcgdexId only. ──
+  // ── Real card scans, weighted to repeats. Records with a non-empty
+  // tcgdexId, sorted qty-desc (missing qty counts as 1) then price-desc,
+  // capped at MAX_REAL_CARDS distinct records. A qty>1 record gets multiple
+  // floating copies later (see kjrIntroBuildScene), capped per-record. ──
+  function kjrIntroQty(rec) {
+    var q = parseFloat(rec && rec.qty);
+    return (isFinite(q) && q > 0) ? q : 1;
+  }
   async function kjrIntroBuildCardTextures(THREE) {
     var db = kjrIntroDB();
     var pool = [].concat((db && db.singles) || [], (db && db.slabs) || []).filter(function (r) { return r && r.tcgdexId; });
-    pool.sort(function (a, b) { return (parseFloat(b.marketPrice) || 0) - (parseFloat(a.marketPrice) || 0); });
+    pool.sort(function (a, b) {
+      var qd = kjrIntroQty(b) - kjrIntroQty(a);
+      if (qd !== 0) return qd;
+      return (parseFloat(b.marketPrice) || 0) - (parseFloat(a.marketPrice) || 0);
+    });
     var picked = pool.slice(0, MAX_REAL_CARDS);
     var results = await Promise.all(picked.map(async function (rec) {
       try {
@@ -3266,10 +3297,26 @@ async function exportXlsx() {
         var data = await res.json();
         if (!data || !data.image) return null;
         var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
-        return await kjrIntroLoadTexture(THREE, objUrl);
+        var tex = await kjrIntroLoadTexture(THREE, objUrl);
+        if (!tex) return null;
+        return { texture: tex, copies: Math.min(REAL_CARD_MAX_COPIES, Math.round(kjrIntroQty(rec))) };
       } catch (e) { return null; } // procedural back fills the slot instead
     }));
     return results.filter(Boolean);
+  }
+
+  // ── Brand lockup assets: whale mark (same-origin, already SW-precached,
+  // no need for the intro-art cache bucket) + wordmark canvas. Waits for
+  // Lexend to finish loading (if the browser exposes document.fonts) so the
+  // wordmark texture isn't baked with a fallback font. ──
+  async function kjrIntroBuildBrand(THREE) {
+    var whaleTexP = kjrIntroLoadTexture(THREE, './Assets/whale-icon.png');
+    var wordTexP = (async function () {
+      try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) { /* font-load races are fine, canvas falls back to sans-serif */ }
+      return kjrIntroWordmarkTexture(THREE);
+    })();
+    var pair = await Promise.all([whaleTexP, wordTexP]);
+    return { whaleTex: pair[0], wordTex: pair[1] };
   }
 
   // ── Every remote image goes through this cache bucket (match first, put
@@ -3359,23 +3406,39 @@ async function exportXlsx() {
     ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
     return new THREE.CanvasTexture(c);
   }
+  // Wordmark canvas, rendered at 6x resolution (bumped again for the
+  // round-2 larger lockup, LOCKUP_SCALE=2.6) so the text stays crisp at the
+  // finale's framing distance and enlarged on-screen size.
+  function kjrIntroWordmarkTexture(THREE) {
+    var res = 6;
+    var w = 640 * res, h = 120 * res;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    ctx.font = '700 ' + (56 * res) + 'px Lexend, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#EAE7F5';
+    ctx.fillText('Kujira Collectibles', w / 2, h / 2);
+    return new THREE.CanvasTexture(c);
+  }
 
-  // ── Scene build + animate + reveal. Throws bubble to kjrIntroMain's catch. ──
+  // ── Scene build + animate + brand finale. Throws bubble to kjrIntroMain's catch. ──
   async function kjrIntroBuildScene(THREE, stageEl) {
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     var pair = await Promise.all([
       kjrIntroBuildCast(THREE).catch(function () { return []; }),
-      kjrIntroBuildCardTextures(THREE).catch(function () { return []; })
+      kjrIntroBuildCardTextures(THREE).catch(function () { return []; }),
+      kjrIntroBuildBrand(THREE).catch(function () { return { whaleTex: null, wordTex: null }; })
     ]);
-    var castData = pair[0], realCardTextures = pair[1];
+    var castData = pair[0], realCardEntries = pair[1], brand = pair[2];
     introCastNames = castData.filter(function (c) { return c.texture; }).map(function (c) { return c.name; });
     introCastLoaded = introCastNames.length;
 
     if (_ending) return; // user skipped while assets were loading - do not build anything else
 
     var scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x12101F, 8, 42);
+    scene.fog = new THREE.Fog(0x12101F, 8, 48); // far enough that wailord (deepest, z~-24) still reads clearly, not washed out
     var camera = new THREE.PerspectiveCamera(55, Math.max(1, stageEl.clientWidth) / Math.max(1, stageEl.clientHeight), 0.1, 100);
     camera.position.set(0, 0, 8);
     var renderer = new THREE.WebGLRenderer({ antialias: !coarsePointer, alpha: true, powerPreference: 'low-power' });
@@ -3384,19 +3447,20 @@ async function exportXlsx() {
     stageEl.appendChild(renderer.domElement);
     _renderer = renderer; _scene = scene; _camera = camera;
 
-    // Card field: one InstancedMesh for the procedural-back majority, plus
-    // up to 8 individual meshes for real scans (each needs its own texture).
-    // Spread extended to cover the whole corridor depth (was tuned for a
-    // much shorter ~4s field) so the camera never outruns the ambient field.
+    // Card field: one InstancedMesh for a sparse procedural-back background,
+    // plus real scans as individual meshes (each needs its own texture) - a
+    // qty>1 record renders multiple copies of the same texture so repeat
+    // purchases visibly recur. Spread matches the tableau's depth range,
+    // and REAL_CARD_INSTANCE_CAP keeps total draw calls inside budget even
+    // when many records have qty>=3.
     var cardGeo = new THREE.PlaneGeometry(1, 1.4);
     var cardBackTex = kjrIntroCardBackTexture(THREE);
-    var instancedCount = Math.max(0, CARD_TOTAL - realCardTextures.length);
     var dummy = new THREE.Object3D();
-    if (instancedCount > 0) {
+    if (PROCEDURAL_CARD_COUNT > 0) {
       var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
-      var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, instancedCount);
-      for (var ci = 0; ci < instancedCount; ci++) {
-        dummy.position.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 11, -Math.random() * 80 - 4);
+      var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, PROCEDURAL_CARD_COUNT);
+      for (var ci = 0; ci < PROCEDURAL_CARD_COUNT; ci++) {
+        dummy.position.set((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 9, -6 - Math.random() * 24);
         dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         var s1 = 0.6 + Math.random() * 0.9;
         dummy.scale.set(s1, s1, s1);
@@ -3407,16 +3471,23 @@ async function exportXlsx() {
       scene.add(instMesh);
     }
     var realCards = [];
-    realCardTextures.forEach(function (tex) {
-      var mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
-      var mesh = new THREE.Mesh(cardGeo, mat);
-      mesh.position.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 8, -Math.random() * 70 - 4);
-      mesh.rotation.set((Math.random() - 0.5) * 0.6, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
-      var s2 = 1.0 + Math.random() * 0.5;
-      mesh.scale.set(s2, s2, s2);
-      scene.add(mesh);
-      realCards.push({ mesh: mesh, spin: (Math.random() - 0.5) * 0.1 });
-    });
+    var realCardTotal = 0;
+    for (var ri = 0; ri < realCardEntries.length && realCardTotal < REAL_CARD_INSTANCE_CAP; ri++) {
+      var entry = realCardEntries[ri];
+      for (var cpI = 0; cpI < entry.copies && realCardTotal < REAL_CARD_INSTANCE_CAP; cpI++) {
+        var mat = new THREE.MeshBasicMaterial({ map: entry.texture, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
+        var mesh = new THREE.Mesh(cardGeo, mat);
+        mesh.position.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, -6 - Math.random() * 22);
+        var yTilt = (Math.random() - 0.5) * (Math.PI / 180 * 50); // within ~25 degrees either side, mostly face-on
+        mesh.rotation.set((Math.random() - 0.5) * 0.35, yTilt, (Math.random() - 0.5) * 0.2);
+        var s2 = 1.3 + Math.random() * 0.3;
+        mesh.scale.set(s2, s2, s2);
+        scene.add(mesh);
+        realCards.push({ mesh: mesh, spin: (Math.random() - 0.5) * 0.08, bobPhase: Math.random() * Math.PI * 2 });
+        realCardTotal++;
+      }
+    }
+    _introRealCardCount = realCardTotal;
 
     // Motes
     var moteCount = coarsePointer ? 400 : 800;
@@ -3432,44 +3503,76 @@ async function exportXlsx() {
     var motes = new THREE.Points(moteGeo, moteMat);
     scene.add(motes);
 
-    // Cast: slalom corridor, plane + additive glow sprite behind each,
-    // starts fully transparent and fades in as the camera approaches
-    // (see the fade calc in tick() below). Wailord's plane is scaled
-    // 2.75x and sits further off the path so it reads as a huge flyby.
+    // Cast: tableau plane + additive glow sprite behind each, starts fully
+    // transparent and fades in quickly (see the fade calc in tick() below).
+    // Wailord's plane is scaled 2.75x and sits deepest/highest so it looms
+    // behind the group rather than blocking anyone in front of it.
     var glowTex = kjrIntroGlowTexture(THREE);
     var castMeshes = [];
     for (var ki = 0; ki < CAST.length; ki++) {
       var cEntry = CAST[ki];
       var cTex = castData[ki] && castData[ki].texture;
-      if (!cTex) continue; // failed to load - corridor just has a gap at this slot, never a crash
-      var cZ = CORRIDOR_START_Z - ki * CORRIDOR_SPACING;
+      if (!cTex) continue; // failed to load - tableau just has a gap at this slot, never a crash
       var aspect = (cTex.image && cTex.image.width && cTex.image.height) ? cTex.image.width / cTex.image.height : 1;
       var baseH = 3.2 * (cEntry.scale || 1);
       var baseW = baseH * aspect;
       var cMat = new THREE.MeshBasicMaterial({ map: cTex, transparent: true, depthWrite: false, fog: true, opacity: 0 });
       var cMesh = new THREE.Mesh(new THREE.PlaneGeometry(baseW, baseH), cMat);
-      cMesh.position.set(cEntry.x, cEntry.y, cZ);
+      cMesh.position.set(cEntry.x, cEntry.y, cEntry.z);
       scene.add(cMesh);
       var cGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0 });
       var cGlow = new THREE.Sprite(cGlowMat);
-      cGlow.scale.set(baseW * 2.1, baseH * 2.1, 1);
-      cGlow.position.set(cEntry.x, cEntry.y, cZ - 0.05);
+      var glowMul = 2.1 / Math.sqrt(cEntry.scale || 1); // sub-linear so wailord's halo doesn't wash out the group
+      cGlow.scale.set(baseW * glowMul, baseH * glowMul, 1);
+      cGlow.position.set(cEntry.x, cEntry.y, cEntry.z - 0.05);
       scene.add(cGlow);
-      castMeshes.push({ mesh: cMesh, glow: cGlow, mat: cMat, glowMat: cGlowMat, z: cZ, x: cEntry.x, baseY: cEntry.y, phase: ki * 0.9 });
+      castMeshes.push({ mesh: cMesh, glow: cGlow, mat: cMat, glowMat: cGlowMat, x: cEntry.x, baseY: cEntry.y, phase: ki * 0.9, fadeStart: ki * CAST_FADE_STAGGER });
+    }
+
+    // Brand lockup: whale mark + wordmark, floating above and behind the
+    // tableau, out of the initial frame. The camera pans/pitches up onto it
+    // near the end (see tick() below); no opacity fade needed here, the
+    // camera framing itself is the reveal. Kept unlit by fog so it reads
+    // clearly at the finale rather than blending into the distance haze.
+    var lockupTarget = new THREE.Vector3(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z);
+    if (brand.whaleTex || brand.wordTex) {
+      var brandGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0.55, fog: false });
+      var brandGlow = new THREE.Sprite(brandGlowMat);
+      brandGlow.scale.set(9 * LOCKUP_SCALE, 5 * LOCKUP_SCALE, 1);
+      brandGlow.position.set(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z - 0.1);
+      scene.add(brandGlow);
+      if (brand.whaleTex) {
+        var whaleAspect = (brand.whaleTex.image && brand.whaleTex.image.width && brand.whaleTex.image.height) ? brand.whaleTex.image.width / brand.whaleTex.image.height : 1;
+        var whaleH = 2.0 * LOCKUP_SCALE, whaleW = whaleH * whaleAspect;
+        var whaleMat = new THREE.MeshBasicMaterial({ map: brand.whaleTex, transparent: true, depthWrite: false, fog: false });
+        var whaleMesh = new THREE.Mesh(new THREE.PlaneGeometry(whaleW, whaleH), whaleMat);
+        whaleMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y + 1.3 * LOCKUP_SCALE, LOCKUP_POS.z);
+        scene.add(whaleMesh);
+      }
+      if (brand.wordTex) {
+        var wordAspect = (brand.wordTex.image && brand.wordTex.image.width && brand.wordTex.image.height) ? brand.wordTex.image.width / brand.wordTex.image.height : 4;
+        var wordH = 1.1 * LOCKUP_SCALE, wordW = wordH * wordAspect;
+        var wordMat = new THREE.MeshBasicMaterial({ map: brand.wordTex, transparent: true, depthWrite: false, fog: false });
+        var wordMesh = new THREE.Mesh(new THREE.PlaneGeometry(wordW, wordH), wordMat);
+        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - 0.7 * LOCKUP_SCALE, LOCKUP_POS.z);
+        scene.add(wordMesh);
+      }
     }
 
     // ── Animate ──
     var lastT = 0;
+    var sceneStartT = null; // t (since intro start) of the first tick - cast fade-in is measured from here
     var pointerTX = 0, pointerTY = 0, pointerX = 0, pointerY = 0;
-    var camYaw = 0;
     var canvasFadedIn = false;
     var fogTarget = new THREE.Color(0x8B7CF0);
     var fogBase = new THREE.Color(0x12101F);
+    var aheadPoint = new THREE.Vector3();
+    var lookPoint = new THREE.Vector3();
 
     // Pointer movement only ever feeds pointerX/pointerY below, which only
     // ever touch camera.position.x/y (parallax). It never reaches the z-axis
-    // dolly/reveal-speed logic - hovering cannot affect pace, only a click
-    // (kjrIntroSkip, wired in kjrIntroMain) can, via kjrIntroTriggerReveal.
+    // dolly/pan-timing logic - hovering cannot affect pace, only a click
+    // (kjrIntroSkip, wired in kjrIntroMain) can, via kjrIntroBeginPan.
     function onPointerMove(e) {
       if (coarsePointer) return;
       pointerTX = (e.clientX / window.innerWidth) * 2 - 1;
@@ -3493,6 +3596,8 @@ async function exportXlsx() {
       try {
         var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared
         var dt = Math.max(0, t - lastT); lastT = t;
+        if (sceneStartT === null) sceneStartT = t;
+        var tScene = t - sceneStartT;
 
         if (coarsePointer) {
           pointerX = Math.sin(t * 0.3) * 0.4;
@@ -3504,40 +3609,31 @@ async function exportXlsx() {
         camera.position.x = pointerX * 1.1;
         camera.position.y = -pointerY * 0.7;
 
-        if (!_revealing && t >= REVEAL_AT) kjrIntroTriggerReveal(false);
+        if (!_panning && t >= PAN_START_AT) kjrIntroBeginPan(false);
 
-        if (_revealing) {
-          camera.position.z -= _revealSpeed * dt;
-          var k = Math.min(1, (t - _revealStart) / REVEAL_DURATION);
-          scene.fog.color.copy(fogBase).lerp(fogTarget, k * 0.4);
+        if (_panning) {
+          var panDur = _accelerated ? PAN_DURATION_ACCEL : PAN_DURATION;
+          var holdDur = _accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
+          var elapsed = t - _panStart;
+          var panK = Math.min(1, elapsed / panDur);
+          panK = panK * panK * (3 - 2 * panK); // smoothstep ease into the pan
+          aheadPoint.set(camera.position.x, camera.position.y, camera.position.z - 10);
+          lookPoint.copy(aheadPoint).lerp(lockupTarget, panK);
+          camera.lookAt(lookPoint);
+          var holdK = Math.max(0, Math.min(1, (elapsed - panDur) / holdDur));
+          scene.fog.color.copy(fogBase).lerp(fogTarget, holdK * 0.4);
+          if (holdK > 0 && !_accelerated) introState = 'holding'; // debug/test visibility - accelerated stays 'skipped'
         } else {
-          // Adaptive corridor speed: remaining distance over remaining time to REVEAL_AT, recomputed
-          // every frame. A slow first-run asset load eats into "remaining time" before this ever runs,
-          // so the resulting speed is higher and the corridor still completes on schedule - it never
-          // gets cut short, it just compresses into whatever time is actually left.
-          var remainingTime = Math.max(0.4, REVEAL_AT - t);
-          var remainingDistance = Math.max(0, camera.position.z - CORRIDOR_END_Z);
-          camera.position.z -= (remainingDistance / remainingTime) * dt;
+          // Constant gentle drift over the tableau - no adaptive pacing needed, the
+          // choreography is fixed beats (drift, pan, hold) rather than a distance to cover.
+          camera.position.z -= DOLLY_SPEED * dt;
         }
 
-        realCards.forEach(function (rc) { rc.mesh.rotation.y += rc.spin * 0.02; });
+        realCards.forEach(function (rc) {
+          rc.mesh.rotation.y += rc.spin * 0.02;
+          rc.mesh.position.y += Math.sin(t * 0.6 + rc.bobPhase) * 0.0006; // faint drift, distinct from the cast's bob
+        });
         motes.rotation.y = t * 0.01;
-
-        // Yaw toward the next unpassed cast member (capped, eased), so each subject composes
-        // toward centre on approach instead of drifting to the frustum edge; recentres once
-        // nothing is left ahead. Rotation only - pointer parallax above stays position-only.
-        // Hands off to the next member a couple of units before the exact pass (aheadZ<=2, not
-        // 0) so a slalom-side flip has a head start converging before the following approach.
-        var desiredYaw = 0;
-        for (var yi = 0; yi < castMeshes.length; yi++) {
-          var aheadZ = camera.position.z - castMeshes[yi].z;
-          if (aheadZ <= 2) continue; // passed or about to be - look to the next member early
-          desiredYaw = Math.atan2(castMeshes[yi].x - camera.position.x, aheadZ);
-          break;
-        }
-        desiredYaw = Math.max(-YAW_MAX_RAD, Math.min(YAW_MAX_RAD, desiredYaw));
-        camYaw += (desiredYaw - camYaw) * 0.14;
-        camera.rotation.y = -camYaw;
 
         castMeshes.forEach(function (c) {
           var bob = Math.sin(t * 1.1 + c.phase) * 0.12;
@@ -3545,19 +3641,20 @@ async function exportXlsx() {
           c.mesh.position.y = c.baseY + bob;
           c.mesh.scale.set(breathe, breathe, 1);
           c.glow.position.y = c.baseY + bob;
-          // Signed distance: fades in on approach (full by FADE_IN_AT), holds through the pass,
-          // fades out after (mostly moot in practice - the plane backface-culls once passed anyway).
-          var delta = camera.position.z - c.z;
-          var fade;
-          if (delta > FADE_IN_AT) fade = 1 - Math.min(1, (delta - FADE_IN_AT) / FADE_IN_SPAN);
-          else if (delta >= 0) fade = 1;
-          else fade = Math.max(0, 1 + delta / FADE_OUT_SPAN);
+          // Quick materialise-in, staggered per member but every one is fully visible
+          // well inside ~1.5s - no fade-out, this is a tableau, not a flythrough.
+          var fade = Math.max(0, Math.min(1, (tScene - c.fadeStart) / CAST_FADE_DURATION));
           c.mat.opacity = fade;
           c.glowMat.opacity = fade;
         });
 
         renderer.render(scene, camera);
-        if (!canvasFadedIn) { canvasFadedIn = true; renderer.domElement.classList.add('kjr-in'); }
+        if (!canvasFadedIn) {
+          canvasFadedIn = true;
+          renderer.domElement.classList.add('kjr-in');
+          var wordEl = document.getElementById('intro-word');
+          if (wordEl) wordEl.classList.add('kjr-intro-word-out'); // CSS wordmark was fallback-only, scene has its own brand beat now
+        }
       } catch (e) {
         kjrIntroForceRemove(e);
       }
@@ -3566,33 +3663,33 @@ async function exportXlsx() {
     tick();
   }
 
-  // Begins the reveal (fog brighten + faster forward motion), natural or
-  // accelerated. Idempotent via _revealing - a click during an
-  // already-revealing run (natural or a prior click) is a no-op here, the
-  // teardown it already scheduled is imminent either way.
-  function kjrIntroTriggerReveal(accelerated) {
-    if (_revealing) return;
-    _revealing = true;
-    introState = 'revealing';
-    var t = (performance.now() - _introStartTime) / 1000;
-    _revealStart = t;
-    var remaining = _camera ? Math.max(0, _camera.position.z - CORRIDOR_END_Z) : 0;
-    _revealSpeed = accelerated ? Math.max(BASE_REVEAL_SPEED, remaining / REVEAL_DURATION) : BASE_REVEAL_SPEED;
+  // Begins the upward pan onto the brand lockup, natural or accelerated
+  // (compressed). Idempotent via _panning - a click during an already-panning
+  // run (natural or a prior click) is a no-op here, the teardown it already
+  // scheduled is imminent either way.
+  function kjrIntroBeginPan(accelerated) {
+    if (_panning) return;
+    _panning = true;
+    _accelerated = accelerated;
+    introState = accelerated ? 'skipped' : 'panning';
+    _panStart = (performance.now() - _introStartTime) / 1000;
+    var panDur = accelerated ? PAN_DURATION_ACCEL : PAN_DURATION;
+    var holdDur = accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
     var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
-    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, REVEAL_DURATION * 1000));
+    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (panDur + holdDur) * 1000));
   }
 
   function kjrIntroSkip() {
-    // _revealing guards a second click/key during the accelerated rush (kjrIntroTriggerReveal
-    // already sets it synchronously) - deliberately NOT setting _ending here, that belongs to
-    // kjrIntroDissolve alone, or its deferred call from kjrIntroTriggerReveal would find _ending
+    // _panning guards a second click/key during the accelerated pan (kjrIntroBeginPan already
+    // sets it synchronously) - deliberately NOT setting _ending here, that belongs to
+    // kjrIntroDissolve alone, or its deferred call from kjrIntroBeginPan would find _ending
     // already true and silently no-op, and teardown would never fire.
-    if (_ending || _revealing) return;
+    if (_ending || _panning) return;
     introState = 'skipped';
     if (_scene && _camera) {
-      kjrIntroTriggerReveal(true); // rush the remaining corridor, then a short dissolve tail
+      kjrIntroBeginPan(true); // compressed pan-up + hold, then a short dissolve tail - still lands the brand beat
     } else {
-      kjrIntroDissolve(); // CSS-only phase or asset loading - no camera yet, flat ~260ms fade
+      kjrIntroDissolve(); // CSS-only phase or asset loading - no scene yet, flat ~260ms fade
     }
   }
 
@@ -3662,7 +3759,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.19');
+      THREE = await import('./Assets/lib/three.module.js?v=3.20');
     } catch (e) {
       introKillSwitch = 'import-failed';
       _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS));

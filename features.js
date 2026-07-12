@@ -3114,7 +3114,7 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.20) =====
+/* ===== Launch intro (v3.21) =====
    Self-contained IIFE, does not touch app.js. Plays a Three.js ambient
    tableau on every launch while initDB() and cloud sync run behind it
    (never blocks the app). The #intro div and its critical inline style
@@ -3123,31 +3123,36 @@ async function exportXlsx() {
    and any failure here just falls back to the CSS layer already on screen.
    Cast is fixed (not collection-derived): eight official-artwork planes
    spread across one static frame (no corridor, no per-member camera yaw).
-   The card field behind them is still collection-derived (real TCGdex
-   scans for records with a tcgdexId, procedural backs otherwise), weighted
-   to Julian's repeat purchases (qty-desc, capped copies per card).
+   The card field is collection-derived (real TCGdex scans - a fixed
+   FEATURED_CARDS showcase first, then repeat-purchase DB picks, qty-desc
+   - plus procedural backs filling the rest), spread from just ahead of
+   the start camera down through deep background so the opening frame
+   already sits inside the field rather than facing it from a distance.
    Choreography: cast fades in from the fog (by ~1.5s), a slow constant
-   camera drift over the tableau, then the camera eases into an upward
-   pan/pitch onto a brand lockup (whale mark + wordmark) floating above the
-   scene, holds while the fog brightens, then dissolves into the app.
+   camera drift into the field (cards passing close by the sides as it
+   goes), then the camera eases into an upward pan/pitch onto a brand
+   lockup (whale mark the hero, wordmark small below it) floating above
+   the scene, holds while the fog brightens, then dissolves into the app.
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
-   three.js import failure. A kill-switched run shows the CSS greeting for
-   about 1.2s then dissolves. Hard ceiling: force-removed by 8s no matter
-   what. Pointer movement is parallax-only and never touches pacing - only
-   a click/tap/keydown ends the intro early, and it does so by triggering a
-   compressed version of the brand pan/hold/dissolve (~600-750ms total)
-   rather than a flat cut, so a skip still lands the brand beat. During the
-   CSS-only phase or asset loading (no scene yet) a skip is a flat ~260ms
-   dissolve, same as before, since there's nothing to pan to yet.
+   three.js import failure. A kill-switched run shows the CSS greeting
+   (wordmark fades in for this path only - hidden the rest of the time,
+   the scene carries its own brand beat) for about 1.2s then dissolves.
+   Hard ceiling: force-removed by 8s no matter what. Pointer movement is
+   parallax-only and never touches pacing - only a click/tap/keydown ends
+   the intro early, and it does so by triggering a compressed version of
+   the brand pan/hold/dissolve (~600-750ms total) rather than a flat cut,
+   so a skip still lands the brand beat. During the CSS-only phase or asset
+   loading (no scene yet) a skip is a flat ~260ms dissolve, same as before,
+   since there's nothing to pan to yet.
    Debug: window.__introDebug.info() (safe before and after teardown). */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
   var PROCEDURAL_CARD_COUNT = 25;
-  var MAX_REAL_CARDS = 14;
-  var REAL_CARD_MAX_COPIES = 3;    // per-record cap, so a repeat purchase visibly recurs without flooding the scene
-  var REAL_CARD_INSTANCE_CAP = 10; // total real-card meshes across all records - each costs 2 draw calls (transparent
-  // DoubleSide, needed so a slowly-spinning card doesn't backface-cull), so this keeps the fixed ~22 (cast, motes,
-  // procedural field, brand) plus up to 20 comfortably under the 45 draw-call budget even at worst-case qty load
+  var DB_CARD_POOL_CAP = 14;       // distinct DB records considered, before the combined mesh cap below trims copies
+  var REAL_CARD_MAX_COPIES = 3;    // per DB record, so a repeat purchase visibly recurs without flooding the scene
+  var REAL_CARD_INSTANCE_CAP = 16; // combined real-card meshes across featured + DB records. Front-side-only (see
+  // the card-field build below) costs 1 draw call each, not 2 - keeps the fixed ~22 (cast, motes, procedural
+  // field, brand) plus up to 16 comfortably under the 45 draw-call budget even at worst-case featured+qty load
   var PAN_START_AT = 4.75;    // seconds since true intro start - tableau drift ends, upward pan begins
   var PAN_DURATION = 1.0;     // natural ease into the brand-framing pan
   var HOLD_DURATION = 0.85;   // natural hold on the brand lockup while fog brightens
@@ -3158,7 +3163,7 @@ async function exportXlsx() {
   var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) pan/hold, tuned so
   // pan (~280ms) + hold (~170ms) + tail (~200ms) lands the whole click-to-dashboard sequence around 650ms
   var HARD_CEILING_MS = 8000;
-  var DOLLY_SPEED = 0.65;         // units/sec, constant gentle drift over the tableau (no adaptive pacing needed)
+  var DOLLY_SPEED = 0.65;         // units/sec, constant gentle drift into the card field (no adaptive pacing needed)
   var CAST_FADE_STAGGER = 0.1;    // seconds between each member's fade-in start
   var CAST_FADE_DURATION = 0.55;  // seconds for one member's own fade, last member still lands well inside ~1.5s
 
@@ -3190,7 +3195,7 @@ async function exportXlsx() {
   // at this depth, even at the closest approach right before the pan begins)
   // with margin, so it stays genuinely out of view until the camera looks up.
   var LOCKUP_POS = { x: 0, y: 14, z: -16 }; // validated at real viewports (Playwright 1280x800 + iPhone): out of frame for the whole tableau. A 0-size-at-boot viewport (headless/preview panes) renders aspect-1 and can displace it into view - not a real-device case, do not re-tune y for it
-  var LOCKUP_SCALE = 2.6; // round-2 fix: was reading as a smudge at the hold, calibrated against a measured screenshot to land ~20-22% of frame height
+  var LOCKUP_SCALE = 2.6; // shared base unit for the whole lockup (glow/logo/wordmark sizes below all derive from this) - untouched by the v3.21 logo-first rebalance, which only changed the per-element multipliers
 
   var introState = 'idle';
   var introKillSwitch = null;
@@ -3205,7 +3210,8 @@ async function exportXlsx() {
   var _panning = false;
   var _accelerated = false;
   var _panStart = 0;
-  var _introRealCardCount = 0; // real-scan card meshes actually rendered, after the per-card and total caps
+  var _introRealCardCount = 0; // combined real-scan card meshes actually rendered (featured + DB), after caps
+  var _introFeaturedCardCount = 0; // of the above, how many came from the fixed FEATURED_CARDS showcase
   var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (tableau pace, pan
   // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
 
@@ -3238,6 +3244,7 @@ async function exportXlsx() {
         panning: _panning,
         accelerated: _accelerated,
         realCards: _introRealCardCount,
+        featuredCards: _introFeaturedCardCount,
         introStartTime: _introStartTime || null,
         cameraZ: _camera ? _camera.position.z : null,
         drawCalls: _renderer ? _renderer.info.render.calls : 0,
@@ -3272,23 +3279,59 @@ async function exportXlsx() {
     }));
   }
 
-  // ── Real card scans, weighted to repeats. Records with a non-empty
-  // tcgdexId, sorted qty-desc (missing qty counts as 1) then price-desc,
-  // capped at MAX_REAL_CARDS distinct records. A qty>1 record gets multiple
-  // floating copies later (see kjrIntroBuildScene), capped per-record. ──
+  // ── Featured showcase: Julian's named pieces, pinned to real TCGdex ids
+  // resolved ahead of time against the live API (name + image both
+  // verified - see the v3.21 packet report for the resolution table).
+  // Always attempted first, one copy each, English region (every id below
+  // is an English print). DB picks below never duplicate one of these
+  // (deduped by tcgdexId) and only fill whatever budget is left. ──
+  var FEATURED_CARDS = [
+    'svp-044',    // Charmander, SVP Black Star Promo
+    'xyp-XY67a',  // Jirachi, XY Black Star Promo
+    'svp-131',    // Kingdra ex, SVP Black Star Promo
+    'sv04.5-232', // Mew ex, Paldean Fates, Special Illustration Rare (community nickname "Bubble Mew" - see packet report)
+    'xyp-XY121',  // Charizard EX, XY Black Star Promo
+    'xyp-XY122',  // Blastoise EX, XY Black Star Promo
+    'xyp-XY123',  // Venusaur EX, XY Black Star Promo (same XY1xx promo run as the two above)
+    'smp-SM210',  // Moltres & Zapdos & Articuno GX, SM Black Star Promo (stained-glass tag team)
+    'sv07-148',   // Squirtle, Stellar Crown, Illustration Rare
+    'sv07-143'    // Bulbasaur, Stellar Crown, Illustration Rare
+  ];
+  async function kjrIntroBuildFeaturedEntries(THREE) {
+    var results = await Promise.all(FEATURED_CARDS.map(async function (id) {
+      try {
+        var res = await fetch('https://api.tcgdex.net/v2/en/cards/' + encodeURIComponent(id));
+        if (!res.ok) return null;
+        var data = await res.json();
+        if (!data || !data.image) return null;
+        var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
+        var tex = await kjrIntroLoadTexture(THREE, objUrl);
+        if (!tex) return null;
+        return { texture: tex, copies: 1, featured: true };
+      } catch (e) { return null; } // procedural back fills the slot instead
+    }));
+    return results.filter(Boolean);
+  }
+
+  // ── DB-derived scans, weighted to repeats. Records with a non-empty
+  // tcgdexId not already in FEATURED_CARDS, sorted qty-desc (missing qty
+  // counts as 1) then price-desc, capped at DB_CARD_POOL_CAP distinct
+  // records. A qty>1 record gets multiple floating copies later (see
+  // kjrIntroBuildScene), capped per-record. ──
   function kjrIntroQty(rec) {
     var q = parseFloat(rec && rec.qty);
     return (isFinite(q) && q > 0) ? q : 1;
   }
-  async function kjrIntroBuildCardTextures(THREE) {
+  async function kjrIntroBuildDbEntries(THREE) {
     var db = kjrIntroDB();
-    var pool = [].concat((db && db.singles) || [], (db && db.slabs) || []).filter(function (r) { return r && r.tcgdexId; });
+    var pool = [].concat((db && db.singles) || [], (db && db.slabs) || [])
+      .filter(function (r) { return r && r.tcgdexId && FEATURED_CARDS.indexOf(r.tcgdexId) === -1; });
     pool.sort(function (a, b) {
       var qd = kjrIntroQty(b) - kjrIntroQty(a);
       if (qd !== 0) return qd;
       return (parseFloat(b.marketPrice) || 0) - (parseFloat(a.marketPrice) || 0);
     });
-    var picked = pool.slice(0, MAX_REAL_CARDS);
+    var picked = pool.slice(0, DB_CARD_POOL_CAP);
     var results = await Promise.all(picked.map(async function (rec) {
       try {
         var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(rec.language) : (rec.language || 'en').toString().toLowerCase() || 'en';
@@ -3299,10 +3342,17 @@ async function exportXlsx() {
         var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
         var tex = await kjrIntroLoadTexture(THREE, objUrl);
         if (!tex) return null;
-        return { texture: tex, copies: Math.min(REAL_CARD_MAX_COPIES, Math.round(kjrIntroQty(rec))) };
+        return { texture: tex, copies: Math.min(REAL_CARD_MAX_COPIES, Math.round(kjrIntroQty(rec))), featured: false };
       } catch (e) { return null; } // procedural back fills the slot instead
     }));
     return results.filter(Boolean);
+  }
+  async function kjrIntroBuildCardTextures(THREE) {
+    var both = await Promise.all([
+      kjrIntroBuildFeaturedEntries(THREE).catch(function () { return []; }),
+      kjrIntroBuildDbEntries(THREE).catch(function () { return []; })
+    ]);
+    return both[0].concat(both[1]); // featured first - priority order for the mesh-cap trim in kjrIntroBuildScene
   }
 
   // ── Brand lockup assets: whale mark (same-origin, already SW-precached,
@@ -3448,11 +3498,22 @@ async function exportXlsx() {
     _renderer = renderer; _scene = scene; _camera = camera;
 
     // Card field: one InstancedMesh for a sparse procedural-back background,
-    // plus real scans as individual meshes (each needs its own texture) - a
-    // qty>1 record renders multiple copies of the same texture so repeat
-    // purchases visibly recur. Spread matches the tableau's depth range,
-    // and REAL_CARD_INSTANCE_CAP keeps total draw calls inside budget even
-    // when many records have qty>=3.
+    // plus real scans (featured showcase first, then DB picks) as individual
+    // front-side-only meshes (each needs its own texture) - a qty>1 DB
+    // record renders multiple copies of the same texture so repeat
+    // purchases visibly recur. kjrIntroFieldZ() spans +4 (just ahead of the
+    // start camera, z=8) down to -20, denser through the middle, so the
+    // opening frame already sits inside the field rather than facing it
+    // from a distance. Front-side-only real cards rely on ordinary backface
+    // culling to disappear cleanly (no pop) if the camera ever ends up past
+    // one - see the change report for why that never happens at the current
+    // drift speed/duration, kept anyway as the correct defensive setting.
+    // REAL_CARD_INSTANCE_CAP keeps total draw calls inside budget even at
+    // the worst-case combined featured+DB load.
+    function kjrIntroFieldZ() {
+      var r = (Math.random() + Math.random()) * 0.5; // triangular (two averaged draws) - denser mid-span than flat random
+      return 4 - r * 24;
+    }
     var cardGeo = new THREE.PlaneGeometry(1, 1.4);
     var cardBackTex = kjrIntroCardBackTexture(THREE);
     var dummy = new THREE.Object3D();
@@ -3460,7 +3521,7 @@ async function exportXlsx() {
       var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
       var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, PROCEDURAL_CARD_COUNT);
       for (var ci = 0; ci < PROCEDURAL_CARD_COUNT; ci++) {
-        dummy.position.set((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 9, -6 - Math.random() * 24);
+        dummy.position.set((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 9, kjrIntroFieldZ());
         dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         var s1 = 0.6 + Math.random() * 0.9;
         dummy.scale.set(s1, s1, s1);
@@ -3472,12 +3533,13 @@ async function exportXlsx() {
     }
     var realCards = [];
     var realCardTotal = 0;
+    var featuredTotal = 0;
     for (var ri = 0; ri < realCardEntries.length && realCardTotal < REAL_CARD_INSTANCE_CAP; ri++) {
       var entry = realCardEntries[ri];
       for (var cpI = 0; cpI < entry.copies && realCardTotal < REAL_CARD_INSTANCE_CAP; cpI++) {
-        var mat = new THREE.MeshBasicMaterial({ map: entry.texture, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
+        var mat = new THREE.MeshBasicMaterial({ map: entry.texture, transparent: true, side: THREE.FrontSide, depthWrite: false, fog: true });
         var mesh = new THREE.Mesh(cardGeo, mat);
-        mesh.position.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, -6 - Math.random() * 22);
+        mesh.position.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, kjrIntroFieldZ());
         var yTilt = (Math.random() - 0.5) * (Math.PI / 180 * 50); // within ~25 degrees either side, mostly face-on
         mesh.rotation.set((Math.random() - 0.5) * 0.35, yTilt, (Math.random() - 0.5) * 0.2);
         var s2 = 1.3 + Math.random() * 0.3;
@@ -3485,9 +3547,11 @@ async function exportXlsx() {
         scene.add(mesh);
         realCards.push({ mesh: mesh, spin: (Math.random() - 0.5) * 0.08, bobPhase: Math.random() * Math.PI * 2 });
         realCardTotal++;
+        if (entry.featured) featuredTotal++;
       }
     }
     _introRealCardCount = realCardTotal;
+    _introFeaturedCardCount = featuredTotal;
 
     // Motes
     var moteCount = coarsePointer ? 400 : 800;
@@ -3536,25 +3600,35 @@ async function exportXlsx() {
     // clearly at the finale rather than blending into the distance haze.
     var lockupTarget = new THREE.Vector3(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z);
     if (brand.whaleTex || brand.wordTex) {
+      // Logo-first lockup: the whale mark is the clear hero, roughly 2x the
+      // prior lockup's visual size (4.0 * LOCKUP_SCALE vs the old 2.0). The
+      // wordmark sits below it, sized off the logo's own width (~45%, inside
+      // the 40-50% range) rather than an independent constant, so it stays
+      // smaller and subordinate even if LOCKUP_SCALE is retuned later.
+      // whaleW below is hoisted with a same-aspect fallback in case the logo
+      // texture itself fails to load, so the wordmark still sizes sensibly.
       var brandGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0.55, fog: false });
       var brandGlow = new THREE.Sprite(brandGlowMat);
-      brandGlow.scale.set(9 * LOCKUP_SCALE, 5 * LOCKUP_SCALE, 1);
+      brandGlow.scale.set(18 * LOCKUP_SCALE, 10 * LOCKUP_SCALE, 1); // same aura/hero ratio as before, doubled with the logo
       brandGlow.position.set(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z - 0.1);
       scene.add(brandGlow);
+      var whaleW = 4.0 * LOCKUP_SCALE;
+      var gap = 0.45 * LOCKUP_SCALE; // visible gap between logo and wordmark
       if (brand.whaleTex) {
         var whaleAspect = (brand.whaleTex.image && brand.whaleTex.image.width && brand.whaleTex.image.height) ? brand.whaleTex.image.width / brand.whaleTex.image.height : 1;
-        var whaleH = 2.0 * LOCKUP_SCALE, whaleW = whaleH * whaleAspect;
+        var whaleH = 4.0 * LOCKUP_SCALE;
+        whaleW = whaleH * whaleAspect;
         var whaleMat = new THREE.MeshBasicMaterial({ map: brand.whaleTex, transparent: true, depthWrite: false, fog: false });
         var whaleMesh = new THREE.Mesh(new THREE.PlaneGeometry(whaleW, whaleH), whaleMat);
-        whaleMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y + 1.3 * LOCKUP_SCALE, LOCKUP_POS.z);
+        whaleMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y + gap / 2 + whaleH / 2, LOCKUP_POS.z);
         scene.add(whaleMesh);
       }
       if (brand.wordTex) {
         var wordAspect = (brand.wordTex.image && brand.wordTex.image.width && brand.wordTex.image.height) ? brand.wordTex.image.width / brand.wordTex.image.height : 4;
-        var wordH = 1.1 * LOCKUP_SCALE, wordW = wordH * wordAspect;
+        var wordW = whaleW * 0.45, wordH = wordW / wordAspect;
         var wordMat = new THREE.MeshBasicMaterial({ map: brand.wordTex, transparent: true, depthWrite: false, fog: false });
         var wordMesh = new THREE.Mesh(new THREE.PlaneGeometry(wordW, wordH), wordMat);
-        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - 0.7 * LOCKUP_SCALE, LOCKUP_POS.z);
+        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - gap / 2 - wordH / 2, LOCKUP_POS.z);
         scene.add(wordMesh);
       }
     }
@@ -3651,9 +3725,7 @@ async function exportXlsx() {
         renderer.render(scene, camera);
         if (!canvasFadedIn) {
           canvasFadedIn = true;
-          renderer.domElement.classList.add('kjr-in');
-          var wordEl = document.getElementById('intro-word');
-          if (wordEl) wordEl.classList.add('kjr-intro-word-out'); // CSS wordmark was fallback-only, scene has its own brand beat now
+          renderer.domElement.classList.add('kjr-in'); // #intro-word stays hidden throughout a scene run - it's kill-switch-only now
         }
       } catch (e) {
         kjrIntroForceRemove(e);
@@ -3699,6 +3771,14 @@ async function exportXlsx() {
     var el = document.getElementById('intro');
     if (el) el.classList.add('kjr-intro-out');
     _introTimers.push(setTimeout(kjrIntroTeardown, ms || DISSOLVE_MS));
+  }
+
+  // #intro-word is hidden by default (styles.css) - the scene carries its own
+  // brand beat now. Only the four kill-switch paths below call this, so the
+  // CSS fallback greeting still reads on every one of them.
+  function kjrIntroShowWord() {
+    var el = document.getElementById('intro-word');
+    if (el) el.classList.add('kjr-intro-word-show');
   }
 
   function kjrIntroForceRemove(err) {
@@ -3753,15 +3833,16 @@ async function exportXlsx() {
     window.addEventListener('keydown', kjrIntroSkip);
     _introTimers.push(setTimeout(function () { kjrIntroForceRemove(); }, HARD_CEILING_MS));
 
-    if (!kjrIntroEnabled()) { introKillSwitch = 'settings-off'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { introKillSwitch = 'reduced-motion'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
-    if (!kjrIntroHasWebGL()) { introKillSwitch = 'no-webgl'; _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+    if (!kjrIntroEnabled()) { introKillSwitch = 'settings-off'; kjrIntroShowWord(); _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { introKillSwitch = 'reduced-motion'; kjrIntroShowWord(); _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
+    if (!kjrIntroHasWebGL()) { introKillSwitch = 'no-webgl'; kjrIntroShowWord(); _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.20');
+      THREE = await import('./Assets/lib/three.module.js?v=3.21');
     } catch (e) {
       introKillSwitch = 'import-failed';
+      kjrIntroShowWord();
       _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS));
       return;
     }

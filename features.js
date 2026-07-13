@@ -3114,7 +3114,7 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.22) =====
+/* ===== Launch intro (v3.23) =====
    Self-contained IIFE, does not touch app.js. Plays a Three.js walkthrough
    on every launch while initDB() and cloud sync run behind it (never blocks
    the app). The #intro div and its critical inline style (index.html) plus
@@ -3128,28 +3128,31 @@ async function exportXlsx() {
    filling the rest), spread the length and width of the whole camera path
    (kjrIntroFieldZ/kjrIntroFieldXY) with a clear corridor on the path axis
    and a clear sky cone above its final stretch (see those functions).
-   Choreography: a person walking through a jungle of cards. Cast fades in
-   from the fog (by ~1.5s), a constant forward dolly carries the camera
-   through the surrounding field (cards passing close by the sides, top and
-   bottom), then at WALK_DURATION the camera stops and a three-beat finale
-   plays: look up (pitch onto the brand lockup, position frozen), zoom in
-   (dolly toward it until the whale mark reads as a title card), hold while
-   the fog brightens, then dissolve into the app.
+   Choreography: a person walking slowly through a jungle of cards. Cast
+   fades in from the fog (by ~1.5s), a gentle constant forward dolly carries
+   the camera through the surrounding field (cards passing close by the
+   sides, top and bottom, Wailord looming as the deepest, largest presence),
+   then at WALK_DURATION the camera simply stops - no pan, pitch or zoom -
+   while the world (field, cast, motes, fog) eases to nothing around a
+   single whale-icon outro card that fades in centred ahead of the frozen
+   camera, holds briefly, then the whole overlay dissolves into the app.
+   No brand text anywhere in the WebGL scene, the icon alone carries the
+   brand beat (v3.23, replacing the prior look-up/zoom/wordmark finale).
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
-   three.js import failure. A kill-switched run shows the CSS greeting
-   (wordmark fades in for this path only - hidden the rest of the time,
+   three.js import failure. A kill-switched run shows the CSS greeting (the
+   whale icon fades in for this path only - hidden the rest of the time,
    the scene carries its own brand beat) for about 1.2s then dissolves.
-   Hard ceiling: force-removed by 8s no matter what. Pointer movement is
+   Hard ceiling: force-removed by 9.5s no matter what. Pointer movement is
    parallax-only during the walk and never touches pacing - it stops
-   entirely once the finale begins (the camera "stops": a deliberate,
-   measurable frame for the finale, not mouse-driven). Only a click/tap/
-   keydown ends the intro early, and it does so by triggering the same
-   look-up+zoom compressed to ~500-600ms plus a short dissolve tail
-   (~700-800ms total), so a skip still lands the title-card beat. During
-   the CSS-only phase or asset loading (no scene yet) a skip is a flat
-   ~260ms dissolve, same as before, since there's nothing to look up at yet.
+   entirely once the outro begins (the camera "stops": a deliberate,
+   measurable frame, not mouse-driven, and never panned or zoomed). Only a
+   click/tap/keydown ends the intro early, and it does so by triggering the
+   same icon fade-in compressed to ~350-450ms plus a brief hold and a short
+   dissolve tail, so a skip still lands the icon beat, just fast. During the
+   CSS-only phase or asset loading (no scene yet) a skip is a flat ~260ms
+   dissolve, same as before, since there's nothing to fade to yet.
    Debug: window.__introDebug.info() (safe before and after teardown),
-   .cardProbe(i) and .lockupFit() for the walkthrough/finale QA probes. */
+   .cardProbe(i) and .iconFit() for the walkthrough/outro QA probes. */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
   var PROCEDURAL_CARD_COUNT = 25;
@@ -3158,29 +3161,23 @@ async function exportXlsx() {
   var REAL_CARD_INSTANCE_CAP = 16; // combined real-card meshes across featured + DB records. Front-side-only (see
   // the card-field build below) costs 1 draw call each, not 2 - keeps the fixed ~22 (cast, motes, procedural
   // field, brand) plus up to 16 comfortably under the 45 draw-call budget even at worst-case featured+qty load
-  var WALK_DURATION = 4.5;          // seconds since true intro start - the walk ends, camera stops, finale begins
-  var LOOKUP_DURATION = 0.8;        // natural: camera pitches up onto the lockup, position frozen
-  var ZOOM_DURATION = 1.1;          // natural: camera dollies toward the lockup to the title-card framing
-  var HOLD_DURATION = 0.55;         // natural hold on the title card while fog brightens
-  var LOOKUP_DURATION_ACCEL = 0.18; // compressed look-up for a click-triggered skip
-  var ZOOM_DURATION_ACCEL = 0.25;   // compressed zoom for a click-triggered skip
-  var HOLD_DURATION_ACCEL = 0.12;   // compressed hold for a click-triggered skip
-  var ZOOM_END_POS = { x: 0, y: 9.5, z: -9.6 }; // fixed camera position at the end of the zoom-in dolly -
-  // deliberately NOT derived from wherever the walk happened to stop, so the title-card framing is
-  // reproducible on any device/frame-rate. Tuned against window.__introDebug.lockupFit() at 1280x800: whale
-  // mark ~70-80% of frame width, wordmark ~40-45% of the whale's width, logo centred slightly above the
-  // vertical middle. See the v3.22 packet report for the measured numbers.
-  var ZOOM_END_REF_ASPECT = 1.6; // the 16:10 (1280x800) aspect ZOOM_END_POS above was tuned against - a
-  // narrower/portrait aspect (phones) sees proportionally more of the same world-space distance, so the
-  // camera backs off further from the lockup the narrower the viewport (see the aspectScale use below) -
-  // confirmed necessary: unscaled, the same fixed position measured ~211% of frame width on an iPhone 13
-  // viewport (390x664 CSS px) versus ~79% at 1280x800, badly overflowing the title card on mobile.
+  var WALK_DURATION = 6.0;          // seconds since true intro start - the walk ends, camera stops, outro begins
+  var OUTRO_FADE_DURATION = 1.2;    // natural: world (field/cast/motes/fog) eases to nothing as the icon fades in
+  var OUTRO_HOLD_DURATION = 0.9;    // natural hold on the icon before the overlay dissolve
+  var OUTRO_FADE_ACCEL = 0.4;       // compressed icon fade-in for a click-triggered skip
+  var OUTRO_HOLD_ACCEL = 0.15;      // compressed hold for a click-triggered skip
+  var ICON_DEPTH = 7;                // world units ahead of the frozen camera the outro icon plane sits at
+  var ICON_TARGET_FRAC = 0.7;        // target on-screen width as a fraction of frame width (spec: 65-75%) -
+  // solved directly from ICON_DEPTH + the camera's vertical FOV/aspect at outro start (see kjrIntroBeginOutro),
+  // so the frame fraction holds across desktop and mobile without a separate aspect-scale correction.
+  var FOG_NEAR_TARGET = 0.6;  // outro: fog near/far ease toward these tighter distances as the world dissolves
+  var FOG_FAR_TARGET = 6;     // (icon material itself is fog:false, so it stays clear while the field is swallowed)
   var KILLSWITCH_FADE_MS = 1200;
-  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural finale's tail)
-  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) finale, tuned so look-up+zoom+hold
-  // (~550ms) plus this tail (~200ms) lands the whole click-to-dashboard sequence around 700-750ms
-  var HARD_CEILING_MS = 8000;
-  var DOLLY_SPEED = 4.0;          // units/sec, constant forward walk through the card field (no adaptive pacing needed)
+  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural outro's tail)
+  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) outro, tuned so the icon
+  // fade+hold (~550ms) plus this tail (~200ms) lands the whole click-to-dashboard sequence around 700-750ms
+  var HARD_CEILING_MS = 9500;
+  var DOLLY_SPEED = 2.2;          // units/sec, constant forward walk through the card field (no adaptive pacing needed)
   var CAST_FADE_STAGGER = 0.1;    // seconds between each member's fade-in start
   var CAST_FADE_DURATION = 0.55;  // seconds for one member's own fade, last member still lands well inside ~1.5s
 
@@ -3203,20 +3200,8 @@ async function exportXlsx() {
     { name: 'mew',       id: 151, x: -1.8, y: -1.0, z: -11.5, scale: 0.7 },
     { name: 'mewtwo',    id: 150, x:  3.6, y:  2.2, z: -12, scale: 0.75 },
     { name: 'lugia',     id: 249, x: -3.2, y:  2.2, z: -15 },
-    { name: 'wailord',   id: 321, x:  1.2, y:  1.6, z: -25, scale: 2.75 }
+    { name: 'wailord',   id: 321, x:  1.2, y:  1.6, z: -22, scale: 2.75 }
   ];
-
-  // Brand lockup (whale mark + wordmark), floating above and behind the
-  // walked field, out of frame until the finale looks up onto it.
-  // y=14 clears the 55-degree-FOV frustum's vertical half-height (~3.1 units
-  // at this depth, even at a real device's full-speed walk-end z=-10, the
-  // closest the walk itself ever gets) with a wide margin, so it stays
-  // genuinely out of view until the camera deliberately looks up.
-  var LOCKUP_POS = { x: 0, y: 14, z: -16 }; // validated at real viewports (Playwright 1280x800 + iPhone): out of frame for the whole walk, including v3.22's closer pass (nearer the lockup's own depth narrows the frustum there, not widens it). A 0-size-at-boot viewport (headless/preview panes) renders aspect-1 and can displace it into view - not a real-device case, do not re-tune y for it
-  var LOCKUP_SCALE = 2.6; // shared base unit for the whole lockup (glow/logo/wordmark sizes below all derive from this) - untouched by the v3.21 logo-first rebalance and the v3.22 finale rework, neither of which changed lockup geometry, only camera movement
-  var FINALE_LOOK_Y = 16.5; // world y the finale camera looks at - close to the whale mark's own vertical
-  // centre rather than LOCKUP_POS.y (the logo/wordmark gap-centre), so the logo lands slightly above the
-  // frame's middle rather than near the top. Tuned against lockupFit(), independent of LOCKUP_POS (mesh anchor)
 
   var introState = 'idle';
   var introKillSwitch = null;
@@ -3228,14 +3213,14 @@ async function exportXlsx() {
   var _onPointerMove = null, _onResize = null;
   var _ending = false;
   var _removed = false;
-  var _panning = false;
+  var _outroActive = false;
   var _accelerated = false;
-  var _panStart = 0;
+  var _outroStart = 0;
   var _introRealCardCount = 0; // combined real-scan card meshes actually rendered (featured + DB), after caps
   var _introFeaturedCardCount = 0; // of the above, how many came from the fixed FEATURED_CARDS showcase
   var _introRealCards = null;    // real-card {mesh,...} entries, exposed to __introDebug.cardProbe
-  var _introWhaleMesh = null, _introWordMesh = null, _introTHREE = null; // exposed to __introDebug.lockupFit
-  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (walk pace, finale
+  var _introIconMesh = null, _introTHREE = null; // exposed to __introDebug.iconFit
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (walk pace, outro
   // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
@@ -3264,7 +3249,7 @@ async function exportXlsx() {
         killSwitch: introKillSwitch,
         cast: introCastNames.slice(),
         castLoaded: introCastLoaded,
-        panning: _panning,
+        outro: _outroActive,
         accelerated: _accelerated,
         realCards: _introRealCardCount,
         featuredCards: _introFeaturedCardCount,
@@ -3285,9 +3270,9 @@ async function exportXlsx() {
       var m = _introRealCards[i].mesh;
       return { cardZ: m.position.z, cameraZ: _camera.position.z, passed: _camera.position.z < m.position.z };
     },
-    // QA probe: projects the brand lockup meshes through the camera to measure their actual
-    // on-screen pixel size, for the finale's title-card framing.
-    lockupFit: function () {
+    // QA probe: projects the outro icon plane through the camera to measure its actual
+    // on-screen pixel size and position, for the "65-75% of frame width, centred" spec.
+    iconFit: function () {
       if (!_camera || !_renderer || !_introTHREE) return null;
       var T = _introTHREE;
       var w = _renderer.domElement.clientWidth, h = _renderer.domElement.clientHeight;
@@ -3304,12 +3289,12 @@ async function exportXlsx() {
         });
         return { widthPx: maxX - minX, heightPx: maxY - minY, centerXPx: (minX + maxX) / 2, centerYPx: (minY + maxY) / 2 };
       }
-      var whale = box(_introWhaleMesh), word = box(_introWordMesh);
+      var icon = box(_introIconMesh);
       return {
-        canvasW: w, canvasH: h, whale: whale, word: word,
-        whaleWidthFrac: whale ? whale.widthPx / w : null,
-        whaleCenterYFrac: whale ? whale.centerYPx / h : null,
-        wordToWhaleWidthFrac: (whale && word) ? word.widthPx / whale.widthPx : null
+        canvasW: w, canvasH: h, icon: icon,
+        iconWidthFrac: icon ? icon.widthPx / w : null,
+        iconCenterXFrac: icon ? icon.centerXPx / w : null,
+        iconCenterYFrac: icon ? icon.centerYPx / h : null
       };
     }
   };
@@ -3414,18 +3399,11 @@ async function exportXlsx() {
     return both[0].concat(both[1]); // featured first - priority order for the mesh-cap trim in kjrIntroBuildScene
   }
 
-  // ── Brand lockup assets: whale mark (same-origin, already SW-precached,
-  // no need for the intro-art cache bucket) + wordmark canvas. Waits for
-  // Lexend to finish loading (if the browser exposes document.fonts) so the
-  // wordmark texture isn't baked with a fallback font. ──
+  // ── Brand asset: whale mark alone (same-origin, already SW-precached, no
+  // need for the intro-art cache bucket). No wordmark, no text anywhere in
+  // the WebGL scene - the icon carries the whole brand beat now. ──
   async function kjrIntroBuildBrand(THREE) {
-    var whaleTexP = kjrIntroLoadTexture(THREE, './Assets/whale-icon.png');
-    var wordTexP = (async function () {
-      try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) { /* font-load races are fine, canvas falls back to sans-serif */ }
-      return kjrIntroWordmarkTexture(THREE);
-    })();
-    var pair = await Promise.all([whaleTexP, wordTexP]);
-    return { whaleTex: pair[0], wordTex: pair[1] };
+    return kjrIntroLoadTexture(THREE, './Assets/whale-icon.png');
   }
 
   // ── Every remote image goes through this cache bucket (match first, put
@@ -3515,40 +3493,24 @@ async function exportXlsx() {
     ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
     return new THREE.CanvasTexture(c);
   }
-  // Wordmark canvas, rendered at 6x resolution (bumped again for the
-  // round-2 larger lockup, LOCKUP_SCALE=2.6) so the text stays crisp at the
-  // finale's framing distance and enlarged on-screen size.
-  function kjrIntroWordmarkTexture(THREE) {
-    var res = 6;
-    var w = 640 * res, h = 120 * res;
-    var c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    var ctx = c.getContext('2d');
-    ctx.font = '700 ' + (56 * res) + 'px Lexend, sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#EAE7F5';
-    ctx.fillText('Kujira Collectibles', w / 2, h / 2);
-    return new THREE.CanvasTexture(c);
-  }
-
-  // ── Scene build + animate + brand finale. Throws bubble to kjrIntroMain's catch. ──
+  // ── Scene build + animate + icon outro. Throws bubble to kjrIntroMain's catch. ──
   async function kjrIntroBuildScene(THREE, stageEl) {
-    _introTHREE = THREE; // for __introDebug.lockupFit's on-screen projection
+    _introTHREE = THREE; // for __introDebug.iconFit's on-screen projection
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     var pair = await Promise.all([
       kjrIntroBuildCast(THREE).catch(function () { return []; }),
       kjrIntroBuildCardTextures(THREE).catch(function () { return []; }),
-      kjrIntroBuildBrand(THREE).catch(function () { return { whaleTex: null, wordTex: null }; })
+      kjrIntroBuildBrand(THREE).catch(function () { return null; })
     ]);
-    var castData = pair[0], realCardEntries = pair[1], brand = pair[2];
+    var castData = pair[0], realCardEntries = pair[1], whaleTex = pair[2];
     introCastNames = castData.filter(function (c) { return c.texture; }).map(function (c) { return c.name; });
     introCastLoaded = introCastNames.length;
 
     if (_ending) return; // user skipped while assets were loading - do not build anything else
 
     var scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x12101F, 8, 48); // far enough that wailord (deepest, z~-24) still reads clearly, not washed out
+    scene.fog = new THREE.Fog(0x12101F, 8, 48); // far enough that wailord (deepest, z~-22) still reads clearly, not washed out - tightened by the outro (see FOG_*_TARGET)
     var camera = new THREE.PerspectiveCamera(55, Math.max(1, stageEl.clientWidth) / Math.max(1, stageEl.clientHeight), 0.1, 100);
     camera.position.set(0, 0, 8);
     var renderer = new THREE.WebGLRenderer({ antialias: !coarsePointer, alpha: true, powerPreference: 'low-power' });
@@ -3577,7 +3539,8 @@ async function exportXlsx() {
     // x/y surround the path (a jungle, not a wall ahead): a small clear
     // corridor on the path axis (radius ~1.2) so nothing clips the lens,
     // and a clear sky cone above the walk's final stretch (|x|<2, y>2.5,
-    // z -12..-2) so the look-up finale finds clean sky, no card overlap.
+    // z -12..-2) - this range also covers where the outro icon sits ahead
+    // of the walk's end, keeping that space clear of stray card overlap.
     function kjrIntroFieldXY(z) {
       var x, y, tries = 0;
       do {
@@ -3675,54 +3638,22 @@ async function exportXlsx() {
       castMeshes.push({ mesh: cMesh, glow: cGlow, mat: cMat, glowMat: cGlowMat, x: cEntry.x, baseY: cEntry.y, phase: ki * 0.9, fadeStart: ki * CAST_FADE_STAGGER });
     }
 
-    // Brand lockup: whale mark + wordmark, floating above and behind the
-    // tableau, out of the initial frame. The camera pans/pitches up onto it
-    // near the end (see tick() below); no opacity fade needed here, the
-    // camera framing itself is the reveal. Kept unlit by fog so it reads
-    // clearly at the finale rather than blending into the distance haze.
-    var lockupTarget = new THREE.Vector3(LOCKUP_POS.x, FINALE_LOOK_Y, LOCKUP_POS.z);
-    if (brand.whaleTex || brand.wordTex) {
-      // Logo-first lockup: the whale mark is the clear hero, roughly 2x the
-      // prior lockup's visual size (4.0 * LOCKUP_SCALE vs the old 2.0). The
-      // wordmark sits below it, sized off the logo's own width (~45%, inside
-      // the 40-50% range) rather than an independent constant, so it stays
-      // smaller and subordinate even if LOCKUP_SCALE is retuned later.
-      // whaleW below is hoisted with a same-aspect fallback in case the logo
-      // texture itself fails to load, so the wordmark still sizes sensibly.
-      var brandGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0.55, fog: false });
-      var brandGlow = new THREE.Sprite(brandGlowMat);
-      brandGlow.scale.set(18 * LOCKUP_SCALE, 10 * LOCKUP_SCALE, 1); // same aura/hero ratio as before, doubled with the logo
-      brandGlow.position.set(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z - 0.1);
-      scene.add(brandGlow);
-      var whaleW = 4.0 * LOCKUP_SCALE;
-      var gap = 0.45 * LOCKUP_SCALE; // visible gap between logo and wordmark (whale's own offset above LOCKUP_POS - unchanged by the v3.22 composition fix below)
-      var WORD_RISE = 0.75 * LOCKUP_SCALE; // v3.22 composition fix: lifts the wordmark up toward the whale's
-      // underside so it reads as a snug title-card lockup instead of sitting apart in the lower frame. Tuned
-      // against window.__introDebug.lockupFit(): lands the word centre at ~61.5% of frame height at 1280x800
-      // (~55% on iPhone 13), a clean, deliberate gap below the whale with no clipping on either viewport
-      // (verified via natural-run screenshots, not eyeballed - see the v3.22 packet report for the numbers).
-      if (brand.whaleTex) {
-        var whaleAspect = (brand.whaleTex.image && brand.whaleTex.image.width && brand.whaleTex.image.height) ? brand.whaleTex.image.width / brand.whaleTex.image.height : 1;
-        var whaleH = 4.0 * LOCKUP_SCALE;
-        whaleW = whaleH * whaleAspect;
-        var whaleMat = new THREE.MeshBasicMaterial({ map: brand.whaleTex, transparent: true, depthWrite: false, fog: false });
-        var whaleMesh = new THREE.Mesh(new THREE.PlaneGeometry(whaleW, whaleH), whaleMat);
-        whaleMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y + gap / 2 + whaleH / 2, LOCKUP_POS.z);
-        scene.add(whaleMesh);
-        _introWhaleMesh = whaleMesh; // exposed to __introDebug.lockupFit
-      }
-      if (brand.wordTex) {
-        var wordAspect = (brand.wordTex.image && brand.wordTex.image.width && brand.wordTex.image.height) ? brand.wordTex.image.width / brand.wordTex.image.height : 4;
-        // 0.35 in 3D space, not 0.45: the wordmark sits nearer the camera than the logo at the finale's
-        // look-up angle, so perspective alone inflates it on screen - this spatial ratio is pre-compensated
-        // so the RENDERED result lands ~40-45% of the logo's on-screen width (measured via lockupFit()).
-        var wordW = whaleW * 0.35, wordH = wordW / wordAspect;
-        var wordMat = new THREE.MeshBasicMaterial({ map: brand.wordTex, transparent: true, depthWrite: false, fog: false });
-        var wordMesh = new THREE.Mesh(new THREE.PlaneGeometry(wordW, wordH), wordMat);
-        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - gap / 2 - wordH / 2 + WORD_RISE, LOCKUP_POS.z);
-        scene.add(wordMesh);
-        _introWordMesh = wordMesh; // exposed to __introDebug.lockupFit
-      }
+    // Outro icon: the whale mark alone, built now (texture already loaded)
+    // but sized and positioned only once the walk ends and the camera's
+    // final resting spot is known (see kjrIntroBeginOutro/tick below) - a
+    // plain unit-size plane, scaled at that point to solve for the target
+    // on-screen frame fraction. Kept unlit by fog (fog:false) so it stays
+    // clear and legible while the field around it is swallowed by fog.
+    var introIconMesh = null, introIconMat = null, introIconGlow = null, introIconGlowMat = null, iconAspect = 1;
+    if (whaleTex) {
+      iconAspect = (whaleTex.image && whaleTex.image.width && whaleTex.image.height) ? whaleTex.image.width / whaleTex.image.height : 1;
+      introIconMat = new THREE.MeshBasicMaterial({ map: whaleTex, transparent: true, depthWrite: false, fog: false, opacity: 0 });
+      introIconMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1 / iconAspect), introIconMat);
+      scene.add(introIconMesh);
+      introIconGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0, fog: false });
+      introIconGlow = new THREE.Sprite(introIconGlowMat);
+      scene.add(introIconGlow);
+      _introIconMesh = introIconMesh; // exposed to __introDebug.iconFit
     }
 
     // ── Animate ──
@@ -3730,18 +3661,16 @@ async function exportXlsx() {
     var sceneStartT = null; // t (since intro start) of the first tick - cast fade-in is measured from here
     var pointerTX = 0, pointerTY = 0, pointerX = 0, pointerY = 0;
     var canvasFadedIn = false;
-    var fogTarget = new THREE.Color(0x8B7CF0);
-    var fogBase = new THREE.Color(0x12101F);
-    var walkEndPos = new THREE.Vector3();   // camera position at the moment the walk stops (finale begins)
-    var walkEndAhead = new THREE.Vector3(); // a point 10 units ahead of walkEndPos - look-up eases away from this
-    var zoomEndPos = new THREE.Vector3();   // camera position at the end of the zoom-in dolly
-    var lookPoint = new THREE.Vector3();
-    var panCaptured = false; // walkEndPos/walkEndAhead/zoomEndPos are captured once, the frame panning begins
+    var fogNear0 = scene.fog.near, fogFar0 = scene.fog.far; // captured once, outro eases from these toward the FOG_*_TARGET constants
+    var outroCaptured = false; // the camera position is frozen and the icon sized/placed once, the frame the outro begins
 
     // Pointer movement only ever feeds pointerX/pointerY below, which only
-    // ever touch camera.position.x/y (parallax). It never reaches the z-axis
-    // dolly/pan-timing logic - hovering cannot affect pace, only a click
-    // (kjrIntroSkip, wired in kjrIntroMain) can, via kjrIntroBeginPan.
+    // ever touch camera.position.x/y (parallax) during the walk. It never
+    // reaches the z-axis dolly/outro-timing logic - hovering cannot affect
+    // pace, only a click (kjrIntroSkip, wired in kjrIntroMain) can, via
+    // kjrIntroBeginOutro. Once the outro begins the camera is frozen outright
+    // (see the tick() branch below), so pointer movement has zero effect on
+    // it from that point on either.
     function onPointerMove(e) {
       if (coarsePointer) return;
       pointerTX = (e.clientX / window.innerWidth) * 2 - 1;
@@ -3765,7 +3694,7 @@ async function exportXlsx() {
       try {
         var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared
         var dt = Math.min(0.05, Math.max(0, t - lastT)); lastT = t; // clamped so a slow first frame (asset
-        // decode) or any later stall can't jump the dolly - matters much more at v3.22's faster DOLLY_SPEED
+        // decode) or any later stall can't jump the dolly
         if (sceneStartT === null) sceneStartT = t;
         var tScene = t - sceneStartT;
 
@@ -3776,76 +3705,77 @@ async function exportXlsx() {
           pointerX += (pointerTX - pointerX) * 0.04;
           pointerY += (pointerTY - pointerY) * 0.04;
         }
-        if (!_panning && t >= WALK_DURATION) kjrIntroBeginPan(false);
+        if (!_outroActive && t >= WALK_DURATION) kjrIntroBeginOutro(false);
 
-        if (_panning) {
-          // Position is fully authored from here on (parallax stops - the walker "stops" to
-          // look up, no more mouse sway) - captured once, the first frame panning is true,
-          // whichever of the two triggers (natural threshold above, or a click via
-          // kjrIntroSkip/kjrIntroBeginPan) actually set it.
-          if (!panCaptured) {
-            panCaptured = true;
-            walkEndPos.copy(camera.position);
-            walkEndAhead.set(camera.position.x, camera.position.y, camera.position.z - 10);
-            // Fixed target (not walk-derived, see ZOOM_END_POS), but its offset from the lockup is scaled
-            // by the viewport's aspect so the on-screen width fraction holds across desktop and mobile.
-            var aspectScale = ZOOM_END_REF_ASPECT / camera.aspect;
-            zoomEndPos.set(
-              LOCKUP_POS.x + (ZOOM_END_POS.x - LOCKUP_POS.x) * aspectScale,
-              LOCKUP_POS.y + (ZOOM_END_POS.y - LOCKUP_POS.y) * aspectScale,
-              LOCKUP_POS.z + (ZOOM_END_POS.z - LOCKUP_POS.z) * aspectScale
-            );
+        if (_outroActive) {
+          // Position is frozen outright from here on (parallax stops too - the walker
+          // "stops", no pan, no pitch, no zoom) - captured once, the first frame the
+          // outro is active, whichever of the two triggers (natural threshold above, or
+          // a click via kjrIntroSkip/kjrIntroBeginOutro) actually set it.
+          if (!outroCaptured) {
+            outroCaptured = true;
+            if (introIconMesh) {
+              // Solve the icon's world size directly from its fixed depth ahead of the
+              // camera plus the current vertical FOV/aspect, so ICON_TARGET_FRAC (65-75%
+              // of frame width) holds exactly regardless of viewport shape - no separate
+              // aspect-scale correction needed (unlike the old fixed-position lockup).
+              var vFov = camera.fov * Math.PI / 180;
+              var halfH = ICON_DEPTH * Math.tan(vFov / 2);
+              var halfW = halfH * camera.aspect;
+              var iconW = ICON_TARGET_FRAC * 2 * halfW;
+              var iconH = iconW / iconAspect;
+              introIconMesh.scale.set(iconW, iconH, 1);
+              introIconMesh.position.set(camera.position.x, camera.position.y, camera.position.z - ICON_DEPTH);
+              introIconGlow.scale.set(iconW * 1.7, iconH * 1.7, 1);
+              introIconGlow.position.set(camera.position.x, camera.position.y, camera.position.z - ICON_DEPTH - 0.05);
+            }
           }
-          var lookupDur = _accelerated ? LOOKUP_DURATION_ACCEL : LOOKUP_DURATION;
-          var zoomDur = _accelerated ? ZOOM_DURATION_ACCEL : ZOOM_DURATION;
-          var holdDur = _accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
-          var elapsed = t - _panStart;
+          var fadeDur = _accelerated ? OUTRO_FADE_ACCEL : OUTRO_FADE_DURATION;
+          var holdDur = _accelerated ? OUTRO_HOLD_ACCEL : OUTRO_HOLD_DURATION;
+          var elapsed = t - _outroStart;
 
-          // Beat 1: look up - pitch onto the lockup, smoothstep ease, camera position frozen.
-          var lookK = Math.min(1, elapsed / lookupDur);
-          lookK = lookK * lookK * (3 - 2 * lookK);
-          lookPoint.copy(walkEndAhead).lerp(lockupTarget, lookK);
+          // World empties: field/cast/motes ease to zero opacity, fog tightens around them.
+          var fadeK = Math.min(1, elapsed / fadeDur);
+          fadeK = fadeK * fadeK * (3 - 2 * fadeK);
+          var worldOpacity = 1 - fadeK;
+          if (instMesh) instMesh.material.opacity = worldOpacity;
+          realCards.forEach(function (rc) { rc.mesh.material.opacity = worldOpacity; });
+          moteMat.opacity = 0.75 * worldOpacity;
+          castMeshes.forEach(function (c) { c.mat.opacity = worldOpacity; c.glowMat.opacity = worldOpacity; });
+          scene.fog.near = fogNear0 + (FOG_NEAR_TARGET - fogNear0) * fadeK;
+          scene.fog.far = fogFar0 + (FOG_FAR_TARGET - fogFar0) * fadeK;
 
-          // Beat 2: zoom in - dolly toward the lockup (not FOV zoom), still looking at it.
-          var zoomK = Math.max(0, Math.min(1, (elapsed - lookupDur) / zoomDur));
-          zoomK = zoomK * zoomK * (3 - 2 * zoomK);
-          if (zoomK > 0) {
-            camera.position.lerpVectors(walkEndPos, zoomEndPos, zoomK);
-            camera.lookAt(lockupTarget);
-          } else {
-            camera.lookAt(lookPoint);
-          }
+          // Icon fades in as the world fades out - no camera movement at any point here.
+          if (introIconMat) { introIconMat.opacity = fadeK; introIconGlowMat.opacity = fadeK * 0.5; }
 
-          // Beat 3: hold - fog brightens toward the title card, no further camera movement.
-          var holdK = Math.max(0, Math.min(1, (elapsed - lookupDur - zoomDur) / holdDur));
-          scene.fog.color.copy(fogBase).lerp(fogTarget, holdK * 0.4);
-          if (!_accelerated) introState = holdK > 0 ? 'holding' : (zoomK > 0 ? 'zooming' : 'panning'); // debug/test visibility - accelerated stays 'skipped'
+          var holdK = Math.max(0, Math.min(1, (elapsed - fadeDur) / holdDur));
+          if (!_accelerated) introState = holdK > 0 ? 'holding' : 'outro'; // debug/test visibility - accelerated stays 'skipped'
         } else {
-          // Constant forward walk through the field - no adaptive pacing needed, the
-          // choreography is fixed beats (walk, look-up, zoom, hold) rather than a distance to cover.
+          // Constant slow forward walk through the field - no adaptive pacing needed, the
+          // choreography is fixed beats (walk, then the outro) rather than a distance to cover.
           camera.position.x = pointerX * 1.1;
           camera.position.y = -pointerY * 0.7;
           camera.position.z -= DOLLY_SPEED * dt;
+
+          realCards.forEach(function (rc) {
+            rc.mesh.rotation.y += rc.spin * 0.02;
+            rc.mesh.position.y += Math.sin(t * 0.6 + rc.bobPhase) * 0.0006; // faint drift, distinct from the cast's bob
+          });
+          motes.rotation.y = t * 0.01;
+
+          castMeshes.forEach(function (c) {
+            var bob = Math.sin(t * 1.1 + c.phase) * 0.12;
+            var breathe = 1 + Math.sin(t * 0.8 + c.phase) * 0.03;
+            c.mesh.position.y = c.baseY + bob;
+            c.mesh.scale.set(breathe, breathe, 1);
+            c.glow.position.y = c.baseY + bob;
+            // Quick materialise-in, staggered per member but every one is fully visible
+            // well inside ~1.5s - no fade-out here, that only starts once the outro begins above.
+            var fade = Math.max(0, Math.min(1, (tScene - c.fadeStart) / CAST_FADE_DURATION));
+            c.mat.opacity = fade;
+            c.glowMat.opacity = fade;
+          });
         }
-
-        realCards.forEach(function (rc) {
-          rc.mesh.rotation.y += rc.spin * 0.02;
-          rc.mesh.position.y += Math.sin(t * 0.6 + rc.bobPhase) * 0.0006; // faint drift, distinct from the cast's bob
-        });
-        motes.rotation.y = t * 0.01;
-
-        castMeshes.forEach(function (c) {
-          var bob = Math.sin(t * 1.1 + c.phase) * 0.12;
-          var breathe = 1 + Math.sin(t * 0.8 + c.phase) * 0.03;
-          c.mesh.position.y = c.baseY + bob;
-          c.mesh.scale.set(breathe, breathe, 1);
-          c.glow.position.y = c.baseY + bob;
-          // Quick materialise-in, staggered per member but every one is fully visible
-          // well inside ~1.5s - no fade-out, this is a tableau, not a flythrough.
-          var fade = Math.max(0, Math.min(1, (tScene - c.fadeStart) / CAST_FADE_DURATION));
-          c.mat.opacity = fade;
-          c.glowMat.opacity = fade;
-        });
 
         renderer.render(scene, camera);
         if (!canvasFadedIn) {
@@ -3860,32 +3790,30 @@ async function exportXlsx() {
     tick();
   }
 
-  // Begins the upward pan onto the brand lockup, natural or accelerated
-  // (compressed). Idempotent via _panning - a click during an already-panning
-  // run (natural or a prior click) is a no-op here, the teardown it already
-  // scheduled is imminent either way.
-  function kjrIntroBeginPan(accelerated) {
-    if (_panning) return;
-    _panning = true;
+  // Begins the icon outro, natural or accelerated (compressed). Idempotent via
+  // _outroActive - a click during an already-active outro (natural or a prior
+  // click) is a no-op here, the teardown it already scheduled is imminent either way.
+  function kjrIntroBeginOutro(accelerated) {
+    if (_outroActive) return;
+    _outroActive = true;
     _accelerated = accelerated;
-    introState = accelerated ? 'skipped' : 'panning';
-    _panStart = (performance.now() - _introStartTime) / 1000;
-    var lookupDur = accelerated ? LOOKUP_DURATION_ACCEL : LOOKUP_DURATION;
-    var zoomDur = accelerated ? ZOOM_DURATION_ACCEL : ZOOM_DURATION;
-    var holdDur = accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
+    introState = accelerated ? 'skipped' : 'outro';
+    _outroStart = (performance.now() - _introStartTime) / 1000;
+    var fadeDur = accelerated ? OUTRO_FADE_ACCEL : OUTRO_FADE_DURATION;
+    var holdDur = accelerated ? OUTRO_HOLD_ACCEL : OUTRO_HOLD_DURATION;
     var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
-    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (lookupDur + zoomDur + holdDur) * 1000));
+    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (fadeDur + holdDur) * 1000));
   }
 
   function kjrIntroSkip() {
-    // _panning guards a second click/key during the accelerated pan (kjrIntroBeginPan already
-    // sets it synchronously) - deliberately NOT setting _ending here, that belongs to
-    // kjrIntroDissolve alone, or its deferred call from kjrIntroBeginPan would find _ending
+    // _outroActive guards a second click/key during the accelerated outro (kjrIntroBeginOutro
+    // already sets it synchronously) - deliberately NOT setting _ending here, that belongs to
+    // kjrIntroDissolve alone, or its deferred call from kjrIntroBeginOutro would find _ending
     // already true and silently no-op, and teardown would never fire.
-    if (_ending || _panning) return;
+    if (_ending || _outroActive) return;
     introState = 'skipped';
     if (_scene && _camera) {
-      kjrIntroBeginPan(true); // compressed pan-up + hold, then a short dissolve tail - still lands the brand beat
+      kjrIntroBeginOutro(true); // compressed icon fade + brief hold, then a short dissolve tail - no pan, still lands the icon beat
     } else {
       kjrIntroDissolve(); // CSS-only phase or asset loading - no scene yet, flat ~260ms fade
     }
@@ -3899,9 +3827,9 @@ async function exportXlsx() {
     _introTimers.push(setTimeout(kjrIntroTeardown, ms || DISSOLVE_MS));
   }
 
-  // #intro-word is hidden by default (styles.css) - the scene carries its own
-  // brand beat now. Only the four kill-switch paths below call this, so the
-  // CSS fallback greeting still reads on every one of them.
+  // #intro-word (the whale icon, no text) is hidden by default (styles.css) -
+  // the scene carries its own brand beat now. Only the four kill-switch paths
+  // below call this, so the CSS fallback greeting still reads on every one of them.
   function kjrIntroShowWord() {
     var el = document.getElementById('intro-word');
     if (el) el.classList.add('kjr-intro-word-show');
@@ -3946,7 +3874,7 @@ async function exportXlsx() {
     var el = document.getElementById('intro');
     if (el && el.parentNode) el.parentNode.removeChild(el);
     _scene = null; _camera = null; _renderer = null;
-    _introRealCards = null; _introWhaleMesh = null; _introWordMesh = null; _introTHREE = null;
+    _introRealCards = null; _introIconMesh = null; _introTHREE = null;
   }
 
   async function kjrIntroMain() {
@@ -3966,7 +3894,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.22');
+      THREE = await import('./Assets/lib/three.module.js?v=3.23');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

@@ -1338,7 +1338,7 @@ dialog.kjr-complete-back::backdrop{background:rgba(0,0,0,0.7)}
 .kjr-complete-summary.amber{color:var(--amber);border-color:var(--complete-summary-amber-bd)}
   /* re-use existing kjr-* utility classes from v2 */
 
-/* ===== Launch intro (v3.22) =====
+/* ===== Launch intro (v3.23) =====
    Fixed dark brand gradient regardless of light/dark theme (the intro is a
    deliberately theme-invariant splash), so colours here are literal hex,
    never the --bg/--text/--accent tokens (those flip in html.light).
@@ -1348,18 +1348,20 @@ dialog.kjr-complete-back::backdrop{background:rgba(0,0,0,0.7)}
 #intro-stage{position:absolute;inset:0}
 #intro-stage canvas{display:block;width:100%!important;height:100%!important;opacity:0;transition:opacity 0.9s ease}
 #intro-stage canvas.kjr-in{opacity:1}
-/* Hidden by default - the 3D scene carries its own brand beat now (logo-first
-   finale). This wordmark is the CSS-only fallback greeting, shown (faded in)
-   only on a kill-switch path (features.js kjrIntroShowWord), never during a
-   normal run, not even in the CSS boot phase before the canvas fades in. */
-#intro-word{position:relative;font-family:'Lexend',sans-serif;font-weight:600;font-size:clamp(22px,5vw,36px);letter-spacing:0.05em;text-align:center;padding:0 24px;background:linear-gradient(100deg,#EAE7F5 25%,#ffffff 50%,#EAE7F5 75%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:kjrIntroShimmer 2.8s ease-in-out infinite;user-select:none;opacity:0;transition:opacity 0.4s ease}
+/* Hidden by default - the 3D scene carries its own brand beat now (the icon
+   outro). This is the CSS-only fallback greeting, whale icon alone, no text,
+   shown (faded in) only on a kill-switch path (features.js kjrIntroShowWord),
+   never during a normal run, not even in the CSS boot phase before the
+   canvas fades in. */
+#intro-word{position:relative;display:flex;align-items:center;justify-content:center;user-select:none;opacity:0;transition:opacity 0.4s ease}
 #intro-word.kjr-intro-word-show{opacity:1}
+#intro-word-icon{width:64px;height:64px;filter:drop-shadow(0 0 18px rgba(139,124,240,0.5));animation:kjrIntroIconPulse 2.8s ease-in-out infinite}
 #intro-skip{position:absolute;left:0;right:0;bottom:calc(28px + env(safe-area-inset-bottom));text-align:center;font-family:'Lexend',sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#B0AAC8;opacity:0.35;animation:kjrIntroHint 3.2s ease-in-out 0.6s infinite;user-select:none}
-@keyframes kjrIntroShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes kjrIntroIconPulse{0%,100%{opacity:0.85}50%{opacity:1}}
 @keyframes kjrIntroHint{0%,100%{opacity:0.35}50%{opacity:0.75}}
 @media(prefers-reduced-motion:reduce){
   #intro{transition:opacity 0.2s linear}
   #intro.kjr-intro-out{transform:none}
-  #intro-word{animation:none;background-position:0 0}
+  #intro-word-icon{animation:none}
   #intro-skip{animation:none;opacity:0.55}
 }

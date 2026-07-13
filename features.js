@@ -3114,37 +3114,42 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.21) =====
-   Self-contained IIFE, does not touch app.js. Plays a Three.js ambient
-   tableau on every launch while initDB() and cloud sync run behind it
-   (never blocks the app). The #intro div and its critical inline style
-   (index.html) plus the CSS in styles.css are the fallback greeting on
-   their own - everything below is a progressive enhancement over that,
-   and any failure here just falls back to the CSS layer already on screen.
+/* ===== Launch intro (v3.22) =====
+   Self-contained IIFE, does not touch app.js. Plays a Three.js walkthrough
+   on every launch while initDB() and cloud sync run behind it (never blocks
+   the app). The #intro div and its critical inline style (index.html) plus
+   the CSS in styles.css are the fallback greeting on their own - everything
+   below is a progressive enhancement over that, and any failure here just
+   falls back to the CSS layer already on screen.
    Cast is fixed (not collection-derived): eight official-artwork planes
-   spread across one static frame (no corridor, no per-member camera yaw).
-   The card field is collection-derived (real TCGdex scans - a fixed
-   FEATURED_CARDS showcase first, then repeat-purchase DB picks, qty-desc
-   - plus procedural backs filling the rest), spread from just ahead of
-   the start camera down through deep background so the opening frame
-   already sits inside the field rather than facing it from a distance.
-   Choreography: cast fades in from the fog (by ~1.5s), a slow constant
-   camera drift into the field (cards passing close by the sides as it
-   goes), then the camera eases into an upward pan/pitch onto a brand
-   lockup (whale mark the hero, wordmark small below it) floating above
-   the scene, holds while the fog brightens, then dissolves into the app.
+   woven among the card field along the walk. The card field is
+   collection-derived (real TCGdex scans - a fixed FEATURED_CARDS showcase
+   first, then repeat-purchase DB picks, qty-desc - plus procedural backs
+   filling the rest), spread the length and width of the whole camera path
+   (kjrIntroFieldZ/kjrIntroFieldXY) with a clear corridor on the path axis
+   and a clear sky cone above its final stretch (see those functions).
+   Choreography: a person walking through a jungle of cards. Cast fades in
+   from the fog (by ~1.5s), a constant forward dolly carries the camera
+   through the surrounding field (cards passing close by the sides, top and
+   bottom), then at WALK_DURATION the camera stops and a three-beat finale
+   plays: look up (pitch onto the brand lockup, position frozen), zoom in
+   (dolly toward it until the whale mark reads as a title card), hold while
+   the fog brightens, then dissolve into the app.
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting
    (wordmark fades in for this path only - hidden the rest of the time,
    the scene carries its own brand beat) for about 1.2s then dissolves.
    Hard ceiling: force-removed by 8s no matter what. Pointer movement is
-   parallax-only and never touches pacing - only a click/tap/keydown ends
-   the intro early, and it does so by triggering a compressed version of
-   the brand pan/hold/dissolve (~600-750ms total) rather than a flat cut,
-   so a skip still lands the brand beat. During the CSS-only phase or asset
-   loading (no scene yet) a skip is a flat ~260ms dissolve, same as before,
-   since there's nothing to pan to yet.
-   Debug: window.__introDebug.info() (safe before and after teardown). */
+   parallax-only during the walk and never touches pacing - it stops
+   entirely once the finale begins (the camera "stops": a deliberate,
+   measurable frame for the finale, not mouse-driven). Only a click/tap/
+   keydown ends the intro early, and it does so by triggering the same
+   look-up+zoom compressed to ~500-600ms plus a short dissolve tail
+   (~700-800ms total), so a skip still lands the title-card beat. During
+   the CSS-only phase or asset loading (no scene yet) a skip is a flat
+   ~260ms dissolve, same as before, since there's nothing to look up at yet.
+   Debug: window.__introDebug.info() (safe before and after teardown),
+   .cardProbe(i) and .lockupFit() for the walkthrough/finale QA probes. */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
   var PROCEDURAL_CARD_COUNT = 25;
@@ -3153,31 +3158,43 @@ async function exportXlsx() {
   var REAL_CARD_INSTANCE_CAP = 16; // combined real-card meshes across featured + DB records. Front-side-only (see
   // the card-field build below) costs 1 draw call each, not 2 - keeps the fixed ~22 (cast, motes, procedural
   // field, brand) plus up to 16 comfortably under the 45 draw-call budget even at worst-case featured+qty load
-  var PAN_START_AT = 4.75;    // seconds since true intro start - tableau drift ends, upward pan begins
-  var PAN_DURATION = 1.0;     // natural ease into the brand-framing pan
-  var HOLD_DURATION = 0.85;   // natural hold on the brand lockup while fog brightens
-  var PAN_DURATION_ACCEL = 0.28;  // compressed pan for a click-triggered skip
-  var HOLD_DURATION_ACCEL = 0.17; // compressed hold for a click-triggered skip
+  var WALK_DURATION = 4.5;          // seconds since true intro start - the walk ends, camera stops, finale begins
+  var LOOKUP_DURATION = 0.8;        // natural: camera pitches up onto the lockup, position frozen
+  var ZOOM_DURATION = 1.1;          // natural: camera dollies toward the lockup to the title-card framing
+  var HOLD_DURATION = 0.55;         // natural hold on the title card while fog brightens
+  var LOOKUP_DURATION_ACCEL = 0.18; // compressed look-up for a click-triggered skip
+  var ZOOM_DURATION_ACCEL = 0.25;   // compressed zoom for a click-triggered skip
+  var HOLD_DURATION_ACCEL = 0.12;   // compressed hold for a click-triggered skip
+  var ZOOM_END_POS = { x: 0, y: 9.5, z: -9.6 }; // fixed camera position at the end of the zoom-in dolly -
+  // deliberately NOT derived from wherever the walk happened to stop, so the title-card framing is
+  // reproducible on any device/frame-rate. Tuned against window.__introDebug.lockupFit() at 1280x800: whale
+  // mark ~70-80% of frame width, wordmark ~40-45% of the whale's width, logo centred slightly above the
+  // vertical middle. See the v3.22 packet report for the measured numbers.
+  var ZOOM_END_REF_ASPECT = 1.6; // the 16:10 (1280x800) aspect ZOOM_END_POS above was tuned against - a
+  // narrower/portrait aspect (phones) sees proportionally more of the same world-space distance, so the
+  // camera backs off further from the lockup the narrower the viewport (see the aspectScale use below) -
+  // confirmed necessary: unscaled, the same fixed position measured ~211% of frame width on an iPhone 13
+  // viewport (390x664 CSS px) versus ~79% at 1280x800, badly overflowing the title card on mobile.
   var KILLSWITCH_FADE_MS = 1200;
-  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural pan/hold's tail)
-  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) pan/hold, tuned so
-  // pan (~280ms) + hold (~170ms) + tail (~200ms) lands the whole click-to-dashboard sequence around 650ms
+  var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural finale's tail)
+  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) finale, tuned so look-up+zoom+hold
+  // (~550ms) plus this tail (~200ms) lands the whole click-to-dashboard sequence around 700-750ms
   var HARD_CEILING_MS = 8000;
-  var DOLLY_SPEED = 0.65;         // units/sec, constant gentle drift into the card field (no adaptive pacing needed)
+  var DOLLY_SPEED = 4.0;          // units/sec, constant forward walk through the card field (no adaptive pacing needed)
   var CAST_FADE_STAGGER = 0.1;    // seconds between each member's fade-in start
   var CAST_FADE_DURATION = 0.55;  // seconds for one member's own fade, last member still lands well inside ~1.5s
 
-  // Fixed cast, composed as one static tableau (no corridor, no camera yaw).
+  // Fixed cast, positions carried over from the v3.21 composition fix, now
+  // woven into a much denser surrounding card field (v3.22) rather than a
+  // lone static tableau - checked against the 55-degree vertical FOV at
+  // both 16:10 desktop and the narrower iPhone portrait frustum for legible
+  // framing during the walk (see the v3.22 packet report for screenshots).
   // Direct official-artwork URLs by dex id - no PokeAPI JSON lookups needed.
   // x/y/z are hand-placed so all eight read in one view with no bad overlap;
   // wailord sits deepest and highest (plus a scale multiplier) so it looms
-  // behind the group without blocking anyone in front of it.
-  // Round-2 composition fix: mid-depth members pushed wider with depth
-  // compensation (checked against the 55-degree vertical FOV at both 16:10
-  // desktop and the narrower iPhone portrait frustum, worst case right
-  // before the pan begins) so the frame reads as filled, not huddled
-  // centrally. Lugia moved off wailord's angular span (was reading
-  // white-on-pale-blue); mew and arcanine given more x/y/z separation.
+  // behind the group without blocking anyone in front of it. Lugia sits off
+  // wailord's angular span (was reading white-on-pale-blue); mew and
+  // arcanine given more x/y/z separation from their neighbours.
   var CAST = [
     { name: 'totodile',  id: 158, x: -3.4, y: -1.6, z: -9 },
     { name: 'cyndaquil', id: 155, x:  3.3, y: -1.4, z: -10.5 },
@@ -3190,12 +3207,16 @@ async function exportXlsx() {
   ];
 
   // Brand lockup (whale mark + wordmark), floating above and behind the
-  // tableau, out of the initial frame - the camera pans up onto it at the end.
-  // y=14 clears the 55-degree-FOV frustum's vertical half-height (~10.9 units
-  // at this depth, even at the closest approach right before the pan begins)
-  // with margin, so it stays genuinely out of view until the camera looks up.
-  var LOCKUP_POS = { x: 0, y: 14, z: -16 }; // validated at real viewports (Playwright 1280x800 + iPhone): out of frame for the whole tableau. A 0-size-at-boot viewport (headless/preview panes) renders aspect-1 and can displace it into view - not a real-device case, do not re-tune y for it
-  var LOCKUP_SCALE = 2.6; // shared base unit for the whole lockup (glow/logo/wordmark sizes below all derive from this) - untouched by the v3.21 logo-first rebalance, which only changed the per-element multipliers
+  // walked field, out of frame until the finale looks up onto it.
+  // y=14 clears the 55-degree-FOV frustum's vertical half-height (~3.1 units
+  // at this depth, even at a real device's full-speed walk-end z=-10, the
+  // closest the walk itself ever gets) with a wide margin, so it stays
+  // genuinely out of view until the camera deliberately looks up.
+  var LOCKUP_POS = { x: 0, y: 14, z: -16 }; // validated at real viewports (Playwright 1280x800 + iPhone): out of frame for the whole walk, including v3.22's closer pass (nearer the lockup's own depth narrows the frustum there, not widens it). A 0-size-at-boot viewport (headless/preview panes) renders aspect-1 and can displace it into view - not a real-device case, do not re-tune y for it
+  var LOCKUP_SCALE = 2.6; // shared base unit for the whole lockup (glow/logo/wordmark sizes below all derive from this) - untouched by the v3.21 logo-first rebalance and the v3.22 finale rework, neither of which changed lockup geometry, only camera movement
+  var FINALE_LOOK_Y = 16.5; // world y the finale camera looks at - close to the whale mark's own vertical
+  // centre rather than LOCKUP_POS.y (the logo/wordmark gap-centre), so the logo lands slightly above the
+  // frame's middle rather than near the top. Tuned against lockupFit(), independent of LOCKUP_POS (mesh anchor)
 
   var introState = 'idle';
   var introKillSwitch = null;
@@ -3212,7 +3233,9 @@ async function exportXlsx() {
   var _panStart = 0;
   var _introRealCardCount = 0; // combined real-scan card meshes actually rendered (featured + DB), after caps
   var _introFeaturedCardCount = 0; // of the above, how many came from the fixed FEATURED_CARDS showcase
-  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (tableau pace, pan
+  var _introRealCards = null;    // real-card {mesh,...} entries, exposed to __introDebug.cardProbe
+  var _introWhaleMesh = null, _introWordMesh = null, _introTHREE = null; // exposed to __introDebug.lockupFit
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (walk pace, finale
   // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
@@ -3247,10 +3270,46 @@ async function exportXlsx() {
         featuredCards: _introFeaturedCardCount,
         introStartTime: _introStartTime || null,
         cameraZ: _camera ? _camera.position.z : null,
+        cameraX: _camera ? _camera.position.x : null,
+        cameraY: _camera ? _camera.position.y : null,
         drawCalls: _renderer ? _renderer.info.render.calls : 0,
         geometries: _renderer ? _renderer.info.memory.geometries : 0,
         textures: _renderer ? _renderer.info.memory.textures : 0,
         removed: _removed
+      };
+    },
+    // QA probe: world z of the i-th real-scan card mesh vs the camera's current z, to verify
+    // FrontSide backface culling once the walk carries the camera past a card.
+    cardProbe: function (i) {
+      if (!_camera || !_introRealCards || !_introRealCards[i]) return null;
+      var m = _introRealCards[i].mesh;
+      return { cardZ: m.position.z, cameraZ: _camera.position.z, passed: _camera.position.z < m.position.z };
+    },
+    // QA probe: projects the brand lockup meshes through the camera to measure their actual
+    // on-screen pixel size, for the finale's title-card framing.
+    lockupFit: function () {
+      if (!_camera || !_renderer || !_introTHREE) return null;
+      var T = _introTHREE;
+      var w = _renderer.domElement.clientWidth, h = _renderer.domElement.clientHeight;
+      function box(mesh) {
+        if (!mesh) return null;
+        var hw = mesh.geometry.parameters.width / 2, hh = mesh.geometry.parameters.height / 2;
+        var pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        pts.forEach(function (p) {
+          var v = new T.Vector3(p[0], p[1], 0).applyMatrix4(mesh.matrixWorld).project(_camera);
+          var px = (v.x * 0.5 + 0.5) * w, py = (1 - (v.y * 0.5 + 0.5)) * h;
+          minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+          minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+        });
+        return { widthPx: maxX - minX, heightPx: maxY - minY, centerXPx: (minX + maxX) / 2, centerYPx: (minY + maxY) / 2 };
+      }
+      var whale = box(_introWhaleMesh), word = box(_introWordMesh);
+      return {
+        canvasW: w, canvasH: h, whale: whale, word: word,
+        whaleWidthFrac: whale ? whale.widthPx / w : null,
+        whaleCenterYFrac: whale ? whale.centerYPx / h : null,
+        wordToWhaleWidthFrac: (whale && word) ? word.widthPx / whale.widthPx : null
       };
     }
   };
@@ -3474,6 +3533,7 @@ async function exportXlsx() {
 
   // ── Scene build + animate + brand finale. Throws bubble to kjrIntroMain's catch. ──
   async function kjrIntroBuildScene(THREE, stageEl) {
+    _introTHREE = THREE; // for __introDebug.lockupFit's on-screen projection
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     var pair = await Promise.all([
@@ -3501,18 +3561,34 @@ async function exportXlsx() {
     // plus real scans (featured showcase first, then DB picks) as individual
     // front-side-only meshes (each needs its own texture) - a qty>1 DB
     // record renders multiple copies of the same texture so repeat
-    // purchases visibly recur. kjrIntroFieldZ() spans +4 (just ahead of the
-    // start camera, z=8) down to -20, denser through the middle, so the
-    // opening frame already sits inside the field rather than facing it
-    // from a distance. Front-side-only real cards rely on ordinary backface
-    // culling to disappear cleanly (no pop) if the camera ever ends up past
-    // one - see the change report for why that never happens at the current
-    // drift speed/duration, kept anyway as the correct defensive setting.
-    // REAL_CARD_INSTANCE_CAP keeps total draw calls inside budget even at
-    // the worst-case combined featured+DB load.
+    // purchases visibly recur. kjrIntroFieldZ()/kjrIntroFieldXY() spread
+    // both across the whole walked corridor (z +8 to -25, x/y surrounding
+    // the path on every side), denser mid-span, so the camera is inside the
+    // field from the first frame and cards pass its sides/top/bottom
+    // throughout the walk. Front-side-only real cards rely on ordinary
+    // backface culling to disappear cleanly (no pop) once the camera walks
+    // past one - now a routine occurrence at this pace, verified in the
+    // v3.22 packet report. REAL_CARD_INSTANCE_CAP keeps total draw calls
+    // inside budget even at the worst-case combined featured+DB load.
     function kjrIntroFieldZ() {
       var r = (Math.random() + Math.random()) * 0.5; // triangular (two averaged draws) - denser mid-span than flat random
-      return 4 - r * 24;
+      return 8 - r * 33; // +8 (level with the camera's start) back to -25, the whole walked corridor
+    }
+    // x/y surround the path (a jungle, not a wall ahead): a small clear
+    // corridor on the path axis (radius ~1.2) so nothing clips the lens,
+    // and a clear sky cone above the walk's final stretch (|x|<2, y>2.5,
+    // z -12..-2) so the look-up finale finds clean sky, no card overlap.
+    function kjrIntroFieldXY(z) {
+      var x, y, tries = 0;
+      do {
+        x = -6 + Math.random() * 12;
+        y = -3 + Math.random() * 6.5;
+        tries++;
+      } while (tries < 6 && (Math.hypot(x, y) < 1.2 || (Math.abs(x) < 2 && y > 2.5 && z > -12 && z < -2)));
+      var d = Math.hypot(x, y);
+      if (d < 1.2) { var k = d > 0.0001 ? 1.2 / d : 1; x *= k; y *= k; }
+      if (Math.abs(x) < 2 && y > 2.5 && z > -12 && z < -2) x = (x < 0 ? -1 : 1) * (2 + Math.random() * 4);
+      return { x: x, y: y };
     }
     var cardGeo = new THREE.PlaneGeometry(1, 1.4);
     var cardBackTex = kjrIntroCardBackTexture(THREE);
@@ -3521,7 +3597,9 @@ async function exportXlsx() {
       var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
       var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, PROCEDURAL_CARD_COUNT);
       for (var ci = 0; ci < PROCEDURAL_CARD_COUNT; ci++) {
-        dummy.position.set((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 9, kjrIntroFieldZ());
+        var pz = kjrIntroFieldZ();
+        var pxy = kjrIntroFieldXY(pz);
+        dummy.position.set(pxy.x, pxy.y, pz);
         dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         var s1 = 0.6 + Math.random() * 0.9;
         dummy.scale.set(s1, s1, s1);
@@ -3539,9 +3617,12 @@ async function exportXlsx() {
       for (var cpI = 0; cpI < entry.copies && realCardTotal < REAL_CARD_INSTANCE_CAP; cpI++) {
         var mat = new THREE.MeshBasicMaterial({ map: entry.texture, transparent: true, side: THREE.FrontSide, depthWrite: false, fog: true });
         var mesh = new THREE.Mesh(cardGeo, mat);
-        mesh.position.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, kjrIntroFieldZ());
+        var rz = kjrIntroFieldZ();
+        var rxy = kjrIntroFieldXY(rz);
+        mesh.position.set(rxy.x, rxy.y, rz);
         var yTilt = (Math.random() - 0.5) * (Math.PI / 180 * 50); // within ~25 degrees either side, mostly face-on
-        mesh.rotation.set((Math.random() - 0.5) * 0.35, yTilt, (Math.random() - 0.5) * 0.2);
+        var lookDir = Math.max(-1, Math.min(1, rxy.y / 3)) * 0.45; // above the path tilts down, below tilts up
+        mesh.rotation.set((Math.random() - 0.5) * 0.35 + lookDir, yTilt, (Math.random() - 0.5) * 0.2);
         var s2 = 1.3 + Math.random() * 0.3;
         mesh.scale.set(s2, s2, s2);
         scene.add(mesh);
@@ -3552,6 +3633,7 @@ async function exportXlsx() {
     }
     _introRealCardCount = realCardTotal;
     _introFeaturedCardCount = featuredTotal;
+    _introRealCards = realCards; // exposed to __introDebug.cardProbe for the pass-behind QA check
 
     // Motes
     var moteCount = coarsePointer ? 400 : 800;
@@ -3598,7 +3680,7 @@ async function exportXlsx() {
     // near the end (see tick() below); no opacity fade needed here, the
     // camera framing itself is the reveal. Kept unlit by fog so it reads
     // clearly at the finale rather than blending into the distance haze.
-    var lockupTarget = new THREE.Vector3(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z);
+    var lockupTarget = new THREE.Vector3(LOCKUP_POS.x, FINALE_LOOK_Y, LOCKUP_POS.z);
     if (brand.whaleTex || brand.wordTex) {
       // Logo-first lockup: the whale mark is the clear hero, roughly 2x the
       // prior lockup's visual size (4.0 * LOCKUP_SCALE vs the old 2.0). The
@@ -3613,7 +3695,12 @@ async function exportXlsx() {
       brandGlow.position.set(LOCKUP_POS.x, LOCKUP_POS.y, LOCKUP_POS.z - 0.1);
       scene.add(brandGlow);
       var whaleW = 4.0 * LOCKUP_SCALE;
-      var gap = 0.45 * LOCKUP_SCALE; // visible gap between logo and wordmark
+      var gap = 0.45 * LOCKUP_SCALE; // visible gap between logo and wordmark (whale's own offset above LOCKUP_POS - unchanged by the v3.22 composition fix below)
+      var WORD_RISE = 0.75 * LOCKUP_SCALE; // v3.22 composition fix: lifts the wordmark up toward the whale's
+      // underside so it reads as a snug title-card lockup instead of sitting apart in the lower frame. Tuned
+      // against window.__introDebug.lockupFit(): lands the word centre at ~61.5% of frame height at 1280x800
+      // (~55% on iPhone 13), a clean, deliberate gap below the whale with no clipping on either viewport
+      // (verified via natural-run screenshots, not eyeballed - see the v3.22 packet report for the numbers).
       if (brand.whaleTex) {
         var whaleAspect = (brand.whaleTex.image && brand.whaleTex.image.width && brand.whaleTex.image.height) ? brand.whaleTex.image.width / brand.whaleTex.image.height : 1;
         var whaleH = 4.0 * LOCKUP_SCALE;
@@ -3622,14 +3709,19 @@ async function exportXlsx() {
         var whaleMesh = new THREE.Mesh(new THREE.PlaneGeometry(whaleW, whaleH), whaleMat);
         whaleMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y + gap / 2 + whaleH / 2, LOCKUP_POS.z);
         scene.add(whaleMesh);
+        _introWhaleMesh = whaleMesh; // exposed to __introDebug.lockupFit
       }
       if (brand.wordTex) {
         var wordAspect = (brand.wordTex.image && brand.wordTex.image.width && brand.wordTex.image.height) ? brand.wordTex.image.width / brand.wordTex.image.height : 4;
-        var wordW = whaleW * 0.45, wordH = wordW / wordAspect;
+        // 0.35 in 3D space, not 0.45: the wordmark sits nearer the camera than the logo at the finale's
+        // look-up angle, so perspective alone inflates it on screen - this spatial ratio is pre-compensated
+        // so the RENDERED result lands ~40-45% of the logo's on-screen width (measured via lockupFit()).
+        var wordW = whaleW * 0.35, wordH = wordW / wordAspect;
         var wordMat = new THREE.MeshBasicMaterial({ map: brand.wordTex, transparent: true, depthWrite: false, fog: false });
         var wordMesh = new THREE.Mesh(new THREE.PlaneGeometry(wordW, wordH), wordMat);
-        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - gap / 2 - wordH / 2, LOCKUP_POS.z);
+        wordMesh.position.set(LOCKUP_POS.x, LOCKUP_POS.y - gap / 2 - wordH / 2 + WORD_RISE, LOCKUP_POS.z);
         scene.add(wordMesh);
+        _introWordMesh = wordMesh; // exposed to __introDebug.lockupFit
       }
     }
 
@@ -3640,8 +3732,11 @@ async function exportXlsx() {
     var canvasFadedIn = false;
     var fogTarget = new THREE.Color(0x8B7CF0);
     var fogBase = new THREE.Color(0x12101F);
-    var aheadPoint = new THREE.Vector3();
+    var walkEndPos = new THREE.Vector3();   // camera position at the moment the walk stops (finale begins)
+    var walkEndAhead = new THREE.Vector3(); // a point 10 units ahead of walkEndPos - look-up eases away from this
+    var zoomEndPos = new THREE.Vector3();   // camera position at the end of the zoom-in dolly
     var lookPoint = new THREE.Vector3();
+    var panCaptured = false; // walkEndPos/walkEndAhead/zoomEndPos are captured once, the frame panning begins
 
     // Pointer movement only ever feeds pointerX/pointerY below, which only
     // ever touch camera.position.x/y (parallax). It never reaches the z-axis
@@ -3669,7 +3764,8 @@ async function exportXlsx() {
       _raf = requestAnimationFrame(tick);
       try {
         var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared
-        var dt = Math.max(0, t - lastT); lastT = t;
+        var dt = Math.min(0.05, Math.max(0, t - lastT)); lastT = t; // clamped so a slow first frame (asset
+        // decode) or any later stall can't jump the dolly - matters much more at v3.22's faster DOLLY_SPEED
         if (sceneStartT === null) sceneStartT = t;
         var tScene = t - sceneStartT;
 
@@ -3680,26 +3776,55 @@ async function exportXlsx() {
           pointerX += (pointerTX - pointerX) * 0.04;
           pointerY += (pointerTY - pointerY) * 0.04;
         }
-        camera.position.x = pointerX * 1.1;
-        camera.position.y = -pointerY * 0.7;
-
-        if (!_panning && t >= PAN_START_AT) kjrIntroBeginPan(false);
+        if (!_panning && t >= WALK_DURATION) kjrIntroBeginPan(false);
 
         if (_panning) {
-          var panDur = _accelerated ? PAN_DURATION_ACCEL : PAN_DURATION;
+          // Position is fully authored from here on (parallax stops - the walker "stops" to
+          // look up, no more mouse sway) - captured once, the first frame panning is true,
+          // whichever of the two triggers (natural threshold above, or a click via
+          // kjrIntroSkip/kjrIntroBeginPan) actually set it.
+          if (!panCaptured) {
+            panCaptured = true;
+            walkEndPos.copy(camera.position);
+            walkEndAhead.set(camera.position.x, camera.position.y, camera.position.z - 10);
+            // Fixed target (not walk-derived, see ZOOM_END_POS), but its offset from the lockup is scaled
+            // by the viewport's aspect so the on-screen width fraction holds across desktop and mobile.
+            var aspectScale = ZOOM_END_REF_ASPECT / camera.aspect;
+            zoomEndPos.set(
+              LOCKUP_POS.x + (ZOOM_END_POS.x - LOCKUP_POS.x) * aspectScale,
+              LOCKUP_POS.y + (ZOOM_END_POS.y - LOCKUP_POS.y) * aspectScale,
+              LOCKUP_POS.z + (ZOOM_END_POS.z - LOCKUP_POS.z) * aspectScale
+            );
+          }
+          var lookupDur = _accelerated ? LOOKUP_DURATION_ACCEL : LOOKUP_DURATION;
+          var zoomDur = _accelerated ? ZOOM_DURATION_ACCEL : ZOOM_DURATION;
           var holdDur = _accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
           var elapsed = t - _panStart;
-          var panK = Math.min(1, elapsed / panDur);
-          panK = panK * panK * (3 - 2 * panK); // smoothstep ease into the pan
-          aheadPoint.set(camera.position.x, camera.position.y, camera.position.z - 10);
-          lookPoint.copy(aheadPoint).lerp(lockupTarget, panK);
-          camera.lookAt(lookPoint);
-          var holdK = Math.max(0, Math.min(1, (elapsed - panDur) / holdDur));
+
+          // Beat 1: look up - pitch onto the lockup, smoothstep ease, camera position frozen.
+          var lookK = Math.min(1, elapsed / lookupDur);
+          lookK = lookK * lookK * (3 - 2 * lookK);
+          lookPoint.copy(walkEndAhead).lerp(lockupTarget, lookK);
+
+          // Beat 2: zoom in - dolly toward the lockup (not FOV zoom), still looking at it.
+          var zoomK = Math.max(0, Math.min(1, (elapsed - lookupDur) / zoomDur));
+          zoomK = zoomK * zoomK * (3 - 2 * zoomK);
+          if (zoomK > 0) {
+            camera.position.lerpVectors(walkEndPos, zoomEndPos, zoomK);
+            camera.lookAt(lockupTarget);
+          } else {
+            camera.lookAt(lookPoint);
+          }
+
+          // Beat 3: hold - fog brightens toward the title card, no further camera movement.
+          var holdK = Math.max(0, Math.min(1, (elapsed - lookupDur - zoomDur) / holdDur));
           scene.fog.color.copy(fogBase).lerp(fogTarget, holdK * 0.4);
-          if (holdK > 0 && !_accelerated) introState = 'holding'; // debug/test visibility - accelerated stays 'skipped'
+          if (!_accelerated) introState = holdK > 0 ? 'holding' : (zoomK > 0 ? 'zooming' : 'panning'); // debug/test visibility - accelerated stays 'skipped'
         } else {
-          // Constant gentle drift over the tableau - no adaptive pacing needed, the
-          // choreography is fixed beats (drift, pan, hold) rather than a distance to cover.
+          // Constant forward walk through the field - no adaptive pacing needed, the
+          // choreography is fixed beats (walk, look-up, zoom, hold) rather than a distance to cover.
+          camera.position.x = pointerX * 1.1;
+          camera.position.y = -pointerY * 0.7;
           camera.position.z -= DOLLY_SPEED * dt;
         }
 
@@ -3745,10 +3870,11 @@ async function exportXlsx() {
     _accelerated = accelerated;
     introState = accelerated ? 'skipped' : 'panning';
     _panStart = (performance.now() - _introStartTime) / 1000;
-    var panDur = accelerated ? PAN_DURATION_ACCEL : PAN_DURATION;
+    var lookupDur = accelerated ? LOOKUP_DURATION_ACCEL : LOOKUP_DURATION;
+    var zoomDur = accelerated ? ZOOM_DURATION_ACCEL : ZOOM_DURATION;
     var holdDur = accelerated ? HOLD_DURATION_ACCEL : HOLD_DURATION;
     var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
-    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (panDur + holdDur) * 1000));
+    _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (lookupDur + zoomDur + holdDur) * 1000));
   }
 
   function kjrIntroSkip() {
@@ -3820,6 +3946,7 @@ async function exportXlsx() {
     var el = document.getElementById('intro');
     if (el && el.parentNode) el.parentNode.removeChild(el);
     _scene = null; _camera = null; _renderer = null;
+    _introRealCards = null; _introWhaleMesh = null; _introWordMesh = null; _introTHREE = null;
   }
 
   async function kjrIntroMain() {
@@ -3839,7 +3966,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.21');
+      THREE = await import('./Assets/lib/three.module.js?v=3.22');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

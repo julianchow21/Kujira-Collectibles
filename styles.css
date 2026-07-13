@@ -1338,7 +1338,7 @@ dialog.kjr-complete-back::backdrop{background:rgba(0,0,0,0.7)}
 .kjr-complete-summary.amber{color:var(--amber);border-color:var(--complete-summary-amber-bd)}
   /* re-use existing kjr-* utility classes from v2 */
 
-/* ===== Launch intro (v3.21) =====
+/* ===== Launch intro (v3.22) =====
    Fixed dark brand gradient regardless of light/dark theme (the intro is a
    deliberately theme-invariant splash), so colours here are literal hex,
    never the --bg/--text/--accent tokens (those flip in html.light).

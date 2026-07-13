@@ -3222,6 +3222,46 @@ async function exportXlsx() {
   var _introIconMesh = null, _introTHREE = null; // exposed to __introDebug.iconFit
   var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (walk pace, outro
   // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
+  var _kjrToastQueue = [];       // queued [msg, dur, isError] while the intro owns the top layer
+  var _kjrOrigToast = null;      // the real app.js toast(), captured while intercepted
+  var _kjrToastIntercepted = false;
+
+  // ── Toast interception (v3.24). app.js's #toast is a top-layer popover,
+  // it paints above the intro's z-index regardless, so a sync-conflict
+  // toast firing mid-boot would show over the overlay. toast/toastError are
+  // top-level `function` declarations in app.js (not const), so both files
+  // sharing one global scope means reassigning the identifier here is a
+  // real, reassignable global rebind, not a shadow - every bare `toast(...)`
+  // call anywhere (including toastError's internal call) resolves through
+  // it. Deferral, not suppression: nothing is swallowed, it replays the
+  // instant the intro tears down. Installed only once kjrIntroMain commits
+  // to eventually tearing down (after the "markup missing" bail-out), so an
+  // early return there can never leave toast permanently intercepted. ──
+  function kjrIntroInterceptToast() {
+    if (_kjrToastIntercepted || typeof toast !== 'function') return;
+    _kjrOrigToast = toast;
+    _kjrToastIntercepted = true;
+    window.toast = function (msg, dur, isError) {
+      _kjrToastQueue.push([msg, dur, isError]);
+      if (_kjrToastQueue.length > 3) _kjrToastQueue.shift(); // newest 3 only, oldest dropped
+    };
+  }
+  function kjrIntroReplayToasts() {
+    if (!_kjrToastIntercepted) return;
+    var orig = _kjrOrigToast;
+    window.toast = orig; // restore first - replayed calls, and any new ones, hit the real toast again
+    _kjrToastIntercepted = false;
+    _kjrOrigToast = null;
+    var queued = _kjrToastQueue.slice();
+    _kjrToastQueue.length = 0;
+    if (typeof orig !== 'function' || !queued.length) return;
+    var delay = 0;
+    queued.forEach(function (args) {
+      if (delay === 0) orig(args[0], args[1], args[2]);
+      else setTimeout(function () { orig(args[0], args[1], args[2]); }, delay);
+      delay += args[2] ? 6000 : (typeof args[1] === 'number' ? args[1] : 2800); // mirrors toast()'s own dismiss timing
+    });
+  }
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
   function kjrIntroEnabled() {
@@ -3844,37 +3884,45 @@ async function exportXlsx() {
   function kjrIntroTeardown() {
     if (_removed) return;
     _removed = true;
-    introState = 'done';
-    _introTimers.forEach(function (id) { clearTimeout(id); });
-    _introTimers.length = 0;
-    if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
-    if (_onPointerMove) { window.removeEventListener('pointermove', _onPointerMove); _onPointerMove = null; }
-    if (_onResize) { window.removeEventListener('resize', _onResize); _onResize = null; }
-    window.removeEventListener('pointerdown', kjrIntroSkip);
-    window.removeEventListener('keydown', kjrIntroSkip);
     try {
-      if (_scene) {
-        _scene.traverse(function (obj) {
-          if (obj.isInstancedMesh && typeof obj.dispose === 'function') obj.dispose(); // frees the per-instance matrix buffer
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) {
-            var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            mats.forEach(function (m) { if (m.map) m.map.dispose(); m.dispose(); });
-          }
-        });
-      }
-      if (_renderer) {
-        _renderer.dispose();
-        if (_renderer.forceContextLoss) _renderer.forceContextLoss();
-        if (_renderer.domElement && _renderer.domElement.parentNode) _renderer.domElement.parentNode.removeChild(_renderer.domElement);
-      }
-    } catch (e3) { /* best-effort disposal, never block removal */ }
-    _introObjectUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e4) {} });
-    _introObjectUrls.length = 0;
-    var el = document.getElementById('intro');
-    if (el && el.parentNode) el.parentNode.removeChild(el);
-    _scene = null; _camera = null; _renderer = null;
-    _introRealCards = null; _introIconMesh = null; _introTHREE = null;
+      introState = 'done';
+      _introTimers.forEach(function (id) { clearTimeout(id); });
+      _introTimers.length = 0;
+      if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+      if (_onPointerMove) { window.removeEventListener('pointermove', _onPointerMove); _onPointerMove = null; }
+      if (_onResize) { window.removeEventListener('resize', _onResize); _onResize = null; }
+      window.removeEventListener('pointerdown', kjrIntroSkip);
+      window.removeEventListener('keydown', kjrIntroSkip);
+      try {
+        if (_scene) {
+          _scene.traverse(function (obj) {
+            if (obj.isInstancedMesh && typeof obj.dispose === 'function') obj.dispose(); // frees the per-instance matrix buffer
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+              mats.forEach(function (m) { if (m.map) m.map.dispose(); m.dispose(); });
+            }
+          });
+        }
+        if (_renderer) {
+          _renderer.dispose();
+          if (_renderer.forceContextLoss) _renderer.forceContextLoss();
+          if (_renderer.domElement && _renderer.domElement.parentNode) _renderer.domElement.parentNode.removeChild(_renderer.domElement);
+        }
+      } catch (e3) { /* best-effort disposal, never block removal */ }
+      _introObjectUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e4) {} });
+      _introObjectUrls.length = 0;
+      var el = document.getElementById('intro');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      _scene = null; _camera = null; _renderer = null;
+      _introRealCards = null; _introIconMesh = null; _introTHREE = null;
+    } finally {
+      // Restore toast()/toastError() and replay anything queued during the
+      // intro, in order, through the app's real toast mechanism - runs on
+      // every exit path (natural, skip, kill-switch, hard ceiling, error),
+      // exactly once, even if the block above throws.
+      kjrIntroReplayToasts();
+    }
   }
 
   async function kjrIntroMain() {
@@ -3883,6 +3931,7 @@ async function exportXlsx() {
     if (!introEl) return; // markup missing - nothing to control
     var stageEl = document.getElementById('intro-stage');
 
+    kjrIntroInterceptToast(); // every path below now funnels to kjrIntroTeardown, safe to intercept from here
     introState = 'css';
     window.addEventListener('pointerdown', kjrIntroSkip, { passive: true });
     window.addEventListener('keydown', kjrIntroSkip);
@@ -3894,7 +3943,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.23');
+      THREE = await import('./Assets/lib/three.module.js?v=3.24');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

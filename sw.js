@@ -4,13 +4,13 @@
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
    intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v27';
+const CACHE = 'kujira-v28';
 // three.core.min.js has no ?v= query: it's the vendored file's own internal
 // import specifier (three.module.js imports "./three.core.min.js" verbatim,
 // no query), so the real runtime request never carries one either - a query
 // here would just make this entry miss its own precache. Busted by CACHE
 // bumping instead, same as every other unversioned CORE entry below.
-const CORE = ['./', './index.html', './styles.css', './app.js', './features.js', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/whale-icon-maskable-512.png', './Assets/lib/three.module.js?v=3.23', './Assets/lib/three.core.min.js'];
+const CORE = ['./', './index.html', './styles.css', './app.js', './features.js', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/whale-icon-maskable-512.png', './Assets/lib/three.module.js?v=3.24', './Assets/lib/three.core.min.js'];
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();

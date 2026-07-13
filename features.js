@@ -3114,99 +3114,117 @@ async function exportXlsx() {
   }
 }
 
-/* ===== Launch intro (v3.23) =====
-   Self-contained IIFE, does not touch app.js. Plays a Three.js walkthrough
-   on every launch while initDB() and cloud sync run behind it (never blocks
-   the app). The #intro div and its critical inline style (index.html) plus
-   the CSS in styles.css are the fallback greeting on their own - everything
-   below is a progressive enhancement over that, and any failure here just
-   falls back to the CSS layer already on screen.
-   Cast is fixed (not collection-derived): eight official-artwork planes
-   woven among the card field along the walk. The card field is
-   collection-derived (real TCGdex scans - a fixed FEATURED_CARDS showcase
-   first, then repeat-purchase DB picks, qty-desc - plus procedural backs
-   filling the rest), spread the length and width of the whole camera path
-   (kjrIntroFieldZ/kjrIntroFieldXY) with a clear corridor on the path axis
-   and a clear sky cone above its final stretch (see those functions).
-   Choreography: a person walking slowly through a jungle of cards. Cast
-   fades in from the fog (by ~1.5s), a gentle constant forward dolly carries
-   the camera through the surrounding field (cards passing close by the
-   sides, top and bottom, Wailord looming as the deepest, largest presence),
-   then at WALK_DURATION the camera simply stops - no pan, pitch or zoom -
-   while the world (field, cast, motes, fog) eases to nothing around a
-   single whale-icon outro card that fades in centred ahead of the frozen
-   camera, holds briefly, then the whole overlay dissolves into the app.
-   No brand text anywhere in the WebGL scene, the icon alone carries the
-   brand beat (v3.23, replacing the prior look-up/zoom/wordmark finale).
+/* ===== Launch intro (v3.25) =====
+   Self-contained IIFE, does not touch app.js. Plays a Three.js booster-pack
+   rip on every launch while initDB() and cloud sync run behind it (never
+   blocks the app). The #intro div and its critical inline style (index.html)
+   plus the CSS in styles.css are the fallback greeting on their own -
+   everything below is a progressive enhancement over that, and any failure
+   here just falls back to the CSS layer already on screen.
+   Choreography: a procedural Kujira booster pack (brand-toned canvas
+   textures, never a real Pokemon pack design) floats centre frame, bobs and
+   tilts to the pointer, then squeezes as if gripped (anticipation). Its
+   crimped top strip tears off with a burst of foil motes and the body
+   drops/fades (rip). Six cards launch out of the pack mouth on staggered
+   tumbling arcs, two or three passing close by the camera, and settle around
+   the frame (burst). The pool is the union of FEATURED_CARDS and any DB
+   record with a tcgdexId (deduped), Fisher-Yates shuffled every load so the
+   draw is different every reload - a smaller pool pads with procedural holo
+   backs. The most valuable of the six drawn cards is always placed last so
+   it eases to centre, holds at a readable scale with a glow pulse, while the
+   other five drift softly around it (hit). Everything then fades into the
+   fog around the same whale-icon outro as before (icon alone, 70% of frame
+   width, camera frozen throughout - it never moves in this composition -
+   no text), then the overlay dissolves into the app.
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting (the
-   whale icon fades in for this path only - hidden the rest of the time,
-   the scene carries its own brand beat) for about 1.2s then dissolves.
-   Hard ceiling: force-removed by 9.5s no matter what. Pointer movement is
-   parallax-only during the walk and never touches pacing - it stops
-   entirely once the outro begins (the camera "stops": a deliberate,
-   measurable frame, not mouse-driven, and never panned or zoomed). Only a
-   click/tap/keydown ends the intro early, and it does so by triggering the
-   same icon fade-in compressed to ~350-450ms plus a brief hold and a short
-   dissolve tail, so a skip still lands the icon beat, just fast. During the
-   CSS-only phase or asset loading (no scene yet) a skip is a flat ~260ms
-   dissolve, same as before, since there's nothing to fade to yet.
-   Debug: window.__introDebug.info() (safe before and after teardown),
-   .cardProbe(i) and .iconFit() for the walkthrough/outro QA probes. */
+   whale icon fades in for this path only) for about 1.2s then dissolves.
+   Hard ceiling (redesigned v3.25 round 2): a 5s bootstrap deadline force-removes
+   a hung load before the scene even starts (import stall, stuck asset fetch);
+   once the scene is actually running the ceiling re-anchors to the real
+   sequence length plus a margin, so a normal cold-asset run never gets cut
+   off mid-hold, with an absolute 12s page-load backstop regardless. Pointer movement only
+   ever tilts the pack during the anticipation beat, never touches pacing.
+   Only a click/tap/keydown ends the intro early, compressing straight to
+   the icon fade-in (no pack physics on the skip path) plus a brief hold and
+   a short dissolve tail. During the CSS-only phase or asset loading (no
+   scene yet) a skip is a flat ~260ms dissolve, same as before.
+   Debug: window.__introDebug.info() (safe before and after teardown) and
+   .iconFit() for the outro QA probe. info().drawnCards is the six card ids
+   drawn this run (last = the hit), proof of the per-load randomisation. */
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
-  var PROCEDURAL_CARD_COUNT = 25;
-  var DB_CARD_POOL_CAP = 14;       // distinct DB records considered, before the combined mesh cap below trims copies
-  var REAL_CARD_MAX_COPIES = 3;    // per DB record, so a repeat purchase visibly recurs without flooding the scene
-  var REAL_CARD_INSTANCE_CAP = 16; // combined real-card meshes across featured + DB records. Front-side-only (see
-  // the card-field build below) costs 1 draw call each, not 2 - keeps the fixed ~22 (cast, motes, procedural
-  // field, brand) plus up to 16 comfortably under the 45 draw-call budget even at worst-case featured+qty load
-  var WALK_DURATION = 6.0;          // seconds since true intro start - the walk ends, camera stops, outro begins
-  var OUTRO_FADE_DURATION = 1.2;    // natural: world (field/cast/motes/fog) eases to nothing as the icon fades in
-  var OUTRO_HOLD_DURATION = 0.9;    // natural hold on the icon before the overlay dissolve
-  var OUTRO_FADE_ACCEL = 0.4;       // compressed icon fade-in for a click-triggered skip
-  var OUTRO_HOLD_ACCEL = 0.15;      // compressed hold for a click-triggered skip
-  var ICON_DEPTH = 7;                // world units ahead of the frozen camera the outro icon plane sits at
-  var ICON_TARGET_FRAC = 0.7;        // target on-screen width as a fraction of frame width (spec: 65-75%) -
-  // solved directly from ICON_DEPTH + the camera's vertical FOV/aspect at outro start (see kjrIntroBeginOutro),
-  // so the frame fraction holds across desktop and mobile without a separate aspect-scale correction.
+  var CARD_DRAW_COUNT = 6;
+  var DRAW_ATTEMPT_CAP = 12;      // random slice of the shuffled pool actually fetched, buffer over the six needed
+  var ANTICIPATION_DURATION = 1.2; // pack floats, bobs, tilts, then squeezes as if gripped
+  var RIP_DURATION = 0.8;          // crimp strip tears away, foil burst, pack body drops/fades
+  var BURST_DURATION = 2.2;        // six cards launch, staggered ~0.35s apart, tumble and settle
+  var HIT_HOLD_DURATION = 1.0;     // the most valuable card eases to centre and holds
+  var T_ANT_END = ANTICIPATION_DURATION;
+  var T_RIP_END = T_ANT_END + RIP_DURATION;
+  var T_BURST_END = T_RIP_END + BURST_DURATION;
+  var PACK_DURATION = T_BURST_END + HIT_HOLD_DURATION; // outro begins here (~5.2s), single source of truth
+  var CARD_STAGGER = 0.35;
+  // Burst-energy fix (v3.25 round 2): the pack body used to vanish the instant burst began (before
+  // even the first card had visibly launched), so the cards read as appearing from nothing. It now
+  // stays visible, tilting and dropping, at least through the 4th card's launch (3*CARD_STAGGER) plus
+  // a bit more margin, then fades quickly rather than lingering stale into the hit beat.
+  var PACK_BODY_HOLD_UNTIL = 4 * CARD_STAGGER; // seconds after T_RIP_END
+  var PACK_BODY_FADE_TAIL = 0.4;
+  var CARD_FLIGHT_DURATION = 1.05;
+  var HIT_EASE_DURATION = 0.4;     // of the HIT_HOLD_DURATION budget, the rest is pure hold+pulse
+  var FOIL_LIFE = 0.6;
+  var OUTRO_FADE_DURATION = 1.2;   // natural: everything eases to nothing as the icon fades in
+  var OUTRO_HOLD_DURATION = 0.9;   // natural hold on the icon before the overlay dissolve
+  var OUTRO_FADE_ACCEL = 0.25;     // compressed icon fade-in for a click-triggered skip
+  var OUTRO_HOLD_ACCEL = 0.1;      // compressed hold for a click-triggered skip
+  var ICON_DEPTH = 7;              // world units ahead of the frozen camera the outro icon plane sits at
+  var ICON_TARGET_FRAC = 0.7;      // target on-screen width as a fraction of frame width (spec: 65-75%) -
+  // solved directly from ICON_DEPTH + the camera's vertical FOV/aspect, so the frame fraction holds across
+  // desktop and mobile without a separate aspect-scale correction (kept from v3.24).
+  var CAMERA_Z = 8;                // camera position is fixed for the whole run - nothing moves it, ever
+  var PACK_Z = -1;                 // world z the pack floats at (9 units ahead of the fixed camera)
+  var HIT_Z = -1;                  // world z the hit card settles at, same depth as the pack
+  var PACK_TARGET_FRAC_W = 0.29;   // pack on-screen WIDTH as a fraction of frame width (spec: 28-30%),
+  // solved directly against the camera's aspect (same trick as ICON_TARGET_FRAC below) so it holds
+  // across desktop and mobile rather than an approximate height-based fraction (v3.25 round 2 fix -
+  // the old height-based PACK_TARGET_FRAC_H of 0.28 actually resolved to only ~13% of frame width at
+  // desktop's 16:10 aspect, reading as a small pouch rather than a pack worth ripping).
+  var HIT_TARGET_FRAC_H = 0.37;    // hit card on-screen height as a fraction of frame height (spec: 35-40%)
   var FOG_NEAR_TARGET = 0.6;  // outro: fog near/far ease toward these tighter distances as the world dissolves
   var FOG_FAR_TARGET = 6;     // (icon material itself is fog:false, so it stays clear while the field is swallowed)
   var KILLSWITCH_FADE_MS = 1200;
   var DISSOLVE_MS = 260;          // flat dissolve (CSS-phase/asset-loading skip, and the natural outro's tail)
-  var ACCEL_DISSOLVE_MS = 200;    // tail after an accelerated (click-triggered) outro, tuned so the icon
-  // fade+hold (~550ms) plus this tail (~200ms) lands the whole click-to-dashboard sequence around 700-750ms
-  var HARD_CEILING_MS = 9500;
-  var DOLLY_SPEED = 2.2;          // units/sec, constant forward walk through the card field (no adaptive pacing needed)
-  var CAST_FADE_STAGGER = 0.1;    // seconds between each member's fade-in start
-  var CAST_FADE_DURATION = 0.55;  // seconds for one member's own fade, last member still lands well inside ~1.5s
+  var ACCEL_DISSOLVE_MS = 150;    // tail after an accelerated (click-triggered) outro - nominal sum with the two
+  // constants above is 500ms, tuned down from v3.24's 750ms total so real setTimeout/rAF scheduling overhead
+  // (observed ~100-140ms across two chained timers in QA) still lands the whole skip inside the spec's 500-650ms.
+  // Ceiling redesign (v3.25 round 2): the old single 9s page-load-anchored ceiling fired on EVERY
+  // natural run, because a cold asset fetch (~2.2s round trip) alone ate well into that budget before
+  // the scene could even render its first frame, so the choreography's own 5.2s+outro length left no
+  // room and the icon hold got truncated with an abrupt cut. Two independent, purpose-built timers now:
+  var BOOTSTRAP_CEILING_MS = 5000;  // page-load-anchored: force-remove only if the scene never starts (hung load, import stall)
+  var CEILING_MARGIN_MS = 1200;     // slack added once the scene IS running, over its real natural length
+  var ABSOLUTE_BACKSTOP_MS = 12000; // page-load-anchored, unconditional - last resort if the re-anchor above ever misbehaves
+  var NATURAL_SEQUENCE_MS = (PACK_DURATION + OUTRO_FADE_DURATION + OUTRO_HOLD_DURATION) * 1000 + DISSOLVE_MS; // scene-start to natural teardown
 
-  // Fixed cast, positions carried over from the v3.21 composition fix, now
-  // woven into a much denser surrounding card field (v3.22) rather than a
-  // lone static tableau - checked against the 55-degree vertical FOV at
-  // both 16:10 desktop and the narrower iPhone portrait frustum for legible
-  // framing during the walk (see the v3.22 packet report for screenshots).
-  // Direct official-artwork URLs by dex id - no PokeAPI JSON lookups needed.
-  // x/y/z are hand-placed so all eight read in one view with no bad overlap;
-  // wailord sits deepest and highest (plus a scale multiplier) so it looms
-  // behind the group without blocking anyone in front of it. Lugia sits off
-  // wailord's angular span (was reading white-on-pale-blue); mew and
-  // arcanine given more x/y/z separation from their neighbours.
-  var CAST = [
-    { name: 'totodile',  id: 158, x: -3.4, y: -1.6, z: -9 },
-    { name: 'cyndaquil', id: 155, x:  3.3, y: -1.4, z: -10.5 },
-    { name: 'arcanine',  id: 59,  x: -5.0, y:  0.6, z: -17 },
-    { name: 'deoxys',    id: 386, x:  5.2, y:  0.8, z: -18 },
-    { name: 'mew',       id: 151, x: -1.8, y: -1.0, z: -11.5, scale: 0.7 },
-    { name: 'mewtwo',    id: 150, x:  3.6, y:  2.2, z: -12, scale: 0.75 },
-    { name: 'lugia',     id: 249, x: -3.2, y:  2.2, z: -15 },
-    { name: 'wailord',   id: 321, x:  1.2, y:  1.6, z: -22, scale: 2.75 }
+  // Rest positions for the five non-hit cards, as FRACTIONS of the frame's
+  // half-width/half-height at that card's own depth (never raw world units)
+  // - the trap this avoids: a fixed x/y tuned at desktop's 16:10 reads fine
+  // there but pushes cards off-frame on an iPhone's narrow portrait aspect.
+  // Resolved to world units once at scene build against the actual aspect.
+  var REST_FRACS = [
+    { xf: -0.62, yf: 0.42, z: 1.4 },
+    { xf: 0.66, yf: 0.32, z: 2.0 },
+    { xf: -0.55, yf: -0.5, z: 0.7 },
+    { xf: 0.58, yf: -0.42, z: 1.6 },
+    { xf: 0.08, yf: 0.66, z: 2.3 },
+    { xf: 0.08, yf: -0.1, z: 1.8 } // index 5 (the hit card) pre-hit rest, near centre-low
   ];
+  var CLOSE_INDICES = [1, 3, 4]; // these arc closer to camera mid-flight ("passing close by the camera")
+  var CARD_ORBIT_SCALE = 1.3;    // world-unit scale for the five non-hit cards (perspective handles their relative size by depth)
 
   var introState = 'idle';
   var introKillSwitch = null;
-  var introCastNames = [];
-  var introCastLoaded = 0;
   var _renderer = null, _scene = null, _camera = null, _raf = null;
   var _introTimers = [];
   var _introObjectUrls = [];
@@ -3216,27 +3234,36 @@ async function exportXlsx() {
   var _outroActive = false;
   var _accelerated = false;
   var _outroStart = 0;
-  var _introRealCardCount = 0; // combined real-scan card meshes actually rendered (featured + DB), after caps
+  var _introRealCardCount = 0;   // of the six drawn, how many are real scans (not procedural padding)
   var _introFeaturedCardCount = 0; // of the above, how many came from the fixed FEATURED_CARDS showcase
-  var _introRealCards = null;    // real-card {mesh,...} entries, exposed to __introDebug.cardProbe
+  var _introDrawnIds = [];       // the six drawn card ids, launch order, last = the hit - randomisation proof
+  var _introDrawnPrices = [];    // parallel prices - QA proof the last slot is always the max of the six
+  var _introCeilingHit = false;  // true only if HARD_CEILING force-removed the intro rather than a natural/skip dissolve
   var _introIconMesh = null, _introTHREE = null; // exposed to __introDebug.iconFit
-  var _introStartTime = 0; // performance.now() at kjrIntroMain start - all timing (walk pace, outro
-  // start, hard ceiling) is measured from here, not from THREE.Clock/scene-build time.
+  var _introHitCardMesh = null; // exposed to __introDebug.hitFit
+  var _introPhaseLog = []; // {state, tMs} per phase transition, scene-relative - QA proof of the actual choreography timing
+  var _introStartTime = 0; // performance.now() at kjrIntroMain start - HARD_CEILING and debug info only
+  var _sceneStartTime = 0; // performance.now() at the first tick() call - the choreography (anticipation/
+  // rip/burst/hit/outro) is measured from HERE, not from page load, or the asset fetch (up to
+  // DRAW_ATTEMPT_CAP tcgdex round trips) would silently eat into the anticipation/rip beats before the
+  // first frame even renders, skipping straight to burst on a slow connection - a real bug caught in
+  // v3.25 QA (verify-v325's first run landed mid-burst on the "anticipation" screenshot).
   var _kjrToastQueue = [];       // queued [msg, dur, isError] while the intro owns the top layer
   var _kjrOrigToast = null;      // the real app.js toast(), captured while intercepted
   var _kjrToastIntercepted = false;
 
-  // ── Toast interception (v3.24). app.js's #toast is a top-layer popover,
-  // it paints above the intro's z-index regardless, so a sync-conflict
-  // toast firing mid-boot would show over the overlay. toast/toastError are
-  // top-level `function` declarations in app.js (not const), so both files
-  // sharing one global scope means reassigning the identifier here is a
-  // real, reassignable global rebind, not a shadow - every bare `toast(...)`
-  // call anywhere (including toastError's internal call) resolves through
-  // it. Deferral, not suppression: nothing is swallowed, it replays the
-  // instant the intro tears down. Installed only once kjrIntroMain commits
-  // to eventually tearing down (after the "markup missing" bail-out), so an
-  // early return there can never leave toast permanently intercepted. ──
+  // ── Toast interception (v3.24, unchanged in v3.25). app.js's #toast is a
+  // top-layer popover, it paints above the intro's z-index regardless, so a
+  // sync-conflict toast firing mid-boot would show over the overlay.
+  // toast/toastError are top-level `function` declarations in app.js (not
+  // const), so both files sharing one global scope means reassigning the
+  // identifier here is a real, reassignable global rebind, not a shadow -
+  // every bare `toast(...)` call anywhere (including toastError's internal
+  // call) resolves through it. Deferral, not suppression: nothing is
+  // swallowed, it replays the instant the intro tears down. Installed only
+  // once kjrIntroMain commits to eventually tearing down (after the "markup
+  // missing" bail-out), so an early return there can never leave toast
+  // permanently intercepted. ──
   function kjrIntroInterceptToast() {
     if (_kjrToastIntercepted || typeof toast !== 'function') return;
     _kjrOrigToast = toast;
@@ -3287,88 +3314,82 @@ async function exportXlsx() {
       return {
         state: introState,
         killSwitch: introKillSwitch,
-        cast: introCastNames.slice(),
-        castLoaded: introCastLoaded,
+        drawnCards: _introDrawnIds.slice(),
+        drawnPrices: _introDrawnPrices.slice(),
+        phaseLog: _introPhaseLog.slice(),
+        ceilingHit: _introCeilingHit,
+        sceneStartTime: _sceneStartTime || null,
         outro: _outroActive,
         accelerated: _accelerated,
         realCards: _introRealCardCount,
         featuredCards: _introFeaturedCardCount,
         introStartTime: _introStartTime || null,
         cameraZ: _camera ? _camera.position.z : null,
-        cameraX: _camera ? _camera.position.x : null,
-        cameraY: _camera ? _camera.position.y : null,
         drawCalls: _renderer ? _renderer.info.render.calls : 0,
         geometries: _renderer ? _renderer.info.memory.geometries : 0,
         textures: _renderer ? _renderer.info.memory.textures : 0,
         removed: _removed
       };
     },
-    // QA probe: world z of the i-th real-scan card mesh vs the camera's current z, to verify
-    // FrontSide backface culling once the walk carries the camera past a card.
-    cardProbe: function (i) {
-      if (!_camera || !_introRealCards || !_introRealCards[i]) return null;
-      var m = _introRealCards[i].mesh;
-      return { cardZ: m.position.z, cameraZ: _camera.position.z, passed: _camera.position.z < m.position.z };
-    },
     // QA probe: projects the outro icon plane through the camera to measure its actual
     // on-screen pixel size and position, for the "65-75% of frame width, centred" spec.
     iconFit: function () {
       if (!_camera || !_renderer || !_introTHREE) return null;
-      var T = _introTHREE;
       var w = _renderer.domElement.clientWidth, h = _renderer.domElement.clientHeight;
-      function box(mesh) {
-        if (!mesh) return null;
-        var hw = mesh.geometry.parameters.width / 2, hh = mesh.geometry.parameters.height / 2;
-        var pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
-        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        pts.forEach(function (p) {
-          var v = new T.Vector3(p[0], p[1], 0).applyMatrix4(mesh.matrixWorld).project(_camera);
-          var px = (v.x * 0.5 + 0.5) * w, py = (1 - (v.y * 0.5 + 0.5)) * h;
-          minX = Math.min(minX, px); maxX = Math.max(maxX, px);
-          minY = Math.min(minY, py); maxY = Math.max(maxY, py);
-        });
-        return { widthPx: maxX - minX, heightPx: maxY - minY, centerXPx: (minX + maxX) / 2, centerYPx: (minY + maxY) / 2 };
-      }
-      var icon = box(_introIconMesh);
+      var icon = kjrIntroProjectBox(_introTHREE, _camera, w, h, _introIconMesh);
       return {
         canvasW: w, canvasH: h, icon: icon,
         iconWidthFrac: icon ? icon.widthPx / w : null,
         iconCenterXFrac: icon ? icon.centerXPx / w : null,
         iconCenterYFrac: icon ? icon.centerYPx / h : null
       };
+    },
+    // QA probe: same projection for the hit card, for the "35-40% of frame height, centred" spec.
+    hitFit: function () {
+      if (!_camera || !_renderer || !_introTHREE) return null;
+      var w = _renderer.domElement.clientWidth, h = _renderer.domElement.clientHeight;
+      var card = kjrIntroProjectBox(_introTHREE, _camera, w, h, _introHitCardMesh);
+      return {
+        canvasW: w, canvasH: h, card: card,
+        cardHeightFrac: card ? card.heightPx / h : null,
+        cardCenterXFrac: card ? card.centerXPx / w : null,
+        cardCenterYFrac: card ? card.centerYPx / h : null
+      };
     }
   };
+  // Shared by iconFit/hitFit: projects a plane mesh's geometry corners through the
+  // camera to measure its actual on-screen pixel box (scale-aware via matrixWorld).
+  function kjrIntroProjectBox(T, camera, w, h, mesh) {
+    if (!mesh) return null;
+    var hw = mesh.geometry.parameters.width / 2, hh = mesh.geometry.parameters.height / 2;
+    var pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    pts.forEach(function (p) {
+      var v = new T.Vector3(p[0], p[1], 0).applyMatrix4(mesh.matrixWorld).project(camera);
+      var px = (v.x * 0.5 + 0.5) * w, py = (1 - (v.y * 0.5 + 0.5)) * h;
+      minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+    });
+    return { widthPx: maxX - minX, heightPx: maxY - minY, centerXPx: (minX + maxX) / 2, centerYPx: (minY + maxY) / 2 };
+  }
 
-  // ── DB access, still used for the collection-derived card field (real
-  // TCGdex scans). DB is declared `let DB = {...}` at the top level of
-  // app.js - a classic-script top-level `let` is visible to features.js as
-  // the bare identifier (both scripts share one global lexical scope) but
-  // is NOT a property of window. window.DB is attempted first per spec,
-  // the bare identifier is the real path that actually finds data today. ──
+  // ── DB access, for the pack draw pool (real TCGdex scans). DB is declared
+  // `let DB = {...}` at the top level of app.js - a classic-script top-level
+  // `let` is visible to features.js as the bare identifier (both scripts
+  // share one global lexical scope) but is NOT a property of window.
+  // window.DB is attempted first per spec, the bare identifier is the real
+  // path that actually finds data today. ──
   function kjrIntroDB() {
     if (window.DB && (window.DB.singles || window.DB.slabs)) return window.DB;
     try { if (typeof DB !== 'undefined' && DB) return DB; } catch (e) { /* DB not declared yet - fall through */ }
     return null;
   }
 
-  // ── Fixed cast artwork, direct by dex id, no PokeAPI JSON round trip. ──
-  async function kjrIntroBuildCast(THREE) {
-    return Promise.all(CAST.map(async function (c) {
-      var url = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/' + c.id + '.png';
-      try {
-        var objUrl = await kjrIntroCachedImage(url);
-        var tex = await kjrIntroLoadTexture(THREE, objUrl);
-        return { name: c.name, texture: tex };
-      } catch (e) { return { name: c.name, texture: null }; } // corridor just has a gap at this slot
-    }));
-  }
-
   // ── Featured showcase: Julian's named pieces, pinned to real TCGdex ids
-  // resolved ahead of time against the live API (name + image both
-  // verified - see the v3.21 packet report for the resolution table).
-  // Always attempted first, one copy each, English region (every id below
-  // is an English print). DB picks below never duplicate one of these
-  // (deduped by tcgdexId) and only fill whatever budget is left. ──
+  // resolved ahead of time against the live API (see the v3.21 packet report
+  // for the resolution table). Always in the draw pool, English region
+  // (every id below is an English print), price treated as high so a
+  // featured card always outranks a DB record for the "hit" beat. ──
   var FEATURED_CARDS = [
     'svp-044',    // Charmander, SVP Black Star Promo
     'xyp-XY67a',  // Jirachi, XY Black Star Promo
@@ -3381,67 +3402,70 @@ async function exportXlsx() {
     'sv07-148',   // Squirtle, Stellar Crown, Illustration Rare
     'sv07-143'    // Bulbasaur, Stellar Crown, Illustration Rare
   ];
-  async function kjrIntroBuildFeaturedEntries(THREE) {
-    var results = await Promise.all(FEATURED_CARDS.map(async function (id) {
-      try {
-        var res = await fetch('https://api.tcgdex.net/v2/en/cards/' + encodeURIComponent(id));
-        if (!res.ok) return null;
-        var data = await res.json();
-        if (!data || !data.image) return null;
-        var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
-        var tex = await kjrIntroLoadTexture(THREE, objUrl);
-        if (!tex) return null;
-        return { texture: tex, copies: 1, featured: true };
-      } catch (e) { return null; } // procedural back fills the slot instead
-    }));
-    return results.filter(Boolean);
-  }
 
-  // ── DB-derived scans, weighted to repeats. Records with a non-empty
-  // tcgdexId not already in FEATURED_CARDS, sorted qty-desc (missing qty
-  // counts as 1) then price-desc, capped at DB_CARD_POOL_CAP distinct
-  // records. A qty>1 record gets multiple floating copies later (see
-  // kjrIntroBuildScene), capped per-record. ──
-  function kjrIntroQty(rec) {
-    var q = parseFloat(rec && rec.qty);
-    return (isFinite(q) && q > 0) ? q : 1;
-  }
-  async function kjrIntroBuildDbEntries(THREE) {
-    var db = kjrIntroDB();
-    var pool = [].concat((db && db.singles) || [], (db && db.slabs) || [])
-      .filter(function (r) { return r && r.tcgdexId && FEATURED_CARDS.indexOf(r.tcgdexId) === -1; });
-    pool.sort(function (a, b) {
-      var qd = kjrIntroQty(b) - kjrIntroQty(a);
-      if (qd !== 0) return qd;
-      return (parseFloat(b.marketPrice) || 0) - (parseFloat(a.marketPrice) || 0);
+  // ── Draw pool: union of FEATURED_CARDS and any DB record with a non-empty
+  // tcgdexId, deduped by id. Fisher-Yates shuffled every load - this is what
+  // makes every reload a different pack. Six are drawn from a random slice
+  // of the shuffled order (buffered above six for fetch failures), and
+  // whichever of the six has the highest price is moved to the last (hit)
+  // slot. Featured cards carry Infinity so they always count as "high". ──
+  function kjrIntroBuildDrawPool() {
+    var seen = {};
+    var pool = [];
+    FEATURED_CARDS.forEach(function (id) {
+      if (seen[id]) return;
+      seen[id] = 1;
+      pool.push({ id: id, source: 'featured', price: Infinity });
     });
-    var picked = pool.slice(0, DB_CARD_POOL_CAP);
-    var results = await Promise.all(picked.map(async function (rec) {
-      try {
-        var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(rec.language) : (rec.language || 'en').toString().toLowerCase() || 'en';
-        var res = await fetch('https://api.tcgdex.net/v2/' + encodeURIComponent(lang) + '/cards/' + encodeURIComponent(rec.tcgdexId));
-        if (!res.ok) return null;
-        var data = await res.json();
-        if (!data || !data.image) return null;
-        var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
-        var tex = await kjrIntroLoadTexture(THREE, objUrl);
-        if (!tex) return null;
-        return { texture: tex, copies: Math.min(REAL_CARD_MAX_COPIES, Math.round(kjrIntroQty(rec))), featured: false };
-      } catch (e) { return null; } // procedural back fills the slot instead
-    }));
-    return results.filter(Boolean);
+    var db = kjrIntroDB();
+    var dbRecords = [].concat((db && db.singles) || [], (db && db.slabs) || []);
+    dbRecords.forEach(function (r) {
+      if (!r || !r.tcgdexId || seen[r.tcgdexId]) return;
+      seen[r.tcgdexId] = 1;
+      pool.push({ id: r.tcgdexId, source: 'db', price: parseFloat(r.marketPrice) || 0, rec: r });
+    });
+    return pool;
   }
-  async function kjrIntroBuildCardTextures(THREE) {
-    var both = await Promise.all([
-      kjrIntroBuildFeaturedEntries(THREE).catch(function () { return []; }),
-      kjrIntroBuildDbEntries(THREE).catch(function () { return []; })
-    ]);
-    return both[0].concat(both[1]); // featured first - priority order for the mesh-cap trim in kjrIntroBuildScene
+  function kjrShuffle(arr) {
+    for (var i = arr.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    }
+    return arr;
+  }
+  async function kjrIntroFetchCardEntry(THREE, entry) {
+    var lang = entry.source === 'db' && typeof _tcgdexLang === 'function' ? _tcgdexLang(entry.rec.language) : 'en';
+    var res = await fetch('https://api.tcgdex.net/v2/' + encodeURIComponent(lang) + '/cards/' + encodeURIComponent(entry.id));
+    if (!res.ok) return null;
+    var data = await res.json();
+    if (!data || !data.image) return null;
+    var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
+    var tex = await kjrIntroLoadTexture(THREE, objUrl);
+    if (!tex) return null;
+    return { id: entry.id, texture: tex, price: entry.price, featured: entry.source === 'featured', procedural: false };
+  }
+  async function kjrIntroDrawCards(THREE) {
+    var pool = kjrShuffle(kjrIntroBuildDrawPool());
+    var attemptPool = pool.slice(0, Math.min(pool.length, DRAW_ATTEMPT_CAP));
+    var results = await Promise.all(attemptPool.map(function (entry) {
+      return kjrIntroFetchCardEntry(THREE, entry).catch(function () { return null; });
+    }));
+    var drawn = results.filter(Boolean).slice(0, CARD_DRAW_COUNT);
+    var procCounter = 0;
+    while (drawn.length < CARD_DRAW_COUNT) {
+      drawn.push({ id: 'proc-' + (procCounter++), texture: null, price: -Infinity, featured: false, procedural: true });
+    }
+    var hitIdx = 0;
+    for (var k = 1; k < drawn.length; k++) if (drawn[k].price > drawn[hitIdx].price) hitIdx = k;
+    var hit = drawn.splice(hitIdx, 1)[0];
+    drawn.push(hit); // the most valuable of the six always launches last (the hit beat)
+    return drawn;
   }
 
   // ── Brand asset: whale mark alone (same-origin, already SW-precached, no
   // need for the intro-art cache bucket). No wordmark, no text anywhere in
-  // the WebGL scene - the icon carries the whole brand beat now. ──
+  // the WebGL scene - the icon carries the whole brand beat. Its loaded
+  // Image is also reused to draw the pack front's whale mark below. ──
   async function kjrIntroBuildBrand(THREE) {
     return kjrIntroLoadTexture(THREE, './Assets/whale-icon.png');
   }
@@ -3488,7 +3512,7 @@ async function exportXlsx() {
     } catch (e) { return false; }
   }
 
-  // ── Procedural assets (brand-toned, never the official card back design) ──
+  // ── Procedural assets (brand-toned, never the official card back or pack design) ──
   function kjrIntroCardBackTexture(THREE) {
     var w = 256, h = 358;
     var c = document.createElement('canvas');
@@ -3513,6 +3537,96 @@ async function exportXlsx() {
     ctx.fillText('K', w / 2, h / 2);
     return new THREE.CanvasTexture(c);
   }
+  // Pack front: brand gradient, a static faint diagonal foil texture baked in (the genuinely moving
+  // sweep is a separate overlay layer, see kjrIntroPackSweepTexture below), whale mark large and
+  // centred (drawn from the already-loaded outro icon Image, never re-fetched), a keyline border plus
+  // a soft rim highlight - never a real Pokemon pack design.
+  function kjrIntroPackFrontTexture(THREE, whaleImg) {
+    var w = 512, h = 712;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    var grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#12101F'); grad.addColorStop(1, '#2E2752');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(139,124,240,0.1)'; ctx.lineWidth = 20;
+    for (var i = -h; i < w + h; i += 64) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + h, h); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = 'rgba(139,124,240,0.55)'; ctx.lineWidth = 8;
+    ctx.strokeRect(14, 14, w - 28, h - 28);
+    // Subtle rim highlight, just inside the keyline - a soft pale edge with a little glow so the
+    // dark pack silhouette separates from the dark scene background instead of reading as a flat void.
+    ctx.save();
+    ctx.shadowColor = 'rgba(234,231,245,0.4)'; ctx.shadowBlur = 20;
+    ctx.strokeStyle = 'rgba(234,231,245,0.3)'; ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, w - 12, h - 12);
+    ctx.restore();
+    if (whaleImg) {
+      try {
+        var iw = w * 0.62, ih = iw * (whaleImg.height / whaleImg.width || 1);
+        ctx.save();
+        ctx.shadowColor = 'rgba(139,124,240,0.65)'; ctx.shadowBlur = 34;
+        ctx.drawImage(whaleImg, (w - iw) / 2, (h - ih) / 2, iw, ih);
+        ctx.restore();
+      } catch (e) { /* whale mark just skipped, gradient/sheen still reads */ }
+    }
+    return new THREE.CanvasTexture(c);
+  }
+  function kjrIntroPackBackTexture(THREE) {
+    var w = 512, h = 712;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    var grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#12101F'); grad.addColorStop(1, '#241E42');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(139,124,240,0.08)'; ctx.lineWidth = 20;
+    for (var i = -h; i < w + h; i += 44) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + h, h); ctx.stroke();
+    }
+    return new THREE.CanvasTexture(c);
+  }
+  // Moving holo sweep, layered separately in front of the static branded front face (v3.25 round 2
+  // fix - an earlier attempt animated the offset of the WHOLE baked front texture, which dragged the
+  // whale mark and border along with it and wrapped into a visible duplicate, a real bug caught in
+  // this round's own QA screenshots). A single soft diagonal band on an otherwise transparent canvas,
+  // repeat-wrapped and offset-animated in tick(), reads as one clean sheen passing over the pack.
+  function kjrIntroPackSweepTexture(THREE) {
+    var s = 128;
+    var c = document.createElement('canvas');
+    c.width = c.height = s;
+    var ctx = c.getContext('2d');
+    var grad = ctx.createLinearGradient(0, 0, s, s);
+    grad.addColorStop(0, 'rgba(139,124,240,0)');
+    grad.addColorStop(0.36, 'rgba(139,124,240,0)');
+    grad.addColorStop(0.5, 'rgba(180,168,240,0.4)');
+    grad.addColorStop(0.64, 'rgba(139,124,240,0)');
+    grad.addColorStop(1, 'rgba(139,124,240,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, s, s);
+    return new THREE.CanvasTexture(c);
+  }
+  function kjrIntroCrimpTexture(THREE) {
+    var w = 512, h = 96;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#1c1730'; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(139,124,240,0.5)';
+    var toothW = 22;
+    for (var x = 0; x < w; x += toothW * 2) {
+      ctx.beginPath();
+      ctx.moveTo(x, h); ctx.lineTo(x + toothW / 2, 0); ctx.lineTo(x + toothW, h);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(234,231,245,0.4)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, h - 3); ctx.lineTo(w, h - 3); ctx.stroke();
+    return new THREE.CanvasTexture(c);
+  }
   function kjrIntroMoteTexture(THREE) {
     var s = 64;
     var c = document.createElement('canvas');
@@ -3533,157 +3647,161 @@ async function exportXlsx() {
     ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
     return new THREE.CanvasTexture(c);
   }
+
+  function kjrEaseOutCubic(p) { var q = 1 - p; return 1 - q * q * q; }
+  function kjrLerp(a, b, k) { return a + (b - a) * k; }
+  function kjrClamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
   // ── Scene build + animate + icon outro. Throws bubble to kjrIntroMain's catch. ──
   async function kjrIntroBuildScene(THREE, stageEl) {
     _introTHREE = THREE; // for __introDebug.iconFit's on-screen projection
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     var pair = await Promise.all([
-      kjrIntroBuildCast(THREE).catch(function () { return []; }),
-      kjrIntroBuildCardTextures(THREE).catch(function () { return []; }),
+      kjrIntroDrawCards(THREE).catch(function () { return []; }),
       kjrIntroBuildBrand(THREE).catch(function () { return null; })
     ]);
-    var castData = pair[0], realCardEntries = pair[1], whaleTex = pair[2];
-    introCastNames = castData.filter(function (c) { return c.texture; }).map(function (c) { return c.name; });
-    introCastLoaded = introCastNames.length;
+    var drawnCards = pair[0], whaleTex = pair[1];
+    // Guard: a scene-build error upstream could return fewer than six - pad procedural rather than crash.
+    while (drawnCards.length < CARD_DRAW_COUNT) drawnCards.push({ id: 'proc-fallback-' + drawnCards.length, texture: null, price: -Infinity, featured: false, procedural: true });
+    _introDrawnIds = drawnCards.map(function (d) { return d.id; });
+    _introDrawnPrices = drawnCards.map(function (d) { return d.price; }); // QA proof the hit (last slot) is always the max
+    _introRealCardCount = drawnCards.filter(function (d) { return !d.procedural; }).length;
+    _introFeaturedCardCount = drawnCards.filter(function (d) { return d.featured; }).length;
 
     if (_ending) return; // user skipped while assets were loading - do not build anything else
 
     var scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x12101F, 8, 48); // far enough that wailord (deepest, z~-22) still reads clearly, not washed out - tightened by the outro (see FOG_*_TARGET)
+    scene.fog = new THREE.Fog(0x12101F, 5, 16);
     var camera = new THREE.PerspectiveCamera(55, Math.max(1, stageEl.clientWidth) / Math.max(1, stageEl.clientHeight), 0.1, 100);
-    camera.position.set(0, 0, 8);
+    camera.position.set(0, 0, CAMERA_Z); // fixed for the whole run - the pack and cards move, the camera never does
     var renderer = new THREE.WebGLRenderer({ antialias: !coarsePointer, alpha: true, powerPreference: 'low-power' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     renderer.setSize(stageEl.clientWidth, stageEl.clientHeight);
     stageEl.appendChild(renderer.domElement);
     _renderer = renderer; _scene = scene; _camera = camera;
 
-    // Card field: one InstancedMesh for a sparse procedural-back background,
-    // plus real scans (featured showcase first, then DB picks) as individual
-    // front-side-only meshes (each needs its own texture) - a qty>1 DB
-    // record renders multiple copies of the same texture so repeat
-    // purchases visibly recur. kjrIntroFieldZ()/kjrIntroFieldXY() spread
-    // both across the whole walked corridor (z +8 to -25, x/y surrounding
-    // the path on every side), denser mid-span, so the camera is inside the
-    // field from the first frame and cards pass its sides/top/bottom
-    // throughout the walk. Front-side-only real cards rely on ordinary
-    // backface culling to disappear cleanly (no pop) once the camera walks
-    // past one - now a routine occurrence at this pace, verified in the
-    // v3.22 packet report. REAL_CARD_INSTANCE_CAP keeps total draw calls
-    // inside budget even at the worst-case combined featured+DB load.
-    function kjrIntroFieldZ() {
-      var r = (Math.random() + Math.random()) * 0.5; // triangular (two averaged draws) - denser mid-span than flat random
-      return 8 - r * 33; // +8 (level with the camera's start) back to -25, the whole walked corridor
-    }
-    // x/y surround the path (a jungle, not a wall ahead): a small clear
-    // corridor on the path axis (radius ~1.2) so nothing clips the lens,
-    // and a clear sky cone above the walk's final stretch (|x|<2, y>2.5,
-    // z -12..-2) - this range also covers where the outro icon sits ahead
-    // of the walk's end, keeping that space clear of stray card overlap.
-    function kjrIntroFieldXY(z) {
-      var x, y, tries = 0;
-      do {
-        x = -6 + Math.random() * 12;
-        y = -3 + Math.random() * 6.5;
-        tries++;
-      } while (tries < 6 && (Math.hypot(x, y) < 1.2 || (Math.abs(x) < 2 && y > 2.5 && z > -12 && z < -2)));
-      var d = Math.hypot(x, y);
-      if (d < 1.2) { var k = d > 0.0001 ? 1.2 / d : 1; x *= k; y *= k; }
-      if (Math.abs(x) < 2 && y > 2.5 && z > -12 && z < -2) x = (x < 0 ? -1 : 1) * (2 + Math.random() * 4);
-      return { x: x, y: y };
-    }
-    var cardGeo = new THREE.PlaneGeometry(1, 1.4);
-    var cardBackTex = kjrIntroCardBackTexture(THREE);
-    var dummy = new THREE.Object3D();
-    if (PROCEDURAL_CARD_COUNT > 0) {
-      var cardMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: true });
-      var instMesh = new THREE.InstancedMesh(cardGeo, cardMat, PROCEDURAL_CARD_COUNT);
-      for (var ci = 0; ci < PROCEDURAL_CARD_COUNT; ci++) {
-        var pz = kjrIntroFieldZ();
-        var pxy = kjrIntroFieldXY(pz);
-        dummy.position.set(pxy.x, pxy.y, pz);
-        dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        var s1 = 0.6 + Math.random() * 0.9;
-        dummy.scale.set(s1, s1, s1);
-        dummy.updateMatrix();
-        instMesh.setMatrixAt(ci, dummy.matrix);
-      }
-      instMesh.instanceMatrix.needsUpdate = true;
-      scene.add(instMesh);
-    }
-    var realCards = [];
-    var realCardTotal = 0;
-    var featuredTotal = 0;
-    for (var ri = 0; ri < realCardEntries.length && realCardTotal < REAL_CARD_INSTANCE_CAP; ri++) {
-      var entry = realCardEntries[ri];
-      for (var cpI = 0; cpI < entry.copies && realCardTotal < REAL_CARD_INSTANCE_CAP; cpI++) {
-        var mat = new THREE.MeshBasicMaterial({ map: entry.texture, transparent: true, side: THREE.FrontSide, depthWrite: false, fog: true });
-        var mesh = new THREE.Mesh(cardGeo, mat);
-        var rz = kjrIntroFieldZ();
-        var rxy = kjrIntroFieldXY(rz);
-        mesh.position.set(rxy.x, rxy.y, rz);
-        var yTilt = (Math.random() - 0.5) * (Math.PI / 180 * 50); // within ~25 degrees either side, mostly face-on
-        var lookDir = Math.max(-1, Math.min(1, rxy.y / 3)) * 0.45; // above the path tilts down, below tilts up
-        mesh.rotation.set((Math.random() - 0.5) * 0.35 + lookDir, yTilt, (Math.random() - 0.5) * 0.2);
-        var s2 = 1.3 + Math.random() * 0.3;
-        mesh.scale.set(s2, s2, s2);
-        scene.add(mesh);
-        realCards.push({ mesh: mesh, spin: (Math.random() - 0.5) * 0.08, bobPhase: Math.random() * Math.PI * 2 });
-        realCardTotal++;
-        if (entry.featured) featuredTotal++;
-      }
-    }
-    _introRealCardCount = realCardTotal;
-    _introFeaturedCardCount = featuredTotal;
-    _introRealCards = realCards; // exposed to __introDebug.cardProbe for the pass-behind QA check
+    var vFovRad = camera.fov * Math.PI / 180;
+    function kjrWorldHalfH(z) { return (CAMERA_Z - z) * Math.tan(vFovRad / 2); }
+    function kjrWorldHeightForFrac(frac, z) { return frac * 2 * kjrWorldHalfH(z); }
 
-    // Motes
-    var moteCount = coarsePointer ? 400 : 800;
+    // Motes: ambient background dust, unrelated to the pack choreography, kept throughout.
+    var moteCount = coarsePointer ? 300 : 600;
     var positions = new Float32Array(moteCount * 3);
     for (var mi = 0; mi < moteCount; mi++) {
-      positions[mi * 3] = (Math.random() - 0.5) * 30;
-      positions[mi * 3 + 1] = (Math.random() - 0.5) * 18;
-      positions[mi * 3 + 2] = -Math.random() * 85;
+      positions[mi * 3] = (Math.random() - 0.5) * 22;
+      positions[mi * 3 + 1] = (Math.random() - 0.5) * 14;
+      positions[mi * 3 + 2] = 4 - Math.random() * 26;
     }
     var moteGeo = new THREE.BufferGeometry();
     moteGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    var moteMat = new THREE.PointsMaterial({ size: 0.14, map: kjrIntroMoteTexture(THREE), transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x8B7CF0, sizeAttenuation: true });
+    var moteMat = new THREE.PointsMaterial({ size: 0.13, map: kjrIntroMoteTexture(THREE), transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x8B7CF0, sizeAttenuation: true });
     var motes = new THREE.Points(moteGeo, moteMat);
     scene.add(motes);
 
-    // Cast: tableau plane + additive glow sprite behind each, starts fully
-    // transparent and fades in quickly (see the fade calc in tick() below).
-    // Wailord's plane is scaled 2.75x and sits deepest/highest so it looms
-    // behind the group rather than blocking anyone in front of it.
-    var glowTex = kjrIntroGlowTexture(THREE);
-    var castMeshes = [];
-    for (var ki = 0; ki < CAST.length; ki++) {
-      var cEntry = CAST[ki];
-      var cTex = castData[ki] && castData[ki].texture;
-      if (!cTex) continue; // failed to load - tableau just has a gap at this slot, never a crash
-      var aspect = (cTex.image && cTex.image.width && cTex.image.height) ? cTex.image.width / cTex.image.height : 1;
-      var baseH = 3.2 * (cEntry.scale || 1);
-      var baseW = baseH * aspect;
-      var cMat = new THREE.MeshBasicMaterial({ map: cTex, transparent: true, depthWrite: false, fog: true, opacity: 0 });
-      var cMesh = new THREE.Mesh(new THREE.PlaneGeometry(baseW, baseH), cMat);
-      cMesh.position.set(cEntry.x, cEntry.y, cEntry.z);
-      scene.add(cMesh);
-      var cGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0 });
-      var cGlow = new THREE.Sprite(cGlowMat);
-      var glowMul = 2.1 / Math.sqrt(cEntry.scale || 1); // sub-linear so wailord's halo doesn't wash out the group
-      cGlow.scale.set(baseW * glowMul, baseH * glowMul, 1);
-      cGlow.position.set(cEntry.x, cEntry.y, cEntry.z - 0.05);
-      scene.add(cGlow);
-      castMeshes.push({ mesh: cMesh, glow: cGlow, mat: cMat, glowMat: cGlowMat, x: cEntry.x, baseY: cEntry.y, phase: ki * 0.9, fadeStart: ki * CAST_FADE_STAGGER });
+    // The pack: puffed box (front/back canvas textures, plain side colour), plus a
+    // separate crimped top-strip plane that detaches and rips away independently.
+    var whaleImg = whaleTex && whaleTex.image;
+    var packFrontTex = kjrIntroPackFrontTexture(THREE, whaleImg);
+    var packBackTex = kjrIntroPackBackTexture(THREE);
+    // Width-first sizing (PACK_TARGET_FRAC_W), height derived from the pack's own portrait ratio -
+    // aspect-scaled via kjrWorldHalfH so the 28-30% frame-width target holds on desktop and mobile alike.
+    var packWidth = PACK_TARGET_FRAC_W * 2 * kjrWorldHalfH(PACK_Z) * camera.aspect;
+    var packHeight = packWidth / 0.72;
+    var packDepth = packHeight * 0.14;
+    // fog:false on every pack-body material - v3.25 round 2 fix. The scene fog colour (0x12101F) is
+    // literally the pack front texture's own top gradient stop, so at the pack's fogged depth the
+    // default fog:true blend was flattening it toward its own darkest tone - the root cause of the
+    // "washed-out grey pouch" defect. The outro icon plane already uses this same fog:false trick.
+    var sideMat = new THREE.MeshBasicMaterial({ color: 0x1c1730, transparent: true, opacity: 1, fog: false });
+    var frontMat = new THREE.MeshBasicMaterial({ map: packFrontTex, transparent: true, opacity: 1, fog: false });
+    var backMat = new THREE.MeshBasicMaterial({ map: packBackTex, transparent: true, opacity: 1, fog: false });
+    var packBody = new THREE.Mesh(new THREE.BoxGeometry(packWidth, packHeight, packDepth), [sideMat, sideMat, sideMat, sideMat, frontMat, backMat]);
+    var packGroup = new THREE.Group();
+    packGroup.position.set(0, 0, PACK_Z);
+    packGroup.add(packBody);
+
+    // Moving holo sweep overlay - a separate plane just in front of the front face, child of packBody
+    // so it inherits the squeeze/tilt/drop for free. Only this texture's offset animates (see tick()).
+    var sweepTex = kjrIntroPackSweepTexture(THREE);
+    sweepTex.wrapS = THREE.RepeatWrapping;
+    var sweepMat = new THREE.MeshBasicMaterial({ map: sweepTex, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    var sweepMesh = new THREE.Mesh(new THREE.PlaneGeometry(packWidth, packHeight), sweepMat);
+    sweepMesh.position.set(0, 0, packDepth / 2 + 0.004);
+    packBody.add(sweepMesh);
+
+    var crimpHeight = packHeight * 0.16;
+    var crimpMat = new THREE.MeshBasicMaterial({ map: kjrIntroCrimpTexture(THREE), transparent: true, opacity: 1, side: THREE.FrontSide, depthWrite: false, fog: false });
+    var crimpMesh = new THREE.Mesh(new THREE.PlaneGeometry(packWidth * 1.03, crimpHeight), crimpMat);
+    crimpMesh.position.set(0, packHeight / 2 - crimpHeight / 2, packDepth / 2 + 0.01);
+    packGroup.add(crimpMesh);
+    scene.add(packGroup);
+
+    // Foil burst at the tear line: a small JS-driven Points system, dormant (opacity 0)
+    // until the rip triggers it once, then eases out over FOIL_LIFE.
+    var foilCount = 70;
+    var foilPos = new Float32Array(foilCount * 3);
+    var foilVel = new Float32Array(foilCount * 3);
+    var foilGeo = new THREE.BufferGeometry();
+    foilGeo.setAttribute('position', new THREE.BufferAttribute(foilPos, 3));
+    var foilMat = new THREE.PointsMaterial({ size: 0.05, map: kjrIntroMoteTexture(THREE), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, color: 0xEAE7F5, sizeAttenuation: true });
+    var foilMotes = new THREE.Points(foilGeo, foilMat);
+    scene.add(foilMotes);
+    var foilTriggered = false, foilStartT = 0;
+    // Re-triggerable burst (v3.25 round 2 burst-energy fix): called once on the rip tear and again on
+    // each card's launch, resetting the shared buffer each time so the mote burst persists through the
+    // whole burst beat as a series of small energetic puffs timed with the staggered launches, rather
+    // than one burst that fades out long before the last cards fly.
+    function kjrIntroFoilBurst(originY, originZ, intensity, tNow) {
+      foilTriggered = true; foilStartT = tNow;
+      for (var fi = 0; fi < foilCount; fi++) {
+        foilPos[fi * 3] = (Math.random() - 0.5) * packWidth;
+        foilPos[fi * 3 + 1] = originY;
+        foilPos[fi * 3 + 2] = originZ;
+        foilVel[fi * 3] = (Math.random() - 0.5) * 2.4 * intensity;
+        foilVel[fi * 3 + 1] = (0.6 + Math.random() * 1.8) * intensity;
+        foilVel[fi * 3 + 2] = (0.4 + Math.random() * 1.2) * intensity;
+      }
+      foilGeo.attributes.position.needsUpdate = true;
+      foilMat.opacity = 1;
     }
 
-    // Outro icon: the whale mark alone, built now (texture already loaded)
-    // but sized and positioned only once the walk ends and the camera's
-    // final resting spot is known (see kjrIntroBeginOutro/tick below) - a
-    // plain unit-size plane, scaled at that point to solve for the target
-    // on-screen frame fraction. Kept unlit by fog (fog:false) so it stays
-    // clear and legible while the field around it is swallowed by fog.
+    // Six cards drawn this load, resolved to world rest positions (fractional, see REST_FRACS).
+    var cardGeo = new THREE.PlaneGeometry(1, 1.4);
+    var cardBackTex = kjrIntroCardBackTexture(THREE);
+    var hitTargetScale = kjrWorldHeightForFrac(HIT_TARGET_FRAC_H, HIT_Z) / 1.4;
+    var glowTex = kjrIntroGlowTexture(THREE);
+    var cards = [];
+    for (var ci = 0; ci < CARD_DRAW_COUNT; ci++) {
+      var d = drawnCards[ci];
+      var tex = d.texture || cardBackTex;
+      var mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, side: THREE.FrontSide, depthWrite: false, fog: true });
+      var mesh = new THREE.Mesh(cardGeo, mat);
+      scene.add(mesh);
+      var rf = REST_FRACS[ci];
+      cards.push({
+        mesh: mesh, mat: mat, isHit: ci === CARD_DRAW_COUNT - 1,
+        launchAt: T_RIP_END + ci * CARD_STAGGER,
+        startPos: { x: (ci - 2.5) * 0.15, y: packHeight * 0.32, z: PACK_Z + packDepth * 0.6 },
+        restPos: { x: rf.xf * kjrWorldHalfH(rf.z) * camera.aspect, y: rf.yf * kjrWorldHalfH(rf.z), z: rf.z },
+        closeHump: CLOSE_INDICES.indexOf(ci) !== -1 ? 1.6 : 0,
+        arcLift: 0.9 + Math.random() * 0.4,
+        spinY: (Math.random() * 2 + 2) * (Math.random() < 0.5 ? -1 : 1),
+        spinX: (Math.random() - 0.5) * 2, spinZ: (Math.random() - 0.5) * 2,
+        finalTilt: { x: (Math.random() - 0.5) * 0.2, y: (Math.random() - 0.5) * 0.25, z: (Math.random() - 0.5) * 0.15 },
+        bobPhase: Math.random() * Math.PI * 2,
+        settled: false,
+        foilBurstDone: false // triggers a small mote puff the instant this card launches
+      });
+    }
+    var hitCard = cards[CARD_DRAW_COUNT - 1];
+    _introHitCardMesh = hitCard.mesh; // exposed to __introDebug.hitFit
+    var hitGlowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x8B7CF0, opacity: 0 });
+    var hitGlow = new THREE.Sprite(hitGlowMat);
+    scene.add(hitGlow);
+
+    // Outro icon: the whale mark alone, built now (texture already loaded) but sized
+    // and positioned only once the outro begins (see kjrIntroBeginOutro/tick below).
     var introIconMesh = null, introIconMat = null, introIconGlow = null, introIconGlowMat = null, iconAspect = 1;
     if (whaleTex) {
       iconAspect = (whaleTex.image && whaleTex.image.width && whaleTex.image.height) ? whaleTex.image.width / whaleTex.image.height : 1;
@@ -3698,19 +3816,17 @@ async function exportXlsx() {
 
     // ── Animate ──
     var lastT = 0;
-    var sceneStartT = null; // t (since intro start) of the first tick - cast fade-in is measured from here
     var pointerTX = 0, pointerTY = 0, pointerX = 0, pointerY = 0;
     var canvasFadedIn = false;
-    var fogNear0 = scene.fog.near, fogFar0 = scene.fog.far; // captured once, outro eases from these toward the FOG_*_TARGET constants
-    var outroCaptured = false; // the camera position is frozen and the icon sized/placed once, the frame the outro begins
+    var fogNear0 = scene.fog.near, fogFar0 = scene.fog.far;
+    var outroCaptured = false;
+    var ripTriggered = false, packHidden = false;
+    var hitCaptured = false, hitStartT = 0;
+    var hitStartPos = null, hitStartRot = null, hitStartScale = 1;
 
-    // Pointer movement only ever feeds pointerX/pointerY below, which only
-    // ever touch camera.position.x/y (parallax) during the walk. It never
-    // reaches the z-axis dolly/outro-timing logic - hovering cannot affect
-    // pace, only a click (kjrIntroSkip, wired in kjrIntroMain) can, via
-    // kjrIntroBeginOutro. Once the outro begins the camera is frozen outright
-    // (see the tick() branch below), so pointer movement has zero effect on
-    // it from that point on either.
+    // Pointer movement only ever tilts the pack during anticipation (parallax), it
+    // never reaches pacing/timing - only a click (kjrIntroSkip) can affect that, via
+    // kjrIntroBeginOutro. Once the outro begins nothing is pointer-driven any more.
     function onPointerMove(e) {
       if (coarsePointer) return;
       pointerTX = (e.clientX / window.innerWidth) * 2 - 1;
@@ -3729,14 +3845,40 @@ async function exportXlsx() {
     _onPointerMove = onPointerMove;
     _onResize = onResize;
 
+    function kjrUpdateCardFlight(card, t) {
+      var p = kjrClamp01((t - card.launchAt) / CARD_FLIGHT_DURATION);
+      if (t < card.launchAt) { card.mat.opacity = 0; return; }
+      var ease = kjrEaseOutCubic(p);
+      var rotFactor = 1 - ease;
+      card.mesh.position.set(
+        kjrLerp(card.startPos.x, card.restPos.x, ease),
+        kjrLerp(card.startPos.y, card.restPos.y, ease) + card.arcLift * Math.sin(p * Math.PI),
+        kjrLerp(card.startPos.z, card.restPos.z, ease) + card.closeHump * Math.sin(p * Math.PI)
+      );
+      card.mesh.rotation.set(
+        card.finalTilt.x * ease + Math.sin(p * Math.PI * card.spinX * 2) * rotFactor * 1.1,
+        card.finalTilt.y * ease + card.spinY * Math.PI * 2 * rotFactor,
+        card.finalTilt.z * ease + Math.sin(p * Math.PI * card.spinZ * 2) * rotFactor
+      );
+      var pop = CARD_ORBIT_SCALE * (0.6 + 0.4 * Math.min(1, p / 0.15));
+      card.mesh.scale.set(pop, pop, 1);
+      card.mat.opacity = Math.min(1, p / 0.2);
+      if (p >= 1 && !card.settled) card.settled = true;
+      if (card.settled) {
+        card.mesh.position.x = card.restPos.x + Math.sin(t * 0.5 + card.bobPhase) * 0.05;
+        card.mesh.position.y = card.restPos.y + Math.sin(t * 0.9 + card.bobPhase) * 0.08;
+        card.mesh.rotation.z = card.finalTilt.z + Math.sin(t * 0.6 + card.bobPhase) * 0.03;
+      }
+    }
+
     function tick() {
       _raf = requestAnimationFrame(tick);
       try {
-        var t = (performance.now() - _introStartTime) / 1000; // seconds since the intro appeared
-        var dt = Math.min(0.05, Math.max(0, t - lastT)); lastT = t; // clamped so a slow first frame (asset
-        // decode) or any later stall can't jump the dolly
-        if (sceneStartT === null) sceneStartT = t;
-        var tScene = t - sceneStartT;
+        var t = (performance.now() - _sceneStartTime) / 1000; // seconds since the scene actually started rendering
+        var dt = Math.min(0.05, Math.max(0, t - lastT)); lastT = t;
+        if (!_introPhaseLog.length || _introPhaseLog[_introPhaseLog.length - 1].state !== introState) {
+          _introPhaseLog.push({ state: introState, tMs: Math.round(t * 1000) });
+        }
 
         if (coarsePointer) {
           pointerX = Math.sin(t * 0.3) * 0.4;
@@ -3745,20 +3887,13 @@ async function exportXlsx() {
           pointerX += (pointerTX - pointerX) * 0.04;
           pointerY += (pointerTY - pointerY) * 0.04;
         }
-        if (!_outroActive && t >= WALK_DURATION) kjrIntroBeginOutro(false);
+        if (!_outroActive && t >= PACK_DURATION) kjrIntroBeginOutro(false);
+        if (!packHidden) sweepTex.offset.x = (sweepTex.offset.x + dt * 0.35) % 1; // moving holo sweep while the pack is onscreen
 
         if (_outroActive) {
-          // Position is frozen outright from here on (parallax stops too - the walker
-          // "stops", no pan, no pitch, no zoom) - captured once, the first frame the
-          // outro is active, whichever of the two triggers (natural threshold above, or
-          // a click via kjrIntroSkip/kjrIntroBeginOutro) actually set it.
           if (!outroCaptured) {
             outroCaptured = true;
             if (introIconMesh) {
-              // Solve the icon's world size directly from its fixed depth ahead of the
-              // camera plus the current vertical FOV/aspect, so ICON_TARGET_FRAC (65-75%
-              // of frame width) holds exactly regardless of viewport shape - no separate
-              // aspect-scale correction needed (unlike the old fixed-position lockup).
               var vFov = camera.fov * Math.PI / 180;
               var halfH = ICON_DEPTH * Math.tan(vFov / 2);
               var halfW = halfH * camera.aspect;
@@ -3774,47 +3909,120 @@ async function exportXlsx() {
           var holdDur = _accelerated ? OUTRO_HOLD_ACCEL : OUTRO_HOLD_DURATION;
           var elapsed = t - _outroStart;
 
-          // World empties: field/cast/motes ease to zero opacity, fog tightens around them.
           var fadeK = Math.min(1, elapsed / fadeDur);
           fadeK = fadeK * fadeK * (3 - 2 * fadeK);
           var worldOpacity = 1 - fadeK;
-          if (instMesh) instMesh.material.opacity = worldOpacity;
-          realCards.forEach(function (rc) { rc.mesh.material.opacity = worldOpacity; });
+          if (packGroup.visible) { frontMat.opacity = backMat.opacity = sideMat.opacity = worldOpacity; sweepMat.opacity = 0.35 * worldOpacity; }
+          if (crimpMesh.visible) { crimpMat.opacity = worldOpacity; }
+          cards.forEach(function (c) { c.mat.opacity = worldOpacity; });
+          hitGlowMat.opacity = Math.min(hitGlowMat.opacity, worldOpacity);
+          foilMat.opacity = Math.min(foilMat.opacity, worldOpacity);
           moteMat.opacity = 0.75 * worldOpacity;
-          castMeshes.forEach(function (c) { c.mat.opacity = worldOpacity; c.glowMat.opacity = worldOpacity; });
           scene.fog.near = fogNear0 + (FOG_NEAR_TARGET - fogNear0) * fadeK;
           scene.fog.far = fogFar0 + (FOG_FAR_TARGET - fogFar0) * fadeK;
 
-          // Icon fades in as the world fades out - no camera movement at any point here.
           if (introIconMat) { introIconMat.opacity = fadeK; introIconGlowMat.opacity = fadeK * 0.5; }
 
           var holdK = Math.max(0, Math.min(1, (elapsed - fadeDur) / holdDur));
           if (!_accelerated) introState = holdK > 0 ? 'holding' : 'outro'; // debug/test visibility - accelerated stays 'skipped'
         } else {
-          // Constant slow forward walk through the field - no adaptive pacing needed, the
-          // choreography is fixed beats (walk, then the outro) rather than a distance to cover.
-          camera.position.x = pointerX * 1.1;
-          camera.position.y = -pointerY * 0.7;
-          camera.position.z -= DOLLY_SPEED * dt;
+          if (t < T_ANT_END) {
+            introState = 'anticipation';
+            var bobY = Math.sin(t * 1.3) * 0.08;
+            var tiltX = pointerY * 0.06, tiltY = pointerX * 0.09;
+            var squeezeWindow = kjrClamp01((t - 0.7) / 0.5);
+            var squeeze = squeezeWindow * Math.sin(t * 38) * 0.028;
+            packGroup.position.set(0, bobY, PACK_Z);
+            packGroup.rotation.set(tiltX, tiltY, 0);
+            packBody.scale.set(1 - squeeze, 1 + squeeze * 0.6, 1);
+          } else if (t < T_RIP_END) {
+            introState = 'rip';
+            if (!ripTriggered) {
+              ripTriggered = true;
+              scene.attach(crimpMesh); // detaches from packGroup, preserving its current world transform
+              var tearY = crimpMesh.position.y;
+              kjrIntroFoilBurst(tearY, PACK_Z + packDepth, 1, t);
+            }
+            var ripP = (t - T_ANT_END) / RIP_DURATION;
+            crimpMesh.position.y += 1.6 * dt;
+            crimpMesh.position.z += 1.0 * dt;
+            crimpMesh.rotation.x += 2.2 * dt;
+            crimpMat.opacity = 1 - ripP;
+            packGroup.position.y -= 0.5 * dt;
+            // Pack body itself stays fully visible through the rip (only the crimp strip fades here) -
+            // it keeps tilting/dropping and only fades once enough cards have burst out, below.
+          } else {
+            if (t < T_RIP_END + PACK_BODY_HOLD_UNTIL + PACK_BODY_FADE_TAIL) {
+              // still onscreen: keep tilting and dropping so the cards read as bursting out of the
+              // pack, not appearing from nothing (v3.25 round 2 burst-energy fix)
+              packGroup.position.y -= 0.35 * dt;
+              packGroup.rotation.x += 0.5 * dt;
+              packGroup.rotation.z += 0.25 * dt;
+              var bodyFadeP = kjrClamp01((t - (T_RIP_END + PACK_BODY_HOLD_UNTIL)) / PACK_BODY_FADE_TAIL);
+              frontMat.opacity = backMat.opacity = sideMat.opacity = 1 - bodyFadeP;
+              sweepMat.opacity = 0.35 * (1 - bodyFadeP);
+            } else if (!packHidden) {
+              packHidden = true; packGroup.visible = false; crimpMesh.visible = false;
+            }
+            if (t < T_BURST_END) introState = 'burst'; else introState = 'hit';
 
-          realCards.forEach(function (rc) {
-            rc.mesh.rotation.y += rc.spin * 0.02;
-            rc.mesh.position.y += Math.sin(t * 0.6 + rc.bobPhase) * 0.0006; // faint drift, distinct from the cast's bob
-          });
-          motes.rotation.y = t * 0.01;
+            if (!hitCaptured && t >= T_BURST_END) {
+              hitCaptured = true; hitStartT = t;
+              hitStartPos = hitCard.mesh.position.clone();
+              hitStartRot = hitCard.mesh.rotation.clone();
+              hitStartScale = hitCard.mesh.scale.x;
+            }
+            for (var i = 0; i < cards.length; i++) {
+              var card = cards[i];
+              if (!card.foilBurstDone && t >= card.launchAt) {
+                card.foilBurstDone = true;
+                kjrIntroFoilBurst(card.startPos.y, card.startPos.z, 0.65, t); // a mote puff per launch keeps the burst feeling alive throughout, not just at the rip
+              }
+              if (card.isHit && hitCaptured) {
+                var p2 = kjrClamp01((t - hitStartT) / HIT_EASE_DURATION);
+                var e2 = kjrEaseOutCubic(p2);
+                card.mesh.position.set(
+                  kjrLerp(hitStartPos.x, 0, e2), kjrLerp(hitStartPos.y, 0, e2), kjrLerp(hitStartPos.z, HIT_Z, e2)
+                );
+                card.mesh.rotation.set(
+                  kjrLerp(hitStartRot.x, 0, e2), kjrLerp(hitStartRot.y, 0, e2), kjrLerp(hitStartRot.z, 0, e2)
+                );
+                var hs = kjrLerp(hitStartScale, hitTargetScale, e2);
+                card.mesh.scale.set(hs, hs, 1);
+                card.mat.opacity = 1;
+                hitGlow.position.copy(card.mesh.position);
+                hitGlow.scale.set(hs * 1.9, hs * 1.9 * 1.4, 1);
+                if (p2 >= 1) {
+                  hitGlowMat.opacity = 0.4 + Math.sin((t - hitStartT) * 3) * 0.15;
+                } else {
+                  hitGlowMat.opacity = e2 * 0.5;
+                }
+              } else {
+                kjrUpdateCardFlight(card, t);
+              }
+            }
+          }
+        }
 
-          castMeshes.forEach(function (c) {
-            var bob = Math.sin(t * 1.1 + c.phase) * 0.12;
-            var breathe = 1 + Math.sin(t * 0.8 + c.phase) * 0.03;
-            c.mesh.position.y = c.baseY + bob;
-            c.mesh.scale.set(breathe, breathe, 1);
-            c.glow.position.y = c.baseY + bob;
-            // Quick materialise-in, staggered per member but every one is fully visible
-            // well inside ~1.5s - no fade-out here, that only starts once the outro begins above.
-            var fade = Math.max(0, Math.min(1, (tScene - c.fadeStart) / CAST_FADE_DURATION));
-            c.mat.opacity = fade;
-            c.glowMat.opacity = fade;
-          });
+        // Foil decay/motion, unconditional so it keeps running across rip/burst/hit (previously nested
+        // only inside the rip branch, which silently froze the motes the instant burst began - the
+        // root cause of the "empty, no particles" burst defect). Skipped once the outro's own fade
+        // takes over foilMat.opacity via the min() blend above.
+        if (!_outroActive && foilTriggered) {
+          var foilElapsed = t - foilStartT;
+          if (foilElapsed < FOIL_LIFE) {
+            var fpos = foilGeo.attributes.position.array;
+            for (var pi = 0; pi < foilCount; pi++) {
+              fpos[pi * 3] += foilVel[pi * 3] * dt;
+              fpos[pi * 3 + 1] += foilVel[pi * 3 + 1] * dt;
+              foilVel[pi * 3 + 1] -= 0.8 * dt; // gentle gravity, foil arcs then settles
+              fpos[pi * 3 + 2] += foilVel[pi * 3 + 2] * dt;
+            }
+            foilGeo.attributes.position.needsUpdate = true;
+            foilMat.opacity = 1 - (foilElapsed / FOIL_LIFE);
+          } else {
+            foilMat.opacity = 0;
+          }
         }
 
         renderer.render(scene, camera);
@@ -3827,6 +4035,10 @@ async function exportXlsx() {
       }
     }
     introState = 'scene';
+    _sceneStartTime = performance.now();
+    // Re-anchor the ceiling to the real choreography length now the scene is actually running - a
+    // slow cold-asset fetch that ate into the bootstrap budget no longer costs the natural run its hold.
+    _introTimers.push(setTimeout(function () { _introCeilingHit = true; kjrIntroForceRemove(); }, NATURAL_SEQUENCE_MS + CEILING_MARGIN_MS));
     tick();
   }
 
@@ -3838,7 +4050,7 @@ async function exportXlsx() {
     _outroActive = true;
     _accelerated = accelerated;
     introState = accelerated ? 'skipped' : 'outro';
-    _outroStart = (performance.now() - _introStartTime) / 1000;
+    _outroStart = (performance.now() - _sceneStartTime) / 1000;
     var fadeDur = accelerated ? OUTRO_FADE_ACCEL : OUTRO_FADE_DURATION;
     var holdDur = accelerated ? OUTRO_HOLD_ACCEL : OUTRO_HOLD_DURATION;
     var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
@@ -3853,7 +4065,7 @@ async function exportXlsx() {
     if (_ending || _outroActive) return;
     introState = 'skipped';
     if (_scene && _camera) {
-      kjrIntroBeginOutro(true); // compressed icon fade + brief hold, then a short dissolve tail - no pan, still lands the icon beat
+      kjrIntroBeginOutro(true); // compressed icon fade + brief hold, then a short dissolve tail - no pack physics on this path
     } else {
       kjrIntroDissolve(); // CSS-only phase or asset loading - no scene yet, flat ~260ms fade
     }
@@ -3915,7 +4127,7 @@ async function exportXlsx() {
       var el = document.getElementById('intro');
       if (el && el.parentNode) el.parentNode.removeChild(el);
       _scene = null; _camera = null; _renderer = null;
-      _introRealCards = null; _introIconMesh = null; _introTHREE = null;
+      _introIconMesh = null; _introHitCardMesh = null; _introTHREE = null;
     } finally {
       // Restore toast()/toastError() and replay anything queued during the
       // intro, in order, through the app's real toast mechanism - runs on
@@ -3935,7 +4147,14 @@ async function exportXlsx() {
     introState = 'css';
     window.addEventListener('pointerdown', kjrIntroSkip, { passive: true });
     window.addEventListener('keydown', kjrIntroSkip);
-    _introTimers.push(setTimeout(function () { kjrIntroForceRemove(); }, HARD_CEILING_MS));
+    // Bootstrap deadline: only fires if the scene never starts rendering (kjrIntroBuildScene sets
+    // _sceneStartTime on its first tick and installs the real ceiling itself from there).
+    _introTimers.push(setTimeout(function () {
+      if (_sceneStartTime) return; // scene is already running, the re-anchored ceiling below owns this now
+      _introCeilingHit = true; kjrIntroForceRemove();
+    }, BOOTSTRAP_CEILING_MS));
+    // Unconditional last-resort backstop, independent of the above two - always page-load-anchored.
+    _introTimers.push(setTimeout(function () { _introCeilingHit = true; kjrIntroForceRemove(); }, ABSOLUTE_BACKSTOP_MS));
 
     if (!kjrIntroEnabled()) { introKillSwitch = 'settings-off'; kjrIntroShowWord(); _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { introKillSwitch = 'reduced-motion'; kjrIntroShowWord(); _introTimers.push(setTimeout(kjrIntroDissolve, KILLSWITCH_FADE_MS)); return; }
@@ -3943,7 +4162,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.24');
+      THREE = await import('./Assets/lib/three.module.js?v=3.25');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

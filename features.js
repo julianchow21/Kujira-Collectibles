@@ -3342,7 +3342,7 @@ async function exportXlsx() {
 
   // ── Settings toggle (index.html onclick="kjrToggleIntroSetting()") ──
   function kjrIntroEnabled() {
-    try { return localStorage.getItem(INTRO_KEY) !== 'false'; } catch (e) { return true; }
+    try { return localStorage.getItem(INTRO_KEY) === 'true'; } catch (e) { return false; }
   }
   function kjrApplyIntroToggleIcon(enabled) {
     var on = document.getElementById('intro-icon-on');
@@ -4286,7 +4286,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.30');
+      THREE = await import('./Assets/lib/three.module.js?v=3.31');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

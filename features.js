@@ -3139,12 +3139,15 @@ async function exportXlsx() {
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting (the
    whale icon fades in for this path only) for about 1.2s then dissolves.
-   Hard ceiling (redesigned v3.25 round 2): a 5s bootstrap deadline force-removes
-   a hung load before the scene even starts (import stall, stuck asset fetch);
-   once the scene is actually running the ceiling re-anchors to the real
-   sequence length plus a margin, so a normal cold-asset run never gets cut
-   off mid-hold, with an absolute 12s page-load backstop regardless. Pointer movement only
-   ever tilts the pack during the anticipation beat, never touches pacing.
+   Hard ceiling (redesigned v3.28): a 5s bootstrap deadline force-removes a hung
+   load before the scene even starts (import stall, stuck asset fetch); once
+   the scene is running a rolling per-phase watchdog takes over, re-armed at
+   every phase transition with a fresh budget sized off that phase's own
+   nominal duration, so real-device jank during the choreography never costs
+   a healthy, still-progressing run its natural hold - only a genuinely stuck
+   phase gets force-removed - with an absolute 18s page-load backstop
+   regardless. Pointer movement only ever tilts the pack during the
+   anticipation beat, never touches pacing.
    Only a click/tap/keydown ends the intro early, compressing straight to
    the icon fade-in (no pack physics on the skip path) plus a brief hold and
    a short dissolve tail. During the CSS-only phase or asset loading (no
@@ -3203,9 +3206,18 @@ async function exportXlsx() {
   // the scene could even render its first frame, so the choreography's own 5.2s+outro length left no
   // room and the icon hold got truncated with an abrupt cut. Two independent, purpose-built timers now:
   var BOOTSTRAP_CEILING_MS = 5000;  // page-load-anchored: force-remove only if the scene never starts (hung load, import stall)
-  var CEILING_MARGIN_MS = 1200;     // slack added once the scene IS running, over its real natural length
-  var ABSOLUTE_BACKSTOP_MS = 12000; // page-load-anchored, unconditional - last resort if the re-anchor above ever misbehaves
-  var NATURAL_SEQUENCE_MS = (PACK_DURATION + OUTRO_FADE_DURATION + OUTRO_HOLD_DURATION) * 1000 + DISSOLVE_MS; // scene-start to natural teardown
+  // Watchdog redesign (v3.28): the round-2 fix above still armed a SINGLE fixed deadline once, the
+  // instant the scene started (NATURAL_SEQUENCE_MS + a flat 1200ms margin). That margin had to absorb
+  // ALL main-thread jank for the rest of the run in one static budget - a real device caught truncating
+  // a healthy, still-progressing run (ceilingHit:true, state:"done" quality, just slow) because a busy
+  // stretch after scene-start ate into it. Replaced with a rolling per-phase watchdog (see
+  // kjrIntroArmWatchdog below), re-armed fresh at every phase transition, so only a genuinely STUCK
+  // phase (nothing re-arms it) ever gets force-removed.
+  var ABSOLUTE_BACKSTOP_MS = 18000; // page-load-anchored, unconditional, last resort. Bootstrap worst-case
+  // (5000) + the full natural sequence (~7.6s: PACK_DURATION 5.2s + outro fade/hold 2.1s + dissolve) +
+  // one phase's worst-case rolling-watchdog slack (~4.4s, the burst phase's own allowance, the largest)
+  // comfortably fits inside 18s with headroom to spare, while still being a real backstop rather than
+  // a budget an adversarial worst-case pile-up could plausibly exhaust.
 
   // Rest positions for the five non-hit cards, as FRACTIONS of the frame's
   // half-width/half-height at that card's own depth (never raw world units)
@@ -3242,6 +3254,8 @@ async function exportXlsx() {
   var _introIconMesh = null, _introTHREE = null; // exposed to __introDebug.iconFit
   var _introHitCardMesh = null; // exposed to __introDebug.hitFit
   var _introPhaseLog = []; // {state, tMs} per phase transition, scene-relative - QA proof of the actual choreography timing
+  var _watchdogTimerId = null;    // the one live rolling watchdog timer, cleared and re-armed at each phase transition
+  var _introWatchdogArmCount = 0; // debug proof the watchdog is actually re-arming through a run, not just armed once
   var _introStartTime = 0; // performance.now() at kjrIntroMain start - HARD_CEILING and debug info only
   var _sceneStartTime = 0; // performance.now() at the first tick() call - the choreography (anticipation/
   // rip/burst/hit/outro) is measured from HERE, not from page load, or the asset fetch (up to
@@ -3318,6 +3332,7 @@ async function exportXlsx() {
         drawnPrices: _introDrawnPrices.slice(),
         phaseLog: _introPhaseLog.slice(),
         ceilingHit: _introCeilingHit,
+        watchdogArmCount: _introWatchdogArmCount,
         sceneStartTime: _sceneStartTime || null,
         outro: _outroActive,
         accelerated: _accelerated,
@@ -3652,6 +3667,24 @@ async function exportXlsx() {
   function kjrLerp(a, b, k) { return a + (b - a) * k; }
   function kjrClamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 
+  // ── Rolling per-phase watchdog (v3.28). One reusable helper, called at every phase-transition
+  // point (entering rip, entering burst, entering hit, beginning the outro, entering the outro hold,
+  // starting the dissolve). Each call clears whatever was previously armed and arms a fresh deadline
+  // sized off THAT phase's own nominal duration - so a run that is merely slow always has full slack
+  // ahead of it at every step, while a phase that never transitions (nothing re-arms it) still gets
+  // caught. Fires the exact same kjrIntroForceRemove teardown path as the old fixed ceiling. ──
+  var WATCHDOG_FLOOR_MS = 3500;   // even the shortest phase gets at least this much real slack
+  var WATCHDOG_MULTIPLIER = 2;    // otherwise at least double the phase's own designed duration
+  function kjrPhaseWatchdogMs(phaseSeconds) {
+    return Math.max(WATCHDOG_FLOOR_MS, phaseSeconds * 1000 * WATCHDOG_MULTIPLIER);
+  }
+  function kjrIntroArmWatchdog(ms) {
+    if (_watchdogTimerId) clearTimeout(_watchdogTimerId);
+    _watchdogTimerId = setTimeout(function () { _introCeilingHit = true; kjrIntroForceRemove(); }, ms);
+    _introTimers.push(_watchdogTimerId);
+    _introWatchdogArmCount++;
+  }
+
   // ── Scene build + animate + icon outro. Throws bubble to kjrIntroMain's catch. ──
   async function kjrIntroBuildScene(THREE, stageEl) {
     _introTHREE = THREE; // for __introDebug.iconFit's on-screen projection
@@ -3820,7 +3853,8 @@ async function exportXlsx() {
     var canvasFadedIn = false;
     var fogNear0 = scene.fog.near, fogFar0 = scene.fog.far;
     var outroCaptured = false;
-    var ripTriggered = false, packHidden = false;
+    var holdEntered = false;
+    var ripTriggered = false, packHidden = false, burstEntered = false;
     var hitCaptured = false, hitStartT = 0;
     var hitStartPos = null, hitStartRot = null, hitStartScale = 1;
 
@@ -3924,6 +3958,7 @@ async function exportXlsx() {
           if (introIconMat) { introIconMat.opacity = fadeK; introIconGlowMat.opacity = fadeK * 0.5; }
 
           var holdK = Math.max(0, Math.min(1, (elapsed - fadeDur) / holdDur));
+          if (holdK > 0 && !holdEntered) { holdEntered = true; kjrIntroArmWatchdog(kjrPhaseWatchdogMs(holdDur)); } // entering outro hold
           if (!_accelerated) introState = holdK > 0 ? 'holding' : 'outro'; // debug/test visibility - accelerated stays 'skipped'
         } else {
           if (t < T_ANT_END) {
@@ -3939,6 +3974,7 @@ async function exportXlsx() {
             introState = 'rip';
             if (!ripTriggered) {
               ripTriggered = true;
+              kjrIntroArmWatchdog(kjrPhaseWatchdogMs(RIP_DURATION)); // entering rip
               scene.attach(crimpMesh); // detaches from packGroup, preserving its current world transform
               var tearY = crimpMesh.position.y;
               kjrIntroFoilBurst(tearY, PACK_Z + packDepth, 1, t);
@@ -3952,6 +3988,7 @@ async function exportXlsx() {
             // Pack body itself stays fully visible through the rip (only the crimp strip fades here) -
             // it keeps tilting/dropping and only fades once enough cards have burst out, below.
           } else {
+            if (!burstEntered) { burstEntered = true; kjrIntroArmWatchdog(kjrPhaseWatchdogMs(BURST_DURATION)); } // entering burst
             if (t < T_RIP_END + PACK_BODY_HOLD_UNTIL + PACK_BODY_FADE_TAIL) {
               // still onscreen: keep tilting and dropping so the cards read as bursting out of the
               // pack, not appearing from nothing (v3.25 round 2 burst-energy fix)
@@ -3968,6 +4005,7 @@ async function exportXlsx() {
 
             if (!hitCaptured && t >= T_BURST_END) {
               hitCaptured = true; hitStartT = t;
+              kjrIntroArmWatchdog(kjrPhaseWatchdogMs(HIT_HOLD_DURATION)); // entering hit
               hitStartPos = hitCard.mesh.position.clone();
               hitStartRot = hitCard.mesh.rotation.clone();
               hitStartScale = hitCard.mesh.scale.x;
@@ -4036,9 +4074,9 @@ async function exportXlsx() {
     }
     introState = 'scene';
     _sceneStartTime = performance.now();
-    // Re-anchor the ceiling to the real choreography length now the scene is actually running - a
-    // slow cold-asset fetch that ate into the bootstrap budget no longer costs the natural run its hold.
-    _introTimers.push(setTimeout(function () { _introCeilingHit = true; kjrIntroForceRemove(); }, NATURAL_SEQUENCE_MS + CEILING_MARGIN_MS));
+    // Rolling watchdog takes over from here (v3.28) - armed fresh for the anticipation beat now,
+    // then re-armed at every subsequent phase transition inside tick() (see kjrIntroArmWatchdog).
+    kjrIntroArmWatchdog(kjrPhaseWatchdogMs(ANTICIPATION_DURATION));
     tick();
   }
 
@@ -4054,6 +4092,7 @@ async function exportXlsx() {
     var fadeDur = accelerated ? OUTRO_FADE_ACCEL : OUTRO_FADE_DURATION;
     var holdDur = accelerated ? OUTRO_HOLD_ACCEL : OUTRO_HOLD_DURATION;
     var tailMs = accelerated ? ACCEL_DISSOLVE_MS : DISSOLVE_MS;
+    kjrIntroArmWatchdog(kjrPhaseWatchdogMs(fadeDur)); // entering the outro fade
     _introTimers.push(setTimeout(function () { kjrIntroDissolve(tailMs); }, (fadeDur + holdDur) * 1000));
   }
 
@@ -4074,6 +4113,7 @@ async function exportXlsx() {
   function kjrIntroDissolve(ms) {
     if (_ending) return;
     _ending = true;
+    kjrIntroArmWatchdog(kjrPhaseWatchdogMs((ms || DISSOLVE_MS) / 1000)); // starting the dissolve - safety net only, teardown below is synchronous
     var el = document.getElementById('intro');
     if (el) el.classList.add('kjr-intro-out');
     _introTimers.push(setTimeout(kjrIntroTeardown, ms || DISSOLVE_MS));
@@ -4162,7 +4202,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.27');
+      THREE = await import('./Assets/lib/three.module.js?v=3.28');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

@@ -3139,16 +3139,31 @@ async function exportXlsx() {
    Kill-switch order: settings toggle off, prefers-reduced-motion, no WebGL,
    three.js import failure. A kill-switched run shows the CSS greeting (the
    whale icon fades in for this path only) for about 1.2s then dissolves.
-   Hard ceiling (redesigned v3.29): a 5s bootstrap deadline force-removes a hung
-   load before the scene even starts (import stall, stuck asset fetch); once
-   the scene is running a per-frame heartbeat watchdog takes over, re-armed at
-   the top of every rendered frame with one fixed 3s allowance, so as long as
-   the WebGL loop is genuinely still producing frames - any pace, even very
-   slow under real main-thread contention (concurrent sync/pricing/table work
-   sharing the thread) - it is never killed; only a run with NO rendered frame
-   for the whole window is truly stuck. An absolute 31s page-load backstop
-   still applies regardless. Pointer movement only ever tilts the pack during
-   the anticipation beat, never touches pacing.
+   First paint is decoupled from the network (redesigned v3.30): the six card
+   picks are chosen SYNCHRONOUSLY from the local draw pool (ids, prices, the hit
+   slot - all known without a fetch), the scene renders its first frame with all
+   six cards showing the procedural holo back, and the real card art is fetched
+   in the background AFTER rendering has started. Each card cross-fades from its
+   holo-back placeholder to its real texture the instant that card's OWN fetch
+   resolves, whenever that happens relative to the choreography (before, during,
+   or after its reveal beat). A card whose fetch never resolves (slow network,
+   TCGdex down) simply keeps its holo back for the whole run - it never blocks
+   the scene from existing. The only hard prerequisite for first paint is the
+   three.js import itself (you cannot render WebGL without the library) plus the
+   whale mark, which is same-origin and SW-precached (a bounded local load, not
+   external API latency). Uncontrolled TCGdex latency can no longer delay first
+   paint or block the app, which was the whole v3.28/v3.29 failure class.
+   Hard ceiling (v3.30): a 5s bootstrap deadline force-removes a hung load before
+   the scene even starts - now covering ONLY the local three.js import plus the
+   synchronous scene build plus the precached whale, no external fetch, so it is
+   comfortably slack. Once the scene is running a per-frame heartbeat watchdog
+   takes over (unchanged from v3.29), re-armed at the top of every rendered frame
+   with one fixed 3s allowance, so as long as the WebGL loop is genuinely still
+   producing frames - any pace, even very slow under real main-thread contention
+   (concurrent sync/pricing/table work sharing the thread) - it is never killed;
+   only a run with NO rendered frame for the whole window is truly stuck. An
+   absolute 31s page-load backstop still applies regardless. Pointer movement
+   only ever tilts the pack during the anticipation beat, never touches pacing.
    Only a click/tap/keydown ends the intro early, compressing straight to
    the icon fade-in (no pack physics on the skip path) plus a brief hold and
    a short dissolve tail. During the CSS-only phase or asset loading (no
@@ -3159,7 +3174,6 @@ async function exportXlsx() {
 (function () {
   var INTRO_KEY = 'kujira_intro_enabled';
   var CARD_DRAW_COUNT = 6;
-  var DRAW_ATTEMPT_CAP = 12;      // random slice of the shuffled pool actually fetched, buffer over the six needed
   var ANTICIPATION_DURATION = 1.2; // pack floats, bobs, tilts, then squeezes as if gripped
   var RIP_DURATION = 0.8;          // crimp strip tears away, foil burst, pack body drops/fades
   var BURST_DURATION = 2.2;        // six cards launch, staggered ~0.35s apart, tumble and settle
@@ -3176,6 +3190,7 @@ async function exportXlsx() {
   var PACK_BODY_HOLD_UNTIL = 4 * CARD_STAGGER; // seconds after T_RIP_END
   var PACK_BODY_FADE_TAIL = 0.4;
   var CARD_FLIGHT_DURATION = 1.05;
+  var REVEAL_FADE = 0.45;          // seconds to cross-fade a card's real texture in over its holo-back placeholder once its own background fetch resolves
   var HIT_EASE_DURATION = 0.4;     // of the HIT_HOLD_DURATION budget, the rest is pure hold+pulse
   var FOIL_LIFE = 0.6;
   var OUTRO_FADE_DURATION = 1.2;   // natural: everything eases to nothing as the icon fades in
@@ -3202,11 +3217,16 @@ async function exportXlsx() {
   var ACCEL_DISSOLVE_MS = 150;    // tail after an accelerated (click-triggered) outro - nominal sum with the two
   // constants above is 500ms, tuned down from v3.24's 750ms total so real setTimeout/rAF scheduling overhead
   // (observed ~100-140ms across two chained timers in QA) still lands the whole skip inside the spec's 500-650ms.
-  // Ceiling redesign (v3.25 round 2): the old single 9s page-load-anchored ceiling fired on EVERY
-  // natural run, because a cold asset fetch (~2.2s round trip) alone ate well into that budget before
-  // the scene could even render its first frame, so the choreography's own 5.2s+outro length left no
-  // room and the icon hold got truncated with an abrupt cut. Two independent, purpose-built timers now:
-  var BOOTSTRAP_CEILING_MS = 5000;  // page-load-anchored: force-remove only if the scene never starts (hung load, import stall)
+  // Ceiling scope (v3.30): with the card fetches removed from the pre-first-paint path (they now run in
+  // the background and each card cross-fades in on its own resolve - see kjrIntroDrawSlots / the reveal
+  // pass in tick), the bootstrap deadline no longer has to budget for any external TCGdex round trip. It
+  // now covers ONLY the local three.js dynamic import, the synchronous scene build, and the same-origin
+  // SW-precached whale load - all bounded, none network-external - so 5000ms is comfortably slack rather
+  // than the tight race it was when a cold ~2.2s asset fetch (times up to twelve, in parallel but still
+  // sharing the connection) sat inside this same window. Kept at 5000 deliberately: dropping it lower
+  // would only risk killing a legitimately slow FIRST-visit import of the ~600KB vendored three.module.js
+  // on a cold cache over slow mobile, for no gain now that uncontrolled API latency is out of this gate.
+  var BOOTSTRAP_CEILING_MS = 5000;  // page-load-anchored: force-remove only if the scene never starts (hung import, dead build)
   // Watchdog redesign (v3.29): v3.28's rolling PER-PHASE watchdog (a fresh deadline sized off each
   // phase's own nominal duration, re-armed only at phase transitions) still assumed contention was
   // bounded within a single phase's floor. A real live-site run (~750 rows, concurrent Supabase sync,
@@ -3221,15 +3241,16 @@ async function exportXlsx() {
   // single main-thread stall (contention shows up as a "few hundred ms" synchronous block between
   // frames, per the real failure this fixes) so a merely-slow run always gets re-armed well before this
   // fires, while still catching a genuinely dead rAF loop within a few seconds rather than tens of them.
-  var ABSOLUTE_BACKSTOP_MS = 31000; // page-load-anchored, unconditional, last resort. Bootstrap worst-case
-  // (5000) + a REALISTIC natural-sequence duration under SUSTAINED heavy real-device contention (23000:
-  // the ~7.6s ideal-conditions choreography - PACK_DURATION 5.2s + outro fade/hold 2.1s + dissolve -
-  // tripled, a generous multiplier grounded in the real v3.28 failure where a single 1.2s phase alone
-  // absorbed 3.5s+ of zero-frame stall under genuine contention; tripling the WHOLE sequence assumes
-  // that same pressure persists throughout the run, not just once) + one heartbeat window's grace (3000)
-  // so a run still rendering right up to this deadline gets one final full heartbeat window before being
-  // cut off. Deliberately generous: this must never be the thing that fires under normal heavy load,
-  // only a true last-resort net for an adversarial pile-up.
+  var ABSOLUTE_BACKSTOP_MS = 31000; // page-load-anchored, unconditional, last resort. Re-derived v3.30 and
+  // deliberately LEFT generous: the per-frame heartbeat is the real guard against main-thread contention
+  // now, not this backstop, and the whole escalation was about contention truncating a healthy run - so
+  // tightening this would re-introduce exactly the truncation risk we are trying to kill, for no benefit.
+  // Bootstrap worst-case (5000, now a bounded local-only gate) + a natural-sequence duration under
+  // SUSTAINED heavy real-device contention (23000: the ~7.6s ideal-conditions choreography - PACK_DURATION
+  // 5.2s + outro fade/hold 2.1s + dissolve - tripled, grounded in the real v3.28 failure where a single
+  // 1.2s phase alone absorbed 3.5s+ of zero-frame stall under genuine contention) + one heartbeat window's
+  // grace (3000). This must never be the thing that fires under normal heavy load, only a true last-resort
+  // net for an adversarial pile-up or a broken rAF clock.
 
   // Rest positions for the five non-hit cards, as FRACTIONS of the frame's
   // half-width/half-height at that card's own depth (never raw world units)
@@ -3258,7 +3279,8 @@ async function exportXlsx() {
   var _outroActive = false;
   var _accelerated = false;
   var _outroStart = 0;
-  var _introRealCardCount = 0;   // of the six drawn, how many are real scans (not procedural padding)
+  var _introRealCardCount = 0;   // of the six drawn, how many are real cards (a fetch will be attempted), vs procedural padding
+  var _introResolvedCardCount = 0; // of the real cards, how many have had their texture fetch resolve and cross-fade in (climbs over the run - progressive-upgrade proof)
   var _introFeaturedCardCount = 0; // of the above, how many came from the fixed FEATURED_CARDS showcase
   var _introDrawnIds = [];       // the six drawn card ids, launch order, last = the hit - randomisation proof
   var _introDrawnPrices = [];    // parallel prices - QA proof the last slot is always the max of the six
@@ -3272,10 +3294,10 @@ async function exportXlsx() {
   // rare extras) - large numbers (dozens to hundreds) are healthy proof the loop kept ticking, not a bug
   var _introStartTime = 0; // performance.now() at kjrIntroMain start - HARD_CEILING and debug info only
   var _sceneStartTime = 0; // performance.now() at the first tick() call - the choreography (anticipation/
-  // rip/burst/hit/outro) is measured from HERE, not from page load, or the asset fetch (up to
-  // DRAW_ATTEMPT_CAP tcgdex round trips) would silently eat into the anticipation/rip beats before the
-  // first frame even renders, skipping straight to burst on a slow connection - a real bug caught in
-  // v3.25 QA (verify-v325's first run landed mid-burst on the "anticipation" screenshot).
+  // rip/burst/hit/outro) is measured from HERE, not from page load. Since v3.30 no card fetch is awaited
+  // before the first frame (they stream in the background), so this now lands close to page load, but the
+  // scene-relative anchor is still correct: it is the moment the first frame actually rendered, whatever the
+  // local import/build cost was, so a slow three.js import can never shift the choreography's own timeline.
   var _kjrToastQueue = [];       // queued [msg, dur, isError] while the intro owns the top layer
   var _kjrOrigToast = null;      // the real app.js toast(), captured while intercepted
   var _kjrToastIntercepted = false;
@@ -3351,6 +3373,7 @@ async function exportXlsx() {
         outro: _outroActive,
         accelerated: _accelerated,
         realCards: _introRealCardCount,
+        resolvedCards: _introResolvedCardCount,
         featuredCards: _introFeaturedCardCount,
         introStartTime: _introStartTime || null,
         cameraZ: _camera ? _camera.position.z : null,
@@ -3462,7 +3485,34 @@ async function exportXlsx() {
     }
     return arr;
   }
-  async function kjrIntroFetchCardEntry(THREE, entry) {
+  // Draw the six slots SYNCHRONOUSLY - no network (v3.30). The pool entries already carry everything the
+  // choreography needs to start: id, price, featured flag. The hit (most valuable, launches last) is
+  // decided here from those local prices, so it is fixed the instant the scene builds and never depends on
+  // whether any art fetch wins its race - a card whose fetch is slow or fails just shows its holo back. The
+  // Fisher-Yates shuffle over the union pool then taking the first six is what keeps every reload different.
+  function kjrIntroDrawSlots() {
+    var pool = kjrShuffle(kjrIntroBuildDrawPool());
+    var slots = pool.slice(0, CARD_DRAW_COUNT).map(function (entry) {
+      return { id: entry.id, price: entry.price, featured: entry.source === 'featured', procedural: false, entry: entry };
+    });
+    var procCounter = 0;
+    while (slots.length < CARD_DRAW_COUNT) {
+      slots.push({ id: 'proc-' + (procCounter++), price: -Infinity, featured: false, procedural: true, entry: null });
+    }
+    var hitIdx = 0;
+    for (var k = 1; k < slots.length; k++) if (slots[k].price > slots[hitIdx].price) hitIdx = k;
+    var hit = slots.splice(hitIdx, 1)[0];
+    slots.push(hit); // the most valuable of the six always launches last (the hit beat)
+    return slots;
+  }
+  // Fetch a single slot's real card texture in the BACKGROUND, after the scene is already rendering. Runs
+  // once per real slot, fully independent of the others - it resolves to a texture (which tick() then
+  // cross-fades in over that card's holo back) or to null (the card keeps its holo back for the whole run).
+  // No round trip here can ever gate first paint or block the app: the scene already exists before this
+  // is even called.
+  async function kjrIntroFetchSlotTexture(THREE, slot) {
+    var entry = slot.entry;
+    if (!entry) return null;
     var lang = entry.source === 'db' && typeof _tcgdexLang === 'function' ? _tcgdexLang(entry.rec.language) : 'en';
     var res = await fetch('https://api.tcgdex.net/v2/' + encodeURIComponent(lang) + '/cards/' + encodeURIComponent(entry.id));
     if (!res.ok) return null;
@@ -3470,25 +3520,7 @@ async function exportXlsx() {
     if (!data || !data.image) return null;
     var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
     var tex = await kjrIntroLoadTexture(THREE, objUrl);
-    if (!tex) return null;
-    return { id: entry.id, texture: tex, price: entry.price, featured: entry.source === 'featured', procedural: false };
-  }
-  async function kjrIntroDrawCards(THREE) {
-    var pool = kjrShuffle(kjrIntroBuildDrawPool());
-    var attemptPool = pool.slice(0, Math.min(pool.length, DRAW_ATTEMPT_CAP));
-    var results = await Promise.all(attemptPool.map(function (entry) {
-      return kjrIntroFetchCardEntry(THREE, entry).catch(function () { return null; });
-    }));
-    var drawn = results.filter(Boolean).slice(0, CARD_DRAW_COUNT);
-    var procCounter = 0;
-    while (drawn.length < CARD_DRAW_COUNT) {
-      drawn.push({ id: 'proc-' + (procCounter++), texture: null, price: -Infinity, featured: false, procedural: true });
-    }
-    var hitIdx = 0;
-    for (var k = 1; k < drawn.length; k++) if (drawn[k].price > drawn[hitIdx].price) hitIdx = k;
-    var hit = drawn.splice(hitIdx, 1)[0];
-    drawn.push(hit); // the most valuable of the six always launches last (the hit beat)
-    return drawn;
+    return tex || null;
   }
 
   // ── Brand asset: whale mark alone (same-origin, already SW-precached, no
@@ -3700,19 +3732,20 @@ async function exportXlsx() {
     _introTHREE = THREE; // for __introDebug.iconFit's on-screen projection
     var coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
-    var pair = await Promise.all([
-      kjrIntroDrawCards(THREE).catch(function () { return []; }),
-      kjrIntroBuildBrand(THREE).catch(function () { return null; })
-    ]);
-    var drawnCards = pair[0], whaleTex = pair[1];
-    // Guard: a scene-build error upstream could return fewer than six - pad procedural rather than crash.
-    while (drawnCards.length < CARD_DRAW_COUNT) drawnCards.push({ id: 'proc-fallback-' + drawnCards.length, texture: null, price: -Infinity, featured: false, procedural: true });
-    _introDrawnIds = drawnCards.map(function (d) { return d.id; });
-    _introDrawnPrices = drawnCards.map(function (d) { return d.price; }); // QA proof the hit (last slot) is always the max
-    _introRealCardCount = drawnCards.filter(function (d) { return !d.procedural; }).length;
-    _introFeaturedCardCount = drawnCards.filter(function (d) { return d.featured; }).length;
+    // Card picks are synchronous and local (v3.30) - no fetch, so the scene can build and paint its first
+    // frame immediately. Only the whale mark is awaited, and it is same-origin + SW-precached (a bounded
+    // local load, not external API latency). The six real card textures are fetched in the background below.
+    var drawnSlots = kjrIntroDrawSlots();
+    // Guard: a pool smaller than six pads procedural rather than crash (never happens with 10 featured, kept for safety).
+    while (drawnSlots.length < CARD_DRAW_COUNT) drawnSlots.push({ id: 'proc-fallback-' + drawnSlots.length, price: -Infinity, featured: false, procedural: true, entry: null });
+    _introDrawnIds = drawnSlots.map(function (d) { return d.id; });
+    _introDrawnPrices = drawnSlots.map(function (d) { return d.price; }); // QA proof the hit (last slot) is always the max
+    _introRealCardCount = drawnSlots.filter(function (d) { return !d.procedural; }).length;
+    _introFeaturedCardCount = drawnSlots.filter(function (d) { return d.featured; }).length;
 
-    if (_ending) return; // user skipped while assets were loading - do not build anything else
+    var whaleTex = await kjrIntroBuildBrand(THREE).catch(function () { return null; });
+
+    if (_ending) return; // user skipped while the whale was loading - do not build anything else
 
     var scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x12101F, 5, 16);
@@ -3816,14 +3849,25 @@ async function exportXlsx() {
     var glowTex = kjrIntroGlowTexture(THREE);
     var cards = [];
     for (var ci = 0; ci < CARD_DRAW_COUNT; ci++) {
-      var d = drawnCards[ci];
-      var tex = d.texture || cardBackTex;
-      var mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, side: THREE.FrontSide, depthWrite: false, fog: true });
+      var slot = drawnSlots[ci];
+      // Base layer is ALWAYS the procedural holo back - what the card shows before, or forever without, its
+      // real art. Its real front is a separate overlay child (below), cross-faded in only once this card's
+      // own background fetch resolves.
+      var mat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, opacity: 0, side: THREE.FrontSide, depthWrite: false, fog: true });
       var mesh = new THREE.Mesh(cardGeo, mat);
       scene.add(mesh);
+      // Real-texture overlay: same plane a hair in front, child of the base so it inherits every flight /
+      // settle / hit / outro transform for free. Hidden until this card's fetch lands (see reveal pass in tick).
+      var frontMat = new THREE.MeshBasicMaterial({ map: cardBackTex, transparent: true, opacity: 0, side: THREE.FrontSide, depthWrite: false, fog: true });
+      var frontMesh = new THREE.Mesh(cardGeo, frontMat);
+      frontMesh.position.z = 0.002;
+      frontMesh.visible = false;
+      mesh.add(frontMesh);
       var rf = REST_FRACS[ci];
       cards.push({
-        mesh: mesh, mat: mat, isHit: ci === CARD_DRAW_COUNT - 1,
+        mesh: mesh, mat: mat, slot: slot,
+        frontMesh: frontMesh, frontMat: frontMat, realReady: false, revealP: 0,
+        isHit: ci === CARD_DRAW_COUNT - 1,
         launchAt: T_RIP_END + ci * CARD_STAGGER,
         startPos: { x: (ci - 2.5) * 0.15, y: packHeight * 0.32, z: PACK_Z + packDepth * 0.6 },
         restPos: { x: rf.xf * kjrWorldHalfH(rf.z) * camera.aspect, y: rf.yf * kjrWorldHalfH(rf.z), z: rf.z },
@@ -4072,6 +4116,16 @@ async function exportXlsx() {
           }
         }
 
+        // Progressive real-texture reveal (v3.30): each overlay tracks its own card's base opacity, so the
+        // cross-fade respects that card's flight fade-in and the outro fade-out, and eases in over REVEAL_FADE
+        // from the moment its background fetch resolved - whenever in the choreography that happens to land.
+        for (var rvi = 0; rvi < cards.length; rvi++) {
+          var rvc = cards[rvi];
+          if (!rvc.frontMesh.visible) continue;
+          if (rvc.realReady && rvc.revealP < 1) rvc.revealP = kjrClamp01(rvc.revealP + dt / REVEAL_FADE);
+          rvc.frontMat.opacity = rvc.mat.opacity * rvc.revealP;
+        }
+
         renderer.render(scene, camera);
         if (!canvasFadedIn) {
           canvasFadedIn = true;
@@ -4081,6 +4135,23 @@ async function exportXlsx() {
         kjrIntroForceRemove(e);
       }
     }
+    // Kick off the six real-card fetches in the BACKGROUND, now that the scene is fully built and about to
+    // render (v3.30). Each resolves independently; the winning texture is stashed on its card and the reveal
+    // pass in tick() cross-fades it in over the holo back. A fetch that fails or never returns just leaves the
+    // holo back in place. This runs AFTER the whole scene exists, so no round trip here can delay first paint.
+    cards.forEach(function (card) {
+      if (!card.slot || card.slot.procedural) return;
+      kjrIntroFetchSlotTexture(THREE, card.slot).then(function (tex) {
+        if (!tex) return;
+        if (_removed) { try { tex.dispose(); } catch (e) {} return; } // resolved after teardown - dispose the orphan, do not touch a torn-down scene
+        card.frontMat.map = tex;
+        card.frontMat.needsUpdate = true;
+        card.frontMesh.visible = true;
+        card.realReady = true; // tick() eases revealP 0 -> 1 from here
+        _introResolvedCardCount++;
+      }).catch(function () { /* card keeps its holo back for the rest of the run */ });
+    });
+
     introState = 'scene';
     _sceneStartTime = performance.now();
     // Per-frame heartbeat takes over from here (v3.29) - one initial arm now covers the scene-build-to
@@ -4215,7 +4286,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.29');
+      THREE = await import('./Assets/lib/three.module.js?v=3.30');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

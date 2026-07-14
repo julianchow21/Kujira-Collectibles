@@ -4162,7 +4162,7 @@ async function exportXlsx() {
 
     var THREE;
     try {
-      THREE = await import('./Assets/lib/three.module.js?v=3.26');
+      THREE = await import('./Assets/lib/three.module.js?v=3.27');
     } catch (e) {
       introKillSwitch = 'import-failed';
       kjrIntroShowWord();

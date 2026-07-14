@@ -3979,6 +3979,9 @@ document.addEventListener('keydown', e => {
 // =========== NAVIGATION ===========
 let _kjrCurrentPage = null; // tracks the active tab so we only scroll-reset on an actual switch, never on a same-page re-render
 function showPage(name) {
+  // Leaving Singles for any other tab drops the session-only unresolved
+  // filter, so it can never sit silently active after a tab change.
+  if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn, .btb-item, .nav-dd-item').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.nav-dd').forEach(d => d.classList.remove('contains-active'));
@@ -4524,6 +4527,26 @@ function _renderUnresolvedBanner() {
   el.classList.add('show');
 }
 
+// Session-only Singles filter driven by clicking the unresolved banner text.
+// Deliberately NOT persisted (not localStorage/DB backed) - a plain module
+// var that resets on reload and is explicitly cleared by showPage whenever
+// the user navigates to any tab other than Singles, so it can never linger
+// silently active after a tab change. Reuses _kjrUnresolvedSingles() itself
+// for the row set, no separate copy of the resolution rule.
+let _kjrSinglesUnresolvedOnly = false;
+function _kjrShowUnresolvedOnly() {
+  _kjrSinglesUnresolvedOnly = true;
+  showPage('inventory'); // showPage('inventory') renders the Singles grid
+}
+function _kjrClearUnresolvedFilter() {
+  _kjrSinglesUnresolvedOnly = false;
+  renderSingles();
+}
+function _updateUnresolvedFilterChip() {
+  const chip = document.getElementById('singles-unresolved-filter-chip');
+  if (chip) chip.style.display = _kjrSinglesUnresolvedOnly ? '' : 'none';
+}
+
 function renderSingles() {
   _renderUnresolvedBanner();
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
@@ -4542,7 +4565,14 @@ function renderSingles() {
 
   const statusFilter = (document.getElementById('singles-status-filter')?.value) || 'available';
 
+  // Unresolved-only mode (banner click) - restricts to exactly the rows
+  // _kjrUnresolvedSingles() flags, computed once here rather than per row.
+  const unresolvedIds = (_kjrSinglesUnresolvedOnly && typeof _kjrUnresolvedSingles === 'function')
+    ? new Set(_kjrUnresolvedSingles().map(i => i.id))
+    : null;
+
   const passesFilters = i => {
+    if (unresolvedIds && !unresolvedIds.has(i.id)) return false;
     if (lang && i.language !== lang) return false;
     if (type && i.type !== type) return false;
     // Universal search: text fields + numeric ranges + "raw", "near mint",
@@ -4693,6 +4723,7 @@ function renderSingles() {
   attachHeaderDrag('singles');
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
   updateClearFiltersBtn('singles');
+  _updateUnresolvedFilterChip();
 }
 
 function updateField(table, id, field, val) {

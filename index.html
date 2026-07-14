@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.26">
+<link rel="stylesheet" href="styles.css?v=3.27">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.26 (14 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.27 (14 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -229,7 +229,7 @@
   <div class="section-title">Singles Inventory</div>
   <div class="unresolved-banner" id="singles-unresolved-banner">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    <span id="singles-unresolved-text"></span>
+    <span id="singles-unresolved-text" role="button" tabindex="0" style="cursor:pointer;text-decoration:underline dotted" title="Click to filter Singles to just these cards" onclick="_kjrShowUnresolvedOnly()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_kjrShowUnresolvedOnly()}"></span>
     <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="_dismissUnresolvedBanner()" aria-label="Dismiss">✕</button>
   </div>
   <div class="inv-stats" id="singles-stats"></div>
@@ -268,6 +268,7 @@
       </div>
     </div>
     <button class="btn btn-sm" id="clear-filters-singles" style="display:none" onclick="clearAllFilters('singles')" title="Clear search, column filters and dropdown filters">✕ Clear all filters</button>
+    <button class="btn btn-sm" id="singles-unresolved-filter-chip" style="display:none;color:var(--amber);border-color:var(--amber)" onclick="_kjrClearUnresolvedFilter()" title="Clear the unresolved-only filter">Showing unresolved only, ✕ Clear filter</button>
     <button class="btn btn-sm" onclick="exportCSV('singles')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-singles">
       <button class="btn btn-sm col-toggle-btn" onclick="toggleColMenu('singles')">⊞ Columns</button>
@@ -1592,7 +1593,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.26"></script>
-<script src="features.js?v=3.26"></script>
+<script src="app.js?v=3.27"></script>
+<script src="features.js?v=3.27"></script>
 </body>
 </html>

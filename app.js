@@ -859,8 +859,17 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
       dirtySet.delete(id);
       const label = localRow.name || localRow.product || id;
       const diff = (typeof _clDiff === 'function') ? _clDiff(tableKey, cloudRow, localRow) : '';
-      if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + (diff || 'no tracked-field differences'));
-      if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
+      // An empty diff means only untracked fields (priceHistory, tcgdexId,
+      // the local-only priced-today marker) differ - a phantom "conflict"
+      // from same-value re-pricing on two devices, not a real discarded
+      // edit. Still log it honestly, but skip the toast so the user isn't
+      // warned about nothing.
+      if (diff) {
+        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + diff);
+        if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
+      } else {
+        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, tracked fields identical');
+      }
       continue;
     }
     byId.set(id, localRow);
@@ -7721,7 +7730,18 @@ async function refreshPrice(id, table) {
     if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
   }
   if (r.maxSgd) {
-    item.marketPrice = r.maxSgd.toFixed(0);
+    const newPrice = r.maxSgd.toFixed(0);
+    const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId);
+    // Same no-op guard as applyPriceToGroup: unchanged value + no new id
+    // means nothing to sync, so skip history/markDirty and leave the row
+    // untouched. Still stamp the local priced-today marker.
+    if (item.marketPrice === newPrice && !idIsNew) {
+      item._tcgdexPricedDate = new Date().toISOString().slice(0,10);
+      saveData();
+      toast('Price unchanged: S$' + newPrice + ' (' + r.source + ')');
+      return;
+    }
+    item.marketPrice = newPrice;
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({
       date: new Date().toISOString().slice(0,10),
@@ -7918,7 +7938,20 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
   const applyToItem = (id, table) => {
     const item = DB[table]?.find(i => i.id === id);
     if (!item) return;
-    item.marketPrice = priceSgd.toFixed(0);
+    const newPrice = priceSgd.toFixed(0);
+    const idIsNew = !!(resolvedTcgdexId && !item.tcgdexId);
+    // Genuine no-op re-price: same value, no new id to cache. Skip history
+    // + markDirty entirely so the row stays completely untouched for sync -
+    // two devices re-pricing the same unchanged value daily were each
+    // ping-ponging phantom "newer" copies via mergeTable's client-clock
+    // updated_at. Still stamp a local, non-synced "priced today" marker
+    // (same pattern as _tcgdexMissDate) so the queue's skip-today self-heal
+    // keeps working without generating any sync traffic.
+    if (item.marketPrice === newPrice && !idIsNew) {
+      item._tcgdexPricedDate = today;
+      return;
+    }
+    item.marketPrice = newPrice;
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push(histEntry);
     if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
@@ -8085,6 +8118,10 @@ const TCGDEX_GAP_MS = 250;
 function _tcgdexPricedToday(item, today) {
   const row = DB[item.table]?.find(i => i.id === item.id);
   if (!row || !row.marketPrice) return false;
+  // A same-value re-price (see applyPriceToGroup) skips the history append
+  // on purpose, so check this local non-synced marker first, before falling
+  // back to the history date below.
+  if (row._tcgdexPricedDate === today) return true;
   const hist = Array.isArray(row.priceHistory) ? row.priceHistory : [];
   const last = hist[hist.length - 1];
   return !!(last && last.date === today);
@@ -8598,19 +8635,29 @@ async function bulkRefreshPrices(table) {
   for (const item of items) {
     showSyncProgress(done + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
     const r = await fetchMarketPrice({ name: item.name, grader: item.grader||null, grade: item.grade||null, language: item.language||null, tcgdexId: item.tcgdexId||null });
+    const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
     if (r.resolvedTcgdexId && !item.tcgdexId) {
       item.tcgdexId = r.resolvedTcgdexId;
       if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
     }
     if (r.maxSgd) {
-      item.marketPrice = r.maxSgd.toFixed(0);
-      if (!item.priceHistory) item.priceHistory = [];
-      item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, unit: r.maxUsd ? 'USD' : 'EUR', source: r.source, confidence: r.confidence });
-      if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
-      if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+      const newPrice = r.maxSgd.toFixed(0);
+      // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
+      // + no new id to cache means nothing to sync, so only stamp the local
+      // priced-today marker and skip history/markDirty. Still counts as a
+      // successful pass (the fetch did confirm the price).
+      if (item.marketPrice === newPrice && !idIsNew) {
+        item._tcgdexPricedDate = new Date().toISOString().slice(0,10);
+      } else {
+        item.marketPrice = newPrice;
+        if (!item.priceHistory) item.priceHistory = [];
+        item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, unit: r.maxUsd ? 'USD' : 'EUR', source: r.source, confidence: r.confidence });
+        if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
+        if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+        }
+        markDirty(table, item.id);
       }
-      markDirty(table, item.id);
       done++;
       consecTransport = 0;
     } else {

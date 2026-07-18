@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.32',
+    release: 'kujira-collectibles@3.33',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.32">
+<link rel="stylesheet" href="styles.css?v=3.33">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.32 (18 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.33 (19 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -1009,7 +1009,7 @@
         <div class="form-group"><label class="lbl">Type</label>
           <select class="fi" id="ms-type"><option value="raw">Raw Single</option><option value="sealed">Sealed</option></select></div>
         <div class="form-group"><label class="lbl">Condition</label>
-          <select class="fi" id="ms-cond"><option>Mint</option><option>Near Mint</option><option value="NM">NM (Near Mint, short form)</option><option>Lightly Played</option><option>Moderately Played</option><option>Heavily Played</option><option>Damaged</option></select></div>
+          <select class="fi" id="ms-cond"><option>Mint</option><option>Near Mint</option><option>Lightly Played</option><option>Moderately Played</option><option>Heavily Played</option><option>Damaged</option></select></div>
         <div class="form-group"><label class="lbl">Qty</label><input class="fi" type="number" id="ms-qty" value="1" min="1"></div>
         <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" min="0" placeholder="0.00" step="0.01"></div>
         <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="ms-market" min="0" placeholder="0.00" step="0.01"></div>
@@ -1593,7 +1593,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.32"></script>
-<script src="features.js?v=3.32"></script>
+<script src="app.js?v=3.33"></script>
+<script src="features.js?v=3.33"></script>
 </body>
 </html>

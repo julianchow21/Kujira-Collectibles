@@ -133,6 +133,30 @@ test('trash-lifecycle: restoreFromTrash - the row returns to its original table 
   assert.strictEqual(DB.trash.length, 0, 'the trash entry is gone after a successful restore');
 });
 
+test('trash-lifecycle: restoreFromTrash canonicalises a legacy short-form condition on a restored singles snapshot, and marks it dirty', async () => {
+  // Regression pin (v3.33 review round): production trash lives in Supabase
+  // and the v4 condition migration can never reach it (DB.trash is only ever
+  // populated from the localhost-only _kjrLocalTrash key - see initDB). So a
+  // singles row trashed before the migration ran, then restored after the
+  // one-shot flag has burned, must still come back canonicalised - not with
+  // the legacy 'NM' reintroduced verbatim.
+  const { ctx, grab } = await loadApp({
+    location: LOCALHOST_LOCATION,
+    localStorage: {
+      _kjrLocalTrash: JSON.stringify([
+        { id: 'trash_1', data: { originalTable: 'singles', originalId: 's1', item: { id: 's1', name: 'Legacy Card', condition: 'NM', status: 'Available' }, deletedAt: new Date().toISOString() }, updated_at: new Date().toISOString() },
+      ]),
+    },
+  });
+  await ctx.restoreFromTrash('trash_1');
+  const { DB } = grab('DB');
+  const { _dirty } = grab('_dirty');
+  const restored = DB.singles.find((r) => r.id === 's1');
+  assert.ok(restored, 'row is back in DB.singles');
+  assert.strictEqual(restored.condition, 'Near Mint', 'legacy short-form condition is canonicalised on restore, not reintroduced verbatim');
+  assert.strictEqual(_dirty.singles.has('s1'), true, 'the restored row is marked dirty so the canonicalised value re-syncs');
+});
+
 test('trash-lifecycle: restoreFromTrash - restoring an id already back in the table is a safe no-op (does not duplicate)', async () => {
   const { ctx, grab } = await loadApp({
     location: LOCALHOST_LOCATION,

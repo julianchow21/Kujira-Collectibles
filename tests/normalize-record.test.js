@@ -130,3 +130,114 @@ test('normalize-record: non-object input is returned unchanged (no throw)', asyn
   assert.strictEqual(ctx.normalizeRecord('singles', undefined), undefined);
   assert.strictEqual(ctx.normalizeRecord('singles', 'a string'), 'a string');
 });
+
+// ---------------------------------------------------------------------------
+// v3.33 - canonicalCondition extraction. Quick Entry used to default to the
+// short form 'NM' while normalizeRecord expanded to 'Near Mint', logging a
+// phantom changelog diff on every edit-modal save that didn't touch condition.
+// Both paths (plus CSV import) now delegate to one shared canonicalCondition()
+// helper - these tests pin the write paths to canonical agreement.
+// ---------------------------------------------------------------------------
+
+test('normalize-record: parseSmartLine defaults to condition "Near Mint" with conditionExplicit false when no condition token is present', async () => {
+  const { ctx } = await loadApp();
+  const out = ctx.parseSmartLine('Zapdos 42 RH $35 EN');
+  assert.strictEqual(out.condition, 'Near Mint');
+  assert.strictEqual(out.conditionExplicit, false);
+});
+
+test('normalize-record: parseSmartLine and normalizeRecord agree on every condition token, both landing on one of the six canonical long forms', async () => {
+  const { ctx } = await loadApp();
+  const CANON = ['Mint', 'Near Mint', 'Lightly Played', 'Moderately Played', 'Heavily Played', 'Damaged'];
+  const tokens = ['NM', 'nm', 'near mint', 'LP', 'lightly played', 'MP', 'moderately played', 'HP', 'heavily played', 'damaged', 'mint'];
+  for (const token of tokens) {
+    const parsed = ctx.parseSmartLine('Zapdos 42 $10 ' + token).condition;
+    const normalized = ctx.normalizeRecord('singles', { condition: token }).condition;
+    assert.strictEqual(parsed, normalized, `parseSmartLine and normalizeRecord disagree on token "${token}"`);
+    assert.ok(CANON.includes(parsed), `"${parsed}" (from token "${token}") is not one of the six canonical forms`);
+  }
+});
+
+test('normalize-record: canonicalCondition is a no-op on all six already-canonical values (idempotent)', async () => {
+  const { ctx } = await loadApp();
+  const CANON = ['Mint', 'Near Mint', 'Lightly Played', 'Moderately Played', 'Heavily Played', 'Damaged'];
+  for (const c of CANON) {
+    assert.strictEqual(ctx.canonicalCondition(c), c);
+  }
+});
+
+test('normalize-record: normalizeRecord is idempotent on condition - running it twice matches running it once', async () => {
+  const { ctx } = await loadApp();
+  const CANON = ['Mint', 'Near Mint', 'Lightly Played', 'Moderately Played', 'Heavily Played', 'Damaged'];
+  for (const c of CANON) {
+    const once = ctx.normalizeRecord('singles', { condition: c }).condition;
+    const twice = ctx.normalizeRecord('singles', { condition: once }).condition;
+    assert.strictEqual(twice, once, `double-normalizing "${c}" changed the value`);
+  }
+  // Also starting from a short form - the fixed point is reached after one pass.
+  const onceShort = ctx.normalizeRecord('singles', { condition: 'nm' }).condition;
+  const twiceShort = ctx.normalizeRecord('singles', { condition: onceShort }).condition;
+  assert.strictEqual(onceShort, 'Near Mint');
+  assert.strictEqual(twiceShort, 'Near Mint');
+});
+
+test('normalize-record: migration v4 canonicalises legacy short-form condition in DB.singles and DB.trash on first load, guarded by pokeinv_migrated_v4 thereafter', async () => {
+  const LOCALHOST_LOCATION = {
+    protocol: 'http:', hostname: 'localhost', host: 'localhost:3800',
+    href: 'http://localhost:3800/', origin: 'http://localhost:3800',
+    pathname: '/', search: '',
+  };
+  // sbFetchAll('singles'/'slabs'/'sales') is NOT gated by isLocalhostPreview
+  // (only writes are - see flush-guard.test.js) and has no internal .catch, so
+  // the harness's default "everything rejects" fetch would send initDB
+  // straight to its outer catch (app.js ~1023), skipping every migration
+  // block. Resolve just those three to an empty page so the rest of initDB
+  // runs exactly like a real "cloud has nothing new" load; everything else
+  // (etbs/booster*/ebay, FX rate, etc.) keeps the proven-safe default
+  // rejection every other test in this suite already relies on.
+  const fetchStub = async (url) => {
+    const u = String(url);
+    if (u.includes('/rest/v1/singles') || u.includes('/rest/v1/slabs') || u.includes('/rest/v1/sales')) {
+      return { ok: true, status: 200, json: async () => [], text: async () => '[]', headers: { get: () => null } };
+    }
+    throw new TypeError('offline');
+  };
+  const trashSnapshot = [{
+    id: 'trash_1',
+    data: { originalTable: 'singles', originalId: 'x9', item: { id: 'x9', name: 'Old Trashed', condition: 'NM' }, deletedAt: new Date().toISOString() },
+    updated_at: new Date().toISOString(),
+  }];
+
+  const first = await loadApp({
+    location: LOCALHOST_LOCATION,
+    fetch: fetchStub,
+    seed: { singles: [{ id: 's1', name: 'Test Card', condition: 'NM', qty: 1, status: 'Available' }] },
+    localStorage: {
+      pokeinv_migrated_v2: '1',
+      pokeinv_migrated_v3: '1',
+      _kjrLocalTrash: JSON.stringify(trashSnapshot),
+    },
+  });
+  const { DB: db1 } = first.grab('DB');
+  const { _dirty: dirty1 } = first.grab('_dirty');
+  assert.strictEqual(db1.singles.find(r => r.id === 's1').condition, 'Near Mint', 'legacy short form is canonicalised on load');
+  assert.strictEqual(dirty1.singles.has('s1'), true, 'the fixed row is marked dirty so it re-syncs');
+  assert.strictEqual(db1.trash[0].data.item.condition, 'Near Mint', 'trash snapshot condition is canonicalised too');
+  assert.strictEqual(first.localStorage.getItem('pokeinv_migrated_v4'), '1', 'flag is set once the migration has run');
+
+  // Second load: identical starting data, but the v4 flag is already set -
+  // the block must be skipped entirely, leaving the still-legacy value alone.
+  const second = await loadApp({
+    location: LOCALHOST_LOCATION,
+    fetch: fetchStub,
+    seed: { singles: [{ id: 's1', name: 'Test Card', condition: 'NM', qty: 1, status: 'Available' }] },
+    localStorage: {
+      pokeinv_migrated_v2: '1',
+      pokeinv_migrated_v3: '1',
+      pokeinv_migrated_v4: '1',
+      _kjrLocalTrash: JSON.stringify(trashSnapshot),
+    },
+  });
+  const { DB: db2 } = second.grab('DB');
+  assert.strictEqual(db2.singles.find(r => r.id === 's1').condition, 'NM', 'guarded by the flag - a second load does not touch it');
+});

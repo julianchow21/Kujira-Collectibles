@@ -750,6 +750,28 @@ function toIsoDateStr(val) {
   return m[3] + '-' + String(mi + 1).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
 }
 
+// Canonical condition mapping for raw-card grading (singles/slabs scale) -
+// shared by every write path so short forms (NM/LP/MP/HP) and fuzzy words
+// ("near mint plus" etc) all converge on one long-form value, the same one
+// the edit-modal <select> uses. Previously each write path (Quick Entry
+// default, the smart-line parser, CSV import, this normalizer) carried its
+// own inline copy of this mapping, and Quick Entry's copy defaulted to the
+// short form 'NM' while this one expanded to 'Near Mint' - saving the edit
+// modal without touching condition logged a phantom changelog diff
+// "condition: NM -> Near Mint". Non-string/empty input and anything that
+// doesn't match a known token are returned unchanged.
+function canonicalCondition(val) {
+  if (typeof val !== 'string' || !val) return val;
+  const c = val.trim().toLowerCase();
+  return (c === 'nm' || c.includes('near')) ? 'Near Mint' :
+    (c === 'lp' || c.includes('lightly')) ? 'Lightly Played' :
+    (c === 'mp' || c.includes('moderately')) ? 'Moderately Played' :
+    (c === 'hp' || c.includes('heavily')) ? 'Heavily Played' :
+    (c === 'damaged') ? 'Damaged' :
+    (c === 'mint') ? 'Mint' :
+    val;
+}
+
 // =========== UNIFIED MANUAL-INPUT NORMALIZER ===========
 // Every manual-entry path (Add Single modal, Add Slab modal, Add Sale modal,
 // kjr modal for ETB/BB/Pack/eBay) routes its raw form values through this so
@@ -779,15 +801,7 @@ function normalizeRecord(table, obj) {
   }
   // 4. Condition → canonical long form (matches the edit-modal <select>)
   if (out.condition && table !== 'etbs' && table !== 'boosterBoxes' && table !== 'boosterPacks') {
-    const c = out.condition.toString().trim().toLowerCase();
-    out.condition =
-      (c === 'nm' || c.includes('near')) ? 'Near Mint' :
-      (c === 'lp' || c.includes('lightly')) ? 'Lightly Played' :
-      (c === 'mp' || c.includes('moderately')) ? 'Moderately Played' :
-      (c === 'hp' || c.includes('heavily')) ? 'Heavily Played' :
-      (c === 'damaged') ? 'Damaged' :
-      (c === 'mint') ? 'Mint' :
-      out.condition;
+    out.condition = canonicalCondition(out.condition);
   }
   // 5. Grader + grade → canonical via _resolveGrader. Edits / new entries
   // get cleaned at save time so going forward the data is consistent.
@@ -1009,6 +1023,34 @@ async function initDB() {
       });
       if (n > 0) { saveData(); console.info('[v3 migration] backfilled ' + n + ' sales'); }
       localStorage.setItem('pokeinv_migrated_v3', '1');
+    }
+
+    // ── Session 2 migration: canonicalise legacy short-form condition ('NM' ──
+    // etc) to the long form on rows saved before canonicalCondition() existed.
+    // Runs once per device. Trash snapshots are full verbatim copies of the
+    // original row (see sendToTrash) so they carry the same legacy shorthand
+    // and are fixed alongside.
+    if (!localStorage.getItem('pokeinv_migrated_v4')) {
+      let n = 0;
+      (DB.singles || []).forEach(s => {
+        const fixed = canonicalCondition(s.condition);
+        if (fixed !== s.condition) { s.condition = fixed; markDirty('singles', s.id); n++; }
+      });
+      // Trash never rides the singles/slabs/etc dirty queue - _dirty has no
+      // 'trash' bucket and saveAllToSupabase() only ever uploads the 7 real
+      // tables, never trash. localStorage (_saveLocalTrash) is this layer's
+      // only persistence for DB.trash, so that's what gets flushed below.
+      let nt = 0;
+      (DB.trash || []).forEach(entry => {
+        const d = entry && entry.data;
+        if (!d || d.originalTable !== 'singles' || !d.item) return;
+        const fixedTrash = canonicalCondition(d.item.condition);
+        if (fixedTrash !== d.item.condition) { d.item.condition = fixedTrash; nt++; }
+      });
+      if (n > 0) { saveData(); await saveAllToSupabase(); }
+      if (nt > 0) _saveLocalTrash();
+      if (n > 0 || nt > 0) console.info('[v4 migration] canonicalised condition on ' + n + ' single(s) and ' + nt + ' trash snapshot(s)');
+      localStorage.setItem('pokeinv_migrated_v4', '1');
     }
 
     // ── Retry any dirty items persisted from a previous failed sync ──
@@ -1645,7 +1687,7 @@ function parseSmartLine(raw) {
   if (!line) return null;
 
   let s = line;
-  const result = { _raw: line, name: '', type: 'raw', language: 'EN', condition: 'NM',
+  const result = { _raw: line, name: '', type: 'raw', language: 'EN', condition: 'Near Mint',
     qty: 1, listPrice: 0, costPrice: '', marketPrice: '', set: '', notes: '',
     status: 'Available', grader: '', grade: '', certNo: '', rank: '', dateListed: '' };
 
@@ -1743,12 +1785,7 @@ function parseSmartLine(raw) {
   const condM = s.match(/\b(mint|NM|near\s*mint|LP|lightly\s*played|MP|moderately\s*played|HP|heavily\s*played|damaged)\b/i);
   result.conditionExplicit = !!condM;
   if (condM) {
-    const cm = condM[1].toLowerCase();
-    result.condition = cm === 'nm' || cm.includes('near') ? 'Near Mint'
-      : cm === 'lp' || cm.includes('lightly') ? 'Lightly Played'
-      : cm === 'mp' || cm.includes('moderately') ? 'Moderately Played'
-      : cm === 'hp' || cm.includes('heavily') ? 'Heavily Played'
-      : cm === 'damaged' ? 'Damaged' : 'Mint';
+    result.condition = canonicalCondition(condM[1]);
     s = s.replace(condM[0], '').trim();
   }
 
@@ -1886,13 +1923,13 @@ function saveSmartAdd() {
     } else {
       const qty = Math.max(1, parseInt(p.qty)||1);
       for (let q = 0; q < qty; q++) {
-        const item = {
+        const item = normalizeRecord('singles', {
           id: genId('s'), name: p.name, set: p.set, language: p.language,
           type: p.type === 'sealed' ? 'sealed' : 'raw',
           condition: p.condition, qty: 1,
           listPrice: p.listPrice, costPrice: p.costPrice, marketPrice: p.marketPrice,
           status: p.status, notes: p.notes, priceHistory: []
-        };
+        });
         DB.singles.push(item);
         markDirty('singles', item.id);
         if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', item.id);
@@ -2031,10 +2068,10 @@ function cmdAddKey(e) {
       const addedIds = [];
       for (let q = 0; q < qty; q++) {
         const newId = genId('s');
-        const singleItem = { id: newId, name: parsed.name, set: parsed.set, language: parsed.language,
+        const singleItem = normalizeRecord('singles', { id: newId, name: parsed.name, set: parsed.set, language: parsed.language,
           type: parsed.type === 'sealed' ? 'sealed' : 'raw', condition: parsed.condition, qty: 1,
           listPrice: parsed.listPrice, costPrice: parsed.costPrice, marketPrice: parsed.marketPrice,
-          status: 'Available', notes: parsed.notes, priceHistory: [] };
+          status: 'Available', notes: parsed.notes, priceHistory: [] });
         DB.singles.push(singleItem);
         markDirty('singles', newId);
         if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', newId);
@@ -4882,6 +4919,12 @@ async function restoreFromTrash(trashId) {
       renderTrash();
       return;
     }
+    // Trash snapshots can predate the v4 condition migration (which only
+    // ever reaches DB.trash on localhost - production trash lives in
+    // Supabase and this migration never touches it). Canonicalise on the
+    // way back in so restoring an old singles row can't reintroduce the
+    // legacy short form after the one-shot migration flag has already burned.
+    if (originalTable === 'singles') item.condition = canonicalCondition(item.condition);
     DB[originalTable].push(item);
     markDirty(originalTable, item.id);
     saveData();
@@ -5091,7 +5134,7 @@ function openEditSingle(id) {
   document.getElementById('ms-set').value = item.set||'';
   document.getElementById('ms-lang').value = item.language||'EN';
   document.getElementById('ms-type').value = item.type||'raw';
-  document.getElementById('ms-cond').value = item.condition||'Near Mint';
+  document.getElementById('ms-cond').value = canonicalCondition(item.condition)||'Near Mint';
   document.getElementById('ms-qty').value = item.qty||1;
   document.getElementById('ms-cost').value = item.costPrice||'';
   document.getElementById('ms-list').value = item.listPrice||'';
@@ -9484,8 +9527,7 @@ async function importData() {
       delete obj.dateListed; delete obj.date;
       obj.type      = detectType(obj.name, obj.type);
       // Normalise shorthand to long form so the edit-modal <select> matches on load.
-      const _rawCond = (obj.condition || 'Near Mint').toString().trim();
-      obj.condition = (_rawCond.toUpperCase() === 'NM') ? 'Near Mint' : _rawCond;
+      obj.condition = canonicalCondition((obj.condition || 'Near Mint').toString().trim());
       obj.qty       = parseInt(obj.qty) || 1;
       obj.status    = obj.status || 'Available';
       newItems.push(obj);

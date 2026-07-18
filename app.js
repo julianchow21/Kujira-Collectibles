@@ -4372,7 +4372,13 @@ function _resolveGrader(grader, grade, extraText) {
     if (new RegExp('\\b' + g + '\\b').test(blob) || blob.includes(g)) { canonGrader = g; break; }
   }
   // 3. Extract numeric grade - order matters so "10" wins over "1".
-  const gradeM = blob.match(/\b(10\b|9\.5|9\b|8\.5|8\b|7\b|6\.5|6\b|5\.5|5\b|4\b|3\b|2\b|1\b)/);
+  //    Glued forms ("PSA10", "P10") have no word boundary between letter and
+  //    digit, so when the first pass finds nothing, retry against a copy with
+  //    a space inserted at each letter-digit seam. Retry only when empty:
+  //    shapes that already resolve are untouched.
+  const GRADE_RE = /\b(10\b|9\.5|9\b|8\.5|8\b|7\b|6\.5|6\b|5\.5|5\b|4\b|3\b|2\b|1\b)/;
+  const splitBlob = blob.replace(/([A-Z])(?=\d)/g, '$1 ');
+  const gradeM = blob.match(GRADE_RE) || splitBlob.match(GRADE_RE);
   const canonGrade = gradeM ? gradeM[1] : '';
   // 4. Pristine modifier - awarded by TAG, CGC, and BGS as a top-tier
   //    subgrade on 10s. (PSA does NOT use "Pristine" - Gem Mint 10 is
@@ -4383,7 +4389,7 @@ function _resolveGrader(grader, grade, extraText) {
   const PRISTINE_GRADERS = new Set(['TAG','CGC','BGS']);
   const isPristine =
     /\bPRISTINE\b/.test(blob) ||
-    (PRISTINE_GRADERS.has(canonGrader) && canonGrade === '10' && /\bP\b/.test(blob));
+    (PRISTINE_GRADERS.has(canonGrader) && canonGrade === '10' && (/\bP\b/.test(blob) || /\bP\b/.test(splitBlob)));
   return {
     grader:   canonGrader,
     grade:    canonGrade,
@@ -7754,6 +7760,11 @@ async function refreshPrice(id, table) {
   const grader = item.type === 'slab' ? (item.grader||null) : null;
   const grade  = item.type === 'slab' ? (item.grade||null) : null;
   const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null });
+  // Computed BEFORE the persist block assigns item.tcgdexId - afterwards
+  // !item.tcgdexId is always false, the guard below would treat a freshly
+  // resolved id as "nothing new" and the id would save locally but never
+  // markDirty, so it would never sync.
+  const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId);
   // Persist a freshly-resolved TCGdex id (and matched name) even when this
   // call itself missed - so the NEXT refresh skips the resolve round-trip.
   if (r.resolvedTcgdexId && !item.tcgdexId) {
@@ -7762,11 +7773,12 @@ async function refreshPrice(id, table) {
   }
   if (r.maxSgd) {
     const newPrice = r.maxSgd.toFixed(0);
-    const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId);
     // Same no-op guard as applyPriceToGroup: unchanged value + no new id
     // means nothing to sync, so skip history/markDirty and leave the row
-    // untouched. Still stamp the local priced-today marker.
-    if (item.marketPrice === newPrice && !idIsNew) {
+    // untouched. Still stamp the local priced-today marker. Number() on both
+    // sides because the edit modal stores marketPrice as a number while this
+    // path writes strings - see applyPriceToGroup.
+    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew) {
       item._tcgdexPricedDate = new Date().toISOString().slice(0,10);
       saveData();
       toast('Price unchanged: S$' + newPrice + ' (' + r.source + ')');
@@ -7977,8 +7989,12 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
     // ping-ponging phantom "newer" copies via mergeTable's client-clock
     // updated_at. Still stamp a local, non-synced "priced today" marker
     // (same pattern as _tcgdexMissDate) so the queue's skip-today self-heal
-    // keeps working without generating any sync traffic.
-    if (item.marketPrice === newPrice && !idIsNew) {
+    // keeps working without generating any sync traffic. Numeric coercion:
+    // the edit modal stores marketPrice as a NUMBER, not the string this
+    // function itself writes, so a strict === against newPrice (always a
+    // string) never matched a hand-edited row - Number() on both sides
+    // compares the actual value regardless of which type wrote it.
+    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew) {
       item._tcgdexPricedDate = today;
       return;
     }

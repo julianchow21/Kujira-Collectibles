@@ -15,15 +15,15 @@ html{-webkit-tap-highlight-color:transparent}
   --tag-bg:#161D36;--tag-border:#26304F;
   --psa-bg:#2A1522;--psa-border:#3A2532;
   --cgc-bg:#281E14;--cgc-border:#382E20;
-  --accent:#8B7CF0;--accent2:#7A6AE8;--accent-soft:#221C44;--accent-fg:#1A1033;
+  --accent:#8B7CF0;--accent2:#7A6AE8;--accent-soft:#221C44;--accent-fg:#1A1033;--accent-glow:rgba(139,124,240,0.35);
   --radius:8px;--radius-lg:12px;
+  --backdrop:rgba(0,0,0,0.6);
+  --modal-sm:520px;--modal-md:660px;--modal-lg:720px;
   /* Status badge tokens (dark). Light overrides live in html.light. */
   --b-raw-bg:#16281E;--b-raw-fg:#4ADE80;--b-raw-bd:#24382C;
   --b-sealed-bg:#2A2113;--b-sealed-fg:#E8A33D;--b-sealed-bd:#3A3120;
   --b-slab-bg:#161D36;--b-slab-fg:#7EA8F5;--b-slab-bd:#26304F;
   --b-pristine-bg1:#2E2838;--b-pristine-bg2:#262030;--b-pristine-fg:#F0C36D;--b-pristine-bd:#F0C36D;
-  --b-sold-bg:#2A2018;--b-sold-fg:#d18558;--b-sold-bd:#3a2a1f;
-  --b-avail-bg:#16281E;--b-avail-fg:var(--green);--b-avail-bd:#24382C;
   --split-bar-fg:#ffffff;
   /* kjr-status-pill tokens (dark). Light overrides live in html.light. */
   --pill-stock-bg:#1a2a1a;--pill-stock-fg:#4CAF50;--pill-stock-bd:#2a3a2a;
@@ -47,7 +47,7 @@ html.light{
   --green:#3B6D11;--green-soft:#EAF3DE;
   --blue:#1A6FD4;--blue-soft:#E4EEF9;
   --amber:#9E6314;--amber-soft:#F5EBD9;
-  --accent:#0F6E56;--accent2:#0A5A46;--accent-soft:#E1F0EA;--accent-fg:#ffffff;
+  --accent:#0F6E56;--accent2:#0A5A46;--accent-soft:#E1F0EA;--accent-fg:#ffffff;--accent-glow:rgba(15,110,86,0.25);
   --purple:#534AB7;
   --tag:#1D6FCE;--psa:#c0302f;--cgc:#8b4e1e;
   --tag-bg:#E4EEF9;--tag-border:#B8D2F0;
@@ -58,8 +58,6 @@ html.light{
   --b-sealed-bg:#F5EBD9;--b-sealed-fg:#854F0B;--b-sealed-bd:#f0d8a0;
   --b-slab-bg:#E4EEF9;--b-slab-fg:#185FA5;--b-slab-bd:#a8c8f0;
   --b-pristine-bg1:#F8EED8;--b-pristine-bg2:#F3E4C4;--b-pristine-fg:#854F0B;--b-pristine-bd:#BA7517;
-  --b-sold-bg:#f7ecdf;--b-sold-fg:#a65d2e;--b-sold-bd:#e0c4a8;
-  --b-avail-bg:#EAF3DE;--b-avail-fg:var(--green);--b-avail-bd:#bfe3c6;
   --split-bar-fg:#ffffff;
   /* kjr-status-pill tokens (light) */
   --pill-stock-bg:#EAF3DE;--pill-stock-fg:#3B6D11;--pill-stock-bd:#bfe3c6;
@@ -228,8 +226,6 @@ th[data-col-key="profit"] input,th[data-col-key="qty"] input{text-align:right}
    make Pristine 10s instantly distinguishable from regular PSA 10s in the
    badge column. Adapts to light/dark via the badge tokens. */
 .b-pristine{background:linear-gradient(135deg,var(--b-pristine-bg1),var(--b-pristine-bg2));color:var(--b-pristine-fg);border:1px solid var(--b-pristine-bd);box-shadow:inset 0 0 0 1px rgba(252,211,77,0.25),0 0 8px rgba(250,204,21,0.18)}
-.b-sold{background:var(--b-sold-bg);color:var(--b-sold-fg);border:1px solid var(--b-sold-bd)}
-.b-avail{background:var(--b-avail-bg);color:var(--b-avail-fg);border:1px solid var(--b-avail-bd)}
 
 /* BUTTONS */
 .btn{padding:7px 16px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;font-size:13px;color:var(--text);transition:all 0.15s;display:inline-flex;align-items:center;gap:6px;font-family:inherit;white-space:nowrap}
@@ -244,23 +240,17 @@ th[data-col-key="profit"] input,th[data-col-key="qty"] input{text-align:right}
 /* TOOLBAR */
 .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}
 .search-input{padding:8px 12px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;width:260px;font-family:inherit}
-.search-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(45,212,191,0.15)}
+.search-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 select.filter-sel{padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;cursor:pointer;font-family:inherit}
 select.filter-sel:focus{outline:none;border-color:var(--accent)}
-.pills{display:flex;gap:4px}
-.pill{padding:6px 16px;border-radius:999px;border:1px solid var(--border);background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all 0.15s}
-.pill:hover{border-color:var(--border2);color:var(--text)}
-.pill.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.pill:active{transform:scale(0.97)}
-
 /* MODAL */
-.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center;padding:20px}
+.overlay{display:none;position:fixed;inset:0;background:var(--backdrop);z-index:200;align-items:center;justify-content:center;padding:20px}
 .overlay.open{display:flex}
 dialog.overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;align-items:center;justify-content:center;margin:0;position:fixed;inset:0}
 dialog.overlay[open]{display:flex}
-dialog.overlay::backdrop{background:rgba(0,0,0,0.7);transition:background 0.22s ease}
+dialog.overlay::backdrop{background:var(--backdrop);transition:background 0.22s ease}
 @starting-style{dialog.overlay[open]::backdrop{background:rgba(0,0,0,0)}}
-.modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:660px;max-height:90vh;overflow-y:auto;overscroll-behavior:contain}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:var(--modal-md);max-height:90vh;overflow-y:auto;overscroll-behavior:contain}
 .modal-head{padding:18px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg2);z-index:1}
 .modal-head h3{font-size:15px;font-weight:600}
 .modal-body{padding:20px}
@@ -270,18 +260,21 @@ dialog.overlay::backdrop{background:rgba(0,0,0,0.7);transition:background 0.22s 
 .form-group.full{grid-column:1/-1}
 label.lbl{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;font-weight:500}
 input.fi,select.fi,textarea.fi{padding:8px 11px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit;width:100%}
-input.fi:focus,select.fi:focus,textarea.fi:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(45,212,191,0.12)}
+input.fi:focus,select.fi:focus,textarea.fi:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 textarea.fi{resize:vertical;min-height:70px}
 
 /* LISTING OUTPUT */
-.listing-box{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:'SF Mono','Fira Code',monospace;max-height:320px;overflow-y:auto;color:var(--text)}
 .ai-status{color:var(--text3);font-style:italic}
 
 /* CHARTS */
 .chart-wrap{position:relative;height:240px}
 
 /* TOAST */
-#toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);padding:0;border-radius:var(--radius-lg);font-size:13px;z-index:9999;opacity:0;transform:translateX(calc(100% + 32px));transition:opacity 0.22s,transform 0.28s cubic-bezier(0.34,1.3,0.64,1);pointer-events:none;max-width:340px;min-width:210px;box-shadow:var(--shadow-lg);overflow:hidden;cursor:pointer;user-select:none}
+/* margin:0/inset:auto here neutralise the UA [popover] default box model
+   (margin:auto;inset:0) so the popover-triggered toast (see #toast:popover-open
+   below) still docks bottom-right instead of auto-centering - merged up from a
+   duplicate #toast{} block that used to live further down the cascade. */
+#toast{position:fixed;margin:0;inset:auto;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);padding:0;border-radius:var(--radius-lg);font-size:13px;z-index:9999;opacity:0;transform:translateX(calc(100% + 32px));transition:opacity 0.22s,transform 0.28s cubic-bezier(0.34,1.3,0.64,1);pointer-events:none;max-width:340px;min-width:210px;box-shadow:var(--shadow-lg);overflow:hidden;cursor:pointer;user-select:none}
 #toast.show{opacity:1;transform:translateX(0);pointer-events:auto}
 #toast-inner{display:flex;align-items:flex-start;gap:10px;padding:12px 16px}
 #toast-icon{font-size:14px;flex-shrink:0;margin-top:1px;line-height:1.45;font-style:normal}
@@ -289,8 +282,8 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast-bar{height:2px;background:var(--accent);transform-origin:left;transform:scaleX(1)}
 #toast.toast-error{border-left-color:var(--red)}
 #toast.toast-error #toast-bar{background:var(--red)}
-#toast.toast-warn{border-left-color:#f59e0b}
-#toast.toast-warn #toast-bar{background:#f59e0b}
+#toast.toast-warn{border-left-color:var(--amber)}
+#toast.toast-warn #toast-bar{background:var(--amber)}
 @media(max-width:768px){#toast{bottom:calc(56px + env(safe-area-inset-bottom) + 12px);right:12px;left:12px;max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
 
 /* STALE-SHELL UPDATE PILL - sits below the bottom tab bar (z-index 150), own
@@ -378,7 +371,7 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
    hover states are untouched. */
 @media(hover:none){
   .btn:active,.nav-btn:active,.btb-item:active,.icon-btn:active,
-  .nav-dd-item:active,.pill:active,.ai-chip:active,.ai-chip-pill:active,
+  .nav-dd-item:active,.ai-chip:active,.ai-chip-pill:active,
   .sheet-item:active,.sell-cart-remove:active,.sell-qty button:active{
     transform:scale(0.95);
     transition:transform 0.05s ease;
@@ -394,7 +387,7 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
 @media(pointer:coarse){
   .icon-btn{min-width:44px;min-height:44px}
   .eb-tl-dot,.sell-qty button,.sell-cart-remove,.metric-info,.inv-stat-info,
-  .metric-trust,.saved-chart-card .sc-delete{position:relative}
+  .metric-trust{position:relative}
   .eb-tl-dot::after,.sell-qty button::after,.sell-cart-remove::after,
   .metric-info::after,.inv-stat-info::after,.metric-trust::after{
     content:"";position:absolute;inset:-12px;
@@ -402,9 +395,18 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
   /* ::after does not render on replaced form controls (checkboxes) in most
      engines, so grow the box itself instead of relying on a hit-area overlay. */
   input[type=checkbox].row-cb{width:20px;height:20px}
-  .saved-chart-card .sc-delete{min-height:44px}
   .tbl-wrap .btn-sm{position:relative}
   .tbl-wrap .btn-sm::after{content:"";position:absolute;inset:-12px}
+  /* Toolbar action buttons (Filters/Export/Columns/etc) and the update-pill
+     dismiss are too small to grow in place without disturbing layout, so
+     extend their hit area the same way as .tbl-wrap .btn-sm above. */
+  .toolbar .btn-sm{position:relative}
+  .toolbar .btn-sm::after{content:"";position:absolute;inset:-12px}
+  #kjr-update-pill-close{position:relative}
+  #kjr-update-pill-close::after{content:"";position:absolute;inset:-12px}
+  /* Column-toggle rows can grow in place without breaking their flex
+     layouts, so give them a real 44px box instead of a hit-area. */
+  .col-toggle-item{min-height:44px}
 }
 
 /* ── Tier 2: frosted tab bar + 44px touch targets ── */
@@ -424,9 +426,9 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
 dialog.sheet-overlay{border:none;background:transparent;padding:0;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-end;justify-content:center}
 @supports (height:100dvh){dialog.sheet-overlay{height:100dvh}}
 dialog.sheet-overlay[open]{display:flex}
-dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 0.28s ease}
+dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 0.28s ease}
 @starting-style{dialog.sheet-overlay[open]::backdrop{background:rgba(0,0,0,0)}}
-.sheet{width:100%;max-width:560px;background:var(--bg2);border:1px solid var(--border2);border-bottom:none;border-radius:20px 20px 0 0;max-height:85vh;overflow-y:auto;overscroll-behavior:contain;padding:0 16px calc(16px + env(safe-area-inset-bottom));box-shadow:0 -8px 40px rgba(0,0,0,0.45);transform:translateY(0);opacity:1;will-change:transform;transition:transform 0.30s cubic-bezier(0.32,0.72,0,1),opacity 0.22s ease}
+.sheet{width:100%;max-width:var(--modal-sm);background:var(--bg2);border:1px solid var(--border2);border-bottom:none;border-radius:20px 20px 0 0;max-height:85vh;overflow-y:auto;overscroll-behavior:contain;padding:0 16px calc(16px + env(safe-area-inset-bottom));box-shadow:0 -8px 40px rgba(0,0,0,0.45);transform:translateY(0);opacity:1;will-change:transform;transition:transform 0.30s cubic-bezier(0.32,0.72,0,1),opacity 0.22s ease}
 @starting-style{dialog.sheet-overlay[open] .sheet{transform:translateY(100%);opacity:0.7}}
 @keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
 .sheet-handle{width:38px;height:4px;border-radius:2px;background:var(--border2);margin:10px auto 6px}
@@ -479,9 +481,8 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
   .logo{flex-shrink:0;margin-right:0}
   .topbar-actions{gap:4px;margin-left:auto;flex-shrink:1;min-width:0}
   .topbar-actions .icon-btn{display:none}
-  /* keep the gear (Settings) and GitHub push reachable on mobile */
-  .topbar-actions .nav-dd .icon-btn,
-  .topbar-actions #gh-push-btn{display:flex}
+  /* keep the gear (Settings) reachable on mobile */
+  .topbar-actions .nav-dd .icon-btn{display:flex}
   /* Sync pill text is short at mobile widths ("Syncing...", "Synced",
      "⚠ Sync error" - see setSyncStatus), so protect it with flex-shrink:0 and
      a fitting max-width instead of letting it get squeezed toward 0 by its
@@ -841,20 +842,10 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
   .cb-axes-row{grid-template-columns:1fr !important}
 }
 .saved-chart-card{position:relative;margin-bottom:16px}
-.saved-chart-card .sc-delete{
-  display:block;width:100%;text-align:center;
-  background:transparent;border:none;border-top:1px solid var(--border);
-  color:var(--text3);font-size:11px;padding:6px;cursor:pointer;
-  opacity:0;transition:opacity 0.15s;pointer-events:none;
-  border-radius:0 0 var(--radius) var(--radius);
-  margin-top:-1px;
-}
-.saved-chart-card:hover>.sc-delete{opacity:1;pointer-events:auto}
-.saved-chart-card .sc-delete:hover{color:var(--red);background:rgba(255,0,0,0.05)}
 
 /* ── Draggable Dashboard Grid ── */
 .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
-@media(max-width:420px){ .dash-grid{ grid-template-columns:1fr } }
+@media(max-width:768px){ .dash-grid{ grid-template-columns:1fr } }
 .dash-card-wrap{position:relative}
 .dash-card-wrap .drag-handle{position:absolute;top:10px;right:10px;cursor:grab;color:var(--text3);font-size:14px;z-index:10;opacity:0;transition:opacity 0.15s;padding:2px 4px;border-radius:4px;line-height:1}
 .dash-card-wrap:hover .drag-handle{opacity:1}
@@ -867,22 +858,6 @@ dialog.sheet-overlay::backdrop{background:rgba(0,0,0,0.5);transition:background 
 /* SECTION TITLE */
 .section-title{font-size:20px;font-weight:700;letter-spacing:-0.3px;margin-bottom:4px}
 .section-sub{font-size:13px;color:var(--text2);margin-bottom:20px}
-
-/* PRICE HISTORY */
-.ph-row{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px}
-.ph-row:last-child{border:none}
-.ph-date{color:var(--text3);width:80px;flex-shrink:0}
-.ph-price{font-family:monospace;color:var(--text)}
-.ph-delta{font-size:11px;margin-left:auto}
-
-/* CERT LINK */
-.cert-link{font-family:monospace;font-size:11px}
-
-/* TABS */
-.tab-wrap{display:flex;gap:1px;background:var(--bg3);border-radius:var(--radius);padding:3px;width:fit-content;margin-bottom:16px}
-.tab{padding:6px 16px;border-radius:6px;border:none;background:transparent;color:var(--text2);cursor:pointer;font-size:13px;font-family:inherit;transition:all 0.15s}
-.tab:hover{color:var(--text)}
-.tab.active{background:var(--bg2);color:var(--text);font-weight:500;box-shadow:var(--shadow-sm)}
 
 /* SALE ROW */
 .sale-profit-pos{color:var(--green)}
@@ -926,7 +901,7 @@ tr.row-selected td{background:var(--accent-soft) !important}
 .filters-foot{margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:flex-end}
 .filters-foot button{background:none;border:none;color:var(--accent);font-size:11px;font-family:inherit;cursor:pointer;padding:0}
 .filters-foot button:hover{text-decoration:underline}
-.filters-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:999px;background:var(--accent);color:#06302b;font-size:10px;font-weight:700;line-height:1}
+.filters-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:999px;background:var(--accent);color:var(--accent-fg);font-size:10px;font-weight:700;line-height:1}
 .filters-badge:empty{display:none}
 .col-toggle-all{font-size:11px;color:var(--text3);padding:4px 16px 6px;display:flex;gap:8px}
 .col-toggle-all button{background:none;border:none;color:var(--blue);cursor:pointer;font-size:11px;font-family:inherit;padding:0}
@@ -998,7 +973,7 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 /* COMMAND BAR */
 dialog.cmd-overlay{border:none;background:transparent;padding:0;padding-top:80px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-start;justify-content:center}
 dialog.cmd-overlay[open]{display:flex}
-dialog.cmd-overlay::backdrop{background:rgba(0,0,0,0.6)}
+dialog.cmd-overlay::backdrop{background:var(--backdrop)}
 .cmd-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:100%;max-width:620px;box-shadow:var(--shadow-lg);overflow:hidden}
 /* Mobile: vertically centre the Quick Entry popup. Placed after the base
    .cmd-overlay rule so it wins by source order (the earlier mobile block is
@@ -1084,8 +1059,8 @@ dialog.cmd-overlay::backdrop{background:rgba(0,0,0,0.6)}
 /* VERSION HISTORY */
 dialog.ver-overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
 dialog.ver-overlay[open]{display:flex}
-dialog.ver-overlay::backdrop{background:rgba(0,0,0,0.7)}
-.ver-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:520px;max-height:80vh;display:flex;flex-direction:column}
+dialog.ver-overlay::backdrop{background:var(--backdrop)}
+.ver-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:var(--modal-sm);max-height:80vh;display:flex;flex-direction:column}
 .ver-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
 .ver-head h3{font-size:15px;font-weight:600}
 .ver-list{overflow-y:auto;overscroll-behavior:contain;flex:1;padding:8px 0}
@@ -1168,12 +1143,9 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 .exp-row.exp-row-open #exp-caret-slabs,
 .exp-row.exp-row-open #exp-caret-sealed{transform:rotate(90deg)}
 
-/* Freshness chip under Total Market Value */
-.freshness-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:help}
-.freshness-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;display:inline-block}
 /* Recently-added row highlight - fades to neutral after a refresh */
 tr.recent-add > td:first-child::before{content:"●";color:var(--accent);font-size:8px;margin-right:4px;vertical-align:middle}
-tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transparent 60%)}
+tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 60%)}
 
 /* RESPONSIVE */
 @media(max-width:700px){
@@ -1238,7 +1210,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 /* ── SENTRY PANEL ── */
 #sentry-drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:100vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:8000;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);box-shadow:-8px 0 32px rgba(0,0,0,0.4)}
 #sentry-drawer.open{transform:translateX(0)}
-#sentry-drawer-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:7999}
+#sentry-drawer-overlay{display:none;position:fixed;inset:0;background:var(--backdrop);z-index:7999}
 #sentry-drawer-overlay.open{display:block}
 .sentry-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sentry-drawer-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--text)}
@@ -1257,23 +1229,23 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
 @media(prefers-reduced-motion:reduce){
   .sheet,.overlay .modal{transition:none!important}
   .page.active{animation:none!important}
-  .btn:active,.pill:active,.btb-item:active,.sheet-item:active{transform:none!important}
+  .btn:active,.btb-item:active,.sheet-item:active{transform:none!important}
   .live-dot,.ai-typing i{animation:none!important}
   .kjr-modal,.kjr-confirm-box{animation:none!important}
   #sentry-drawer{transition:none!important}
   .eb-tl-dot:hover{transform:none!important}
 }
 
-/* toast popover (JS track) - reset UA popover chrome, keep existing fixed positioning */
+/* toast popover (JS track) - #toast:popover-open unhides it; the UA popover
+   chrome reset (margin/inset) now lives in the main #toast rule above. */
 #toast:popover-open{display:block}
-#toast{margin:0;border:1px solid var(--border2);border-left:3px solid var(--accent);inset:auto;bottom:24px;right:24px;overflow:hidden}
 
 /* KPI tooltip tap-toggle (JS track) - mirrors the existing :hover rules for touch */
 .metric-info.open .inv-stat-tooltip{display:block}
 .metric-trust.open .inv-stat-tooltip{display:block}
 
 /* Global focus ring for keyboard navigation across interactive controls */
-:is(.btn,.icon-btn,.nav-btn,.btb-item,.tab,.pill,.sheet-item,th.sortable,.nav-dd-item,.nav-dd-subitem):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+:is(.btn,.icon-btn,.nav-btn,.btb-item,.sheet-item,th.sortable,.nav-dd-item,.nav-dd-subitem):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .kjr-status-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px;white-space:nowrap}
   .kjr-pill-stock{background:var(--pill-stock-bg);color:var(--pill-stock-fg);border:1px solid var(--pill-stock-bd)}
   .kjr-pill-sold{background:var(--pill-sold-bg);color:var(--pill-sold-fg);border:1px solid var(--pill-sold-bd)}
@@ -1283,17 +1255,17 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
   .kjr-row-actions{display:inline-flex;gap:4px}
   dialog.kjr-modal-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
   dialog.kjr-modal-back[open]{display:flex}
-  dialog.kjr-modal-back::backdrop{background:rgba(0,0,0,0.55)}
+  dialog.kjr-modal-back::backdrop{background:var(--backdrop)}
   /* Flex column with a scrollable middle so the header (with its close button)
      and the action buttons stay pinned and always reachable, no matter how
      long the form is. This is what fixes the "can't get back" tall modal. */
-  .kjr-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(520px,92vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
-  .kjr-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:18px 20px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .kjr-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(var(--modal-sm),92vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+  .kjr-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:18px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
   .kjr-modal-head h3{margin:0;font-size:15px;font-weight:600}
   .kjr-modal-x{flex-shrink:0;width:32px;height:32px;border-radius:8px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
   .kjr-modal-x:hover{color:var(--text);background:var(--bg4)}
   .kjr-modal h3{font-size:15px;font-weight:600}
-  #kjr-modal-fields{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:16px 20px}
+  #kjr-modal-fields{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:20px}
   .kjr-modal .lbl{display:block;font-size:11px;color:var(--text3);margin-bottom:4px;margin-top:10px;text-transform:uppercase;letter-spacing:0.4px}
   .kjr-modal .fi{width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;font-family:inherit;box-sizing:border-box}
   .kjr-modal-actions{display:flex;gap:8px;justify-content:flex-end;padding:16px 20px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0}
@@ -1308,7 +1280,7 @@ tr.recent-add{background:linear-gradient(90deg, rgba(45,212,191,0.08) 0%, transp
   }
 dialog.kjr-confirm-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
 dialog.kjr-confirm-back[open]{display:flex}
-dialog.kjr-confirm-back::backdrop{background:rgba(0,0,0,0.55)}
+dialog.kjr-confirm-back::backdrop{background:var(--backdrop)}
 .kjr-confirm-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:min(380px,92vw);max-height:88vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
 .kjr-confirm-body{padding:20px 22px;font-size:13px;color:var(--text);line-height:1.55;white-space:pre-line}
 .kjr-confirm-body strong{font-weight:600}
@@ -1321,8 +1293,8 @@ dialog.kjr-confirm-back::backdrop{background:rgba(0,0,0,0.55)}
 }
 dialog.kjr-complete-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
 dialog.kjr-complete-back[open]{display:flex}
-dialog.kjr-complete-back::backdrop{background:rgba(0,0,0,0.7)}
-.kjr-complete-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:720px;max-height:90vh;display:flex;flex-direction:column}
+dialog.kjr-complete-back::backdrop{background:var(--backdrop)}
+.kjr-complete-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:var(--modal-lg);max-height:90vh;display:flex;flex-direction:column}
 .kjr-complete-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
 .kjr-complete-head h3{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
 .kjr-complete-body{padding:18px 20px;overflow-y:auto;flex:1}

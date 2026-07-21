@@ -11,7 +11,7 @@
 <link rel="manifest" href="Assets/manifest.webmanifest">
 <link rel="apple-touch-icon" href="Assets/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="Assets/apple-touch-icon.png">
-<meta name="theme-color" content="#0f0f0f">
+<meta name="theme-color" content="#12101F">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.33',
+    release: 'kujira-collectibles@3.34',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.33">
+<link rel="stylesheet" href="styles.css?v=3.34">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.33 (19 Jul)</span>
+      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.34 (21 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -340,24 +340,36 @@
   <div class="inv-stats" id="slabs-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="slabs-search" oninput="renderSlabs()" title='Search across name, grader, grade, cert, rank, notes. Numbers match ±$1 on any price; use &gt;100 / &lt;500 / &gt;=20 for ranges.'>
-    <select class="filter-sel" id="slabs-grader" onchange="renderSlabs()">
-      <option value="">All Graders</option>
-      <option value="TAG">TAG</option>
-      <option value="PSA">PSA</option>
-      <option value="CGC">CGC</option>
-    </select>
-    <select class="filter-sel" id="slabs-grade" onchange="renderSlabs()">
-      <option value="">All Grades</option>
-      <option value="pristine">★ Pristine (TAG/CGC/BGS)</option>
-      <option value="10">10</option>
-      <option value="9.5">9.5</option>
-      <option value="9">9</option>
-      <option value="8.5">8.5</option>
-      <option value="8">8</option>
-      <option value="7">7</option>
-      <option value="6">6</option>
-      <option value="5">5</option>
-    </select>
+    <div class="filters-wrap" id="fw-slabs">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('slabs')" title="Filter by grader and grade">⚲ Filters<span class="filters-badge" id="filters-badge-slabs"></span></button>
+      <div class="filters-dropdown" id="fd-slabs">
+        <div class="filters-row">
+          <label class="filters-label">Grader</label>
+          <select class="fi filters-sel" id="slabs-grader" onchange="renderSlabs()">
+            <option value="">All Graders</option>
+            <option value="TAG">TAG</option>
+            <option value="PSA">PSA</option>
+            <option value="CGC">CGC</option>
+          </select>
+        </div>
+        <div class="filters-row">
+          <label class="filters-label">Grade</label>
+          <select class="fi filters-sel" id="slabs-grade" onchange="renderSlabs()">
+            <option value="">All Grades</option>
+            <option value="pristine">★ Pristine (TAG/CGC/BGS)</option>
+            <option value="10">10</option>
+            <option value="9.5">9.5</option>
+            <option value="9">9</option>
+            <option value="8.5">8.5</option>
+            <option value="8">8</option>
+            <option value="7">7</option>
+            <option value="6">6</option>
+            <option value="5">5</option>
+          </select>
+        </div>
+        <div class="filters-foot"><button type="button" onclick="resetFilters('slabs')">Reset filters</button></div>
+      </div>
+    </div>
     <button class="btn btn-sm" onclick="openTagRankHelper()" title="Open each TAG 10 / Pristine card's grading page and enter its Gem Mint rank"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;vertical-align:-3px;margin-right:4px"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M7 5H4a2 2 0 0 0 0 4h1"/><path d="M17 5h3a2 2 0 0 1 0 4h-1"/></svg>TAG Ranks</button>
     <button class="btn btn-sm" id="clear-filters-slabs" style="display:none" onclick="clearAllFilters('slabs')" title="Clear search, column filters and dropdown filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('slabs')">↓ Export CSV</button>
@@ -481,7 +493,15 @@
             <th data-col-key="dateSold"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Date" oninput="renderSales()" id="slf-date"></th>
             <th data-col-key="product"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Product" oninput="renderSales()" id="slf-product"></th>
             <th data-col-key="buyer"><input class="col-filter" placeholder="Filter..." aria-label="Filter by Buyer" oninput="renderSales()" id="slf-buyer"></th>
-            <th data-col-key="costPrice"></th><th data-col-key="totalCollected"></th><th data-col-key="shippingCost"></th><th data-col-key="fees"></th><th data-col-key="channel"></th><th data-col-key="daysHeld"></th><th data-col-key="profit"></th><th data-col-key="margin"></th><th data-col-key="actions"></th>
+            <th data-col-key="costPrice"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Cost" oninput="renderSales()" id="slf-cost"></th>
+            <th data-col-key="totalCollected"><input class="col-filter" placeholder=">50 / 100-200" title="Examples: 100 (±$1) · &gt;100 · &lt;50 · 100-200" aria-label="Filter by Revenue" oninput="renderSales()" id="slf-revenue"></th>
+            <th data-col-key="shippingCost"><input class="col-filter" placeholder=">5 / 10-30" title="Examples: 10 (±$1) · &gt;5 · &lt;30 · 10-30" aria-label="Filter by Shipping" oninput="renderSales()" id="slf-shipping"></th>
+            <th data-col-key="fees"><input class="col-filter" placeholder=">2 / 5-20" title="Examples: 5 (±$1) · &gt;2 · &lt;20 · 5-20" aria-label="Filter by Fees" oninput="renderSales()" id="slf-fees"></th>
+            <th data-col-key="channel"><select class="col-filter" aria-label="Filter by Channel" onchange="renderSales()" id="slf-channel"><option value="">All</option><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></th>
+            <th data-col-key="daysHeld"><input class="col-filter" placeholder=">30 / 10-60" title="Examples: 30 (±1) · &gt;30 · &lt;10 · 10-60" aria-label="Filter by Days Held" oninput="renderSales()" id="slf-days"></th>
+            <th data-col-key="profit"><input class="col-filter" placeholder=">50 / &lt;-20" title="Examples: 50 (±$1) · &gt;50 · &lt;-20 (losses) · 0-100" aria-label="Filter by Profit" oninput="renderSales()" id="slf-profit"></th>
+            <th data-col-key="margin"><input class="col-filter" placeholder=">20 / 10-30" title="Examples: 20 (±1%) · &gt;20 · &lt;10 · 10-30" aria-label="Filter by Margin" oninput="renderSales()" id="slf-margin"></th>
+            <th data-col-key="actions"></th>
           </tr>
         </thead>
         <tbody id="sales-body"></tbody>
@@ -673,7 +693,7 @@
           <input id="ai-chat-input" style="flex:1;background:transparent;border:none;outline:none;font-size:13px;color:var(--text);font-family:inherit" placeholder="e.g. Which slabs have the highest unrealised gain?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiAnalyst();}">
         </div>
         <button class="btn btn-primary btn-sm" onclick="sendAiAnalyst()" id="ai-send-btn" style="padding:7px 16px;font-size:13px">Send</button>
-        <button class="btn btn-sm" onclick="clearAiChat()" title="Clear chat" style="padding:7px 10px;color:var(--text3)">✕</button>
+        <button class="btn btn-sm" onclick="clearAiChat()" title="Clear chat" aria-label="Close" style="padding:7px 10px;color:var(--text3)">✕</button>
       </div>
     </div>
   </div>
@@ -900,7 +920,7 @@
     <div class="ver-head">
       <h3>🕓 Version History</h3>
       <span style="font-size:11px;color:var(--text3);margin-left:6px;font-weight:400">☁ Synced to cloud</span>
-      <button class="btn btn-ghost btn-sm" onclick="closeVerModal()" style="margin-left:auto">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeVerModal()" style="margin-left:auto" aria-label="Close">✕</button>
     </div>
     <div class="ver-list" id="ver-list"><div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">Loading versions from cloud…</div></div>
     <div class="ver-foot">
@@ -962,7 +982,7 @@
   <div class="modal" style="max-width:780px">
     <div class="modal-head">
       <h3>✦ Smart Add</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-smart-add')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-smart-add')" aria-label="Close">✕</button>
     </div>
     <div class="modal-body">
       <div id="smart-add-help" style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.7;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
@@ -997,7 +1017,7 @@
   <div class="modal">
     <div class="modal-head">
       <h3 id="modal-single-title">Add Single</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-single')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-single')" aria-label="Close">✕</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="ms-id">
@@ -1035,7 +1055,7 @@
   <div class="modal">
     <div class="modal-head">
       <h3 id="modal-slab-title">Add Slab</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-slab')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-slab')" aria-label="Close">✕</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="msl-id">
@@ -1073,7 +1093,7 @@
   <div class="modal" style="max-width:640px;display:flex;flex-direction:column;max-height:88vh">
     <div class="modal-head">
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;vertical-align:-3px;margin-right:6px"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M7 5H4a2 2 0 0 0 0 4h1"/><path d="M17 5h3a2 2 0 0 1 0 4h-1"/></svg>TAG 10 Card Ranks</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-tag-ranks')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-tag-ranks')" aria-label="Close">✕</button>
     </div>
     <div style="padding:0 20px 8px;font-size:12px;color:var(--text3);line-height:1.5">
       Open each card's TAG page, read the <strong style="color:var(--text2)">Highest Gem Mint (T)</strong> number, and type it in. Saves instantly. <span id="tag-rank-progress" style="color:var(--accent)"></span>
@@ -1089,7 +1109,7 @@
   <div class="modal" style="max-width:480px">
     <div class="modal-head">
       <h3>Mark as Sold</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-quick-sell')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-quick-sell')" aria-label="Close">✕</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="qs-table">
@@ -1120,7 +1140,7 @@
   <div class="modal">
     <div class="modal-head">
       <h3 id="msa-modal-title">Add Sale</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-sale')">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-sale')" aria-label="Close">✕</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="msa-id">
@@ -1287,17 +1307,29 @@
   <div class="inv-stats" id="kjr-etb-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="kjr-etb-search" oninput="renderEtbs()" title='Search across product, status, condition, dates, notes. Numbers match ±$1 on price; use &gt;50 / &lt;100 for ranges.'>
-    <select class="filter-sel" id="kjr-etb-status" onchange="renderEtbs()">
-      <option value="">All Status</option><option value="In Stock">In Stock</option>
-      <option value="Sold">Sold</option><option value="Traded">Traded</option>
-    </select>
-    <select class="filter-sel" id="kjr-etb-cond" onchange="renderEtbs()">
-      <option value="">All Conditions</option><option value="Mint">Mint</option>
-      <option value="Dented">Dented</option><option value="Damaged">Damaged</option>
-      <option value="Sealed">Sealed</option>
-    </select>
+    <div class="filters-wrap" id="fw-etbs">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('etbs')" title="Filter by status and condition">⚲ Filters<span class="filters-badge" id="filters-badge-etbs"></span></button>
+      <div class="filters-dropdown" id="fd-etbs">
+        <div class="filters-row">
+          <label class="filters-label">Status</label>
+          <select class="fi filters-sel" id="kjr-etb-status" onchange="renderEtbs()">
+            <option value="">All Status</option><option value="In Stock">In Stock</option>
+            <option value="Sold">Sold</option><option value="Traded">Traded</option>
+          </select>
+        </div>
+        <div class="filters-row">
+          <label class="filters-label">Condition</label>
+          <select class="fi filters-sel" id="kjr-etb-cond" onchange="renderEtbs()">
+            <option value="">All Conditions</option><option value="Mint">Mint</option>
+            <option value="Dented">Dented</option><option value="Damaged">Damaged</option>
+            <option value="Sealed">Sealed</option>
+          </select>
+        </div>
+        <div class="filters-foot"><button type="button" onclick="resetFilters('etbs')">Reset filters</button></div>
+      </div>
+    </div>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenEtbModal()">+ Add ETB</button>
-    <button class="btn btn-sm" onclick="kjrExportTsv('etbs')">↓ Export</button>
+    <button class="btn btn-sm" onclick="kjrExportCsv('etbs')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-etbs">
       <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('etbs')">⊞ Columns</button>
       <div class="col-toggle-dropdown" id="kjr-ctd-etbs"></div>
@@ -1347,13 +1379,22 @@
   </div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="kjr-bb-search" oninput="renderBoosterBoxes()" title='Search across product, status, notes, dates. Numbers match ±$1 on price.'>
-    <select class="filter-sel" id="kjr-bb-status" onchange="renderBoosterBoxes()">
-      <option value="">All Status</option><option value="Unopened Stock">Unopened Stock</option>
-      <option value="Opened">Opened</option><option value="Sold">Sold</option>
-      <option value="Reserved">Reserved</option>
-    </select>
+    <div class="filters-wrap" id="fw-boosterBoxes">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('boosterBoxes')" title="Filter by status">⚲ Filters<span class="filters-badge" id="filters-badge-boosterBoxes"></span></button>
+      <div class="filters-dropdown" id="fd-boosterBoxes">
+        <div class="filters-row">
+          <label class="filters-label">Status</label>
+          <select class="fi filters-sel" id="kjr-bb-status" onchange="renderBoosterBoxes()">
+            <option value="">All Status</option><option value="Unopened Stock">Unopened Stock</option>
+            <option value="Opened">Opened</option><option value="Sold">Sold</option>
+            <option value="Reserved">Reserved</option>
+          </select>
+        </div>
+        <div class="filters-foot"><button type="button" onclick="resetFilters('boosterBoxes')">Reset filters</button></div>
+      </div>
+    </div>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBbModal()">+ Add Booster Box</button>
-    <button class="btn btn-sm" onclick="kjrExportTsv('boosterBoxes')">↓ Export</button>
+    <button class="btn btn-sm" onclick="kjrExportCsv('boosterBoxes')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-boosterBoxes">
       <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('boosterBoxes')">⊞ Columns</button>
       <div class="col-toggle-dropdown" id="kjr-ctd-boosterBoxes"></div>
@@ -1394,13 +1435,22 @@
   </div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="kjr-bp-search" oninput="renderBoosterPacks()" title='Search across product, status, notes, dates. Numbers match ±$1 on price.'>
-    <select class="filter-sel" id="kjr-bp-status" onchange="renderBoosterPacks()">
-      <option value="">All Status</option><option value="Sealed">Sealed</option>
-      <option value="Opened">Opened</option><option value="Sold">Sold</option>
-      <option value="Reserved">Reserved</option>
-    </select>
+    <div class="filters-wrap" id="fw-boosterPacks">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('boosterPacks')" title="Filter by status">⚲ Filters<span class="filters-badge" id="filters-badge-boosterPacks"></span></button>
+      <div class="filters-dropdown" id="fd-boosterPacks">
+        <div class="filters-row">
+          <label class="filters-label">Status</label>
+          <select class="fi filters-sel" id="kjr-bp-status" onchange="renderBoosterPacks()">
+            <option value="">All Status</option><option value="Sealed">Sealed</option>
+            <option value="Opened">Opened</option><option value="Sold">Sold</option>
+            <option value="Reserved">Reserved</option>
+          </select>
+        </div>
+        <div class="filters-foot"><button type="button" onclick="resetFilters('boosterPacks')">Reset filters</button></div>
+      </div>
+    </div>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBpModal()">+ Add Pack</button>
-    <button class="btn btn-sm" onclick="kjrExportTsv('boosterPacks')">↓ Export</button>
+    <button class="btn btn-sm" onclick="kjrExportCsv('boosterPacks')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-boosterPacks">
       <button class="btn btn-sm col-toggle-btn" onclick="kjrToggleColMenu('boosterPacks')">⊞ Columns</button>
       <div class="col-toggle-dropdown" id="kjr-ctd-boosterPacks"></div>
@@ -1440,18 +1490,27 @@
   <div class="inv-stats" id="kjr-ebay-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="kjr-ebay-search" oninput="renderEbayPurchases()" title='Search across product, status, tracking, dates. Numbers match ±$1 on USD/freight/total.'>
-    <select class="filter-sel" id="kjr-ebay-status" onchange="renderEbayPurchases()">
-      <option value="">All Status</option>
-      <option value="Paid">Paid</option>
-      <option value="Shipping to Buyandship">Shipping to Buyandship</option>
-      <option value="At Buyandship">At Buyandship</option>
-      <option value="Ready to Consolidate">Ready to Consolidate</option>
-      <option value="Shipping to Singapore">Shipping to Singapore</option>
-      <option value="Completed">Completed</option>
-      <option value="Cancelled">Cancelled</option>
-    </select>
+    <div class="filters-wrap" id="fw-ebay">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('ebay')" title="Filter by status">⚲ Filters<span class="filters-badge" id="filters-badge-ebay"></span></button>
+      <div class="filters-dropdown" id="fd-ebay">
+        <div class="filters-row">
+          <label class="filters-label">Status</label>
+          <select class="fi filters-sel" id="kjr-ebay-status" onchange="renderEbayPurchases()">
+            <option value="">All Status</option>
+            <option value="Paid">Paid</option>
+            <option value="Shipping to Buyandship">Shipping to Buyandship</option>
+            <option value="At Buyandship">At Buyandship</option>
+            <option value="Ready to Consolidate">Ready to Consolidate</option>
+            <option value="Shipping to Singapore">Shipping to Singapore</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div class="filters-foot"><button type="button" onclick="resetFilters('ebay')">Reset filters</button></div>
+      </div>
+    </div>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenEbayModal()">+ Add Purchase</button>
-    <button class="btn btn-sm" onclick="kjrExportTsv('ebayPurchases')">↓ Export</button>
+    <button class="btn btn-sm" onclick="kjrExportCsv('ebayPurchases')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-ebay">
       <button class="btn btn-sm col-toggle-btn" onclick="kjrEbayToggleColMenu()">⊞ Columns</button>
       <div class="col-toggle-dropdown" id="ctd-ebay"></div>
@@ -1525,7 +1584,7 @@
   <div class="kjr-complete-modal">
     <div class="kjr-complete-head">
       <h3>📥 Confirm Completion - push items into inventory</h3>
-      <button class="btn btn-ghost btn-sm" onclick="kjrCloseCompleteModal()">✕</button>
+      <button class="btn btn-ghost btn-sm" onclick="kjrCloseCompleteModal()" aria-label="Close">✕</button>
     </div>
     <div id="kjr-complete-body" class="kjr-complete-body"></div>
     <div class="kjr-complete-foot">
@@ -1593,7 +1652,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.33"></script>
-<script src="features.js?v=3.33"></script>
+<script src="app.js?v=3.34"></script>
+<script src="features.js?v=3.34"></script>
 </body>
 </html>

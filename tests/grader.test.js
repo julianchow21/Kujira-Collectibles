@@ -1,8 +1,8 @@
 'use strict';
 // Suite 5: grader - _resolveGrader against the 7 documented messy shapes
 // (app.js comment ~4351-4358) plus PSA-never-pristine, BGS pristine/black
-// label, unknown grader passthrough, and graderBadge/graderGradeBadge/
-// _graderClass mapping sanity.
+// label, unknown grader passthrough, and graderGradeBadge/_graderClass
+// mapping sanity.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp, plain } = require('./harness.js');
@@ -92,15 +92,6 @@ test('grader: _resolveGrader - unknown grader passes through with empty canonica
   assert.strictEqual(r.grader, '');
   assert.strictEqual(r.grade, '7');
   assert.deepStrictEqual(plain(r.raw), { grader: 'UnknownGrader', grade: '7' }, 'raw input preserved for callers that want the original values');
-});
-
-test('grader: graderBadge() - class mapping (TAG/PSA/CGC distinct, everything else generic b-slab)', async () => {
-  const { ctx } = await loadApp();
-  assert.match(ctx.graderBadge('TAG', '10'), /b-tag/);
-  assert.match(ctx.graderBadge('PSA', '10'), /b-psa/);
-  assert.match(ctx.graderBadge('CGC', '10'), /b-cgc/);
-  assert.match(ctx.graderBadge('BGS', '10'), /b-slab/, 'BGS has no dedicated colour in graderBadge, falls into the generic bucket');
-  assert.match(ctx.graderBadge('PSA', '10', 'PRISTINE'), /PRISTINE| P</, 'graderBadge just appends " P" for a PRISTINE note, no dedicated pristine class (that is graderGradeBadge\'s job)');
 });
 
 test('grader: _graderClass() - same TAG/PSA/CGC/generic mapping used by graderGradeBadge', async () => {

@@ -659,7 +659,6 @@ function migrateData() {
   if (dirty) {
     // Update localStorage only - no cloud re-upload triggered
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {}
-    console.log('migrateData: patched records in local cache');
   }
 }
 
@@ -973,7 +972,6 @@ async function initDB() {
     } else {
       // Cloud returned 0 but we have local - local might have unsync'd data, push it up
       setSyncStatus('ok');
-      console.log('Cloud empty but local has data - pushing local up');
       await saveAllToSupabase();
     }
 
@@ -1058,7 +1056,6 @@ async function initDB() {
                        (_dirty.etbs?.size||0) + (_dirty.boosterBoxes?.size||0) +
                        (_dirty.boosterPacks?.size||0) + (_dirty.ebayPurchases?.size||0);
     if (dirtyCount > 0) {
-      console.log('Retrying ' + dirtyCount + ' pending dirty items from previous session');
       setTimeout(() => _flushDirtyToSupabase(), 2000);
     }
 
@@ -1491,32 +1488,45 @@ function toggleFiltersMenu(table) {
   if (!isOpen) { wrap.classList.add('open'); updateFiltersBadge(table); }
 }
 
-// Show a count of active filters on the Filters button (status 'available'
-// is the default, so it doesn't count as an active filter).
+// Per-table config for the consolidated Filters popover: which <select>
+// ids live inside it, and each one's "no filter active" default value.
+const _FILTERS_POPOVER = {
+  singles:      [{ id: 'singles-lang', def: '' }, { id: 'singles-type', def: '' }, { id: 'singles-status-filter', def: 'available' }],
+  slabs:        [{ id: 'slabs-grader', def: '' }, { id: 'slabs-grade', def: '' }],
+  etbs:         [{ id: 'kjr-etb-status', def: '' }, { id: 'kjr-etb-cond', def: '' }],
+  boosterBoxes: [{ id: 'kjr-bb-status', def: '' }],
+  boosterPacks: [{ id: 'kjr-bp-status', def: '' }],
+  ebay:         [{ id: 'kjr-ebay-status', def: '' }]
+};
+
+// Show a count of active filters on the Filters button (each select's
+// configured default, e.g. status 'available', doesn't count as active).
 function updateFiltersBadge(table) {
   const badge = document.getElementById('filters-badge-' + table);
   if (!badge) return;
+  const cfg = _FILTERS_POPOVER[table] || [];
   let n = 0;
-  if (table === 'singles') {
-    if ((document.getElementById('singles-lang') || {}).value) n++;
-    if ((document.getElementById('singles-type') || {}).value) n++;
-    const st = (document.getElementById('singles-status-filter') || {}).value;
-    if (st && st !== 'available') n++;
-  }
+  cfg.forEach(f => {
+    const el = document.getElementById(f.id);
+    const val = el ? el.value : '';
+    if (val && val !== f.def) n++;
+  });
   badge.textContent = n ? String(n) : '';
 }
 
-function resetSinglesFilters() {
-  const lang = document.getElementById('singles-lang');
-  const type = document.getElementById('singles-type');
-  const st   = document.getElementById('singles-status-filter');
-  if (lang) lang.value = '';
-  if (type) type.value = '';
-  if (st)   st.value = 'available';
-  // Dispatch change so the mobile segmented mirrors rebuild and the table re-renders.
-  [lang, type, st].forEach(s => s && s.dispatchEvent(new Event('change', { bubbles: true })));
-  updateFiltersBadge('singles');
+// Generic "Reset filters" for any table's Filters popover: restores every
+// select to its configured default and dispatches change so the mobile
+// segmented mirrors rebuild and the table re-renders.
+function resetFilters(table) {
+  const cfg = _FILTERS_POPOVER[table];
+  if (!cfg) return;
+  const els = cfg.map(f => document.getElementById(f.id));
+  cfg.forEach((f, i) => { if (els[i]) els[i].value = f.def; });
+  els.forEach(el => el && el.dispatchEvent(new Event('change', { bubbles: true })));
+  updateFiltersBadge(table);
 }
+
+function resetSinglesFilters() { resetFilters('singles'); }
 
 function setAllCols(table, visible) {
   COL_DEFS[table].forEach(col => {
@@ -1867,14 +1877,14 @@ function previewSmartAdd() {
     const typeCls   = p.type === 'slab' ? 'slab' : p.type === 'sealed' ? 'sealed' : 'raw';
     let meta = [];
     if (p.type === 'slab') {
-      meta.push(p.grader + ' ' + p.grade);
-      if (p.certNo) meta.push('Cert: ' + p.certNo);
-      if (p.rank)   meta.push('Rank: ' + p.rank);
+      meta.push(esc(p.grader) + ' ' + esc(p.grade));
+      if (p.certNo) meta.push('Cert: ' + esc(p.certNo));
+      if (p.rank)   meta.push('Rank: ' + esc(p.rank));
     }
-    meta.push(p.language);
-    if (p.type !== 'slab') meta.push(p.condition);
+    meta.push(esc(p.language));
+    if (p.type !== 'slab') meta.push(esc(p.condition));
     if (p.qty > 1) meta.push('Qty: ' + p.qty);
-    if (p.set) meta.push('Set: ' + p.set);
+    if (p.set) meta.push('Set: ' + esc(p.set));
     // Cost only - that's the entry-time field. Market & Carousell are
     // set later via the inline column editors on the Singles/Slabs tabs.
     if (p.costPrice !== '' && p.costPrice !== undefined) meta.push('<strong style="color:var(--text)">Cost: S$' + p.costPrice + '</strong>');
@@ -3303,6 +3313,7 @@ async function markStatus(table, id, status) {
         if (idx >= 0) {
           DB.sales.splice(idx, 1);
           markDirty('sales', s.id);
+          sendToTrash('sales', s, 'item-re-availed').catch(() => {});
           sbDelete('sales', s.id).catch(()=>{});
           clLog('delete', 'sales', s.product, 'auto-removed (item re-availed)');
         }
@@ -3780,7 +3791,7 @@ function _renderHealthResults(findings){
     <div class="modal" style="max-width:760px;max-height:85vh">
       <div class="modal-head">
         <h3 style="display:flex;align-items:center;gap:8px"><span style="color:${overallColor};font-size:18px">${overallIcon}</span> Data Health Check</h3>
-        <button class="btn btn-ghost btn-sm" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">✕</button>
+        <button class="btn btn-ghost btn-sm" aria-label="Close" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">✕</button>
       </div>
       <div class="modal-body">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-radius:8px;background:var(--bg3);border:1px solid var(--border)">
@@ -3863,6 +3874,20 @@ function applySortHeaders(tableId, table) {
     }
   });
 }
+
+// Keyboard access for sortable column headers: make each th.sortable a tab
+// stop and let Enter/Space trigger the same click handler mouse users get.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('th.sortable').forEach(th => { th.tabIndex = 0; });
+});
+document.addEventListener('keydown', e => {
+  const th = e.target.closest && e.target.closest('th.sortable');
+  if (!th) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (e.key === ' ') e.preventDefault(); // stop page scroll
+    th.click();
+  }
+});
 
 // Date columns across the whole app - sort these chronologically via dateToMs
 // instead of lexicographically, otherwise "31 Aug 2025" sorts after "30 Oct
@@ -3966,7 +3991,7 @@ const _FILTER_INPUTS = {
              sels:['singles-lang','singles-type'], statusSel:'singles-status-filter' },
   slabs:   { search:'slabs-search', cols:['slbf-name','slbf-cost','slbf-mkt','slbf-list','slbf-grade','slbf-cert','slbf-rank','slbf-lang','slbf-date'],
              sels:['slabs-grader','slabs-grade'], statusSel:null },
-  sales:   { search:'sales-search', cols:['slf-date','slf-product','slf-buyer'], sels:[], statusSel:null }
+  sales:   { search:'sales-search', cols:['slf-date','slf-product','slf-buyer','slf-cost','slf-revenue','slf-shipping','slf-fees','slf-days','slf-profit','slf-margin'], sels:['slf-channel'], statusSel:null }
 };
 function _hasActiveFilters(table) {
   const cfg = _FILTER_INPUTS[table];
@@ -4376,13 +4401,6 @@ function pnlHtml(cost, market) {
   const pctSign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
   return '<span class="' + cls + '">' + fmtSigned(diff) + ' (' + pctSign + Math.abs(parseFloat(pct)) + '%)</span>';
 }
-function graderBadge(grader, grade, notes) {
-  const g = (grader||'').toUpperCase();
-  const cls = g === 'TAG' ? 'b-tag' : g === 'PSA' ? 'b-psa' : g === 'CGC' ? 'b-cgc' : 'b-slab';
-  const pr = (notes||'').includes('PRISTINE') ? ' P' : '';
-  return '<span class="badge ' + cls + '">' + g + ' ' + (grade||'').trim() + pr + '</span>';
-}
-
 // ═════════════ GRADER/GRADE RESOLVER ═════════════════════════════════
 // Single source of truth for interpreting slab grader + grade values.
 // Real-world data has the same logical "PSA 10" stored as ANY of:
@@ -4453,7 +4471,7 @@ function graderGradeBadge(grader, grade, notes) {
   const pristineMark  = r.pristine ? ' ★' : '';
   const title         = r.pristine ? ' title="' + (r.grader || 'Slab') + ' Pristine 10 - top-pop subgrade"' : '';
   return '<span class="badge ' + cls + '"' + title + ' style="font-size:13px;font-weight:600;letter-spacing:0.2px;padding:3px 10px">' +
-    displayGrader + ' ' + displayGrade + pristineMark + '</span>';
+    esc(displayGrader) + ' ' + esc(displayGrade) + pristineMark + '</span>';
 }
 
 // =========== SINGLES ===========
@@ -4875,7 +4893,7 @@ async function fetchTrash() {
     return await sbFetchPaged('trash', 'select=id,data,updated_at&order=updated_at.desc', 30000);
   } catch(e) {
     console.warn('Fetch trash failed:', e);
-    return [];
+    return null; // signals a failed fetch, distinct from a genuinely empty trash
   }
 }
 
@@ -4896,6 +4914,7 @@ async function hardDeleteTrashEntry(trashId) {
 
 async function restoreFromTrash(trashId) {
   const entries = await fetchTrash();
+  if (entries === null) { toastError('Could not reach Trash - check your connection and retry'); return; }
   const entry   = entries.find(e => e.id === trashId);
   if (!entry) { toastError('Trash entry not found'); return; }
   const { originalTable, item } = entry.data;
@@ -4974,6 +4993,7 @@ async function restoreFromTrash(trashId) {
 
 async function emptyTrash() {
   const entries = await fetchTrash();
+  if (entries === null) { toastError('Could not reach Trash - check your connection and retry'); return; }
   if (!entries.length) { toast('Trash is already empty'); return; }
   if (!await kjrConfirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.', {ok:'Delete all', danger:true})) return;
   try {
@@ -4988,6 +5008,7 @@ async function emptyTrash() {
 
 async function purgeExpiredTrash() {
   const entries = await fetchTrash();
+  if (entries === null) return; // fetch failed - don't purge on unknown state
   const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
   for (const e of entries) {
     const deletedAt = new Date(e.data?.deletedAt || e.updated_at).getTime();
@@ -5002,6 +5023,11 @@ function renderTrash() {
   list.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading trash…</div></div>';
 
   fetchTrash().then(entries => {
+    if (entries === null) {
+      if (stats) stats.textContent = '';
+      list.innerHTML = '<div class="hig-empty"><div class="hig-empty-icon">⚠</div><div class="hig-empty-title">Couldn\'t load Trash</div><div class="hig-empty-sub">Check your connection and retry.</div></div>';
+      return;
+    }
     const filter = document.getElementById('trash-filter-type')?.value || '';
     const filtered = filter ? entries.filter(e => e.data?.originalTable === filter) : entries;
     if (stats) stats.textContent = filtered.length + ' deleted item' + (filtered.length !== 1 ? 's' : '') + ' · auto-purged after 30 days';
@@ -5615,6 +5641,14 @@ function renderSales() {
   const fDate    = colFilter('slf-date');
   const fProduct = colFilter('slf-product');
   const fBuyer   = colFilter('slf-buyer');
+  const fCost     = colFilter('slf-cost');
+  const fRevenue  = colFilter('slf-revenue');
+  const fShipping = colFilter('slf-shipping');
+  const fFees     = colFilter('slf-fees');
+  const fChannel  = colFilter('slf-channel');
+  const fDays     = colFilter('slf-days');
+  const fProfit   = colFilter('slf-profit');
+  const fMargin   = colFilter('slf-margin');
 
   let items = DB.sales.filter(i => {
     // Universal search across product / buyer / date / numeric (revenue,
@@ -5623,6 +5657,14 @@ function renderSales() {
     if (fDate    && !kjrMatchDateFilter(fDate, i.dateSold)) return false;
     if (fProduct && !(i.product||'').toLowerCase().includes(fProduct)) return false;
     if (fBuyer   && !(i.buyer||'').toLowerCase().includes(fBuyer)) return false;
+    if (fCost     && !kjrMatchNumFilter(fCost, i.costPrice))         return false;
+    if (fRevenue  && !kjrMatchNumFilter(fRevenue, i.totalCollected)) return false;
+    if (fShipping && !kjrMatchNumFilter(fShipping, i.shippingCost))  return false;
+    if (fFees     && !kjrMatchNumFilter(fFees, i.fees))              return false;
+    if (fChannel  && (i.channel || 'Carousell').toLowerCase() !== fChannel) return false;
+    if (fDays     && !kjrMatchNumFilter(fDays, i.daysHeld))          return false;
+    if (fProfit   && !kjrMatchNumFilter(fProfit, i.profit))          return false;
+    if (fMargin   && !kjrMatchNumFilter(fMargin, i.margin))          return false;
     return true;
   });
 
@@ -5648,7 +5690,7 @@ function renderSales() {
   
   const tbody = document.getElementById('sales-body');
   if (!items.length) {
-    const _filtered = !!(q || fDate || fProduct || fBuyer);
+    const _filtered = !!(q || fDate || fProduct || fBuyer || fCost || fRevenue || fShipping || fFees || fChannel || fDays || fProfit || fMargin);
     const _colCount = tbody.previousElementSibling ? tbody.previousElementSibling.querySelectorAll('th').length : 13;
     tbody.innerHTML = kjrInvEmptyRow({
       colspan: _colCount,
@@ -5699,7 +5741,7 @@ function renderSales() {
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('sales', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.product||'row') + '" onchange="toggleRowSelect(\'sales\',\'' + safeId + '\',this.checked)"></td>' +
-      '<td data-col-key="dateSold" style="font-size:12px;white-space:nowrap;color:var(--text2)">' + (toDateMmmYyyy(i.dateSold)||'-').replace(/ (\d{4})$/, '<span class="sales-yr"> $1</span>') + '</td>' +
+      '<td data-col-key="dateSold" style="font-size:12px;white-space:nowrap;color:var(--text2)">' + esc(toDateMmmYyyy(i.dateSold)||'-').replace(/ (\d{4})$/, '<span class="sales-yr"> $1</span>') + '</td>' +
       '<td data-col-key="product" style="max-width:220px;font-weight:500;text-align:left">' +
         '<div style="display:flex;align-items:center;gap:5px">' +
           '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative" class="sale-product-cell">' +
@@ -5967,7 +6009,7 @@ function showMarketValueBreakdown() {
       '<div class="modal" style="max-width:780px;width:95vw">' +
         '<div class="modal-head">' +
           '<h3>Total Market Value · breakdown</h3>' +
-          '<button class="btn btn-ghost btn-sm" onclick="kjrModalCtrl.close(document.getElementById(\'mvbreakdown-modal\'), true)">✕</button>' +
+          '<button class="btn btn-ghost btn-sm" aria-label="Close" onclick="kjrModalCtrl.close(document.getElementById(\'mvbreakdown-modal\'), true)">✕</button>' +
         '</div>' +
         '<div class="modal-body" style="max-height:70vh;overflow-y:auto">' +
           '<div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">' +
@@ -6460,9 +6502,6 @@ function _resetEphemeralUi(){
   const aiIcon = document.getElementById('ai-panel-toggle-icon');
   if (aiBody) aiBody.style.display = 'none';
   if (aiIcon) aiIcon.textContent = '▼ Show';
-  // GitHub push modal
-  const gh = document.getElementById('gh-modal-overlay');
-  if (gh) gh.style.display = 'none';
   // API settings modal (re-injected each time it's opened, so just remove)
   const apiM = document.getElementById('api-key-modal');
   if (apiM) apiM.remove();
@@ -6480,12 +6519,6 @@ function _resetEphemeralUi(){
   document.querySelectorAll('.bulk-bar').forEach(b => b.classList.remove('show'));
   // Column-visibility dropdowns
   document.querySelectorAll('.col-toggle-wrap').forEach(w => w.classList.remove('open'));
-  // Reset the GitHub push button text if it was stuck on "Pushing…"
-  const ghBtn = document.querySelector('#gh-modal-overlay button[onclick*="pushToGithub"]');
-  if (ghBtn && /pushing/i.test(ghBtn.textContent)) {
-    ghBtn.textContent = '🚀 Push to GitHub';
-    ghBtn.disabled = false;
-  }
   // Clear any "Pushing…" status text
   const ghStatus = document.getElementById('gh-status');
   if (ghStatus && /pushing|encoding/i.test(ghStatus.textContent || '')) ghStatus.textContent = '';
@@ -6503,8 +6536,6 @@ function _buildCleanPushHtml(){
   // Close every overlay-style modal
   $('.overlay, .ver-overlay, .nav-dd').forEach(el => { if (el.tagName === 'DIALOG') el.removeAttribute('open'); else el.classList.remove('open'); });
   $('dialog[open]').forEach(el => el.removeAttribute('open'));
-  // Hide the GitHub push modal (style-driven instead of class)
-  const gh = $1('#gh-modal-overlay'); if (gh) gh.style.display = 'none';
   // Strip injected-on-open modals entirely
   ['#api-key-modal', '#health-overlay'].forEach(s => { const el = $1(s); if (el) el.remove(); });
   // Wipe AI chat & visualisation panels - these can carry sensitive data
@@ -9808,9 +9839,9 @@ function applyTheme(mode) {
   }
   // Keep the browser chrome (status bar / task switcher) in step with the
   // active theme. Light hex is the actual html.light --bg token (v3.0
-  // palette, #F6F4EE); dark matches the static <meta> default (#0f0f0f).
+  // palette, #F6F4EE); dark matches the html:not(.light) --bg token (#12101F).
   const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.content = isLight ? '#F6F4EE' : '#0f0f0f';
+  if (themeMeta) themeMeta.content = isLight ? '#F6F4EE' : '#12101F';
 }
 
 function toggleTheme() {

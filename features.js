@@ -314,13 +314,14 @@ function kjrStatCard(label, value, tooltip){
 }
 
 // ═════════════ Sort state ═════════════
-const _kjrSort = { etbs:{k:null,dir:1}, boosterBoxes:{k:null,dir:1}, ebayPurchases:{k:null,dir:1} };
+const _kjrSort = { etbs:{k:null,dir:1}, boosterBoxes:{k:null,dir:1}, boosterPacks:{k:null,dir:1}, ebayPurchases:{k:null,dir:1} };
 function kjrSort(dbKey, k){
   const s = _kjrSort[dbKey];
   s.dir = (s.k === k) ? -s.dir : 1;
   s.k = k;
   if (dbKey === 'etbs') renderEtbs();
   else if (dbKey === 'boosterBoxes') renderBoosterBoxes();
+  else if (dbKey === 'boosterPacks') renderBoosterPacks();
   else if (dbKey === 'ebayPurchases') renderEbayPurchases();
 }
 // Default A→Z sort key for the kjr-style tabs.
@@ -642,18 +643,24 @@ async function kjrDeleteRow(dbKey, id){
   });
 }
 
-// ═════════════ Export TSV (consistent with the Import format) ═════════════
-function kjrExportTsv(dbKey){
+// ═════════════ Export CSV (consistent with Singles/Slabs/Sales) ═════════════
+// RFC-style quoting: a field is only wrapped in quotes when it contains a
+// comma, quote or newline, with internal quotes doubled.
+function _kjrCsvField(v){
+  const s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function kjrExportCsv(dbKey){
   const rows = DB[dbKey] || [];
   if (!rows.length) { toast && toast('Nothing to export'); return; }
   const cols = rows.reduce((set, r) => { Object.keys(r).forEach(k => k !== 'id' && set.add(k)); return set; }, new Set());
   const colList = [...cols];
-  const lines = [colList.join('\t')];
-  rows.forEach(r => lines.push(colList.map(c => String(r[c]==null?'':r[c]).replace(/[\t\n]/g, ' ')).join('\t')));
-  const blob = new Blob([lines.join('\n')], { type: 'text/tab-separated-values' });
+  const lines = [colList.map(_kjrCsvField).join(',')];
+  rows.forEach(r => lines.push(colList.map(c => _kjrCsvField(r[c])).join(',')));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = dbKey + '_' + new Date().toISOString().slice(0,10) + '.tsv';
+  a.href = url; a.download = dbKey + '_' + new Date().toISOString().slice(0,10) + '.csv';
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -798,7 +805,9 @@ function renderEtbs(){
           sub: 'Track Elite Trainer Boxes here, cost, market and Carousell price side by side.',
           ctaLabel: '+ Add ETB', ctaAction: 'kjrOpenEtbModal()' });
   } else if (inStock.length === 0) {
-    body = '<tr><td colspan="8" style="color:var(--text3);padding:18px;text-align:center">No In-Stock ETBs.</td></tr>';
+    body = kjrInvEmptyRow({ colspan: 8, filtered: false, icon: '📦', title: 'No In-Stock ETBs',
+      sub: 'All tracked ETBs are marked Sold or Traded. Expand Sold / Traded below to see them.',
+      ctaLabel: '+ Add ETB', ctaAction: 'kjrOpenEtbModal()' });
   }
   body += kjrSoldToggleRow('etbs', inactive.length, 8);
   if (_kjrSoldOpen.etbs) body += inactive.map(r => rowHtml(r, true)).join('');
@@ -806,6 +815,7 @@ function renderEtbs(){
   // Apply saved column order + wire header drag for this table
   if (typeof _kjrColApply === 'function')  _kjrColApply('etbs');
   if (typeof _kjrColAttach === 'function') _kjrColAttach('etbs');
+  if (typeof updateFiltersBadge === 'function') updateFiltersBadge('etbs');
 }
 
 // ═════════════ Booster Boxes ═════════════
@@ -896,13 +906,16 @@ function renderBoosterBoxes(){
           sub: 'Track sealed Booster Boxes here, cost, market and Carousell price side by side.',
           ctaLabel: '+ Add Booster Box', ctaAction: 'kjrOpenBbModal()' });
   } else if (active.length === 0) {
-    body = '<tr><td colspan="10" style="color:var(--text3);padding:18px;text-align:center">No unopened booster boxes.</td></tr>';
+    body = kjrInvEmptyRow({ colspan: 10, filtered: false, icon: '📦', title: 'No Unopened Booster Boxes',
+      sub: 'All tracked Booster Boxes are marked Sold or Traded. Expand Sold / Traded below to see them.',
+      ctaLabel: '+ Add Booster Box', ctaAction: 'kjrOpenBbModal()' });
   }
   body += kjrSoldToggleRow('boosterBoxes', inactive.length, 10);
   if (_kjrSoldOpen.boosterBoxes) body += inactive.map(r => rowHtml(r, true)).join('');
   document.getElementById('kjr-bb-body').innerHTML = body;
   if (typeof _kjrColApply === 'function')  _kjrColApply('boosterBoxes');
   if (typeof _kjrColAttach === 'function') _kjrColAttach('boosterBoxes');
+  if (typeof updateFiltersBadge === 'function') updateFiltersBadge('boosterBoxes');
 }
 
 // ═════════════ eBay Purchases ═════════════
@@ -1362,7 +1375,9 @@ function renderEbayPurchases(){
           sub: 'Track eBay buys through the Buyandship pipeline, from Paid to Completed.',
           ctaLabel: '+ Add Purchase', ctaAction: 'kjrOpenEbayModal()' });
   } else if (active.length === 0) {
-    body = '<tr><td colspan="11" style="color:var(--text3);padding:18px;text-align:center">Nothing in transit - all received or cancelled.</td></tr>';
+    body = kjrInvEmptyRow({ colspan: 11, filtered: false, icon: '📮', title: 'Nothing In Transit',
+      sub: 'All eBay purchases are Completed or Cancelled. Expand Completed below to see them.',
+      ctaLabel: '+ Add Purchase', ctaAction: 'kjrOpenEbayModal()' });
   }
   body += kjrSoldToggleRow('ebayPurchases', inactive.length, 11);
   if (_kjrSoldOpen.ebayPurchases) body += inactive.map(r => rowHtml(r, true)).join('');
@@ -1371,6 +1386,7 @@ function renderEbayPurchases(){
   _kjrApplyEbayColVisibility();
   if (typeof _kjrApplyEbayColOrder === 'function') _kjrApplyEbayColOrder();
   if (typeof _kjrEbayAttachHeaderDrag === 'function') _kjrEbayAttachHeaderDrag();
+  if (typeof updateFiltersBadge === 'function') updateFiltersBadge('ebay');
 }
 
 function kjrCopyTracking(btn, text) {
@@ -1498,6 +1514,7 @@ function kjrEbayBulkAdvanceSelected(){
 function kjrEbayInlineEdit(id, field, value){
   const p = (DB.ebayPurchases || []).find(r => r.id === id);
   if (!p) return;
+  if (typeof snapshotForUndo === 'function') snapshotForUndo();
   const v = parseFloat(value);
   p[field] = isNaN(v) ? '' : v;
   // If the user is editing the total SGD field directly inline, that's an
@@ -1596,7 +1613,7 @@ const _KJR_GENERIC_TABLES = {
                   defaultOrder: ['date','product','unitPrice','qty','totalPrice','marketPrice','carousellPrice','status','notes','actions'],
                   locked: new Set(['actions']) },
   boosterPacks: { tableId: 'kjr-bp-table',  lsKey: 'pokeinv_bp_col_order',
-                  defaultOrder: ['date','product','unitPrice','qty','totalPrice','status','notes','actions'],
+                  defaultOrder: ['date','product','unitPrice','qty','totalPrice','marketPrice','carousellPrice','status','notes','actions'],
                   locked: new Set(['actions']) },
 };
 function _kjrColLoad(tbl){
@@ -2321,9 +2338,6 @@ function kjrMarkCompleted(id){ return kjrOpenCompleteModal(id); }
   }, 1500));
 })();
 // ═════════════ Booster Packs ═════════════
-// Sort state for the new key
-_kjrSort.boosterPacks = { k:null, dir:1 };
-
 const KJR_BP_FIELDS = [
   { key:'date',       label:'Date',         type:'date' },
   { key:'product',    label:'Product',      type:'text' },
@@ -2391,13 +2405,16 @@ function renderBoosterPacks(){
           sub: 'Track sealed Booster Packs here, cost, market and Carousell price side by side.',
           ctaLabel: '+ Add Pack', ctaAction: 'kjrOpenBpModal()' });
   } else if (active.length === 0) {
-    body = '<tr><td colspan="10" style="color:var(--text3);padding:18px;text-align:center">No sealed booster packs.</td></tr>';
+    body = kjrInvEmptyRow({ colspan: 10, filtered: false, icon: '📦', title: 'No Sealed Booster Packs',
+      sub: 'All tracked Booster Packs are marked Sold or Traded. Expand Sold / Traded below to see them.',
+      ctaLabel: '+ Add Pack', ctaAction: 'kjrOpenBpModal()' });
   }
   body += kjrSoldToggleRow('boosterPacks', inactive.length, 10);
   if (_kjrSoldOpen.boosterPacks) body += inactive.map(r => rowHtml(r, true)).join('');
   document.getElementById('kjr-bp-body').innerHTML = body;
   if (typeof _kjrColApply === 'function')  _kjrColApply('boosterPacks');
   if (typeof _kjrColAttach === 'function') _kjrColAttach('boosterPacks');
+  if (typeof updateFiltersBadge === 'function') updateFiltersBadge('boosterPacks');
 }
 
 // ═════════════ Hook into showPage ═════════════

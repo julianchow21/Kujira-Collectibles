@@ -974,7 +974,7 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 dialog.cmd-overlay{border:none;background:transparent;padding:0;padding-top:80px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-start;justify-content:center}
 dialog.cmd-overlay[open]{display:flex}
 dialog.cmd-overlay::backdrop{background:var(--backdrop)}
-.cmd-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:100%;max-width:620px;box-shadow:var(--shadow-lg);overflow:hidden}
+.cmd-box{background:var(--bg2);color:var(--text);border:1px solid var(--border2);border-radius:var(--radius-lg);width:100%;max-width:620px;box-shadow:var(--shadow-lg);overflow:hidden}
 /* Mobile: vertically centre the Quick Entry popup. Placed after the base
    .cmd-overlay rule so it wins by source order (the earlier mobile block is
    overridden by the base rule). Desktop keeps its top-pinned position. */

@@ -2137,13 +2137,39 @@ function cmdSellSearch() {
   const bbs     = (DB.boosterBoxes||[]) .filter(i => kjrIsActiveStatus('boosterBoxes', i.status) && allMatch(haystackSealed(i)));
   const bps     = (DB.boosterPacks||[]) .filter(i => kjrIsActiveStatus('boosterPacks', i.status) && allMatch(haystackSealed(i)));
 
-  cmdSellResults = [
-    ...slabs  .map(i => ({ ...i, _table: 'slabs' })),    // slabs first - usually highest value
-    ...singles.map(i => ({ ...i, _table: 'singles' })),
-    ...etbs   .map(i => ({ ...i, _table: 'etbs' })),
-    ...bbs    .map(i => ({ ...i, _table: 'boosterBoxes' })),
-    ...bps    .map(i => ({ ...i, _table: 'boosterPacks' })),
-  ].slice(0, 15);
+  // Sort each group by cost descending (highest cost first), using the same
+  // field renderCmdSellResults shows on the "Cost: S$..." sub-line per table.
+  // Missing/unparseable cost sorts last, never NaN-shuffles the list.
+  const _cmdSellCostField = t => t === 'boosterPacks' ? 'unitPrice'
+    : (t === 'etbs' || t === 'boosterBoxes') ? 'totalPrice'
+    : 'costPrice';
+  const _cmdSellSortByCost = (arr, table) => {
+    const field = _cmdSellCostField(table);
+    return arr.slice().sort((a, b) => {
+      const ca = parseFloat(a[field]);
+      const cb = parseFloat(b[field]);
+      const va = isNaN(ca) ? -Infinity : ca;
+      const vb = isNaN(cb) ? -Infinity : cb;
+      return vb - va;
+    });
+  };
+
+  const sortedSlabs   = _cmdSellSortByCost(slabs, 'slabs')    .map(i => ({ ...i, _table: 'slabs' }));
+  const sortedSingles = _cmdSellSortByCost(singles, 'singles').map(i => ({ ...i, _table: 'singles' }));
+  const sortedEtbs    = _cmdSellSortByCost(etbs, 'etbs')      .map(i => ({ ...i, _table: 'etbs' }));
+  const sortedBbs     = _cmdSellSortByCost(bbs, 'boosterBoxes').map(i => ({ ...i, _table: 'boosterBoxes' }));
+  const sortedBps     = _cmdSellSortByCost(bps, 'boosterPacks').map(i => ({ ...i, _table: 'boosterPacks' }));
+
+  // Default order: singles, slabs, sealed. A grading-term query (PSA/CGC/TAG/
+  // ACE/BGS/SGC - the same canonical grader list the grader/grade resolver
+  // uses) flips slabs to the front, since that signals the user is hunting a
+  // graded card specifically.
+  const hasGradingTerm = tokens.some(t => _CANONICAL_GRADERS.includes(t.toUpperCase()));
+  const groupOrder = hasGradingTerm
+    ? [sortedSlabs, sortedSingles, sortedEtbs, sortedBbs, sortedBps]
+    : [sortedSingles, sortedSlabs, sortedEtbs, sortedBbs, sortedBps];
+
+  cmdSellResults = [].concat(...groupOrder).slice(0, 15);
 
   if (cmdSellResults.length === 0) {
     el.innerHTML = '<div class="cmd-empty">No available inventory matches "' + esc(raw) + '"</div>';

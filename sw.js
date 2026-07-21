@@ -4,7 +4,7 @@
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
    intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v37';
+const CACHE = 'kujira-v38';
 // three.core.min.js has no ?v= query: it's the vendored file's own internal
 // import specifier (three.module.js imports "./three.core.min.js" verbatim,
 // no query), so the real runtime request never carries one either - a query

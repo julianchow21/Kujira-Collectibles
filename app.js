@@ -10435,6 +10435,24 @@ function loadPillOrder(src, type, defaultKeys) {
   } catch(e) { return defaultKeys; }
 }
 
+// Tap-based reorder (no drag required) - swaps a pill with its adjacent
+// neighbour in the currently rendered section, then reuses the exact same
+// persistence path (savePillOrder) the drag-end handler calls, and re-renders
+// the palette so touch and drag both stay in sync. Mirrors moveColOrderStep.
+function _cbMovePillStep(src, type, key, dir) {
+  const section = document.getElementById('cb-pill-section-' + type);
+  if (!section) return;
+  const order = [...section.querySelectorAll(':scope > .cb-field-pill')].map(el => el.dataset.field);
+  const idx = order.indexOf(key);
+  if (idx < 0) return;
+  const targetIdx = idx + dir;
+  if (targetIdx < 0 || targetIdx >= order.length) return;
+  order.splice(idx, 1);
+  order.splice(targetIdx, 0, key);
+  savePillOrder(src, type, order);
+  initCustomChartBuilder();
+}
+
 const CB_PINNED_FIELDS_KEY = 'pokeinv_cb_pinned_fields_v1';
 
 function _cbGetPinnedFields() {
@@ -10549,6 +10567,7 @@ function initCustomChartBuilder() {
 
     // Droppable section container
     const section = document.createElement('div');
+    section.id = 'cb-pill-section-' + type;
     section.dataset.section = type;
     section.dataset.src = src;
     section.style.cssText = 'display:flex;flex-direction:column;gap:5px';
@@ -10571,6 +10590,9 @@ function initCustomChartBuilder() {
       savePillOrder(src, type, newOrder);
     });
 
+    const firstKey = fields.length ? fields[0][0] : null;
+    const lastKey  = fields.length ? fields[fields.length - 1][0] : null;
+
     fields.forEach(([key, f]) => {
       const pill = document.createElement('div');
       pill.className = 'cb-field-pill';
@@ -10578,7 +10600,10 @@ function initCustomChartBuilder() {
       pill.dataset.field = key;
       pill.dataset.label = f.label;
       pill.dataset.section = type; // marks it as a reorder drag, not a drop-to-axis drag
-      pill.innerHTML = `<span class="pill-icon" style="cursor:grab;opacity:0.5;font-size:11px;margin-right:2px">⠿</span><span class="pill-icon">${f.icon}</span><span>${f.label}</span><span class="pill-type">${type === 'dim' ? 'Group' : 'Value'}</span>`;
+      pill.innerHTML = `<span class="pill-icon" style="cursor:grab;opacity:0.5;font-size:11px;margin-right:2px">⠿</span><span class="pill-icon">${f.icon}</span><span>${f.label}</span>` +
+        `<span class="cb-pill-meta"><span class="pill-type">${type === 'dim' ? 'Group' : 'Value'}</span>` +
+        `<button type="button" class="btn btn-ghost btn-sm cb-pill-order-btn" style="padding:2px 6px;font-size:11px" title="Move up" aria-label="Move ${f.label} up" onclick="event.stopPropagation();_cbMovePillStep('${src}','${type}','${key}',-1)"${key === firstKey ? ' disabled' : ''}>↑</button>` +
+        `<button type="button" class="btn btn-ghost btn-sm cb-pill-order-btn" style="padding:2px 6px;font-size:11px" title="Move down" aria-label="Move ${f.label} down" onclick="event.stopPropagation();_cbMovePillStep('${src}','${type}','${key}',1)"${key === lastKey ? ' disabled' : ''}>↓</button></span>`;
 
       let _dragToAxis = false;
       pill.addEventListener('dragstart', e => {

@@ -823,11 +823,14 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
 .cb-drop-zone.drag-over{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .cb-drop-zone.has-value{border-style:solid;border-color:var(--accent);background:var(--accent-soft)}
 .cb-drop-label{font-size:12px}
-.cb-field-pill{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text2);cursor:grab;transition:all 0.15s;user-select:none}
+.cb-field-pill{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text2);cursor:grab;transition:all 0.15s;user-select:none}
 .cb-field-pill:hover{border-color:var(--accent);color:var(--text);background:var(--bg4)}
 .cb-field-pill:active{cursor:grabbing;opacity:0.7}
 .cb-field-pill .pill-icon{font-size:13px}
-.cb-field-pill .pill-type{font-size:10px;color:var(--text3);margin-left:auto}
+.cb-field-pill .pill-type{font-size:10px;color:var(--text3)}
+.cb-pill-meta{display:flex;align-items:center;gap:6px;margin-left:auto}
+.cb-pill-order-btn{flex-shrink:0}
+.cb-pill-order-btn:disabled{opacity:0.3;cursor:not-allowed}
 .cb-pill-dragging{opacity:0.4;border-style:dashed !important}
 .cb-field-pill[data-section]{cursor:grab}
 .cb-field-pill[data-section]:active{cursor:grabbing}

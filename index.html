@@ -16,7 +16,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Kujira">
-<script>try{if(localStorage.getItem('pokeinv_theme')==='light')document.documentElement.classList.add('light')}catch(e){}</script>
+<script>/* Cosmetic pre-paint theme read: if localStorage is blocked or unreadable here, the page just paints in the default (dark) theme instead of light. */try{if(localStorage.getItem('pokeinv_theme')==='light')document.documentElement.classList.add('light')}catch(e){}</script>
 <!-- ═══════════════════════════════════════════════════════════
      SENTRY - JS error monitoring (DSN configured, active on prod).
      Bump the release below alongside the version badge so Sentry
@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.35',
+    release: 'kujira-collectibles@3.37',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.35">
+<link rel="stylesheet" href="styles.css?v=3.37">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:9px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.35 (21 Jul)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.37 (29 Jul)</span>
     </div>
   </a>
   <nav class="nav">
@@ -656,9 +656,6 @@
 
   <!-- SAVED CUSTOM CHARTS (persisted) -->
   <div id="saved-charts-container"></div>
-
-  <!-- DRAGGABLE DASHBOARD GRID -->
-  <div id="dash-grid-container"></div>
 
   <!-- AI Analyst Panel -->
   <div id="ai-analyst-card" style="margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg)">
@@ -1611,7 +1608,7 @@
 <!-- ── USER GUIDE markdown source (rendered by kjrGuideRender below) ── -->
 <script type="text/markdown" id="guide-source"># Kujira Collectibles
 
-The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https://app.notion.com/p/37b8d0753fdb81cab3aac8314a8a9b2f)
+The full written guide is on Journal: [**Kujira User Guide**](https://kujira-journal.pages.dev)
 
 ## Quick reference
 
@@ -1625,7 +1622,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 - **Undo / Redo** - **Ctrl+Z** / **Ctrl+Y** for any action.
 - **eBay Declared** - click the cell to toggle Yes → No → N/A.
 
-*Full reference (data model, deployment, security) is on Notion.*
+*Full reference (data model, deployment, security) is on Journal.*
 </script>
 
 
@@ -1652,7 +1649,7 @@ The full written guide is on Notion: [**Kujira User Guide v2 (10 Jun)**](https:/
 </div>
 
 
-<script src="app.js?v=3.35"></script>
-<script src="features.js?v=3.35"></script>
+<script src="app.js?v=3.37"></script>
+<script src="features.js?v=3.37"></script>
 </body>
 </html>

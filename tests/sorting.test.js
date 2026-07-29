@@ -33,15 +33,23 @@ test('sorting: marketPrice - missing/unpriced rows always sort to the bottom reg
   assert.deepStrictEqual(desc, [1, 3, 2, 4], 'priced rows descending first (100,50), unpriced STILL trail even on descending');
 });
 
-test('sorting: marketPrice - a cost-basis fallback is NOT used for sorting (only the "effective market" = marketPrice itself)', async () => {
+test('sorting: marketPrice - a cost-basis fallback IS used for sorting (F2: effectiveMarketInfo), interleaved among real market prices', async () => {
   const { ctx } = await loadApp();
-  // sortItems' effectiveMarket() only reads marketPrice, unlike the
-  // dashboard's getMkt() which falls back to costPrice - a row with a cost
-  // but no market price still sorts as "empty", not as its cost value.
-  const items = [{ id: 1, name: 'A', costPrice: 500 }, { id: 2, name: 'B', marketPrice: 10 }];
+  // sortItems' effectiveMarket() now routes through effectiveMarketInfo (F2),
+  // matching the marketPrice cell, dashboard and chart builder: a row with no
+  // marketPrice but a costPrice sorts by that cost-as-estimate value, landing
+  // wherever it falls among real market prices, not dumped at the end.
+  // Before F2 this test's old assertion ([2,1,3]) would have failed here -
+  // the old effectiveMarket() only read marketPrice, so id 3 (cost-only, 60)
+  // sorted as empty/0 and trailed regardless of value.
+  const items = [
+    { id: 1, name: 'A', marketPrice: 100 },
+    { id: 2, name: 'B', marketPrice: 10 },
+    { id: 3, name: 'C', costPrice: 60 }, // no marketPrice, cost-basis estimate = 60
+  ];
   ctx.sortState.singles.col = 'marketPrice'; ctx.sortState.singles.dir = 1;
   const asc = plain(ctx.sortItems(items, 'singles')).map((i) => i.id);
-  assert.deepStrictEqual(asc, [2, 1], 'the priced row (10) comes first; the unpriced-despite-high-cost row trails');
+  assert.deepStrictEqual(asc, [2, 3, 1], 'cost-estimate row (60) sorts between the two real market prices (10, 100), not trailing');
 });
 
 test('sorting: date columns sort chronologically via dateToMs, not lexicographically', async () => {
@@ -92,4 +100,16 @@ test('sorting: default sort (no column picked) - singles/slabs default to most-r
   ];
   const result = plain(ctx.sortItems(items, 'singles')).map((i) => i.id);
   assert.deepStrictEqual(result, [2, 1], 'most-recently-added first by default, descending on datePurchased');
+});
+
+test('effectiveMarketInfo: real market price, cost-basis fallback (flagged as estimate), and the zero case', async () => {
+  const { ctx } = await loadApp();
+  const real = ctx.effectiveMarketInfo({ marketPrice: 120, costPrice: 80 });
+  assert.deepStrictEqual(plain(real), { value: 120, isEstimate: false }, 'a real marketPrice wins outright, cost is ignored');
+
+  const costFallback = ctx.effectiveMarketInfo({ marketPrice: '', costPrice: 45 });
+  assert.deepStrictEqual(plain(costFallback), { value: 45, isEstimate: true }, 'no marketPrice falls back to costPrice, flagged as an estimate');
+
+  const empty = ctx.effectiveMarketInfo({ marketPrice: '', costPrice: '' });
+  assert.deepStrictEqual(plain(empty), { value: 0, isEstimate: true }, 'neither field set: zero value, still flagged (nothing to show)');
 });

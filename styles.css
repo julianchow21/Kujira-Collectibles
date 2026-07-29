@@ -89,7 +89,7 @@ a:hover{text-decoration:underline}
 .logo-whale{height:30px;width:auto;flex-shrink:0}
 .logo-name{display:flex;flex-direction:column;line-height:1.1}
 .logo-name span:first-child{font-size:14px;font-weight:800;letter-spacing:0.5px;background:linear-gradient(135deg,#A99DF5,#D4537E);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.logo-name span:last-child{font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text3);-webkit-text-fill-color:var(--text3)}
+.logo-name span:last-child{font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text3);-webkit-text-fill-color:var(--text3)}
 html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56,#534AB7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .nav{display:flex;gap:2px;flex:1}
 /* font-weight is FIXED at 500 for every state: a weight change on .active made
@@ -843,18 +843,6 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
 }
 .saved-chart-card{position:relative;margin-bottom:16px}
 
-/* ── Draggable Dashboard Grid ── */
-.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
-@media(max-width:768px){ .dash-grid{ grid-template-columns:1fr } }
-.dash-card-wrap{position:relative}
-.dash-card-wrap .drag-handle{position:absolute;top:10px;right:10px;cursor:grab;color:var(--text3);font-size:14px;z-index:10;opacity:0;transition:opacity 0.15s;padding:2px 4px;border-radius:4px;line-height:1}
-.dash-card-wrap:hover .drag-handle{opacity:1}
-.dash-card-wrap .drag-handle:hover{color:var(--text);background:var(--bg3)}
-.dash-card-wrap .drag-handle:active{cursor:grabbing}
-.dash-card-wrap.dragging{opacity:0.35;outline:2px dashed var(--accent);border-radius:var(--radius)}
-.dash-card-wrap.drag-target{outline:2px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft)}
-.dash-card-wrap.full-width{grid-column:span 2}
-
 /* SECTION TITLE */
 .section-title{font-size:20px;font-weight:700;letter-spacing:-0.3px;margin-bottom:4px}
 .section-sub{font-size:13px;color:var(--text2);margin-bottom:20px}
@@ -1218,7 +1206,7 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 .sentry-issue{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;cursor:pointer;transition:border-color 0.15s,background 0.15s}
 .sentry-issue:hover{border-color:var(--border2);background:var(--bg4)}
 .sentry-issue:last-child{margin-bottom:0}
-.sentry-badge{display:none;position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;font-size:9px;font-weight:700;border-radius:10px;min-width:15px;height:15px;align-items:center;justify-content:center;padding:0 3px;line-height:1;pointer-events:none}
+.sentry-badge{display:none;position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;font-size:11px;font-weight:700;border-radius:10px;min-width:17px;height:17px;align-items:center;justify-content:center;padding:0 3px;line-height:1;pointer-events:none}
 .sentry-empty{text-align:center;padding:40px 20px;color:var(--text3);font-size:13px}
 .sentry-auth{padding:8px 4px;font-size:13px;color:var(--text2);line-height:1.6}
 .sentry-footer{padding:12px 18px;border-top:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text3)}

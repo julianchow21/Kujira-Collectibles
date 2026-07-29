@@ -1544,7 +1544,8 @@ function _kjrEbayLoadColVis(){
   try { return Object.assign({}, JSON.parse(localStorage.getItem(EBAY_COL_KEY) || '{}')); } catch(e) { return {}; }
 }
 function _kjrEbaySaveColVis(map){
-  try { localStorage.setItem(EBAY_COL_KEY, JSON.stringify(map)); } catch(e) {}
+  // Column visibility preference only. Failure means it resets to default next reload.
+  try { localStorage.setItem(EBAY_COL_KEY, JSON.stringify(map)); } catch(e) { console.warn('[ebay] column visibility save failed:', e); }
 }
 function _kjrApplyEbayColVisibility(){
   const vis = _kjrEbayLoadColVis();
@@ -1629,7 +1630,8 @@ function _kjrColLoad(tbl){
 }
 function _kjrColSave(tbl, order){
   const cfg = _KJR_GENERIC_TABLES[tbl]; if (!cfg) return;
-  try { localStorage.setItem(cfg.lsKey, JSON.stringify(order)); } catch(e) {}
+  // Column order preference only. Failure means it resets to default next reload.
+  try { localStorage.setItem(cfg.lsKey, JSON.stringify(order)); } catch(e) { console.warn('[' + tbl + '] column order save failed:', e); }
 }
 function _kjrColApply(tbl){
   const cfg = _KJR_GENERIC_TABLES[tbl]; if (!cfg) return;
@@ -1697,13 +1699,23 @@ function _kjrColBuildMenu(tbl){
   // data-col-key cells (for reorder alignment) but has no label text.
   tableEl.querySelectorAll('thead tr:first-child th[data-col-key]').forEach(th => { labels[th.dataset.colKey] = th.textContent.trim() || th.dataset.colKey; });
   const order = _kjrColLoad(tbl);
+
+  // Find first and last reorderable columns
+  let firstReorderableKey = null, lastReorderableKey = null;
+  for (let i = 0; i < order.length; i++) {
+    if (!cfg.locked.has(order[i])) {
+      if (firstReorderableKey === null) firstReorderableKey = order[i];
+      lastReorderableKey = order[i];
+    }
+  }
+
   dd.innerHTML = order.map(key => {
     const locked = cfg.locked.has(key);
     return '<div class="col-toggle-item">' +
       '<span style="flex:1">' + kjrEscape(labels[key] || key) + '</span>' +
       (locked ? '<span style="font-size:11px;color:var(--text3)">fixed</span>' :
-        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move up" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',-1)">↑</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move down" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',1)">↓</button>') +
+        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move up" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',-1)"' + (key === firstReorderableKey ? ' disabled' : '') + '>↑</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" title="Move down" onclick="event.stopPropagation();kjrColMoveStep(\'' + tbl + '\',\'' + key + '\',1)"' + (key === lastReorderableKey ? ' disabled' : '') + '>↓</button>') +
       '</div>';
   }).join('');
 }
@@ -1760,11 +1772,12 @@ function _kjrEbayLoadColOrder(){
     const valid   = saved.filter(k => EBAY_DEFAULT_COL_ORDER.includes(k));
     const missing = EBAY_DEFAULT_COL_ORDER.filter(k => !valid.includes(k));
     return [...valid, ...missing];
-  } catch(e) {}
+  } catch(e) { console.warn('[ebay] column order load failed:', e); }
   return [...EBAY_DEFAULT_COL_ORDER];
 }
 function _kjrEbaySaveColOrder(order){
-  try { localStorage.setItem(EBAY_COL_ORDER_KEY, JSON.stringify(order)); } catch(e) {}
+  // Column order preference only. Failure means it resets to default next reload.
+  try { localStorage.setItem(EBAY_COL_ORDER_KEY, JSON.stringify(order)); } catch(e) { console.warn('[ebay] column order save failed:', e); }
 }
 function _kjrApplyEbayColOrder(){
   const tbl = document.getElementById('kjr-ebay-table');
@@ -2302,8 +2315,9 @@ async function kjrConfirmCompletion(){
   markDirty('ebayPurchases', p.id);
   saveData();
   // Notify the recent-add pinning helper so new rows surface at the top of
-  // their tables.
-  newIds.forEach(({table, id}) => { try { _pinRecentlyAdded(table, id); } catch(e) {} });
+  // their tables. Cosmetic: the row itself is already saved above, this only
+  // affects sort position on the next render.
+  newIds.forEach(({table, id}) => { try { _pinRecentlyAdded(table, id); } catch(e) { console.warn('[pin] _pinRecentlyAdded failed for ' + table + '/' + id + ':', e); } });
   // Refresh every affected tab
   renderEbayPurchases();
   if (typeof renderSingles === 'function')        renderSingles();
@@ -2334,7 +2348,9 @@ function kjrMarkCompleted(id){ return kjrOpenCompleteModal(id); }
     else if (name === 'ebay') renderEbayPurchases();
   };
   document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
-    try { renderEtbs(); renderBoosterBoxes(); renderEbayPurchases(); } catch(e) {}
+    // Cosmetic: best-effort re-render after cloud load settles. A failure
+    // here just leaves these tabs showing whatever they last rendered.
+    try { renderEtbs(); renderBoosterBoxes(); renderEbayPurchases(); } catch(e) { console.warn('[render] delayed etbs/boosterBoxes/ebay render failed:', e); }
   }, 1500));
 })();
 // ═════════════ Booster Packs ═════════════
@@ -2536,7 +2552,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => { kjrMigrateBoxesToPacks().catch(e => console.error('migrate err', e)); }, 2500);
   // Slab re-parse runs a hair later so the Boxes→Packs prompt isn't stacked on top.
   setTimeout(() => { kjrReparseSlabNames().catch(e => console.error('slab reparse err', e)); }, 3500);
-  setTimeout(() => { try { renderBoosterPacks(); } catch(e) {} }, 1500);
+  // Cosmetic: best-effort re-render, tab just shows stale content on failure.
+  setTimeout(() => { try { renderBoosterPacks(); } catch(e) { console.warn('[render] delayed renderBoosterPacks failed:', e); } }, 1500);
 });
 // ═════════════ Combined Boxes + Packs stats ═════════════
 (function(){
@@ -2589,7 +2606,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
-    setTimeout(() => { try { renderBoosterBoxes && renderBoosterBoxes(); renderBoosterPacks && renderBoosterPacks(); } catch(e) {} }, 1500);
+    // Cosmetic: best-effort re-render, tabs just show stale content on failure.
+    setTimeout(() => { try { renderBoosterBoxes && renderBoosterBoxes(); renderBoosterPacks && renderBoosterPacks(); } catch(e) { console.warn('[render] delayed boosterBoxes/Packs render failed:', e); } }, 1500);
   });
 })();
 // ── USER GUIDE renderer ──────────────────────────────────────────────────────
@@ -4160,7 +4178,7 @@ async function exportXlsx() {
       if (!card.slot || card.slot.procedural) return;
       kjrIntroFetchSlotTexture(THREE, card.slot).then(function (tex) {
         if (!tex) return;
-        if (_removed) { try { tex.dispose(); } catch (e) {} return; } // resolved after teardown - dispose the orphan, do not touch a torn-down scene
+        if (_removed) { try { tex.dispose(); } catch (e) { /* texture may already be disposed, nothing to recover */ } return; } // resolved after teardown - dispose the orphan, do not touch a torn-down scene
         card.frontMat.map = tex;
         card.frontMat.needsUpdate = true;
         card.frontMesh.visible = true;
@@ -4229,6 +4247,8 @@ async function exportXlsx() {
   }
 
   function kjrIntroForceRemove(err) {
+    // console.warn itself is what's guarded here (cosmetic intro sequence,
+    // never worth blocking teardown over a logging call that fails).
     if (err) { try { console.warn('[intro] stopped:', err); } catch (e2) {} }
     _ending = true;
     kjrIntroTeardown();
@@ -4263,6 +4283,8 @@ async function exportXlsx() {
           if (_renderer.domElement && _renderer.domElement.parentNode) _renderer.domElement.parentNode.removeChild(_renderer.domElement);
         }
       } catch (e3) { /* best-effort disposal, never block removal */ }
+      // Cosmetic: revoking an already-revoked or never-created blob URL just
+      // throws harmlessly, nothing left to free either way.
       _introObjectUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e4) {} });
       _introObjectUrls.length = 0;
       var el = document.getElementById('intro');

@@ -40,13 +40,19 @@ test('misc-consistency: SUSPECT - genId can produce duplicate ids when Date.now(
   // but genId has no collision-avoidance beyond hoping for entropy - no
   // counter, no crypto.randomUUID.
   const realRandom = ctx.Math.random;
+  const realNow = ctx.Date.now;
   ctx.Math.random = () => 0.123456;
+  // Pin the clock too: without this the test is racy, not deterministic - a
+  // millisecond boundary landing between the two genId calls makes Date.now()
+  // differ and the "identical ids" assertion fail (observed 29/07/2026).
+  ctx.Date.now = () => 1785284704799;
   try {
     const id1 = ctx.genId('x');
     const id2 = ctx.genId('x');
     assert.strictEqual(id1, id2, 'same millisecond + same random draw -> an actual duplicate id');
   } finally {
     ctx.Math.random = realRandom;
+    ctx.Date.now = realNow;
   }
 });
 

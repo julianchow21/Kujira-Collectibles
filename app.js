@@ -82,6 +82,9 @@ const kjrModalCtrl = (() => {
     dialog._kjrOnClose = null;
     if (onClose) { try { onClose(); } catch(e) { console.error('[kjrModalCtrl] onClose hook failed:', e); } }
     if (entry.trigger && typeof entry.trigger.focus === 'function') {
+      // Cosmetic: restores keyboard focus to whatever opened the dialog. If
+      // the trigger element was removed from the DOM meanwhile, focus() can
+      // throw - nothing to recover, the page just keeps whatever focus it has.
       requestAnimationFrame(() => { try { entry.trigger.focus(); } catch(_){} });
     }
     return true;
@@ -118,6 +121,9 @@ const kjrModalCtrl = (() => {
 
   document.addEventListener('closeAllModals', () => {
     closeAll();
+    // Cosmetic teardown sweep: best-effort close of unrelated UI (Sentry
+    // panel, nav dropdown, stray overlays). Nothing here holds data, a
+    // missing element or already-closed panel is a no-op either way.
     try { if (typeof closeSentryPanel === 'function') closeSentryPanel(); } catch(_){}
     try { if (typeof closeNavDD === 'function') closeNavDD(); } catch(_){}
     document.querySelectorAll('.modal-overlay').forEach(el => { try { if (getComputedStyle(el).display !== 'none') el.remove(); } catch(_){} });
@@ -210,44 +216,85 @@ function hideSyncProgress() {
   if (bar) { bar.style.opacity = '0'; bar.style.transition = 'opacity 0.4s'; setTimeout(() => bar.remove(), 400); }
 }
 
+// ── Supabase: the server owns `updated_at` ───────────────────
+// The client NEVER sends updated_at. Postgres writes it (column default now()
+// plus a BEFORE INSERT OR UPDATE trigger, so no caller can spoof it) and the
+// write asks for the row back, so we stamp the SERVER value onto the in-memory
+// row. Both sides of the conflict check in mergeTable then sit on one clock,
+// the database's. Before this, a device running fast wrote a future timestamp
+// and its stale edit beat a genuinely newer edit from the other device.
+//
+// Both writes carry `Prefer: resolution=merge-duplicates, return=representation`
+// (PostgREST reads a comma-separated Prefer list) plus `select=updated_at`, the
+// documented vertical filter on the returned representation - so the response
+// body is just the timestamps, not a full copy of every row written.
+const _SB_UPSERT_PREFER = 'resolution=merge-duplicates, return=representation';
+
+// Pulls the authoritative timestamp out of a PostgREST representation body.
+// now() is the transaction timestamp, so every row of one upsert shares it,
+// max() is belt-and-braces in case that ever stops being true.
+function _serverUpdatedAt(body) {
+  const rows = Array.isArray(body) ? body : (body ? [body] : []);
+  let best = null, bestMs = -1;
+  for (const row of rows) {
+    const v = row && row.updated_at;
+    if (!v) continue;
+    const ms = new Date(v).getTime();
+    if (!isNaN(ms) && ms > bestMs) { bestMs = ms; best = v; }
+  }
+  return best;
+}
+// Degraded path only (body missing or unparseable, e.g. an intermediary that
+// strips Prefer). Falling back to the client clock keeps the OLD behaviour,
+// imperfect but strictly better than returning null: an unstamped row keeps a
+// stale base _updatedAt, and mergeTable then reads the next local edit as a
+// fake conflict and discards it (B1).
+async function _readServerTs(resp, label) {
+  let ts = null;
+  try { ts = _serverUpdatedAt(await resp.json()); } catch(e) { console.warn('[sync] response body was not JSON for ' + label + ':', e); }
+  if (!ts) {
+    ts = new Date().toISOString();
+    console.warn('[sync] no server updated_at came back for ' + label + ' - fell back to the client clock');
+  }
+  return ts;
+}
+
 // ── Supabase: BATCH upsert (single request for all records) ──
-// Returns the single `updated_at` timestamp written for this batch (or null on
-// the preview-guard / empty-input paths) so callers can stamp it back onto the
-// in-memory rows - without this, DB rows keep their stale base _updatedAt and
-// mergeTable later misreads the next local edit as a fake conflict (B1).
+// Returns the SERVER `updated_at` for this batch (or null on the preview-guard
+// / empty-input paths) so callers can stamp it back onto the in-memory rows -
+// without this, DB rows keep their stale base _updatedAt and mergeTable later
+// misreads the next local edit as a fake conflict (B1).
 async function sbBatchUpsert(table, items) {
   if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
   if (!items.length) return null;
-  const ts = new Date().toISOString();
   const rows = items.map(item => {
     const { id, ...data } = item;
-    return { id, data, updated_at: ts };
+    return { id, data };
   });
-  const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
+  const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
     method: 'POST',
-    headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+    headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
     body: JSON.stringify(rows),
     signal: AbortSignal.timeout(15000)
   });
   if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
-  return ts;
+  return await _readServerTs(r, 'batch upsert on ' + table);
 }
 
 // ── Supabase: single upsert (for individual edits/adds) ──────
-// Returns the `updated_at` timestamp written (or null if the preview guard
-// skipped the write) - see sbBatchUpsert for why callers must stamp this back.
+// Returns the SERVER `updated_at` written (or null if the preview guard skipped
+// the write) - see sbBatchUpsert for why callers must stamp this back.
 async function sbUpsert(table, id, data) {
   if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
   try {
-    const ts = new Date().toISOString();
-    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id', {
+    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
       method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ id, data, updated_at: ts }),
+      headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
+      body: JSON.stringify({ id, data }),
       signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
-    return ts;
+    return await _readServerTs(r, table + '/' + id);
   } catch(e) { setSyncStatus('error', e.message); throw e; }
 }
 
@@ -285,7 +332,14 @@ async function flushPendingDeletes() {
       if (Date.now() - (item.ts || 0) < 7 * 86400 * 1000) stillPending.push(item);
     }
   }
-  try { localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(stillPending)); } catch {}
+  try { localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(stillPending)); } catch(e) {
+    // Data integrity: if this write-back fails the old (pre-flush) pending
+    // list survives untouched, so already-cleared deletes just get retried
+    // again next run - wasteful but not lossy. Still surface it once, a
+    // wholesale localStorage failure here usually means quota exhaustion.
+    console.error('[queue] pending-delete write-back failed:', e);
+    warnOnce('pending-del-writeback', 'Delete queue could not save. Retries may repeat next session.');
+  }
   const cleared = list.length - stillPending.length;
   if (cleared > 0) console.info('[Cloud] Cleared ' + cleared + ' pending delete(s) from previous session(s)');
 }
@@ -331,7 +385,13 @@ async function flushPendingTrash() {
       else console.warn('[Trash] dropping expired pending trash write:', entry.id, e.message);
     }
   }
-  try { localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(stillPending)); } catch {}
+  try { localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(stillPending)); } catch(e) {
+    // Same reasoning as the pending-delete write-back above: the old list
+    // survives untouched on failure, so entries just get retried again next
+    // run rather than lost. Surface once, this is usually quota exhaustion.
+    console.error('[queue] pending-trash write-back failed:', e);
+    warnOnce('pending-trash-writeback', 'Trash queue could not save. Retries may repeat next session.');
+  }
   const cleared = list.length - stillPending.length;
   if (cleared > 0) console.info('[Trash] Flushed ' + cleared + ' pending trash write(s) from previous session(s)');
 }
@@ -429,7 +489,15 @@ function _persistDirty() {
       merged[k] = [...new Set([...stored, ...mine])];
     }
     localStorage.setItem(DIRTY_LS_KEY, JSON.stringify(merged));
-  } catch(e) {}
+  } catch(e) {
+    // Data integrity: this is the cross-session record of which rows still
+    // need a cloud sync. In-memory _dirty is fine for THIS tab, but if this
+    // write fails and the tab closes before the debounced flush runs, the
+    // dirty mark is lost and the row can silently lose to an older cloud
+    // copy on next load's merge. Real risk, not cosmetic.
+    console.error('[dirty] _persistDirty write failed, unsynced edits may not survive a reload:', e);
+    warnOnce('persist-dirty-failed', 'Could not save sync state. Avoid closing the tab until sync finishes.');
+  }
 }
 const _dirty = _loadDirtyFromLS();
 function markDirty(table, id) { if (_dirty[table]) { _dirty[table].add(id); _persistDirty(); } }
@@ -511,7 +579,14 @@ async function _flushDirtyToSupabase() {
   // Persist the stamped timestamps directly - NOT via the debounced saveData(),
   // which would re-arm _saveTimer and re-enter _flushDirtyToSupabase.
   if (anyStamped) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
+    // Data integrity: the row data itself already synced to Supabase above -
+    // this write only stamps the server timestamp back onto the local cache.
+    // If it fails the local copy keeps a stale _updatedAt, which can make a
+    // genuinely-synced row misread as a conflict on the next load (B1).
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
+      console.error('[storage] STORAGE_KEY stamp write failed after dirty flush:', e);
+      warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+    }
   }
   _persistDirty();
   if (!anyError) setSyncStatus('ok');
@@ -556,7 +631,13 @@ async function saveAllToSupabase() {
     }
     // Persist stamped timestamps directly, not via the debounced saveData().
     if (anyStamped) {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
+      // Same reasoning as _flushDirtyToSupabase: rows already synced above,
+      // this only refreshes the local timestamp cache to avoid a fake
+      // conflict on next load.
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
+        console.error('[storage] STORAGE_KEY stamp write failed after saveAllToSupabase:', e);
+        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+      }
     }
     hideSyncProgress();
     setSyncStatus('ok');
@@ -658,7 +739,13 @@ function migrateData() {
 
   if (dirty) {
     // Update localStorage only - no cloud re-upload triggered
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {
+      // If this fails the normalised dates only live in memory for this
+      // session - they revert on reload and this fixup just reruns next
+      // time, so no permanent loss, but still worth a heads-up.
+      console.error('[storage] STORAGE_KEY save failed after date normalisation:', e);
+      warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+    }
   }
 }
 
@@ -860,11 +947,15 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
   for (const id of [...dirtySet]) {
     const localRow = localRows.find(r => r.id === id);
     if (!localRow) continue;
-    // Conflict check: _updatedAt on the local row is the cloud timestamp
-    // its edit was based on (the server refreshes it on every fetch). If
-    // the cloud copy is strictly newer, another device wrote after our
-    // unsynced edit. Keep the newer cloud copy rather than silently
-    // overwriting it on the next flush, and surface what was discarded.
+    // Conflict check. BOTH sides are Postgres now() values, never a client
+    // clock: cloudRow._updatedAt comes off the fetch (sbFetchAll maps
+    // row.updated_at), and localRow._updatedAt is the value the last write
+    // returned (sbUpsert / sbBatchUpsert stamp the server's response back).
+    // So this compares one clock, and a device with a skewed clock can no
+    // longer win with a stale edit. If the cloud copy is strictly newer,
+    // another device wrote after our unsynced edit: keep the newer cloud copy
+    // rather than silently overwriting it on the next flush, and surface what
+    // was discarded.
     const cloudRow = byId.get(id);
     const cloudMs = cloudRow && cloudRow._updatedAt ? new Date(cloudRow._updatedAt).getTime() : 0;
     const baseMs  = localRow._updatedAt ? new Date(localRow._updatedAt).getTime() : 0;
@@ -918,7 +1009,12 @@ async function initDB() {
         shownLocal = true;
       }
     }
-  } catch(e) {}
+  } catch(e) {
+    // Degraded, not lost: this is only the instant-paint pass from the local
+    // cache while the real cloud fetch (below) is in flight. A parse failure
+    // here just means we skip straight to the loading spinner.
+    console.warn('[initDB] local cache quick-paint failed:', e);
+  }
 
   if (!shownLocal) {
     if (main) main.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading inventory from cloud…</div></div>';
@@ -952,7 +1048,13 @@ async function initDB() {
       DB.singles = mergeTable(sbSingles, DB.singles, _dirty.singles, 'singles');
       DB.slabs   = mergeTable(sbSlabs,   DB.slabs,   _dirty.slabs,   'slabs');
       DB.sales   = mergeTable(sbSales,   DB.sales,   _dirty.sales,   'sales');
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {}
+      // Data integrity: this writes the freshly-merged primary tables (cloud
+      // + any still-dirty local edits) to the local cache. A failure here
+      // means the merge result only lives in memory for this session.
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); bumpLocalVersion(); } catch(e) {
+        console.error('[storage] STORAGE_KEY save failed after primary-table cloud merge:', e);
+        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+      }
       setSyncStatus('ok');
       // Pending trash/delete retry now runs BEFORE the cloud fetch above
       // (see comment there) so it isn't repeated here.
@@ -996,7 +1098,11 @@ async function initDB() {
       DB.boosterBoxes  = mergeTable(sbBb,   DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
       DB.boosterPacks  = mergeTable(sbBp,   DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
       DB.ebayPurchases = mergeTable(sbEbay, DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){}
+      // Same as the primary-table merge above, for the secondary/sealed tables.
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
+        console.error('[storage] STORAGE_KEY save failed after secondary-table cloud merge:', e);
+        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+      }
       if (typeof renderEtbs === 'function') renderEtbs();
       if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
       if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
@@ -1101,6 +1207,8 @@ function _kjrCrossTabToast() {
   _kjrCrossTabToastPending = true;
   setTimeout(() => {
     _kjrCrossTabToastPending = false;
+    // Cosmetic: purely informational nudge. If toast()/the DOM isn't ready
+    // yet the merge itself already happened above, nothing to recover.
     try { toast('Another tab updated the data - merged'); } catch(e){}
   }, 400); // debounce a burst of storage events into a single toast
 }
@@ -1211,8 +1319,12 @@ async function deleteSelected(table) {
     const linkedIds = new Set(linkedSales.map(s => s.id));
     DB.sales = DB.sales.filter(s => !linkedIds.has(s.id));
     linkedSales.forEach(s => {
-      sendToTrash('sales', s, 'linked-item-bulk-deleted').catch(() => {});
-      sbDelete('sales', s.id).catch(() => {});
+      // sendToTrash/sbDelete already catch their own errors internally and
+      // queue to _kjrPendingTrashWrites / the pending-delete queue for retry
+      // on next load (see app.js top). These outer catches are a defensive
+      // backstop only, the retry queue already owns recovery here.
+      sendToTrash('sales', s, 'linked-item-bulk-deleted').catch(e => console.warn('sendToTrash (bulk-deleted sale) rejected unexpectedly:', e));
+      sbDelete('sales', s.id).catch(e => console.warn('sbDelete (bulk-deleted sale) rejected unexpectedly:', e));
       clLog('delete', 'sales', s.product, 'auto-trashed (linked item bulk-deleted)');
     });
     renderSales();
@@ -1323,7 +1435,9 @@ const colOrder = { singles: null, slabs: null, sales: null };
   if (gi < 0 || ci < 0 || ci === gi + 1) return;
   order.splice(ci, 1);
   order.splice(order.indexOf('_grade') + 1, 0, 'costPrice');
-  try { localStorage.setItem('pokeinv_colorder', JSON.stringify(colOrder)); } catch(e){}
+  // Preference write, not user data. Failure just means this one-time column
+  // migration reruns (harmlessly, it's a no-op once already applied) next load.
+  try { localStorage.setItem('pokeinv_colorder', JSON.stringify(colOrder)); } catch(e) { console.warn('[colorder] one-time slab migration save failed:', e); }
 })();
 
 function saveColOrder() {
@@ -1369,6 +1483,16 @@ function buildColMenus() {
     const existing = dropdown.querySelectorAll('.col-toggle-item');
     existing.forEach(el => el.remove());
     const defs = getOrderedDefs(table);
+
+    // Find first and last reorderable columns
+    let firstReorderableKey = null, lastReorderableKey = null;
+    for (let i = 0; i < defs.length; i++) {
+      if (defs[i].key !== '_cb' && !defs[i].locked) {
+        if (firstReorderableKey === null) firstReorderableKey = defs[i].key;
+        lastReorderableKey = defs[i].key;
+      }
+    }
+
     defs.forEach(col => {
       if (col.key === '_cb') return; // never show checkbox col in menu
       const visible = isColVisible(table, col.key);
@@ -1381,8 +1505,8 @@ function buildColMenus() {
         '<input type="checkbox"' + (visible ? ' checked' : '') + (col.locked ? ' disabled' : '') + '> ' +
         '<span style="flex:1">' + col.label + '</span>' +
         (col.locked ? '' :
-          '<button type="button" class="btn btn-ghost btn-sm col-order-btn" style="padding:2px 6px;font-size:11px" title="Move up" onclick="event.stopPropagation();moveColOrderStep(\'' + table + '\',\'' + col.key + '\',-1)">↑</button>' +
-          '<button type="button" class="btn btn-ghost btn-sm col-order-btn" style="padding:2px 6px;font-size:11px" title="Move down" onclick="event.stopPropagation();moveColOrderStep(\'' + table + '\',\'' + col.key + '\',1)">↓</button>'
+          '<button type="button" class="btn btn-ghost btn-sm col-order-btn" style="padding:2px 6px;font-size:11px" title="Move up" onclick="event.stopPropagation();moveColOrderStep(\'' + table + '\',\'' + col.key + '\',-1)"' + (col.key === firstReorderableKey ? ' disabled' : '') + '>↑</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm col-order-btn" style="padding:2px 6px;font-size:11px" title="Move down" onclick="event.stopPropagation();moveColOrderStep(\'' + table + '\',\'' + col.key + '\',1)"' + (col.key === lastReorderableKey ? ' disabled' : '') + '>↓</button>'
         );
       if (!col.locked) {
         item.querySelector('input').addEventListener('change', function(e) {
@@ -2654,7 +2778,9 @@ function clLog(action, table, detail, extra) {
   const log = clLoad();
   log.unshift({ id: 'cl_' + Date.now(), ts: Date.now(), action, table: table||'', detail: detail||'', extra: extra||'' });
   if (log.length > CL_LIMIT) log.splice(CL_LIMIT);
-  try { localStorage.setItem(CL_KEY, JSON.stringify(log)); } catch(e) {}
+  // Changelog is an audit trail, not the source of truth for any row - a
+  // failed write here loses one log entry, not inventory data.
+  try { localStorage.setItem(CL_KEY, JSON.stringify(log)); } catch(e) { console.warn('[changelog] entry save failed:', e); }
 }
 
 function clLoad() {
@@ -2979,7 +3105,11 @@ function _evictVersionBlobsFromLS() {
       localStorage.setItem(VER_KEY, JSON.stringify(metaOnly));
     }
   } catch(e) {
-    try { localStorage.removeItem(VER_KEY); } catch(_) {}
+    // Trim-in-place failed (e.g. still over quota even after stripping
+    // blobs) - fall back to dropping the whole versions cache. Versions are
+    // mirrored to Supabase, so this only loses the local offline copy.
+    console.warn('[versions] trim-in-place failed, clearing local versions cache instead:', e);
+    try { localStorage.removeItem(VER_KEY); } catch(_) { console.warn('[versions] VER_KEY removeItem also failed, localStorage may be unusable'); }
   }
   _versionsCache = null; // force a fresh load (with blobs) next time it's needed
 }
@@ -3192,7 +3322,11 @@ function _renderVerItems(el, versions) {
     try {
       const parsed = JSON.parse(v.data);
       counts = parsed.singles.length + ' singles · ' + parsed.slabs.length + ' slabs · ' + parsed.sales.length + ' sales';
-    } catch(e) {}
+    } catch(e) {
+      // Cosmetic: the version snapshot itself (v.data) is untouched by this,
+      // only the "12 singles · 3 slabs..." summary line fails to render.
+      console.warn('[versions] could not parse snapshot for count display:', v.id, e);
+    }
     return '<div class="ver-item">' +
       '<div class="ver-item-info">' +
         '<div class="ver-item-name">' + esc(v.name||'') + '</div>' +
@@ -3339,8 +3473,10 @@ async function markStatus(table, id, status) {
         if (idx >= 0) {
           DB.sales.splice(idx, 1);
           markDirty('sales', s.id);
-          sendToTrash('sales', s, 'item-re-availed').catch(() => {});
-          sbDelete('sales', s.id).catch(()=>{});
+          // sendToTrash/sbDelete already catch internally and queue for
+          // retry (pending-trash / pending-delete). Backstop only.
+          sendToTrash('sales', s, 'item-re-availed').catch(e => console.warn('sendToTrash (re-availed sale) rejected unexpectedly:', e));
+          sbDelete('sales', s.id).catch(e => console.warn('sbDelete (re-availed sale) rejected unexpectedly:', e));
           clLog('delete', 'sales', s.product, 'auto-removed (item re-availed)');
         }
       });
@@ -3710,8 +3846,10 @@ function _loadHealthIgnores(){
   catch(e) { return new Set(); }
 }
 function _saveHealthIgnores(set){
+  // Preference only (dismissed health-check findings). A failed write means
+  // a dismissed finding may reappear next session, nothing more.
   try { localStorage.setItem(HEALTH_IGNORE_KEY, JSON.stringify([...set])); }
-  catch(e) {}
+  catch(e) { console.warn('[health] ignore-list save failed:', e); }
 }
 function healthIgnoreFinding(fp){
   const set = _loadHealthIgnores();
@@ -3931,6 +4069,22 @@ const _NUM_COLS  = new Set(['costPrice','marketPrice','listPrice','qty','priceAl
 // Sales defaults to most-recently-sold first.
 const _DEFAULT_SORT_COL = { singles: 'datePurchased', slabs: 'dateListed', sales: 'dateSold' };
 
+// Effective market value/estimate flag, shared by the marketPrice cell
+// render, the sort column, the dashboard aggregate and the chart builder so
+// they never disagree about "the number the user sees" for an unpriced row:
+// real marketPrice when set, else costPrice as a last-resort estimate
+// (flagged so the UI can mark it), else zero (nothing to show at all).
+function effectiveMarketInfo(i) {
+  const m = parseFloat(i.marketPrice);
+  if (!isNaN(m) && m > 0) return { value: m, isEstimate: false };
+  const c = parseFloat(i.costPrice);
+  if (!isNaN(c) && c > 0) return { value: c, isEstimate: true };
+  return { value: 0, isEstimate: true };
+}
+// Thin wrapper for any caller that only needs the bare number (grepped, no
+// other caller currently exists, kept for back-compat/future use).
+function effectiveMarket(i) { return effectiveMarketInfo(i).value; }
+
 function sortItems(items, table) {
   const s = sortState[table];
   const col = s.col || _DEFAULT_SORT_COL[table];
@@ -3941,25 +4095,19 @@ function sortItems(items, table) {
   // Numbers/words containing leading digits should land at the BOTTOM when
   // sorting alphabetically (so "Charizard" comes before "100-card lot").
   const startsWithDigit = v => /^[\s$]*-?\d/.test(String(v||''));
-  // Helper: effective market value. Sorting must use the same effective
-  // number the user sees in the cell (explicit marketPrice, else cost as a
-  // last resort), or unpriced rows get incorrectly pushed to the bottom and
-  // the column appears not to sort.
-  const effectiveMarket = (i) => {
-    const m = parseFloat(i.marketPrice);
-    if (!isNaN(m) && m > 0) return m;
-    return NaN;
-  };
   return [...items].sort((a, b) => {
-    // Special-case marketPrice: use the effective value (manual override OR
-    // cached lookup). All other columns read directly from the row.
+    // Special-case marketPrice: use the effective value (manual override,
+    // cached lookup, or cost-price estimate). All other columns read
+    // directly from the row.
     let av, bv;
     if (col === 'marketPrice') {
-      av = effectiveMarket(a); bv = effectiveMarket(b);
-      // For marketPrice, "empty" means truly no value anywhere - neither
-      // a manual price nor a cached one. NaN here = no signal.
-      const aEmpty = isNaN(av);
-      const bEmpty = isNaN(bv);
+      av = effectiveMarketInfo(a).value; bv = effectiveMarketInfo(b).value;
+      // "Empty" means truly no value anywhere - neither a manual/cached
+      // price nor a cost-price estimate. Rows with a cost-price estimate
+      // now sort among the real values instead of always landing last -
+      // deliberate change, see F2.
+      const aEmpty = !(av > 0);
+      const bEmpty = !(bv > 0);
       if (aEmpty && bEmpty) return 0;
       if (aEmpty) return 1;
       if (bEmpty) return -1;
@@ -4120,7 +4268,8 @@ document.addEventListener('focusin', function(e) {
   if (!window.matchMedia('(max-width:768px)').matches) return;
   const t = e.target;
   if (t && t.matches && t.matches('input,select,textarea')) {
-    // Wait for the keyboard to animate in, then centre the field.
+    // Wait for the keyboard to animate in, then centre the field. Cosmetic:
+    // worst case the field just isn't auto-centred above the keyboard.
     setTimeout(() => { try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(_){} }, 300);
   }
 });
@@ -4338,6 +4487,7 @@ function toastDismiss() {
   if (!t) return;
   clearTimeout(toastTimer);
   t.classList.remove('show');
+  // Popover API teardown, cosmetic: hidePopover() throws if already closed.
   if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
   setTimeout(() => t.classList.remove('toast-error','toast-warn'), 300);
 }
@@ -4367,6 +4517,7 @@ function toast(msg, dur=2800, isError=false) {
     bar.style.transform  = 'scaleX(1)';
   }
   t.classList.add('show');
+  // Popover API, cosmetic: showPopover() throws if already open.
   if (t.showPopover && !t.matches(':popover-open')) { try { t.showPopover(); } catch(e){} }
   clearTimeout(toastTimer);
   // Double-rAF lets the reset paint before the animation starts
@@ -4378,11 +4529,27 @@ function toast(msg, dur=2800, isError=false) {
   }));
   toastTimer = setTimeout(() => {
     t.classList.remove('show');
+    // Popover API, cosmetic: hidePopover() throws if already closed.
     if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
     setTimeout(() => t.classList.remove('toast-error','toast-warn'), 300);
   }, isError ? 6000 : dur);
 }
 function toastError(msg) { toast(msg, 6000, true); }
+
+// =========== ERROR THROTTLE (Tier-1 data-integrity toasts) ===========
+// A silent catch on a data-integrity write (cloud delete, trash write, DB
+// snapshot to localStorage) must not disappear - Julian needs to know his
+// data didn't make it. But looping that over e.g. a 200-row bulk delete would
+// carpet the screen in identical toasts. This is a function DECLARATION (not
+// a const), so it hoists and is safe to call from code earlier in this file.
+// One toast per error CLASS per session; console.error still fires every
+// time for full context in devtools/Sentry breadcrumbs.
+const _warnOnceSeen = new Set();
+function warnOnce(key, message) {
+  if (_warnOnceSeen.has(key)) return;
+  _warnOnceSeen.add(key);
+  if (typeof toast === 'function') toast('⚠ ' + message, 6000, true);
+}
 
 // =========== MODALS ===========
 function openModal(id) {
@@ -4728,6 +4895,17 @@ function renderSingles() {
 
   function buildRow(i, isSold) {
     const mp = parseFloat(i.marketPrice)||0;
+    // Effective market value shown in the cell: real marketPrice, else a
+    // cost-price estimate (flagged with a leading '~', never colour alone -
+    // see effectiveMarketInfo). True empty (no market, no cost) keeps the
+    // existing blank-cell + reason-title behaviour.
+    const mktInfo = effectiveMarketInfo(i);
+    const mktCellTitle = (mktInfo.isEstimate && mktInfo.value > 0)
+      ? 'Estimated from cost price, no market price set'
+      : _mktEmptyCellTitle(i);
+    const mktDisplay = mktInfo.value > 0
+      ? ((mktInfo.isEstimate ? '~$' : '$') + Math.round(mktInfo.value))
+      : '';
     const typeBadge = i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>';
     const chk = selectedIds.singles.has(i.id);
     const soldBtn = isSold
@@ -4748,7 +4926,7 @@ function renderSingles() {
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',\'' + safeId + '\',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (_mktEmptyCellTitle(i) ? ' title="' + esc(_mktEmptyCellTitle(i)) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.marketPrice ? '$' + Math.round(parseFloat(i.marketPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
@@ -4813,8 +4991,86 @@ function renderSingles() {
   _updateUnresolvedFilterChip();
 }
 
+// =========== FIELD VALIDATION (F5) ===========
+// Central write-path guard so a bad value is rejected with a message instead
+// of landing in DB/Supabase. Wired into every write site: the generic inline
+// cell commit (updateField), and both add/edit modals (saveSingle,
+// saveSlab). Existing stored data is never migrated - this only gates NEW
+// writes, so old string priceAlert values keep working as-is (reads already
+// parseFloat them).
+// Long free-text fields (multi-line notes) get a generous cap; every other
+// known free-text field (names, set/product labels, cert/rank, tracking,
+// URLs, and small controlled-vocabulary fields like status/grade/language
+// which normally come from a <select> but could reach here via a future
+// caller) gets the tighter "short field" cap. Fields not listed here have no
+// defined rule and pass through unchanged, preserving today's behaviour.
+const _VALIDATE_LONG_TEXT_FIELDS = new Set(['notes']);
+const _VALIDATE_SHORT_TEXT_FIELDS = new Set([
+  'name', 'set', 'product', 'buyer', 'condition', 'certNo', 'rank',
+  'tracking', 'ebayUrl', 'carousellUrl', 'declared', 'targetTable',
+  'grader', 'grade', 'language', 'status', 'inventoryId', 'inventoryTable'
+]);
+const _VALIDATE_FIELD_LABEL = {
+  name: 'Name', set: 'Set', product: 'Product', buyer: 'Buyer',
+  condition: 'Condition', certNo: 'Cert #', rank: 'Rank', tracking: 'Tracking',
+  ebayUrl: 'eBay URL', carousellUrl: 'Carousell URL', declared: 'Declared',
+  targetTable: 'Target inventory', grader: 'Grader', grade: 'Grade',
+  language: 'Language', status: 'Status', inventoryId: 'Inventory ID',
+  inventoryTable: 'Inventory table', notes: 'Notes'
+};
+function validateFieldValue(field, raw) {
+  if (field === 'qty') {
+    const s = String(raw ?? '').trim();
+    const n = Number(s);
+    if (s === '' || !Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 9999) {
+      return { ok: false, message: 'Quantity must be a whole number between 1 and 9999' };
+    }
+    return { ok: true, value: n };
+  }
+  if (field === 'priceAlert') {
+    const s = String(raw ?? '').trim();
+    // Blank clears the alert - that must keep working, so it's valid input,
+    // not a rejection.
+    if (s === '') return { ok: true, value: null };
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0 || n > 1000000) {
+      return { ok: false, message: 'Price alert must be a number between 0 and 1,000,000' };
+    }
+    return { ok: true, value: n };
+  }
+  if (_VALIDATE_LONG_TEXT_FIELDS.has(field)) {
+    const s = String(raw ?? '');
+    if (s.length > 2000) {
+      return { ok: false, message: (_VALIDATE_FIELD_LABEL[field] || field) + ' is too long, maximum 2000 characters' };
+    }
+    return { ok: true, value: raw };
+  }
+  if (_VALIDATE_SHORT_TEXT_FIELDS.has(field)) {
+    const s = String(raw ?? '');
+    if (s.length > 200) {
+      return { ok: false, message: (_VALIDATE_FIELD_LABEL[field] || field) + ' is too long, maximum 200 characters' };
+    }
+    return { ok: true, value: raw };
+  }
+  // No rule defined for this field - pass through unchanged.
+  return { ok: true, value: raw };
+}
+
+// Re-render whichever table just rejected an inline edit, so a cell showing
+// a bad value the user typed snaps back to the real stored value instead of
+// silently disagreeing with the data (there's no direct DOM ref back to the
+// input from here - see updateField).
+function _kjrRerenderTable(table) {
+  const fns = {
+    singles: 'renderSingles', slabs: 'renderSlabs', sales: 'renderSales',
+    etbs: 'renderEtbs', boosterBoxes: 'renderBoosterBoxes',
+    boosterPacks: 'renderBoosterPacks', ebayPurchases: 'renderEbayPurchases'
+  };
+  const fn = fns[table];
+  if (fn && typeof window[fn] === 'function') window[fn]();
+}
+
 function updateField(table, id, field, val) {
-  snapshotForUndo();
   const arr = DB[table];
   const item = arr.find(i => i.id === id);
   if (!item) return;
@@ -4822,7 +5078,16 @@ function updateField(table, id, field, val) {
   // No-op if the value is identical - avoid spurious changelog rows from
   // a click-out that didn't actually mutate anything.
   if (String(prevVal ?? '') === String(val ?? '')) return;
-  item[field] = val;
+  // Validate before writing anything (F5) - a rejected value must not set
+  // the dirty flag or touch the record.
+  const check = validateFieldValue(field, val);
+  if (!check.ok) {
+    if (typeof toast === 'function') toast(check.message, 4000, true);
+    _kjrRerenderTable(table);
+    return;
+  }
+  snapshotForUndo();
+  item[field] = check.value;
   // Record price history whenever marketPrice is manually updated
   if (field === 'marketPrice' && val && !isNaN(parseFloat(val))) {
     if (!item.priceHistory) item.priceHistory = [];
@@ -4837,7 +5102,7 @@ function updateField(table, id, field, val) {
   if (typeof clLog === 'function') {
     const label = item.name || item.product || item.title || id;
     const fmt = v => (v === '' || v == null) ? '∅' : String(v);
-    clLog('edit', table, label, field + ': ' + fmt(prevVal) + ' → ' + fmt(val));
+    clLog('edit', table, label, field + ': ' + fmt(prevVal) + ' → ' + fmt(check.value));
   }
 }
 
@@ -4990,7 +5255,10 @@ async function restoreFromTrash(trashId) {
     // this restored row's stale base timestamp as a fake conflict (see A1).
     if (_ts) {
       const _row = DB[originalTable].find(r => r.id === item.id);
-      if (_row) { _row._updatedAt = _ts; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e){} }
+      if (_row) { _row._updatedAt = _ts; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
+        console.error('[storage] STORAGE_KEY stamp write failed after trash restore:', e);
+        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+      } }
     }
     if (originalTable === 'singles') renderSingles();
     if (originalTable === 'slabs')   renderSlabs();
@@ -5135,8 +5403,10 @@ async function deleteItem(id, table) {
   if (voidLinkedSales) {
     linkedSales.forEach(s => {
       DB.sales = DB.sales.filter(x => x.id !== s.id);
-      sendToTrash('sales', s, 'linked-item-deleted').catch(() => {});
-      sbDelete('sales', s.id).catch(() => {});
+      // sendToTrash/sbDelete already catch internally and queue for retry
+      // (pending-trash / pending-delete). Backstop only.
+      sendToTrash('sales', s, 'linked-item-deleted').catch(e => console.warn('sendToTrash (linked-deleted sale) rejected unexpectedly:', e));
+      sbDelete('sales', s.id).catch(e => console.warn('sbDelete (linked-deleted sale) rejected unexpectedly:', e));
       clLog('delete', 'sales', s.product, 'auto-trashed (linked item deleted)');
     });
     renderSales();
@@ -5226,6 +5496,26 @@ function saveSingle() {
   const id = document.getElementById('ms-id').value;
   const name = document.getElementById('ms-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
+  // Field-level validation (F5) - reject and stop before any write, so a bad
+  // qty/priceAlert/oversized text never reaches the record or the undo stack.
+  const _fieldChecks = [
+    { field: 'name',       raw: name,                                          el: 'ms-name' },
+    { field: 'set',        raw: document.getElementById('ms-set').value,       el: 'ms-set' },
+    { field: 'qty',        raw: document.getElementById('ms-qty').value,       el: 'ms-qty' },
+    { field: 'priceAlert', raw: document.getElementById('ms-alert').value,     el: 'ms-alert' },
+    { field: 'notes',      raw: document.getElementById('ms-notes').value,     el: 'ms-notes' },
+  ];
+  const _validated = {};
+  for (const c of _fieldChecks) {
+    const r = validateFieldValue(c.field, c.raw);
+    if (!r.ok) {
+      toast(r.message, 4000, true);
+      const inputEl = document.getElementById(c.el);
+      if (inputEl) inputEl.focus();
+      return;
+    }
+    _validated[c.field] = r.value;
+  }
   snapshotForUndo();
   // Coerce numeric fields on save so downstream reducers never have to guess.
   // Empty strings stay empty so the UI can show '-' rather than '0'.
@@ -5233,18 +5523,18 @@ function saveSingle() {
   const _market = document.getElementById('ms-market').value;
   const item = {
     id: id || genId('s'),
-    name, set: document.getElementById('ms-set').value,
+    name, set: _validated.set,
     language: document.getElementById('ms-lang').value,
     type: document.getElementById('ms-type').value,
     condition: document.getElementById('ms-cond').value,
-    qty: parseInt(document.getElementById('ms-qty').value)||1,
+    qty: _validated.qty,
     listPrice: kjrNum(document.getElementById('ms-list').value),
     costPrice: _cost === '' ? '' : kjrNum(_cost),
     marketPrice: _market === '' ? '' : kjrNum(_market),
     datePurchased: formatDateInput(document.getElementById('ms-date').value),
     status: document.getElementById('ms-status').value,
-    notes: document.getElementById('ms-notes').value,
-    priceAlert: document.getElementById('ms-alert').value,
+    notes: _validated.notes,
+    priceAlert: _validated.priceAlert,
     ebayUrl: document.getElementById('ms-ebay-url').value,
     carousellUrl: document.getElementById('ms-carousell-url').value,
     tcgdexId: document.getElementById('ms-tcgdexid').value,
@@ -5423,7 +5713,17 @@ function renderSlabs() {
     const urlIcon = i.ebayUrl || i.carousellUrl
       ? '<span title="Listed on ' + (i.ebayUrl ? 'eBay ' : '') + (i.carousellUrl ? 'Carousell' : '') + '">🔗</span>' : '';
     const mp = parseFloat(i.marketPrice)||0;
-    const mpDisplay = (i.marketPrice !== '' && i.marketPrice !== null && i.marketPrice !== undefined) ? ('$' + Math.round(parseFloat(i.marketPrice))) : '';
+    // Effective market value shown in the cell: real marketPrice, else a
+    // cost-price estimate (flagged with a leading '~', never colour alone -
+    // see effectiveMarketInfo). Mirrors the singles marketPrice cell so the
+    // two tables agree on unpriced-row treatment (F2).
+    const mktInfo = effectiveMarketInfo(i);
+    const mktCellTitle = (mktInfo.isEstimate && mktInfo.value > 0)
+      ? 'Estimated from cost price, no market price set'
+      : _mktEmptyCellTitle(i);
+    const mpDisplay = mktInfo.value > 0
+      ? ((mktInfo.isEstimate ? '~$' : '$') + Math.round(mktInfo.value))
+      : '';
     const safeId = esc(i.id);
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('slabs', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
@@ -5435,7 +5735,7 @@ function renderSlabs() {
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'-') + '</td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (_mktEmptyCellTitle(i) ? ' title="' + esc(_mktEmptyCellTitle(i)) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
@@ -5528,6 +5828,26 @@ function saveSlab() {
   const id = document.getElementById('msl-id').value;
   const name = document.getElementById('msl-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
+  // Field-level validation (F5) - reject and stop before any write. Slabs
+  // have no qty field, so only priceAlert + free text are checked here.
+  const _fieldChecks = [
+    { field: 'name',       raw: name,                                          el: 'msl-name' },
+    { field: 'certNo',     raw: document.getElementById('msl-cert').value,     el: 'msl-cert' },
+    { field: 'rank',       raw: document.getElementById('msl-rank').value,     el: 'msl-rank' },
+    { field: 'priceAlert', raw: document.getElementById('msl-alert').value,    el: 'msl-alert' },
+    { field: 'notes',      raw: document.getElementById('msl-notes').value,    el: 'msl-notes' },
+  ];
+  const _validated = {};
+  for (const c of _fieldChecks) {
+    const r = validateFieldValue(c.field, c.raw);
+    if (!r.ok) {
+      toast(r.message, 4000, true);
+      const inputEl = document.getElementById(c.el);
+      if (inputEl) inputEl.focus();
+      return;
+    }
+    _validated[c.field] = r.value;
+  }
   snapshotForUndo();
   // Coerce numeric fields on save (see saveSingle comment).
   const _slCost   = document.getElementById('msl-cost').value;
@@ -5538,15 +5858,15 @@ function saveSlab() {
     grader: document.getElementById('msl-grader').value,
     grade: document.getElementById('msl-grade').value,
     language: document.getElementById('msl-lang').value,
-    certNo: document.getElementById('msl-cert').value,
-    rank: document.getElementById('msl-rank').value,
+    certNo: _validated.certNo,
+    rank: _validated.rank,
     listPrice: kjrNum(document.getElementById('msl-list').value),
     costPrice: _slCost === '' ? '' : kjrNum(_slCost),
     marketPrice: _slMarket === '' ? '' : kjrNum(_slMarket),
     dateListed: formatDateInput(document.getElementById('msl-date').value),
     status: document.getElementById('msl-status').value,
-    notes: document.getElementById('msl-notes').value,
-    priceAlert: document.getElementById('msl-alert').value,
+    notes: _validated.notes,
+    priceAlert: _validated.priceAlert,
     ebayUrl: document.getElementById('msl-ebay-url').value,
     carousellUrl: document.getElementById('msl-carousell-url').value,
     tcgdexId: document.getElementById('msl-tcgdexid').value,
@@ -6103,11 +6423,10 @@ function computeDashboardStats() {
   // headline towards zero. The freshness chip below still shows true live
   // coverage, and the sealed bucket already uses this same cost fallback.
   // (table arg kept for call-site compatibility; no longer used internally.)
-  const getMkt = (i, table) => {
-    const explicit = parseFloat(i.marketPrice);
-    if (!isNaN(explicit) && explicit > 0) return explicit;
-    return parseFloat(i.costPrice) || 0;
-  };
+  // Routed through the shared effectiveMarketInfo (F2) so this agrees with
+  // the table cell and sort column - behaviour unchanged here, it already
+  // fell back to costPrice.
+  const getMkt = (i, table) => effectiveMarketInfo(i).value;
   const mktSingles   = DB.singles.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + getMkt(i, 'singles')*(parseInt(i.qty)||1), 0);
   const mktSlabs     = DB.slabs.filter(i => (i.status||'Available') === 'Available').reduce((s,i) => s + getMkt(i, 'slabs'), 0);
   // Sealed market value - used for the exposure breakdown card only.
@@ -6440,7 +6759,8 @@ function renderDashboard() {
     }
   }
 
-  // Destroy any leftover chart instances
+  // Destroy any leftover chart instances. Cosmetic: a chart may already be
+  // destroyed or its canvas already gone, nothing to recover either way.
   Object.values(dashCharts).forEach(c => { try { c.destroy && c.destroy(); } catch(e) {} });
   dashCharts = {};
 
@@ -6521,6 +6841,8 @@ function clearAiChat() {
 // push time gets baked into the published HTML and re-appears on next load.
 // This sweep scrubs every known ephemeral piece so each session starts fresh.
 function _resetEphemeralUi(){
+  // Cosmetic teardown: worst case the AI chat panel isn't cleared and shows
+  // stale content until the next real reset, no data involved.
   try { clearAiChat(); } catch(e) {}
   // AI Portfolio Analyst is opt-in: start every session collapsed, regardless
   // of whatever open/closed state got baked into a published GitHub snapshot.
@@ -6690,8 +7012,11 @@ function _buildAnalystSnapshot(){
   // meant a high-ROI but low-priced slab (e.g. an Eevee TAG 10 bought
   // cheap) could fall out of the AI's view entirely.
   // Sort only - falling back to cost here just orders unpriced rows
-  // sensibly, it never reaches the payload as a market figure.
-  const bySgdValue = arr => [...arr].sort((a,b) => num(b.marketPrice||b.totalPrice) - num(a.marketPrice||a.totalPrice));
+  // sensibly, it never reaches the payload as a market figure. Routed
+  // through effectiveMarketInfo (F2): this sorts both singles (unit-priced)
+  // and sealed arrays (etbs/bb/bp, line-total priced), so it keeps the
+  // totalPrice tail for the sealed rows that have no costPrice field.
+  const bySgdValue = arr => [...arr].sort((a,b) => (effectiveMarketInfo(b).value || (parseFloat(b.totalPrice)||0)) - (effectiveMarketInfo(a).value || (parseFloat(a.totalPrice)||0)));
   const TOP = { singles: 200, sealed: 60 };
   // Sealed market value must never fall back to cost (Julian: "if it cannot
   // find the current market price, it should leave it blank and not corrupt
@@ -6739,7 +7064,10 @@ function _buildAnalystSnapshot(){
   // fields are separately zero-guarded elsewhere) but sealed totals below
   // are summed over priced rows only - see sumSealedMarket.
   const sumCost   = arr => arr.reduce((s,i) => s + (num(i.costPrice||i.totalPrice) * (parseInt(i.qty)||1)), 0);
-  const sumMarket = arr => arr.reduce((s,i) => s + (num(i.marketPrice||i.totalPrice) * (parseInt(i.qty)||1)), 0);
+  // Routed through effectiveMarketInfo (F2): only ever called with singles
+  // or slabs (never the sealed arrays, which use sumSealedMarket below), so
+  // no totalPrice tail is needed here.
+  const sumMarket = arr => arr.reduce((s,i) => s + (effectiveMarketInfo(i).value * (parseInt(i.qty)||1)), 0);
   // Sealed-only: sum market over priced rows, never fall back to cost.
   const sumSealedMarket = arr => arr.reduce((s,r) => s + (kjrNum(r.marketPrice) > 0 ? kjrNum(r.marketPrice) * (parseInt(r.qty)||1) : 0), 0);
   const countSealedPriced = arr => arr.filter(r => kjrNum(r.marketPrice) > 0).length;
@@ -6871,7 +7199,11 @@ async function sendAiAnalyst() {
       try {
         const chartData = JSON.parse(chartMatch[1].trim());
         renderAiChart(chartData);
-      } catch(e) {}
+      } catch(e) {
+        // Degraded: the text reply already rendered above, this only skips
+        // the optional chart if the AI returned malformed <CHART> JSON.
+        console.warn('[ai-chat] chart JSON parse failed:', e);
+      }
     }
   } catch(e) {
     hideAiTyping();
@@ -6888,6 +7220,7 @@ function renderAiChart(cd) {
   const content = document.getElementById('ai-viz-content');
   area.style.display = '';
   content.innerHTML = '<canvas id="ai-chart" style="max-height:280px"></canvas>';
+  // Cosmetic: chart may already be destroyed, nothing to recover.
   if (dashCharts.aiChart) { try { dashCharts.aiChart.destroy(); } catch(e) {} }
   const palette = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80'];
   const colors = cd.colors?.length ? cd.colors : cd.labels.map((_,i) => palette[i%palette.length]);
@@ -7963,7 +8296,10 @@ function loadQueue() {
   }
   return q;
 }
-function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) {} }
+// Refresh-queue bookkeeping only, not priced data: a failed save just means
+// the queue's progress markers (cursor, misses-today) rebuild from scratch
+// next load, as already handled by loadQueue()'s schema-mismatch path above.
+function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) { console.warn('[queue] refresh-queue save failed:', e); } }
 function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY); }
 
 // Which lane will price this queue item? Slabs (graded) never have a TCGdex
@@ -9925,7 +10261,8 @@ function resetCurrentView() {
 // persisted at 'kjr_price_cache') has been removed - it read a Supabase
 // table that was never written by any code, so it only ever served 10 stale
 // hand-seeded rows. Drop any local copy so it can't linger or confuse a
-// future debugging session.
+// future debugging session. Idempotent teardown of a stale, unused key - if
+// this fails the dead key just lingers, nothing reads it any more.
 try { localStorage.removeItem('kjr_price_cache'); } catch(e){}
 
 // Slabs column-order reset - REMOVED. This was a one-time migration to
@@ -9975,10 +10312,15 @@ const CB_FIELDS = {
   // own bespoke measure.
   costPrice:    { label: 'Cost Price (S$)',    icon: '💵', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
                   get: i => parseFloat(i.costPrice ?? i.totalPrice)||0 },
+  // Routed through effectiveMarketInfo (F2) so singles/slabs agree with the
+  // marketPrice cell, sort and dashboard on cost-as-estimate fallback. Sealed
+  // tables have no costPrice field at all, so effectiveMarketInfo always
+  // returns 0 for them and the tail `|| totalPrice` fallback is what actually
+  // prices them, exactly as before this change.
   marketPrice:  { label: 'Market Price (S$)',  icon: '📈', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
-                  get: i => parseFloat(i.marketPrice ?? i.totalPrice)||0 },
+                  get: i => effectiveMarketInfo(i).value || (parseFloat(i.totalPrice) || 0) },
   pnl:          { label: 'Unrealised P&L',     icon: '💹', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
-                  get: i => (parseFloat(i.marketPrice ?? i.totalPrice)||0) - (parseFloat(i.costPrice ?? i.totalPrice)||0) },
+                  get: i => (effectiveMarketInfo(i).value || (parseFloat(i.totalPrice) || 0)) - (parseFloat(i.costPrice ?? i.totalPrice)||0) },
   itemCount:    { label: 'Item Count',         icon: '🔢', type: 'meas', agg: 'sum', weighted: true, unit:'count', tables: _INV_SOURCES,
                   get: () => 1 },
   revenue:      { label: 'Revenue (S$)',       icon: '💰', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],  get: s => parseFloat(s.totalCollected)||0 },
@@ -10038,11 +10380,13 @@ function _loadCbState() {
     if (raw && Array.isArray(raw.x) && Array.isArray(raw.y)) {
       return { x: raw.x.filter(k => CB_FIELDS[k]), y: raw.y.filter(k => CB_FIELDS[k]), customItems: null };
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[chart-builder] state load failed:', e); }
   return { x: [], y: [], customItems: null };
 }
 function _saveCbState() {
-  try { localStorage.setItem(CB_STATE_KEY, JSON.stringify(cbState)); } catch(e) {}
+  // Chart-builder UI state only, not chart data. Failure just means the
+  // builder resets on next reload instead of resuming.
+  try { localStorage.setItem(CB_STATE_KEY, JSON.stringify(cbState)); } catch(e) { console.warn('[chart-builder] state save failed:', e); }
 }
 let cbState = _loadCbState();
 let _cbChart = null;
@@ -10072,7 +10416,7 @@ function savePillOrder(src, type, order) {
     if (!all[src]) all[src] = {};
     all[src][type] = order;
     localStorage.setItem(CB_ORDER_KEY, JSON.stringify(all));
-  } catch(e) {}
+  } catch(e) { console.warn('[chart-builder] pill order save failed:', e); }
 }
 
 function loadPillOrder(src, type, defaultKeys) {
@@ -10093,7 +10437,7 @@ function _cbGetPinnedFields() {
   try {
     const raw = JSON.parse(localStorage.getItem(CB_PINNED_FIELDS_KEY) || 'null');
     if (raw && Array.isArray(raw.dim) && Array.isArray(raw.meas)) return raw;
-  } catch(e) {}
+  } catch(e) { console.warn('[chart-builder] pinned fields load failed:', e); }
   return {
     dim:  ['pokeName','fullName','language','set','condition'],
     meas: ['costPrice','marketPrice','pnl','itemCount','profit']
@@ -10101,7 +10445,7 @@ function _cbGetPinnedFields() {
 }
 
 function _cbSavePinnedFields(pinned) {
-  try { localStorage.setItem(CB_PINNED_FIELDS_KEY, JSON.stringify(pinned)); } catch(e) {}
+  try { localStorage.setItem(CB_PINNED_FIELDS_KEY, JSON.stringify(pinned)); } catch(e) { console.warn('[chart-builder] pinned fields save failed:', e); }
 }
 
 function _cbOpenFieldPicker(type) {
@@ -10518,6 +10862,7 @@ function renderCustomChart() {
     // otherwise stale "N groups · M items" persists after pills are cleared.
     const sumEl = document.getElementById('cb-summary');
     if (sumEl) sumEl.innerHTML = '';
+    // Cosmetic: chart may already be destroyed, nothing to recover.
     if (_cbChart) { try { _cbChart.destroy(); } catch(e) {} _cbChart = null; }
     const saveBtn = document.getElementById('cb-save-btn');
     if (saveBtn) saveBtn.disabled = true;
@@ -10542,6 +10887,7 @@ function renderCustomChart() {
       '<div style="font-size:11px;opacity:0.7">Clear the Filter field or pick a different Source</div>';
     const sumEl = document.getElementById('cb-summary');
     if (sumEl) sumEl.innerHTML = '';
+    // Cosmetic: chart may already be destroyed, nothing to recover.
     if (_cbChart) { try { _cbChart.destroy(); } catch(e) {} _cbChart = null; }
     return;
   }
@@ -10689,7 +11035,9 @@ function loadSavedCharts() {
   try { return JSON.parse(localStorage.getItem(SAVED_CHARTS_KEY) || '[]'); } catch(e) { return []; }
 }
 function persistSavedCharts(charts) {
-  try { localStorage.setItem(SAVED_CHARTS_KEY, JSON.stringify(charts)); } catch(e) {}
+  // Saved chart CONFIGS (axis picks, filters), not inventory data. A failed
+  // save just means a saved chart layout may not survive a reload.
+  try { localStorage.setItem(SAVED_CHARTS_KEY, JSON.stringify(charts)); } catch(e) { console.warn('[saved-charts] save failed:', e); }
 }
 
 function saveChartToDashboard() {
@@ -10798,6 +11146,7 @@ async function deleteSavedChart(id) {
   // Remove from DOM and storage immediately
   const remaining = charts.filter(c => c.id !== id);
   persistSavedCharts(remaining);
+  // Cosmetic: Chart.js instance teardown, may already be destroyed.
   if (window._savedChartInstances?.[id]) {
     try { window._savedChartInstances[id].destroy(); } catch(e) {}
     delete window._savedChartInstances[id];
@@ -10838,6 +11187,7 @@ async function deleteSavedChart(id) {
       const _t = document.getElementById('toast');
       if (_t) {
         _t.classList.remove('show','toast-error','toast-warn');
+        // Popover API, cosmetic: hidePopover() throws if already closed.
         if (_t.hidePopover && _t.matches(':popover-open')) { try { _t.hidePopover(); } catch(e){} }
         const _tMsg = document.getElementById('toast-msg');
         if (_tMsg) _tMsg.textContent = '';
@@ -10904,6 +11254,7 @@ async function deleteAllSavedCharts() {
   persistSavedCharts(pinned);
   // Destroy instances and remove DOM nodes for deletable charts
   for (const c of deletable) {
+    // Cosmetic: Chart.js instance teardown, may already be destroyed.
     if (window._savedChartInstances?.[c.id]) {
       try { window._savedChartInstances[c.id].destroy(); } catch(e) {}
       delete window._savedChartInstances[c.id];
@@ -10973,7 +11324,7 @@ function _renderOneSavedChart(config) {
 function _drawSavedChart(config) {
   if (!window._savedChartInstances) window._savedChartInstances = {};
 
-  // Destroy old instance
+  // Destroy old instance. Cosmetic: may already be destroyed.
   if (window._savedChartInstances[config.id]) {
     try { window._savedChartInstances[config.id].destroy(); } catch(e) {}
     delete window._savedChartInstances[config.id];
@@ -11080,81 +11431,6 @@ function _refreshSavedChart(id) {
   if (config) { _drawSavedChart(config); toast('Chart refreshed with latest data'); }
 }
 
-// =========== DASHBOARD DRAG-TO-REORDER ===========
-const DASH_ORDER_KEY = 'pokeinv_dash_order';
-let _dashDragSrc = null;
-
-function saveDashOrder() {
-  const order = Array.from(document.querySelectorAll('.dash-card-wrap')).map(el => el.id);
-  try { localStorage.setItem(DASH_ORDER_KEY, JSON.stringify(order)); } catch(e) {}
-}
-
-function restoreDashOrder() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(DASH_ORDER_KEY) || 'null');
-    if (!saved || !saved.length) return;
-    // Rebuild grid by moving cards into their saved order
-    // Find all rows and flatten all cards in order
-    const container = document.getElementById('dash-grid-container');
-    if (!container) return;
-    const allRows   = Array.from(container.querySelectorAll('.dash-grid'));
-    const allCards  = Array.from(container.querySelectorAll('.dash-card-wrap'));
-    const cardMap   = {};
-    allCards.forEach(c => cardMap[c.id] = c);
-
-    // Re-insert cards in saved order across rows (2 per row)
-    let ri = 0;
-    for (let i = 0; i < saved.length; i += 2) {
-      const row = allRows[ri++];
-      if (!row) break;
-      row.innerHTML = '';
-      [saved[i], saved[i+1]].forEach(id => { if (id && cardMap[id]) row.appendChild(cardMap[id]); });
-    }
-  } catch(e) {}
-}
-
-function initDashboardDrag() {
-  document.querySelectorAll('.dash-card-wrap').forEach(card => {
-    card.addEventListener('dragstart', e => {
-      _dashDragSrc = card;
-      card.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', card.id);
-    });
-    card.addEventListener('dragend', () => {
-      card.classList.remove('dragging');
-      document.querySelectorAll('.dash-card-wrap').forEach(c => c.classList.remove('drag-target'));
-      saveDashOrder();
-    });
-    card.addEventListener('dragover', e => {
-      e.preventDefault();
-      if (card !== _dashDragSrc) {
-        document.querySelectorAll('.dash-card-wrap').forEach(c => c.classList.remove('drag-target'));
-        card.classList.add('drag-target');
-      }
-    });
-    card.addEventListener('dragleave', () => card.classList.remove('drag-target'));
-    card.addEventListener('drop', e => {
-      e.preventDefault();
-      card.classList.remove('drag-target');
-      if (!_dashDragSrc || _dashDragSrc === card) return;
-      // Swap the two cards in the DOM
-      const srcParent  = _dashDragSrc.parentNode;
-      const tgtParent  = card.parentNode;
-      const srcNext    = _dashDragSrc.nextSibling;
-      const tgtNext    = card.nextSibling;
-      if (srcNext === card) {
-        srcParent.insertBefore(card, _dashDragSrc);
-      } else if (tgtNext === _dashDragSrc) {
-        tgtParent.insertBefore(_dashDragSrc, card);
-      } else {
-        srcParent.insertBefore(card, srcNext);
-        tgtParent.insertBefore(_dashDragSrc, tgtNext);
-      }
-      saveDashOrder();
-    });
-  });
-}
 (function() {
   const _orig = window.showPage;
   window.showPage = function(id) {
@@ -11222,8 +11498,6 @@ function applyDetectedType() {
 })();
 
 buildColMenus();
-// Restore saved dashboard card order
-restoreDashOrder();
 // Kick off async DB load from Supabase, then render
 initDB();
 // Auto-purge trash items older than 30 days (runs in background)

@@ -477,7 +477,7 @@ function _loadDirtyFromLS() {
 // Read-merge-write: union the in-memory dirty set with whatever is currently
 // stored, so a concurrent tab's queued-but-not-yet-synced ids are never
 // clobbered by this tab blindly overwriting the whole blob (B2, two-tab safety).
-function _persistDirty() {
+function _persistDirty(flushed) {
   try {
     const raw = localStorage.getItem(DIRTY_LS_KEY);
     const prev = raw ? JSON.parse(raw) : {};
@@ -486,7 +486,9 @@ function _persistDirty() {
     for (const k of keys) {
       const stored = Array.isArray(prev[k]) ? prev[k] : [];
       const mine = [..._dirty[k]];
-      merged[k] = [...new Set([...stored, ...mine])];
+      const union = new Set([...stored, ...mine]);
+      if (flushed && flushed[k]) for (const id of flushed[k]) union.delete(id);
+      merged[k] = [...union];
     }
     localStorage.setItem(DIRTY_LS_KEY, JSON.stringify(merged));
   } catch(e) {
@@ -541,6 +543,7 @@ async function _flushDirtyToSupabase() {
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
   // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
   const toSync = [];
+  const flushed = {};
   for (const tbl of tables) {
     const key = _dbKey(tbl);
     const dirtyIds = new Set(_dirty[key]); // snapshot
@@ -569,6 +572,7 @@ async function _flushDirtyToSupabase() {
       }
       // Only clear the IDs we successfully uploaded - new mutations since snapshot stay dirty
       dirtyIds.forEach(id => _dirty[key].delete(id));
+      flushed[key] = dirtyIds;
     } catch(e) {
       anyError = true;
       setSyncStatus('error', e.message);
@@ -588,7 +592,7 @@ async function _flushDirtyToSupabase() {
       warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
     }
   }
-  _persistDirty();
+  _persistDirty(flushed);
   if (!anyError) setSyncStatus('ok');
   // Opportunistic: retry any deletes and trash writes that failed previously.
   // Trash first so the snapshot exists before its source row is deleted.

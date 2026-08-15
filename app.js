@@ -3154,11 +3154,12 @@ async function _saveVersionWithName(name){
 async function _pruneCloudVersions() {
   if (isLocalhostPreview()) return; // never write to prod from a local preview
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?select=id&order=updated_at.desc', {
-      headers: { ...SB_HDR, 'Range-Unit': 'items', 'Range': '50-9999' }
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id&order=updated_at.desc&offset=50&limit=1000', {
+      headers: SB_HDR
     });
     if (!r.ok) return; // don't throw - pruning failure shouldn't surface as a save error
     const stale = await r.json();
+    if (!Array.isArray(stale)) return; // guard: never loop over a non-array response
     for (const row of stale) {
       await sbDeleteVersion(row.id);
     }
@@ -4857,7 +4858,7 @@ function renderSingles() {
   const altItems      = showSoldMain ? available : sold;
 
   const totalCost   = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0)*(parseInt(i.qty)||1), 0);
-  const totalValue  = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||0)*(parseInt(i.qty)||1), 0);
+  const totalValue  = available.reduce((s,i) => s + effectiveMarketInfo(i).value*(parseInt(i.qty)||1), 0);
   const totalQty    = available.reduce((s,i) => s + (parseInt(i.qty)||1), 0);
   const unrealised  = totalValue - totalCost;
 
@@ -5630,7 +5631,7 @@ function renderSlabs() {
   const sold      = sortItems(DB.slabs.filter(i => (i.status||'Available') === 'Sold' && passesFilters(i)), 'slabs');
 
   const totalCostSlabs  = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const totalValueSlabs = available.reduce((s,i) => s + (parseFloat(i.marketPrice)||0), 0);
+  const totalValueSlabs = available.reduce((s,i) => s + effectiveMarketInfo(i).value, 0);
   const unrealisedSlabs = totalValueSlabs - totalCostSlabs;
 
   function statCard(label, value, tooltip, cls) {

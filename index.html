@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.40',
+    release: 'kujira-collectibles@3.41',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.40">
+<link rel="stylesheet" href="styles.css?v=3.41">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.40 (15 Aug)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.41 (30 Aug)</span>
     </div>
   </a>
   <nav class="nav">
@@ -660,16 +660,16 @@
   <!-- AI Analyst Panel -->
   <div id="ai-analyst-card" style="margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg)">
     <!-- Header -->
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);background:var(--bg2);cursor:pointer;user-select:none" onclick="toggleAiPanel()">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
-        <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#4a9eff);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🤖</div>
-        <div style="min-width:0">
-          <div style="font-weight:600;font-size:14px;color:var(--text)">AI Portfolio Analyst</div>
-          <div id="ai-panel-subline" style="font-size:11px;color:var(--text3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Gemini / Groq / OpenRouter (free) or Claude · Ask anything about your cards</div>
-        </div>
-      </div>
+    <button type="button" id="ai-panel-toggle" aria-controls="ai-analyst-body" aria-expanded="false" style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;background:var(--bg2);cursor:pointer;user-select:none;width:100%;border:0;border-bottom:1px solid var(--border);color:inherit;font:inherit;text-align:left" onclick="toggleAiPanel()">
+      <span style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
+        <span style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#4a9eff);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🤖</span>
+        <span style="display:flex;flex-direction:column;min-width:0">
+          <span style="font-weight:600;font-size:14px;color:var(--text)">AI Portfolio Analyst</span>
+          <span id="ai-panel-subline" style="font-size:11px;color:var(--text3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block">Gemini / Groq / OpenRouter (free) or Claude · Ask anything about your cards</span>
+        </span>
+      </span>
       <span id="ai-panel-toggle-icon" style="flex-shrink:0;white-space:nowrap;font-size:12px;font-weight:600;color:var(--text2);background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:6px 12px;margin-left:10px">▼ Show</span>
-    </div>
+    </button>
     <div id="ai-analyst-body" style="display:none">
       <!-- Quick prompts -->
       <div style="padding:16px 18px;border-bottom:1px solid var(--border);background:var(--bg2)">
@@ -687,10 +687,10 @@
       <div style="padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:center">
         <div style="flex:1;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border2);border-radius:8px;padding:6px 12px">
           <span style="font-size:14px;opacity:0.5">💬</span>
-          <input id="ai-chat-input" style="flex:1;background:transparent;border:none;outline:none;font-size:13px;color:var(--text);font-family:inherit" placeholder="e.g. Which slabs have the highest unrealised gain?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiAnalyst();}">
+          <input id="ai-chat-input" aria-label="Ask AI Portfolio Analyst" style="flex:1;background:transparent;border:none;outline:none;font-size:13px;color:var(--text);font-family:inherit" placeholder="e.g. Which slabs have the highest unrealised gain?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiAnalyst();}">
         </div>
         <button class="btn btn-primary btn-sm" onclick="sendAiAnalyst()" id="ai-send-btn" style="padding:7px 16px;font-size:13px">Send</button>
-        <button class="btn btn-sm" onclick="clearAiChat()" title="Clear chat" aria-label="Close" style="padding:7px 10px;color:var(--text3)">✕</button>
+        <button class="btn btn-sm" onclick="clearAiChat()" title="Clear chat" aria-label="Clear chat" style="padding:7px 10px;color:var(--text3)">✕</button>
       </div>
     </div>
   </div>
@@ -1019,26 +1019,26 @@
     <div class="modal-body">
       <input type="hidden" id="ms-id">
       <div class="form-grid">
-        <div class="form-group full"><label class="lbl">Card Name *</label><input class="fi" id="ms-name" placeholder="e.g. Charizard ex 223"></div>
-        <div class="form-group"><label class="lbl">Set</label><input class="fi" id="ms-set" placeholder="e.g. sv3"></div>
-        <div class="form-group"><label class="lbl">Language</label>
+        <div class="form-group full"><label class="lbl" for="ms-name">Card Name *</label><input class="fi" id="ms-name" placeholder="e.g. Charizard ex 223"></div>
+        <div class="form-group"><label class="lbl" for="ms-set">Set</label><input class="fi" id="ms-set" placeholder="e.g. sv3"></div>
+        <div class="form-group"><label class="lbl" for="ms-lang">Language</label>
           <select class="fi" id="ms-lang"><option>EN</option><option>JP</option><option>CN</option><option>ID</option></select></div>
-        <div class="form-group"><label class="lbl">Type</label>
+        <div class="form-group"><label class="lbl" for="ms-type">Type</label>
           <select class="fi" id="ms-type"><option value="raw">Raw Single</option><option value="sealed">Sealed</option></select></div>
-        <div class="form-group"><label class="lbl">Condition</label>
+        <div class="form-group"><label class="lbl" for="ms-cond">Condition</label>
           <select class="fi" id="ms-cond"><option>Mint</option><option>Near Mint</option><option>Lightly Played</option><option>Moderately Played</option><option>Heavily Played</option><option>Damaged</option></select></div>
-        <div class="form-group"><label class="lbl">Qty</label><input class="fi" type="number" id="ms-qty" value="1" min="1"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="ms-market" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="ms-list" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Date Purchased</label><input class="fi" type="date" id="ms-date"></div>
-        <div class="form-group"><label class="lbl">Status</label>
+        <div class="form-group"><label class="lbl" for="ms-qty">Qty</label><input class="fi" type="number" id="ms-qty" value="1" min="1"></div>
+        <div class="form-group"><label class="lbl" for="ms-cost">Cost Price (S$)</label><input class="fi" type="number" id="ms-cost" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="ms-market">Market Price (S$)</label><input class="fi" type="number" id="ms-market" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="ms-list">Carousell Price (S$)</label><input class="fi" type="number" id="ms-list" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="ms-date">Date Purchased</label><input class="fi" type="date" id="ms-date"></div>
+        <div class="form-group"><label class="lbl" for="ms-status">Status</label>
           <select class="fi" id="ms-status"><option>Available</option><option>Sold</option></select></div>
-        <div class="form-group"><label class="lbl">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" min="0" placeholder="e.g. 150" step="0.01"></div>
-        <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="ms-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
-        <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="ms-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
-        <div class="form-group full"><label class="lbl">TCGdex ID</label><input class="fi" id="ms-tcgdexid" placeholder="sv03-223"><div id="ms-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched.</div></div>
-        <div class="form-group full"><label class="lbl">Notes</label><textarea class="fi" id="ms-notes" rows="2"></textarea></div>
+        <div class="form-group"><label class="lbl" for="ms-alert">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="ms-alert" min="0" placeholder="e.g. 150" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="ms-ebay-url">eBay Listing URL</label><input class="fi" id="ms-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
+        <div class="form-group"><label class="lbl" for="ms-carousell-url">Carousell Listing URL</label><input class="fi" id="ms-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
+        <div class="form-group full"><label class="lbl" for="ms-tcgdexid">TCGdex ID</label><input class="fi" id="ms-tcgdexid" placeholder="sv03-223"><div id="ms-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched.</div></div>
+        <div class="form-group full"><label class="lbl" for="ms-notes">Notes</label><textarea class="fi" id="ms-notes" rows="2"></textarea></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -1057,25 +1057,25 @@
     <div class="modal-body">
       <input type="hidden" id="msl-id">
       <div class="form-grid">
-        <div class="form-group full"><label class="lbl">Card Name *</label><input class="fi" id="msl-name" placeholder="e.g. Eevee 173"></div>
-        <div class="form-group"><label class="lbl">Grader</label>
+        <div class="form-group full"><label class="lbl" for="msl-name">Card Name *</label><input class="fi" id="msl-name" placeholder="e.g. Eevee 173"></div>
+        <div class="form-group"><label class="lbl" for="msl-grader">Grader</label>
           <select class="fi" id="msl-grader"><option>TAG</option><option>PSA</option><option>CGC</option><option>ACE</option><option>BGS</option></select></div>
-        <div class="form-group"><label class="lbl">Grade</label><input class="fi" id="msl-grade" placeholder="10"></div>
-        <div class="form-group"><label class="lbl">Language</label>
+        <div class="form-group"><label class="lbl" for="msl-grade">Grade</label><input class="fi" id="msl-grade" placeholder="10"></div>
+        <div class="form-group"><label class="lbl" for="msl-lang">Language</label>
           <select class="fi" id="msl-lang"><option>EN</option><option>JP</option><option>CN</option><option>KR</option><option>FR</option><option>DE</option><option>IT</option><option>ES</option><option>PT</option><option>ID</option><option>TH</option></select></div>
-        <div class="form-group"><label class="lbl">Cert #</label><input class="fi" id="msl-cert" placeholder="e.g. L6786028"></div>
-        <div class="form-group"><label class="lbl">Rank</label><input class="fi" id="msl-rank" placeholder="e.g. 1st"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$)</label><input class="fi" type="number" id="msl-cost" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Market Price (S$)</label><input class="fi" type="number" id="msl-market" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Carousell Price (S$)</label><input class="fi" type="number" id="msl-list" min="0" placeholder="0.00" step="0.01"></div>
-        <div class="form-group"><label class="lbl">Date Listed</label><input class="fi" type="date" id="msl-date"></div>
-        <div class="form-group"><label class="lbl">Status</label>
+        <div class="form-group"><label class="lbl" for="msl-cert">Cert #</label><input class="fi" id="msl-cert" placeholder="e.g. L6786028"></div>
+        <div class="form-group"><label class="lbl" for="msl-rank">Rank</label><input class="fi" id="msl-rank" placeholder="e.g. 1st"></div>
+        <div class="form-group"><label class="lbl" for="msl-cost">Cost Price (S$)</label><input class="fi" type="number" id="msl-cost" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="msl-market">Market Price (S$)</label><input class="fi" type="number" id="msl-market" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="msl-list">Carousell Price (S$)</label><input class="fi" type="number" id="msl-list" min="0" placeholder="0.00" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="msl-date">Date Listed</label><input class="fi" type="date" id="msl-date"></div>
+        <div class="form-group"><label class="lbl" for="msl-status">Status</label>
           <select class="fi" id="msl-status"><option>Available</option><option>Sold</option></select></div>
-        <div class="form-group"><label class="lbl">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" min="0" placeholder="e.g. 500" step="0.01"></div>
-        <div class="form-group"><label class="lbl">eBay Listing URL</label><input class="fi" id="msl-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
-        <div class="form-group"><label class="lbl">Carousell Listing URL</label><input class="fi" id="msl-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
-        <div class="form-group full"><label class="lbl">TCGdex ID</label><input class="fi" id="msl-tcgdexid" placeholder="sv03-223"><div id="msl-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched. Slabs are priced via PPT (eBay graded sales), so this rarely applies.</div></div>
-        <div class="form-group full"><label class="lbl">TAG URL / Notes</label><textarea class="fi" id="msl-notes" rows="2"></textarea></div>
+        <div class="form-group"><label class="lbl" for="msl-alert">Price Alert - notify if market reaches (S$)</label><input class="fi" type="number" id="msl-alert" min="0" placeholder="e.g. 500" step="0.01"></div>
+        <div class="form-group"><label class="lbl" for="msl-ebay-url">eBay Listing URL</label><input class="fi" id="msl-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
+        <div class="form-group"><label class="lbl" for="msl-carousell-url">Carousell Listing URL</label><input class="fi" id="msl-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
+        <div class="form-group full"><label class="lbl" for="msl-tcgdexid">TCGdex ID</label><input class="fi" id="msl-tcgdexid" placeholder="sv03-223"><div id="msl-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched. Slabs are priced via PPT (eBay graded sales), so this rarely applies.</div></div>
+        <div class="form-group full"><label class="lbl" for="msl-notes">TAG URL / Notes</label><textarea class="fi" id="msl-notes" rows="2"></textarea></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -1636,7 +1636,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <button class="btn btn-sm" onclick="kjrSentryLoad()" title="Refresh" style="padding:4px 8px;font-size:12px">↻ Refresh</button>
-      <button onclick="closeSentryPanel()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px">&times;</button>
+      <button aria-label="Close Sentry errors" onclick="closeSentryPanel()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px">&times;</button>
     </div>
   </div>
   <div class="sentry-issues-list" id="sentry-issues-body">
@@ -1649,7 +1649,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.40"></script>
-<script src="features.js?v=3.40"></script>
+<script src="app.js?v=3.41"></script>
+<script src="features.js?v=3.41"></script>
 </body>
 </html>

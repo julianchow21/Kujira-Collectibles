@@ -8,49 +8,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { loadApp, plain, ROOT } = require('./harness.js');
 
-test('misc-consistency: genId(prefix) - correct prefix, and effectively unique across 1000 calls in practice', async () => {
+test('misc-consistency: genId(prefix) uses UUID-shaped crypto ids and is unique across 1000 calls', async () => {
   const { ctx } = await loadApp();
   const ids = new Set();
   for (let i = 0; i < 1000; i++) {
     const id = ctx.genId('single');
-    assert.match(id, /^single_\d+_[0-9a-z]{1,4}$/);
+    assert.match(id, /^single_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     ids.add(id);
   }
-  // Not asserting ids.size === 1000 here - see the SUSPECT test below, which
-  // deterministically proves this can occasionally collide.
-  assert.ok(ids.size >= 990, 'overwhelmingly unique in practice (at most a handful of collisions possible per 1000 calls)');
+  assert.strictEqual(ids.size, 1000);
 });
 
-test('misc-consistency: SUSPECT - genId can produce duplicate ids when Date.now() AND the random suffix both coincide (proven deterministically)', async () => {
+test('misc-consistency: genId fallback remains unique when crypto is absent and time/random are pinned', async () => {
   const { ctx } = await loadApp();
-  // genId = prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,6).
-  // A real (non-forced) collision was actually observed empirically: a plain
-  // Node repro of the exact same formula produced 1-2 duplicate ids in some
-  // 1000-call tight loops (out of 1000, most trials had 0, one trial had 2) -
-  // Date.now() has millisecond resolution and a synchronous loop can issue
-  // hundreds of calls within the same millisecond, so uniqueness rests
-  // entirely on the 4-character base36 random suffix (36^4 ≈ 1.68M
-  // possibilities) - a birthday-paradox collision among a few hundred draws
-  // sharing one millisecond is unlikely per call but not negligible in
-  // aggregate. Proven here deterministically by pinning Math.random(): two
-  // calls in the same tick (same Date.now() millisecond, near-certain in a
-  // synchronous loop) with the same "random" draw produce IDENTICAL ids.
-  // Severity: cosmetic in practice (an actual production collision would
-  // need two rows created in the same millisecond AND the same 4-char draw),
-  // but genId has no collision-avoidance beyond hoping for entropy - no
-  // counter, no crypto.randomUUID.
+  const realCrypto = ctx.crypto;
   const realRandom = ctx.Math.random;
   const realNow = ctx.Date.now;
+  ctx.crypto = {};
   ctx.Math.random = () => 0.123456;
-  // Pin the clock too: without this the test is racy, not deterministic - a
-  // millisecond boundary landing between the two genId calls makes Date.now()
-  // differ and the "identical ids" assertion fail (observed 29/07/2026).
   ctx.Date.now = () => 1785284704799;
   try {
     const id1 = ctx.genId('x');
     const id2 = ctx.genId('x');
-    assert.strictEqual(id1, id2, 'same millisecond + same random draw -> an actual duplicate id');
+    assert.notStrictEqual(id1, id2, 'the monotonic counter prevents a collision even when every entropy input is pinned');
+    assert.match(id1, /^x_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$/);
   } finally {
+    ctx.crypto = realCrypto;
     ctx.Math.random = realRandom;
     ctx.Date.now = realNow;
   }
@@ -65,8 +48,7 @@ test('misc-consistency: kjrGenId (features.js ~137) is a private closure, NOT re
   const viaGrab = require('node:vm').runInContext('typeof kjrGenId', sandbox);
   assert.strictEqual(viaGrab, 'undefined', 'not reachable via the shared lexical scope either - genuinely private to the IIFE');
 
-  // kjrId (features.js:275) is the same prefix+timestamp+random pattern,
-  // top-level and fully reachable - used as the closest real substitute.
+  // kjrId is top-level and delegates to the shared collision-resistant path.
   const ids = new Set();
   for (let i = 0; i < 1000; i++) {
     const id = ctx.kjrId('etb');
@@ -74,6 +56,19 @@ test('misc-consistency: kjrGenId (features.js ~137) is a private closure, NOT re
     ids.add(id);
   }
   assert.strictEqual(ids.size, 1000);
+});
+
+test('misc-consistency: every app-owned row-id constructor delegates to genId', () => {
+  const appSrc = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const featureSrc = fs.readFileSync(path.join(ROOT, 'features.js'), 'utf8');
+  assert.doesNotMatch(appSrc, /id:\s*['"](?:cl_|v_|trash_|sc_)['"]?\s*\+\s*Date\.now/);
+  assert.doesNotMatch(appSrc, /function genId\([^}]+return prefix \+ ['"]_['"] \+ Date\.now/);
+  assert.doesNotMatch(featureSrc, /function kjr(?:Gen)?Id\([^}]+Date\.now/);
+  for (const call of ["genId('cl')", "genId('v')", "genId('trash')", "genId('sc')"]) {
+    assert.ok(appSrc.includes(call), call + ' must use the shared generator');
+  }
+  assert.match(featureSrc, /function kjrGenId\(p\)\{ return genId\(p\); \}/);
+  assert.match(featureSrc, /function kjrId\(p\)\{ return genId\(p\); \}/);
 });
 
 test('misc-consistency: TABLE_TO_DB_KEY - every value is a real DB key, but it covers only 7 of DB\'s 8 keys (trash deliberately excluded)', async () => {

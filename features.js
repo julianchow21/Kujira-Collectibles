@@ -134,7 +134,7 @@ if ('serviceWorker' in navigator) {
   };
 
   function normH(h){ return String(h||'').trim().toLowerCase().replace(/[^a-z0-9]/g,''); }
-  function kjrGenId(p){ return p + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+  function kjrGenId(p){ return genId(p); }
 
   function parsePastedTable(raw){
     const lines = raw.split('\n').filter(l => l.trim());
@@ -192,13 +192,23 @@ if ('serviceWorker' in navigator) {
       return;
     }
 
-    snapshotForUndo && snapshotForUndo();
     const arr = DB[schema.dbKey] = DB[schema.dbKey] || [];
     if (mode === 'replace') {
       if (arr.length && !await kjrConfirm('Replace all ' + arr.length + ' existing ' + esc(type) + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.', {ok:'Replace', danger:true})) {
         toast('Import cancelled');
         return;
       }
+      const sbTable = (typeof _tblName === 'function') ? _tblName(schema.dbKey) : schema.dbKey;
+      const replacementIds = new Set(newItems.map(row => row.id));
+      const oldOnlyRows = arr
+        .filter(row => !replacementIds.has(row.id))
+        .map(row => ({ table: sbTable, id: row.id, restoreToken: row._restoreToken || '' }));
+      if (typeof _prepareReplacementSafety !== 'function' ||
+          !await _prepareReplacementSafety({ [schema.dbKey]: newItems }, oldOnlyRows)) {
+        toastError('Import stopped because its restore and delete recovery state could not be saved safely');
+        return;
+      }
+      snapshotForUndo && snapshotForUndo();
       // Delete the old IDs in Supabase too - otherwise the cloud keeps the
       // orphans and they merge back in on next load. Awaited (not
       // fire-and-forget) so a failed delete cannot silently resurrect: sbDelete
@@ -207,16 +217,27 @@ if ('serviceWorker' in navigator) {
       // but the caller still needs to wait for that to happen and warn the
       // user, otherwise the row keeps existing in Supabase this entire session
       // and the finding's resurrection risk is unchanged (FINDING A2).
-      const sbTable = (typeof _tblName === 'function') ? _tblName(schema.dbKey) : schema.dbKey;
       if (typeof sbDelete === 'function') {
-        const results = await Promise.allSettled(arr.map(r => sbDelete(sbTable, r.id)));
-        const failCount = results.filter(res => res.status === 'rejected' || res.value === false).length;
+        const results = await _runPreflightedDeletes(oldOnlyRows);
+        const failCount = results.filter(result => result === false).length;
         if (failCount > 0 && typeof toastError === 'function') {
-          toastError(failCount + ' cloud delete(s) failed and were queued to retry automatically - they will not reappear.');
+          let pending = [];
+          try {
+            const state = _readDeleteState();
+            pending = state.valid ? state.state.pending : [];
+          } catch(_) {}
+          const queuedCount = oldOnlyRows.filter(row => Array.isArray(pending) && pending.some(item =>
+            item && item.table === sbTable && item.id === row.id)).length;
+          if (queuedCount === failCount) {
+            toastError(failCount + ' cloud delete(s) are pending and will retry automatically.');
+          } else {
+            toastError((failCount - queuedCount) + ' cloud delete(s) could not be queued safely. Check sync before reloading.');
+          }
         }
       }
       DB[schema.dbKey] = newItems;
     } else {
+      snapshotForUndo && snapshotForUndo();
       newItems.forEach(it => arr.push(it));
     }
     newItems.forEach(it => markDirty(schema.dbKey, it.id));
@@ -272,7 +293,7 @@ document.querySelectorAll('dialog[id]').forEach(dlg => {
   dlg.addEventListener('click', e => { if (e.target === dlg) kjrModalCtrl.close(dlg); });
 });
 // ═════════════ Shared helpers ═════════════
-function kjrId(p){ return p + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+function kjrId(p){ return genId(p); }
 function kjrEscape(s){ return esc(s); } // alias, esc() in the HELPERS section is the single escaping implementation
 // kjrNum - robust numeric parser. Strips $, commas, spaces and any other
 // formatting before parseFloat. Returns 0 for empty / invalid input.
@@ -619,6 +640,14 @@ async function kjrDeleteRow(dbKey, id){
   // days; previously was a hard delete only recoverable via Ctrl-Z before
   // the next reload.
   if (!await kjrConfirm('Move "' + esc(label) + '" to trash? You can restore it within 30 days from the Trash tab.', {ok:'Move to trash', danger:true})) return;
+  if (typeof sendToTrash === 'function' && !await sendToTrash(dbKey, row, 'single')) return;
+  const deleteTargets = (typeof _preflightSourceDeletes === 'function')
+    ? await _preflightSourceDeletes([{ table: dbKey, rows: [row] }])
+    : null;
+  if (deleteTargets === null) {
+    toastError('Delete stopped because its cloud row could not be queued safely');
+    return;
+  }
   snapshotForUndo && snapshotForUndo();
   const deletedSnapshot = { ...row };
   DB[dbKey].splice(idx, 1);
@@ -631,16 +660,9 @@ async function kjrDeleteRow(dbKey, id){
   if (typeof renderDashboard === 'function') renderDashboard();
   if (typeof clLog === 'function') clLog('delete', dbKey, label, _clSummary(dbKey, deletedSnapshot));
   if (typeof toast === 'function') toast('Moved to trash · view in 🗑 tab');
-  // Background: write to trash + delete from Supabase. sendToTrash stores
-  // originalTable=dbKey which restoreFromTrash already handles via _tblName.
-  const sbTable = (typeof _tblName === 'function') ? _tblName(dbKey) : dbKey;
-  Promise.all([
-    (typeof sendToTrash === 'function') ? sendToTrash(dbKey, deletedSnapshot, 'single') : Promise.resolve(),
-    (typeof sbDelete    === 'function') ? sbDelete(sbTable, id)                          : Promise.resolve()
-  ]).catch(e => {
-    if (typeof setSyncStatus === 'function') setSyncStatus('error', 'Delete sync failed: ' + (e && e.message || e));
-    console.error('kjrDeleteRow background sync failed:', e);
-  });
+  // The recoverable Trash snapshot is already confirmed or durably queued.
+  // Only now may the source row be removed from Supabase.
+  await _runPreflightedDeletes(deleteTargets);
 }
 
 // ═════════════ Export CSV (consistent with Singles/Slabs/Sales) ═════════════
@@ -2461,6 +2483,14 @@ async function kjrMigrateBoxesToPacks(){
     return;
   }
 
+  const deleteTargets = (typeof _preflightSourceDeletes === 'function')
+    ? await _preflightSourceDeletes([{ table: 'boosterBoxes', rows: toMove }])
+    : null;
+  if (deleteTargets === null) {
+    toastError('Migration stopped because old cloud rows could not be queued for safe deletion');
+    return;
+  }
+
   // Move locally
   DB.boosterPacks = DB.boosterPacks || [];
   toMove.forEach(b => {
@@ -2469,13 +2499,15 @@ async function kjrMigrateBoxesToPacks(){
   });
   // Remove from boxes locally
   DB.boosterBoxes = boxes.filter(b => !isPack(b.product || b.name));
+  // Persist the move before awaiting cloud deletes. The new pack's v2 dirty
+  // marker already holds its exact bytes, and the cache must also contain the
+  // moved row if this tab closes during a slow DELETE.
+  saveData();
 
   // Sync: delete from booster_boxes in cloud, upsert into booster_packs
-  let dErr = 0, uErr = 0;
-  for (const b of toMove) {
-    try { await sbDelete('booster_boxes', b.id); } catch(e) { dErr++; console.error(e); }
-  }
-  saveData();
+  let dErr = 0;
+  const deleteResults = await _runPreflightedDeletes(deleteTargets);
+  dErr = deleteResults.filter(result => result === false).length;
   if (typeof toast === 'function') {
     toast('Migrated ' + toMove.length + ' pack rows.' + (dErr ? ' (' + dErr + ' delete errors - see console)' : ''));
   }

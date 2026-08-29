@@ -177,6 +177,63 @@ function _tblName(key) { return DB_KEY_TO_TABLE[key] || key; }
 // deletion undoes itself on the next load when the cloud row re-merges (B3).
 const SYNCED_TABLES = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
 
+// Row IDs are written to localStorage and Supabase primary keys, so a
+// collision is data loss, not a cosmetic duplicate. Production browsers use
+// crypto.randomUUID(). The counter-backed fallback exists for older runtimes
+// and the dependency-free Node harness, and remains unique within a page even
+// when Date.now() and Math.random() are both pinned.
+let _kjrFallbackIdCounter = 0;
+function genId(prefix) {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return prefix + '_' + crypto.randomUUID();
+    }
+  } catch(_) {}
+  _kjrFallbackIdCounter += 1;
+  let entropy = '';
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const words = new Uint32Array(2);
+      crypto.getRandomValues(words);
+      entropy = words[0].toString(36) + words[1].toString(36);
+    }
+  } catch(_) {}
+  if (!entropy) entropy = Math.random().toString(36).slice(2, 12);
+  return prefix + '_' + Date.now().toString(36) + '_' + _kjrFallbackIdCounter.toString(36) + '_' + entropy;
+}
+
+// Supabase has no awareness of the order in which browser promises were
+// started. Serialise operations that touch the same row so a delete invoked
+// after an upsert always reaches the server after it. Web Locks extend that
+// ordering across tabs; the promise map is the dependency-free fallback and
+// also avoids needless lock contention inside one tab. This cannot order a
+// stale write from another device; that requires a backend transaction or
+// tombstone and remains outside this browser-only data model.
+const _cloudRowOps = new Map();
+async function _withCrossTabRowLocks(keys, task, index) {
+  const i = index || 0;
+  if (i >= keys.length) return task();
+  if (typeof navigator === 'undefined' || !navigator.locks || typeof navigator.locks.request !== 'function') return task();
+  return navigator.locks.request('kjr-cloud-row:' + keys[i], { mode: 'exclusive' }, () => _withCrossTabRowLocks(keys, task, i + 1));
+}
+function _queueCloudRowOp(table, ids, task) {
+  const keys = [...new Set(ids.map(id => table + '/' + id))].sort();
+  if (!keys.length) return Promise.resolve().then(task);
+  const prior = [...new Set(keys.map(key => _cloudRowOps.get(key)).filter(Boolean))];
+  const run = Promise.all(prior.map(p => p.catch(() => undefined)))
+    .then(() => _withCrossTabRowLocks(keys, task, 0));
+  let tracked;
+  const cleanup = () => {
+    for (const key of keys) if (_cloudRowOps.get(key) === tracked) _cloudRowOps.delete(key);
+  };
+  tracked = run.then(
+    value => { cleanup(); return value; },
+    error => { cleanup(); throw error; }
+  );
+  for (const key of keys) _cloudRowOps.set(key, tracked);
+  return tracked;
+}
+
 
 // ── Sync status indicator ─────────────────────────────────────
 let _syncStatus = 'idle';
@@ -267,18 +324,28 @@ async function _readServerTs(resp, label) {
 async function sbBatchUpsert(table, items) {
   if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
   if (!items.length) return null;
-  const rows = items.map(item => {
-    const { id, ...data } = item;
-    return { id, data };
+  if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
+  // Clone before the first await. Callers may mutate the live DB objects while
+  // this operation waits behind an older write, but the request must contain
+  // the exact state that its dirty revision represents.
+  const snapshot = items.map(item => JSON.parse(JSON.stringify(item)));
+  return _queueCloudRowOp(table, snapshot.map(item => item.id), async () => {
+    // State can become corrupt while this batch waits behind an older row
+    // operation. Recheck at dispatch so no stale snapshot crosses the wire.
+    if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
+    const rows = snapshot.map(item => {
+      const { id, ...data } = item;
+      return { id, data };
+    });
+    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
+      body: JSON.stringify(rows),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
+    return await _readServerTs(r, 'batch upsert on ' + table);
   });
-  const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
-    method: 'POST',
-    headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
-    body: JSON.stringify(rows),
-    signal: AbortSignal.timeout(15000)
-  });
-  if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
-  return await _readServerTs(r, 'batch upsert on ' + table);
 }
 
 // ── Supabase: single upsert (for individual edits/adds) ──────
@@ -286,15 +353,20 @@ async function sbBatchUpsert(table, items) {
 // the write) - see sbBatchUpsert for why callers must stamp this back.
 async function sbUpsert(table, id, data) {
   if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
+  if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
+  const snapshot = JSON.parse(JSON.stringify(data));
   try {
-    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
-      body: JSON.stringify({ id, data }),
-      signal: AbortSignal.timeout(15000)
+    return await _queueCloudRowOp(table, [id], async () => {
+      if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
+      const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
+        body: JSON.stringify({ id, data: snapshot }),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return await _readServerTs(r, table + '/' + id);
     });
-    if (!r.ok) throw new Error(await r.text());
-    return await _readServerTs(r, table + '/' + id);
   } catch(e) { setSyncStatus('error', e.message); throw e; }
 }
 
@@ -302,37 +374,484 @@ async function sbUpsert(table, id, data) {
 // 5xx, intermittent error). Without this, an orphan row sits in Supabase
 // and re-merges into local state on the next page load.
 const PENDING_DEL_KEY = '_kjrPendingCloudDeletes';
+const CONFIRMED_DEL_KEY = '_kjrConfirmedCloudDeletes';
+const DELETE_STATE_V2_KEY = '_kjrDeleteStateV2';
+const DELETE_STATE_SCHEMA = 2;
+const _deleteStateWarnings = new Set();
 
-function _queuePendingDelete(table, id) {
+function _queueDeleteStateOp(task) {
+  // Web Locks serialise the shared delete-state blobs across same-browser
+  // tabs. The promise-map fallback is same-tab only. Cross-device ordering
+  // still requires a backend transaction or durable server tombstone.
+  return _queueCloudRowOp('__kjr_local__', ['delete-state'], task);
+}
+
+function _emptyDeleteState() { return { pending: [], confirmed: [] }; }
+
+function _warnDeleteStateOnce(key, message, error) {
+  if (!_deleteStateWarnings.has(key)) {
+    _deleteStateWarnings.add(key);
+    console.warn('[delete-state] ' + message + ':', error);
+  }
+  warnOnce('delete-state-' + key, message + '. Inventory remains visible, but delete retries need attention.');
+  try { setSyncStatus('error', message); } catch(_) {}
+}
+
+function _validDeleteStateRecord(record) {
+  return record && record.schema === DELETE_STATE_SCHEMA && typeof record.revision === 'string' &&
+    Array.isArray(record.pending) && Array.isArray(record.confirmed);
+}
+
+function _readLegacyDeleteState() {
+  let pendingRaw = null;
+  let confirmedRaw = null;
   try {
-    const raw = localStorage.getItem(PENDING_DEL_KEY) || '[]';
-    const list = JSON.parse(raw);
-    if (!list.some(x => x.table === table && x.id === id)) {
-      list.push({ table, id, ts: Date.now() });
-      localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(list));
+    pendingRaw = localStorage.getItem(PENDING_DEL_KEY);
+    const pending = JSON.parse(pendingRaw || '[]');
+    if (!Array.isArray(pending)) throw new Error('legacy pending delete state is not an array');
+    try {
+      confirmedRaw = localStorage.getItem(CONFIRMED_DEL_KEY);
+      const confirmed = JSON.parse(confirmedRaw || '[]');
+      if (!Array.isArray(confirmed)) throw new Error('legacy confirmed delete state is not an array');
+      return { valid: true, state: { pending, confirmed }, pendingRaw, confirmedRaw };
+    } catch(e) {
+      _warnDeleteStateOnce('legacy-confirmed-corrupt', 'Legacy confirmed delete state is unreadable', e);
+      return { valid: false, state: _emptyDeleteState(), pendingRaw, confirmedRaw };
     }
-  } catch(e) { console.warn('queuePendingDelete failed:', e); }
+  } catch(e) {
+    _warnDeleteStateOnce('legacy-pending-corrupt', 'Legacy pending delete state is unreadable', e);
+    return { valid: false, state: _emptyDeleteState(), pendingRaw, confirmedRaw };
+  }
+}
+
+function _readDeleteState() {
+  let raw;
+  try { raw = localStorage.getItem(DELETE_STATE_V2_KEY); }
+  catch(e) {
+    _warnDeleteStateOnce('v2-unavailable', 'Delete recovery state is unavailable', e);
+    return { valid: false, state: _emptyDeleteState(), source: 'v2-unavailable', raw: null };
+  }
+  if (raw !== null) {
+    try {
+      const record = JSON.parse(raw);
+      if (!_validDeleteStateRecord(record)) throw new Error('invalid delete-state v2 record');
+      return {
+        valid: true,
+        state: { pending: record.pending, confirmed: record.confirmed },
+        source: 'v2',
+        raw,
+        revision: record.revision,
+      };
+    } catch(e) {
+      // Presence of a corrupt v2 record is authoritative. Never fall back to
+      // legacy mirrors, which may represent only half of an older write.
+      _warnDeleteStateOnce('v2-corrupt', 'Delete recovery state is unreadable', e);
+      return { valid: false, state: _emptyDeleteState(), source: 'v2-corrupt', raw };
+    }
+  }
+  const legacy = _readLegacyDeleteState();
+  return { ...legacy, source: 'legacy', raw: null };
+}
+
+function _deleteStateAllowsCloudWrites() {
+  const current = _readDeleteState();
+  if (current.valid) return true;
+  warnOnce(
+    'delete-state-cloud-writes-paused',
+    'Cloud sync is paused because delete recovery state needs repair. Local edits remain queued.'
+  );
+  try { setSyncStatus('error', 'Cloud sync paused, delete recovery state needs repair'); } catch(_) {}
+  return false;
+}
+
+function _mirrorDeleteStateBestEffort(state) {
+  try { localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(state.pending)); }
+  catch(e) { console.warn('[delete-state] pending legacy mirror failed:', e); }
+  try { localStorage.setItem(CONFIRMED_DEL_KEY, JSON.stringify(state.confirmed)); }
+  catch(e) { console.warn('[delete-state] confirmed legacy mirror failed:', e); }
+}
+
+function _commitDeleteStateV2(state, mirrorLegacy) {
+  if (!state || !Array.isArray(state.pending) || !Array.isArray(state.confirmed)) return null;
+  const record = {
+    schema: DELETE_STATE_SCHEMA,
+    revision: genId('delete_state'),
+    pending: state.pending,
+    confirmed: state.confirmed,
+  };
+  const raw = JSON.stringify(record);
+  try {
+    localStorage.setItem(DELETE_STATE_V2_KEY, raw);
+    if (localStorage.getItem(DELETE_STATE_V2_KEY) !== raw) throw new Error('delete-state v2 write did not verify');
+  } catch(e) {
+    console.warn('[delete-state] authoritative v2 write failed:', e);
+    warnOnce('delete-state-v2-write-failed', 'The change was stopped because delete recovery state could not be saved safely.');
+    return null;
+  }
+  if (mirrorLegacy !== false) _mirrorDeleteStateBestEffort(record);
+  return record;
+}
+
+async function _ensureDeleteStateV2() {
+  try {
+    return await _queueDeleteStateOp(() => {
+      const current = _readDeleteState();
+      if (current.source === 'v2') return true;
+      if (!current.valid) return false;
+      const hadLegacy = current.pendingRaw !== null || current.confirmedRaw !== null;
+      return !!_commitDeleteStateV2(current.state, hadLegacy);
+    });
+  } catch(e) {
+    _warnDeleteStateOnce('v2-migration-failed', 'Delete recovery state could not be migrated', e);
+    return false;
+  }
+}
+
+function _queuePendingDelete(table, id, restoreToken) {
+  try {
+    const current = _readDeleteState();
+    if (!current.valid) return null;
+    const next = { pending: [...current.state.pending], confirmed: [...current.state.confirmed] };
+    let queued = next.pending.find(x => x && x.table === table && x.id === id);
+    if (!queued) {
+      queued = { table, id, ts: Date.now(), restoreToken: restoreToken || '' };
+      next.pending.push(queued);
+      if (!_commitDeleteStateV2(next)) return null;
+    }
+    const saved = _readDeleteState();
+    return saved.valid && saved.state.pending.some(item => item && item.table === table && item.id === id && (item.ts || 0) === (queued.ts || 0))
+      ? queued
+      : null;
+  } catch(e) {
+    console.warn('queuePendingDelete failed:', e);
+    warnOnce('pending-del-queue-failed', 'Delete could not be queued safely. The cloud row was not changed. Try again after freeing browser storage.');
+    return null;
+  }
+}
+
+async function _preflightPendingDeletes(targets) {
+  // Local preview never writes to Supabase, so it must not create cloud retry
+  // markers that no preview delete will ever clear.
+  if (isLocalhostPreview()) return true;
+  if (!targets.length) return true;
+  try {
+    return await _queueDeleteStateOp(() => {
+      const current = _readDeleteState();
+      if (!current.valid) return false;
+      const next = { pending: [...current.state.pending], confirmed: [...current.state.confirmed] };
+      let changed = false;
+      for (const target of targets) {
+        if (next.pending.some(item => item && item.table === target.table && item.id === target.id)) continue;
+        next.pending.push({
+          table: target.table,
+          id: target.id,
+          ts: Date.now(),
+          restoreToken: target.restoreToken || '',
+        });
+        changed = true;
+      }
+      if (changed && !_commitDeleteStateV2(next)) return false;
+      const saved = _readDeleteState();
+      return saved.valid && targets.every(target => saved.state.pending.some(item => item &&
+        item.table === target.table && item.id === target.id));
+    });
+  } catch(e) {
+    console.warn('Delete preflight failed:', e);
+    warnOnce('pending-del-preflight-failed', 'The change was stopped because its cloud deletes could not be queued safely.');
+    return false;
+  }
+}
+
+async function _preflightSourceDeletes(sources) {
+  const targets = [];
+  for (const source of sources) {
+    const table = _tblName(source.table);
+    for (const row of (source.rows || [])) {
+      targets.push({ table, id: row.id, restoreToken: row._restoreToken || '' });
+    }
+  }
+  return await _preflightPendingDeletes(targets) ? targets : null;
+}
+
+function _stateReplacementDeleteTargets(currentState, nextState) {
+  const targets = [];
+  for (const table of SYNCED_TABLES) {
+    const key = _dbKey(table);
+    const nextIds = new Set((nextState[key] || []).map(row => row.id));
+    for (const row of (currentState[key] || [])) {
+      if (!nextIds.has(row.id)) targets.push({ table, id: row.id, restoreToken: row._restoreToken || '' });
+    }
+  }
+  return targets;
+}
+
+async function _runPreflightedDeletes(targets) {
+  if (!targets.length) return [];
+  return Promise.all(targets.map(target => sbDelete(target.table, target.id, target.restoreToken)));
+}
+
+function _cancelPendingDelete(table, id, restoreToken) {
+  try {
+    const current = _readDeleteState();
+    if (!current.valid) return false;
+    const remaining = current.state.pending.filter(item => !(item && item.table === table && item.id === id));
+    const confirmedRemaining = current.state.confirmed.filter(item => !(item && item.table === table && item.id === id));
+    if (restoreToken) {
+      // This is an explicit restore marker, not a delete tombstone. It allows
+      // the newly restored token while continuing to block stale copies that
+      // carry the deleted row's old token.
+      confirmedRemaining.push({ table, id, ts: Date.now(), restoreToken, state: 'restored' });
+    }
+    return !!_commitDeleteStateV2({ pending: remaining, confirmed: confirmedRemaining });
+  } catch(e) {
+    console.warn('cancelPendingDelete failed:', e);
+    warnOnce('pending-del-cancel-failed', 'Restore could not cancel an old delete retry. Restore was stopped to protect the row.');
+    return false;
+  }
+}
+
+function _rowRestoreToken(row) {
+  if (!row || typeof row !== 'object') return '';
+  const source = row.data && typeof row.data === 'object' ? row.data : row;
+  return typeof source._restoreToken === 'string' ? source._restoreToken : '';
+}
+
+function _recordSupersedingRestore(table, id, deletedRestoreToken, currentRestoreToken) {
+  try {
+    const current = _readDeleteState();
+    if (!current.valid) return false;
+    const list = [...current.state.confirmed];
+    const marker = list.find(item => item && item.table === table && item.id === id &&
+      (item.restoreToken || '') === deletedRestoreToken && (item.state || 'deleted') === 'deleted');
+    if (!marker || !currentRestoreToken || currentRestoreToken === deletedRestoreToken) return false;
+    marker.restoreToken = currentRestoreToken;
+    marker.state = 'restored';
+    marker.ts = Date.now();
+    return !!_commitDeleteStateV2({ pending: current.state.pending, confirmed: list });
+  } catch(e) {
+    console.warn('recordSupersedingRestore failed:', e);
+    warnOnce('restore-marker-save-failed', 'A restored cloud row could not be verified locally. Free browser storage and reload.');
+    return false;
+  }
+}
+
+function _deleteBlocksRow(table, row) {
+  const current = _readDeleteState();
+  if (!current.valid) return false;
+  if (current.state.pending.some(item => item && item.table === table && item.id === row.id)) return true;
+  const marker = current.state.confirmed.find(item => item && item.table === table && item.id === row.id);
+  if (!marker) return false;
+  const markerRestoreToken = marker.restoreToken || '';
+  const currentRestoreToken = _rowRestoreToken(row);
+  if ((marker.state || 'deleted') === 'restored') {
+    return currentRestoreToken !== markerRestoreToken;
+  }
+  if (currentRestoreToken && currentRestoreToken !== markerRestoreToken) {
+    // Every explicit restore writes a fresh collision-resistant token into
+    // the row. A different token proves this is a later restore, including
+    // one performed on another device. Replace the delete tombstone with a
+    // restore marker, so older stale tokens stay blocked afterwards.
+    _queueDeleteStateOp(() => _recordSupersedingRestore(table, row.id, markerRestoreToken, currentRestoreToken))
+      .catch(e => console.warn('recordSupersedingRestore queued write failed:', e));
+    return false;
+  }
+  return true;
+}
+function _withoutPendingDeletes(table, rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(row => !_deleteBlocksRow(table, row));
+}
+
+function _confirmDeleteLocally(table, id, ts, restoreToken) {
+  try {
+    const current = _readDeleteState();
+    if (!current.valid) return false;
+    const remaining = current.state.confirmed.filter(item => !(item && item.table === table && item.id === id));
+    remaining.push({ table, id, ts: ts || Date.now(), restoreToken: restoreToken || '', state: 'deleted' });
+    // Tombstone first. Even if cache cleanup below fails, every current-code
+    // tab will hide this id and refuse to dispatch its stale batch snapshot.
+    if (!_commitDeleteStateV2({ pending: current.state.pending, confirmed: remaining })) return false;
+    const key = _dbKey(table);
+    if (DB && Array.isArray(DB[key])) DB[key] = DB[key].filter(row => row.id !== id);
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const cache = JSON.parse(raw);
+      if (Array.isArray(cache[key])) cache[key] = cache[key].filter(row => row.id !== id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cache));
+    }
+    return true;
+  } catch(e) {
+    console.error('[Cloud] confirmed delete cache cleanup failed:', e);
+    warnOnce('confirmed-del-cache-failed', 'A cloud delete succeeded but local cleanup is pending. Keep this tab open until sync retries.');
+    return false;
+  }
+}
+
+function _pendingDeleteStillQueued(item) {
+  const latest = _readDeleteState();
+  return latest.valid && latest.state.pending.some(candidate => candidate &&
+    candidate.table === item.table && candidate.id === item.id &&
+    (candidate.ts || 0) === (item.ts || 0));
+}
+
+function _explicitRestoreCandidates(nextState) {
+  const candidates = [];
+  for (const table of SYNCED_TABLES) {
+    const key = _dbKey(table);
+    for (const row of (nextState[key] || [])) {
+      candidates.push({ table, row, token: genId('restore') });
+    }
+  }
+  return candidates;
+}
+
+function _activeExplicitRestores(candidates, pending, confirmed) {
+  return candidates.filter(candidate => {
+    if (pending.some(item => item && item.table === candidate.table && item.id === candidate.row.id)) return true;
+    const marker = confirmed.find(item => item && item.table === candidate.table && item.id === candidate.row.id);
+    if (!marker) return false;
+    const incomingToken = _rowRestoreToken(candidate.row);
+    const markerToken = marker.restoreToken || '';
+    if ((marker.state || 'deleted') === 'restored') return incomingToken !== markerToken;
+    // A non-empty different token already proves an explicit newer restore
+    // and is accepted by _deleteBlocksRow without replacement.
+    return !incomingToken || incomingToken === markerToken;
+  });
+}
+
+function _stateAfterExplicitRestores(pending, confirmed, active) {
+  const targets = new Set(active.map(candidate => candidate.table + '\n' + candidate.row.id));
+  const nextPending = pending.filter(item => !targets.has((item && item.table) + '\n' + (item && item.id)));
+  const nextConfirmed = confirmed.filter(item => !targets.has((item && item.table) + '\n' + (item && item.id)));
+  for (const candidate of active) {
+    nextConfirmed.push({
+      table: candidate.table,
+      id: candidate.row.id,
+      ts: Date.now(),
+      restoreToken: candidate.token,
+      state: 'restored',
+    });
+  }
+  return { pending: nextPending, confirmed: nextConfirmed };
+}
+
+async function _prepareExplicitRowRestores(_currentState, nextState, _mode) {
+  // Every incoming row must be marker-checked. A Replace import can
+  // deliberately reintroduce an ID that is absent from current memory but
+  // still carries a pending or confirmed delete marker from an earlier
+  // session. Only active markers cause a token write below.
+  const candidates = _explicitRestoreCandidates(nextState);
+  if (!candidates.length) return true;
+
+  let applied = null;
+  try {
+    applied = await _queueDeleteStateOp(() => {
+      const current = _readDeleteState();
+      if (!current.valid) return null;
+      const active = _activeExplicitRestores(candidates, current.state.pending, current.state.confirmed);
+      if (!active.length) return [];
+      const next = _stateAfterExplicitRestores(current.state.pending, current.state.confirmed, active);
+      return _commitDeleteStateV2(next) ? active : null;
+    });
+  } catch(e) {
+    console.warn('Explicit restore state could not be saved:', e);
+    return false;
+  }
+  if (applied === null) return false;
+  for (const candidate of applied) candidate.row._restoreToken = candidate.token;
+  return true;
+}
+
+async function _prepareReplacementSafety(nextState, deleteTargets) {
+  const candidates = _explicitRestoreCandidates(nextState);
+  let applied = null;
+  try {
+    applied = await _queueDeleteStateOp(() => {
+      const current = _readDeleteState();
+      if (!current.valid) return null;
+      const active = _activeExplicitRestores(candidates, current.state.pending, current.state.confirmed);
+      const next = _stateAfterExplicitRestores(current.state.pending, current.state.confirmed, active);
+      for (const target of deleteTargets) {
+        if (!next.pending.some(item => item && item.table === target.table && item.id === target.id)) {
+          next.pending.push({
+            table: target.table,
+            id: target.id,
+            ts: Date.now(),
+            restoreToken: target.restoreToken || '',
+          });
+        }
+      }
+      if (!_commitDeleteStateV2(next)) return null;
+      return active;
+    });
+  } catch(e) {
+    console.warn('Replace safety state could not be saved:', e);
+    return false;
+  }
+  if (applied === null) return false;
+  for (const candidate of applied) candidate.row._restoreToken = candidate.token;
+  return true;
 }
 
 async function flushPendingDeletes() {
   if (isLocalhostPreview()) { return; } // never write to prod from a local preview
-  let list;
-  try { list = JSON.parse(localStorage.getItem(PENDING_DEL_KEY) || '[]'); }
-  catch { return; }
-  if (!Array.isArray(list) || !list.length) return;
+  const initial = _readDeleteState();
+  if (!initial.valid || !initial.state.pending.length) return;
+  const list = initial.state.pending;
   const stillPending = [];
+  const completed = [];
+  let removedCount = 0;
   for (const item of list) {
     try {
-      const r = await fetch(SB_URL + '/rest/v1/' + item.table + '?id=eq.' + encodeURIComponent(item.id), {
-        method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
+      const r = await _queueCloudRowOp(item.table, [item.id], () => {
+        // A restore may cancel this retry while it waits behind a prior row
+        // operation. Recheck inside the lock before issuing the DELETE.
+        if (!_pendingDeleteStillQueued(item)) return null;
+        return fetch(SB_URL + '/rest/v1/' + item.table + '?id=eq.' + encodeURIComponent(item.id), {
+          method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
+        });
       });
+      if (!r) continue;
       if (!r.ok) throw new Error(await r.text());
+      const confirmation = await _queueDeleteStateOp(() => {
+        // The DELETE response can arrive after an explicit restore cancelled
+        // this exact queued attempt. Cancellation wins, so never let a stale
+        // success evict the restored row or overwrite its restore marker.
+        if (!_pendingDeleteStillQueued(item)) return 'cancelled';
+        return _confirmDeleteLocally(item.table, item.id, item.ts, item.restoreToken) ? 'confirmed' : 'failed';
+      });
+      if (confirmation === 'cancelled') continue;
+      if (confirmation !== 'confirmed') {
+        throw new Error('confirmed delete could not be saved locally');
+      }
+      completed.push(item);
     } catch(e) {
-      // Drop items older than 7 days (we will never reclaim these - likely RLS / schema change)
-      if (Date.now() - (item.ts || 0) < 7 * 86400 * 1000) stillPending.push(item);
+      // A failed delete remains a live data-integrity obligation regardless
+      // of age. Old failures are surfaced, never discarded or counted as
+      // cleared, because the cloud row can otherwise resurrect on reload.
+      stillPending.push(item);
+      if (Date.now() - (item.ts || 0) >= 7 * 86400 * 1000) {
+        console.warn('[Cloud] pending delete is over 7 days old and will keep retrying:', item.table + '/' + item.id, e.message);
+      }
     }
   }
-  try { localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(stillPending)); } catch(e) {
+  try {
+    // Re-read after the awaits so a delete queued by another tab during this
+    // flush is preserved. Remove only the exact timestamped attempts that
+    // this run confirmed, never a newer delete for the same row.
+    await _queueDeleteStateOp(() => {
+      const current = _readDeleteState();
+      if (!current.valid) return false;
+      const latest = current.state.pending;
+      const wasCompleted = candidate => completed.some(item =>
+        item.table === candidate.table && item.id === candidate.id && (item.ts || 0) === (candidate.ts || 0)
+      );
+      const remaining = latest.filter(item => !wasCompleted(item));
+      if (!_commitDeleteStateV2({ pending: remaining, confirmed: current.state.confirmed })) return false;
+      removedCount = latest.length - remaining.length;
+      return true;
+    });
+  } catch(e) {
     // Data integrity: if this write-back fails the old (pre-flush) pending
     // list survives untouched, so already-cleared deletes just get retried
     // again next run - wasteful but not lossy. Still surface it once, a
@@ -340,8 +859,7 @@ async function flushPendingDeletes() {
     console.error('[queue] pending-delete write-back failed:', e);
     warnOnce('pending-del-writeback', 'Delete queue could not save. Retries may repeat next session.');
   }
-  const cleared = list.length - stillPending.length;
-  if (cleared > 0) console.info('[Cloud] Cleared ' + cleared + ' pending delete(s) from previous session(s)');
+  if (removedCount > 0) console.info('[Cloud] Cleared ' + removedCount + ' pending delete(s) from previous session(s)');
 }
 
 // Persistent retry queue for TRASH writes that failed (offline, 5xx).
@@ -350,16 +868,26 @@ async function flushPendingDeletes() {
 // written, breaking the 30-day restore promise with no warning.
 const PENDING_TRASH_KEY = '_kjrPendingTrashWrites';
 
-function _queuePendingTrash(entry) {
+function _queuePendingTrashBatch(entries) {
   try {
     const raw = localStorage.getItem(PENDING_TRASH_KEY) || '[]';
     const list = JSON.parse(raw);
-    if (!list.some(x => x.id === entry.id)) {
-      list.push(entry);
-      localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(list));
-    }
-  } catch(e) { console.warn('queuePendingTrash failed:', e); }
+    if (!Array.isArray(list)) return false;
+    const byId = new Map(list.map(entry => [entry.id, entry]));
+    for (const entry of entries) byId.set(entry.id, entry);
+    const next = [...byId.values()];
+    localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(next));
+    const saved = JSON.parse(localStorage.getItem(PENDING_TRASH_KEY) || '[]');
+    return Array.isArray(saved) && entries.every(entry => saved.some(candidate =>
+      candidate && candidate.id === entry.id && JSON.stringify(candidate) === JSON.stringify(entry)));
+  } catch(e) {
+    console.warn('queuePendingTrash failed:', e);
+    warnOnce('pending-trash-queue-failed', 'Delete stopped because its Trash copy could not be saved. The source item was kept.');
+    return false;
+  }
 }
+
+function _queuePendingTrash(entry) { return _queuePendingTrashBatch([entry]); }
 
 async function flushPendingTrash() {
   if (isLocalhostPreview()) { return; } // never write to prod from a local preview
@@ -396,18 +924,50 @@ async function flushPendingTrash() {
   if (cleared > 0) console.info('[Trash] Flushed ' + cleared + ' pending trash write(s) from previous session(s)');
 }
 
-async function sbDelete(table, id) {
+async function sbDelete(table, id, restoreToken) {
   if (isLocalhostPreview()) { return true; } // never write to prod from a local preview
+  if (restoreToken === undefined) {
+    const existing = DB && Array.isArray(DB[_dbKey(table)])
+      ? DB[_dbKey(table)].find(row => row.id === id)
+      : null;
+    restoreToken = _rowRestoreToken(existing);
+  }
+  // Persist the retry obligation before touching either the dirty state or
+  // the server. If browser storage is unavailable, leave both untouched.
+  let queued;
+  try { queued = await _queueDeleteStateOp(() => _queuePendingDelete(table, id, restoreToken)); }
+  catch(e) {
+    setSyncStatus('error', e.message || 'Delete queue lock failed');
+    return false;
+  }
+  if (!queued) {
+    setSyncStatus('error', 'Delete could not be queued safely');
+    return false;
+  }
+  // A delete supersedes dirty revisions already queued for this row. Clear
+  // only the revisions visible now; a later cross-tab edit gets a new token
+  // and remains dirty.
+  _discardDirtyForDelete(_dbKey(table), id);
   try {
-    const r = await fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
+    const r = await _queueCloudRowOp(table, [id], () => fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
       method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-    });
+    }));
     if (!r.ok) throw new Error(await r.text());
+    const completed = await _queueDeleteStateOp(() => {
+      if (!_pendingDeleteStillQueued(queued)) return 'cancelled';
+      if (!_confirmDeleteLocally(table, id, queued.ts, queued.restoreToken)) return false;
+      const current = _readDeleteState();
+      if (!current.valid) return false;
+      const remaining = current.state.pending.filter(item => !(item && item.table === table && item.id === id && (item.ts || 0) === (queued.ts || 0)));
+      if (!_commitDeleteStateV2({ pending: remaining, confirmed: current.state.confirmed })) return false;
+      return true;
+    });
+    if (completed === 'cancelled') return true;
+    if (!completed) throw new Error('confirmed delete could not be saved locally');
     return true;
   } catch(e) {
     setSyncStatus('error', e.message);
-    // Queue for retry so the row does not linger in Supabase and re-merge later.
-    _queuePendingDelete(table, id);
+    // The durable marker was written before the attempt and remains queued.
     return false;
   }
 }
@@ -442,7 +1002,11 @@ async function sbFetchAll(table) {
   // against Supabase direct and through the Worker. id.asc tiebreak keeps page
   // boundaries stable if updated_at values collide.
   const all = await sbFetchPaged(table, 'select=id,data,updated_at&order=updated_at.desc,id.asc');
-  return all.map(row => ({ id: row.id, ...row.data, _updatedAt: row.updated_at }));
+  // A queued delete is the local source of truth until Supabase confirms it.
+  // Hide those orphan rows from cloud merges so a retryable outage never makes
+  // an item the user deleted reappear in the interface.
+  return _withoutPendingDeletes(table, all)
+    .map(row => ({ id: row.id, ...row.data, _updatedAt: row.updated_at }));
 }
 
 // ── Write version counter to localStorage ────────────────────
@@ -458,37 +1022,373 @@ function getLocalVersion() { return parseInt(localStorage.getItem(LS_VERSION_KEY
 let _saveTimer = null;
 // _dirty is persisted to localStorage so a failed sync isn't lost when the tab closes.
 const DIRTY_LS_KEY = 'pokeinv_dirty_v1';
-function _loadDirtyFromLS() {
+const DIRTY_V2_PREFIX = 'pokeinv_dirty_v2:';
+const DIRTY_TABLE_KEYS = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
+const _dirtyTabId = genId('tab');
+const _unresolvedDirtyWinnerTokens = new Set();
+const _syntheticDirtyRevisionTokens = new Set();
+let _dirtyRevisionCounter = 0;
+function _newDirtyRevision() {
+  _dirtyRevisionCounter += 1;
+  return _dirtyTabId + ':' + _dirtyRevisionCounter.toString(36);
+}
+function _emptyDirtyState() {
+  const dirty = {}, revisions = {};
+  for (const key of DIRTY_TABLE_KEYS) {
+    dirty[key] = new Set();
+    revisions[key] = new Map();
+  }
+  return { dirty, revisions };
+}
+
+function _dirtyV2Key(token) { return DIRTY_V2_PREFIX + token; }
+
+function _dirtyMarkerSequence(marker) {
+  if (Number.isSafeInteger(marker && marker.sequence) && marker.sequence >= 0) return marker.sequence;
+  const owner = marker && typeof marker.owner === 'string' ? marker.owner : '';
+  const token = marker && typeof marker.token === 'string' ? marker.token : '';
+  const prefix = owner ? owner + ':' : '';
+  if (!prefix || !token.startsWith(prefix)) return null;
+  const suffix = token.slice(prefix.length);
+  if (!/^[0-9a-z]+$/i.test(suffix)) return null;
+  const parsed = parseInt(suffix, 36);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function _readDirtyV2Markers() {
+  const markers = [];
+  try {
+    if (typeof localStorage.key !== 'function' || typeof localStorage.length !== 'number') return markers;
+    // Snapshot the keys first because callers may remove markers afterwards.
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (typeof key === 'string' && key.startsWith(DIRTY_V2_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        const marker = JSON.parse(raw);
+        if (!marker || !DIRTY_TABLE_KEYS.includes(marker.table) || !marker.id || !marker.token) {
+          console.warn('[dirty] malformed v2 marker retained for recovery:', key);
+          warnOnce('dirty-v2-malformed', 'A sync marker is malformed. Avoid clearing browser data until sync is checked.');
+          continue;
+        }
+        markers.push({ ...marker, key });
+      } catch(e) {
+        console.warn('[dirty] unreadable v2 marker retained for recovery:', key, e);
+        warnOnce('dirty-v2-corrupt', 'A sync marker is unreadable. Avoid clearing browser data until sync is checked.');
+      }
+    }
+  } catch(e) {
+    console.warn('[dirty] v2 marker scan failed:', e);
+    warnOnce('dirty-v2-scan-failed', 'Could not read all sync markers. Avoid closing the tab until sync finishes.');
+  }
+  return markers;
+}
+
+function _writeDirtyV2Marker(table, id, token, rowJson) {
+  try {
+    const key = _dirtyV2Key(token);
+    const existing = localStorage.getItem(key);
+    if (existing) return true;
+    const marker = {
+      table,
+      id,
+      token,
+      owner: _dirtyTabId,
+      createdAt: Date.now(),
+      sequence: _dirtyMarkerSequence({ owner: _dirtyTabId, token }),
+    };
+    if (typeof rowJson === 'string') marker.rowJson = rowJson;
+    localStorage.setItem(key, JSON.stringify(marker));
+    return localStorage.getItem(key) !== null;
+  } catch(e) {
+    console.error('[dirty] unique marker write failed, mutation remains dirty in memory:', e);
+    warnOnce('persist-dirty-v2-failed', 'Could not save the latest sync marker. Avoid closing the tab until sync finishes.');
+    return false;
+  }
+}
+
+function _clearDirtyV2Tokens(flushed) {
+  const cleared = new Map();
+  if (!flushed) return cleared;
+  for (const key of DIRTY_TABLE_KEYS) {
+    const completed = flushed[key];
+    if (!completed) continue;
+    for (const uploadedTokens of completed.values()) {
+      for (const token of uploadedTokens) {
+        if (cleared.has(token)) continue;
+        let ok = true;
+        try {
+          const markerKey = _dirtyV2Key(token);
+          if (localStorage.getItem(markerKey) !== null) {
+            localStorage.removeItem(markerKey);
+            ok = localStorage.getItem(markerKey) === null;
+          }
+        } catch(e) {
+          ok = false;
+          console.error('[dirty] synced marker could not be cleared:', e);
+          warnOnce('dirty-v2-clear-failed', 'A synced marker could not be cleared. Sync will retry safely.');
+        }
+        cleared.set(token, ok);
+      }
+    }
+  }
+  return cleared;
+}
+
+function _dirtyRowJson(table, id, explicitRow) {
+  try {
+    const row = explicitRow || (DB && Array.isArray(DB[table]) ? DB[table].find(candidate => candidate.id === id) : null);
+    return row ? JSON.stringify(row) : null;
+  } catch(_) { return null; }
+}
+
+function _dirtyMarkerHasValidSnapshot(marker) {
+  if (!marker || typeof marker.rowJson !== 'string') return false;
+  try {
+    const row = JSON.parse(marker.rowJson);
+    return !!row && typeof row === 'object' && row.id === marker.id;
+  } catch(_) { return false; }
+}
+
+function _recoverDirtyV2Snapshots() {
+  const markers = _readDirtyV2Markers();
+  const groups = new Map();
+  for (const marker of markers) {
+    if (typeof marker.rowJson !== 'string') {
+      console.warn('[dirty] v2 marker has no recoverable row snapshot and remains pending:', marker.key);
+      warnOnce('dirty-v2-no-snapshot', 'Some older sync markers have no row snapshot. Their cached rows will stay queued for sync.');
+      continue;
+    }
+    let row;
+    try { row = JSON.parse(marker.rowJson); }
+    catch(e) {
+      console.warn('[dirty] v2 row snapshot is unreadable and remains pending:', marker.key, e);
+      warnOnce('dirty-v2-row-corrupt', 'A saved unsynced row is unreadable. Avoid clearing browser data until it is reviewed.');
+      continue;
+    }
+    if (!row || typeof row !== 'object' || row.id !== marker.id) {
+      console.warn('[dirty] v2 row snapshot identity mismatch and remains pending:', marker.key);
+      warnOnce('dirty-v2-row-mismatch', 'A saved unsynced row failed its identity check and was not applied.');
+      continue;
+    }
+    const groupKey = marker.table + '\n' + marker.id;
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push({ marker, row });
+  }
+
+  const discarded = {};
+  const recovered = [];
+  for (const candidates of groups.values()) {
+    candidates.sort((a, b) => {
+      const timeDiff = (Number(b.marker.createdAt) || 0) - (Number(a.marker.createdAt) || 0);
+      if (timeDiff) return timeDiff;
+      if (a.marker.owner && a.marker.owner === b.marker.owner) {
+        const aSequence = _dirtyMarkerSequence(a.marker);
+        const bSequence = _dirtyMarkerSequence(b.marker);
+        if (aSequence !== null && bSequence !== null && aSequence !== bSequence) return bSequence - aSequence;
+      }
+      const aToken = String(a.marker.token), bToken = String(b.marker.token);
+      return aToken === bToken ? 0 : (aToken < bToken ? 1 : -1);
+    });
+    const winner = candidates[0];
+    const differentLosers = candidates.filter(candidate => candidate.marker.rowJson !== winner.marker.rowJson);
+    if (differentLosers.length) {
+      const supersedes = [...new Set([
+        ...(Array.isArray(winner.marker.supersedes) ? winner.marker.supersedes : []),
+        ...differentLosers.map(candidate => candidate.marker.token),
+      ])];
+      let resolutionDurable = false;
+      try {
+        const resolvedWinner = { ...winner.marker, supersedes };
+        delete resolvedWinner.key;
+        localStorage.setItem(winner.marker.key, JSON.stringify(resolvedWinner));
+        const saved = JSON.parse(localStorage.getItem(winner.marker.key) || 'null');
+        resolutionDurable = !!saved && Array.isArray(saved.supersedes) &&
+          supersedes.every(token => saved.supersedes.includes(token));
+        if (resolutionDurable) winner.marker.supersedes = supersedes;
+      } catch(e) {
+        console.warn('[dirty] conflicting snapshot resolution could not be saved:', e);
+      }
+      if (!resolutionDurable) {
+        _unresolvedDirtyWinnerTokens.add(winner.marker.token);
+        warnOnce('dirty-v2-conflict-save-failed', 'Conflicting unsynced edits could not be resolved durably. Sync will keep retrying without discarding them.');
+      } else {
+        if (!discarded[winner.marker.table]) discarded[winner.marker.table] = new Map();
+        discarded[winner.marker.table].set(winner.marker.id, new Set(differentLosers.map(candidate => candidate.marker.token)));
+        for (const loser of differentLosers) {
+          try { localStorage.removeItem(loser.marker.key); }
+          catch(e) { console.warn('[dirty] superseded foreign marker cleanup deferred:', e); }
+          const label = loser.row.name || loser.row.product || loser.marker.id;
+          if (typeof clLog === 'function') {
+            clLog('conflict', winner.marker.table, label,
+              'dirty journal kept token ' + winner.marker.token + ' and discarded older snapshot: ' + loser.marker.rowJson);
+          }
+        }
+      }
+    }
+
+    if (_deleteBlocksRow(_tblName(winner.marker.table), winner.row)) continue;
+    const rows = DB[winner.marker.table];
+    if (!Array.isArray(rows)) continue;
+    const index = rows.findIndex(row => row.id === winner.row.id);
+    if (index >= 0) rows[index] = winner.row;
+    else rows.push(winner.row);
+    recovered.push({ key: winner.marker.table, row: winner.row });
+  }
+  if (Object.keys(discarded).length) _persistDirty(discarded);
+  return recovered;
+}
+
+function _persistRecoveredDirtyRows(recovered) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const latest = raw ? JSON.parse(raw) : {};
+    const byTable = new Map();
+    for (const item of recovered) {
+      if (!byTable.has(item.key)) byTable.set(item.key, []);
+      byTable.get(item.key).push(item.row);
+    }
+    for (const [key, recoveredRows] of byTable) {
+      const cachedRows = Array.isArray(latest[key]) ? latest[key] : [];
+      const byId = new Map(cachedRows.map(row => [row.id, row]));
+      for (const row of recoveredRows) byId.set(row.id, row);
+      latest[key] = [...byId.values()];
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(latest));
+    bumpLocalVersion();
+    return true;
+  } catch(e) {
+    console.error('[dirty] recovered row snapshots could not be cached:', e);
+    warnOnce('dirty-v2-recovery-cache-failed', 'Recovered unsynced edits could not be cached. Avoid closing the tab until sync finishes.');
+    return false;
+  }
+}
+
+function _loadDirtyStateFromLS() {
+  const state = _emptyDirtyState();
+  const v2Markers = _readDirtyV2Markers();
+  let obj = {};
   try {
     const raw = localStorage.getItem(DIRTY_LS_KEY);
-    if (!raw) return { singles: new Set(), slabs: new Set(), sales: new Set(), etbs: new Set(), boosterBoxes: new Set(), boosterPacks: new Set(), ebayPurchases: new Set() };
-    const obj = JSON.parse(raw);
-    return {
-      singles:        new Set(obj.singles        || []),
-      slabs:          new Set(obj.slabs          || []),
-      sales:          new Set(obj.sales          || []),
-      etbs:           new Set(obj.etbs           || []),
-      boosterBoxes:   new Set(obj.boosterBoxes   || []),
-      boosterPacks:   new Set(obj.boosterPacks   || []),
-      ebayPurchases:  new Set(obj.ebayPurchases  || []),
-    };
-  } catch(e) { return { singles: new Set(), slabs: new Set(), sales: new Set(), etbs: new Set(), boosterBoxes: new Set(), boosterPacks: new Set(), ebayPurchases: new Set() }; }
+    obj = raw ? JSON.parse(raw) : {};
+  } catch(_) { obj = {}; }
+  try {
+    const storedRevisions = obj && typeof obj._revisions === 'object' ? obj._revisions : {};
+    for (const key of DIRTY_TABLE_KEYS) {
+      const markerRows = v2Markers.filter(marker => marker.table === key);
+      const ids = new Set(Array.isArray(obj[key]) ? obj[key] : []);
+      for (const marker of markerRows) ids.add(marker.id);
+      for (const id of ids) state.dirty[key].add(id);
+      const byId = storedRevisions[key] && typeof storedRevisions[key] === 'object' ? storedRevisions[key] : {};
+      for (const id of ids) {
+        const tokens = Array.isArray(byId[id]) ? byId[id].filter(v => typeof v === 'string' && v) : [];
+        const markerTokens = markerRows.filter(marker => marker.id === id).map(marker => marker.token);
+        // A current tab owns one revision token. Existing tokens from another
+        // tab stay independently queued and are never claimed by this flush.
+        let revision = markerTokens.find(token => token.startsWith(_dirtyTabId + ':')) ||
+          tokens.find(token => token.startsWith(_dirtyTabId + ':'));
+        if (!revision) {
+          revision = _newDirtyRevision();
+          _syntheticDirtyRevisionTokens.add(revision);
+        }
+        state.revisions[key].set(id, revision);
+      }
+    }
+    return state;
+  } catch(e) { return state; }
 }
-// Read-merge-write: union the in-memory dirty set with whatever is currently
-// stored, so a concurrent tab's queued-but-not-yet-synced ids are never
-// clobbered by this tab blindly overwriting the whole blob (B2, two-tab safety).
+function _loadDirtyFromLS() { return _loadDirtyStateFromLS().dirty; }
+
+// Read-merge-write the legacy dirty arrays plus revision-token metadata. The
+// arrays keep older app versions and existing saved state readable. Tokens let
+// a completed upload remove only the exact mutations it snapped before await;
+// a newer edit in this tab or another tab remains dirty.
 function _persistDirty(flushed) {
   try {
+    const clearedV2 = _clearDirtyV2Tokens(flushed);
+    const markersBeforeWrite = _readDirtyV2Markers();
+    // Every current in-memory mutation gets its own storage key. A foreign tab
+    // can interleave a write anywhere in the legacy mirror's read/write cycle
+    // without either tab overwriting the other's authoritative marker.
+    for (const key of DIRTY_TABLE_KEYS) {
+      for (const id of _dirty[key]) {
+        let token = _dirtyRevisions[key].get(id);
+        if (!token) { token = _newDirtyRevision(); _dirtyRevisions[key].set(id, token); }
+        const rowJson = _dirtyRowJson(key, id);
+        const recoverableForeign = _syntheticDirtyRevisionTokens.has(token) &&
+          markersBeforeWrite.some(marker => marker.table === key && marker.id === id &&
+            marker.token !== token && _dirtyMarkerHasValidSnapshot(marker));
+        if (!recoverableForeign) {
+          const saved = _writeDirtyV2Marker(key, id, token, rowJson);
+          if (saved && typeof rowJson === 'string') _syntheticDirtyRevisionTokens.delete(token);
+        }
+      }
+    }
+    const v2Markers = _readDirtyV2Markers();
     const raw = localStorage.getItem(DIRTY_LS_KEY);
-    const prev = raw ? JSON.parse(raw) : {};
-    const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
-    const merged = {};
-    for (const k of keys) {
-      const stored = Array.isArray(prev[k]) ? prev[k] : [];
-      const mine = [..._dirty[k]];
-      const union = new Set([...stored, ...mine]);
-      if (flushed && flushed[k]) for (const id of flushed[k]) union.delete(id);
-      merged[k] = [...union];
+    let prev = {};
+    try { prev = raw ? JSON.parse(raw) : {}; } catch(_) { prev = {}; }
+    const prevRevisions = prev && typeof prev._revisions === 'object' ? prev._revisions : {};
+    const merged = { _revisions: {} };
+    for (const key of DIRTY_TABLE_KEYS) {
+      const storedIds = new Set(Array.isArray(prev[key]) ? prev[key] : []);
+      const storedById = prevRevisions[key] && typeof prevRevisions[key] === 'object' ? prevRevisions[key] : {};
+      const tokensById = new Map();
+      for (const id of storedIds) {
+        const tokens = Array.isArray(storedById[id]) ? storedById[id].filter(v => typeof v === 'string' && v) : [];
+        tokensById.set(id, new Set(tokens));
+      }
+
+      // Remove this tab's superseded token for each id, then add its current
+      // one. Tokens belonging to other tabs are never removed by this merge.
+      const tableMarkers = v2Markers.filter(marker => marker.table === key);
+      const ids = new Set([...storedIds, ..._dirty[key], ...tableMarkers.map(marker => marker.id)]);
+      for (const marker of tableMarkers) {
+        const tokens = tokensById.get(marker.id) || new Set();
+        tokens.add(marker.token);
+        tokensById.set(marker.id, tokens);
+      }
+      for (const id of ids) {
+        const tokens = tokensById.get(id) || new Set();
+        for (const token of [...tokens]) if (token.startsWith(_dirtyTabId + ':')) tokens.delete(token);
+        if (_dirty[key].has(id)) {
+          let current = _dirtyRevisions[key].get(id);
+          if (!current) { current = _newDirtyRevision(); _dirtyRevisions[key].set(id, current); }
+          tokens.add(current);
+        }
+        tokensById.set(id, tokens);
+      }
+
+      const completed = flushed && flushed[key];
+      if (completed) {
+        for (const [id, uploadedTokens] of completed) {
+          const current = _dirtyRevisions[key].get(id);
+          if (current && uploadedTokens.has(current) && clearedV2.get(current) !== false) {
+            _dirty[key].delete(id);
+            _dirtyRevisions[key].delete(id);
+          }
+          const tokens = tokensById.get(id) || new Set();
+          for (const token of uploadedTokens) if (clearedV2.get(token) !== false) tokens.delete(token);
+          tokensById.set(id, tokens);
+        }
+      }
+
+      const outIds = [];
+      const outById = {};
+      for (const id of ids) {
+        const tokens = tokensById.get(id) || new Set();
+        const isUnflushedLegacy = storedIds.has(id) && tokens.size === 0 && !(completed && completed.has(id));
+        if (tokens.size || isUnflushedLegacy || _dirty[key].has(id)) {
+          outIds.push(id);
+          if (tokens.size) outById[id] = [...tokens];
+        }
+      }
+      merged[key] = outIds;
+      merged._revisions[key] = outById;
     }
     localStorage.setItem(DIRTY_LS_KEY, JSON.stringify(merged));
   } catch(e) {
@@ -501,8 +1401,64 @@ function _persistDirty(flushed) {
     warnOnce('persist-dirty-failed', 'Could not save sync state. Avoid closing the tab until sync finishes.');
   }
 }
-const _dirty = _loadDirtyFromLS();
-function markDirty(table, id) { if (_dirty[table]) { _dirty[table].add(id); _persistDirty(); } }
+function _snapshotDirtyTokens(table, id, rowJson) {
+  const tokens = new Set();
+  // A tab can prove only that its own current token describes the row bytes it
+  // snapshots below. Another tab's token may represent an edit this tab has
+  // not merged yet, so successful upload must never clear it speculatively.
+  const local = _dirtyRevisions[table] && _dirtyRevisions[table].get(id);
+  if (local) tokens.add(local);
+  for (const marker of _readDirtyV2Markers()) {
+    if (marker.table !== table || marker.id !== id) continue;
+    // This tab owns its own sequence. A foreign/orphan marker is clearable
+    // only when it records the exact bytes this upload snapped.
+    if (marker.token.startsWith(_dirtyTabId + ':') ||
+        (typeof rowJson === 'string' && marker.rowJson === rowJson &&
+         !_unresolvedDirtyWinnerTokens.has(marker.token))) {
+      tokens.add(marker.token);
+      if (Array.isArray(marker.supersedes)) {
+        for (const superseded of marker.supersedes) if (typeof superseded === 'string') tokens.add(superseded);
+      }
+    }
+  }
+  return tokens;
+}
+function _discardDirtyForDelete(table, id) {
+  if (!_dirty[table]) return;
+  // The delete supersedes this tab's mutation only. Foreign tokens may describe
+  // bytes this tab never saw, so another tab must remain responsible for them.
+  // The delete/restore marker blocks that tab's stale row from being uploaded.
+  const tokens = _snapshotDirtyTokens(table, id);
+  _dirty[table].delete(id);
+  _dirtyRevisions[table].delete(id);
+  _persistDirty({ [table]: new Map([[id, tokens]]) });
+}
+const _initialDirtyState = _loadDirtyStateFromLS();
+const _dirty = _initialDirtyState.dirty;
+const _dirtyRevisions = _initialDirtyState.revisions;
+function markDirty(table, id, rowSnapshot) {
+  if (!_dirty[table]) return;
+  _dirty[table].add(id);
+  const previousToken = _dirtyRevisions[table].get(id);
+  const token = _newDirtyRevision();
+  _dirtyRevisions[table].set(id, token);
+  if (previousToken) _syntheticDirtyRevisionTokens.delete(previousToken);
+  const markerSaved = _writeDirtyV2Marker(table, id, token, _dirtyRowJson(table, id, rowSnapshot));
+  // Once the later marker is durable, the prior marker from this tab is
+  // superseded. Remove it after, never before, so quota/write failure cannot
+  // erase the last cross-session recovery record.
+  if (markerSaved && previousToken && previousToken !== token) {
+    try {
+      const previousKey = _dirtyV2Key(previousToken);
+      localStorage.removeItem(previousKey);
+      if (localStorage.getItem(previousKey) !== null) throw new Error('marker still present after removeItem');
+    } catch(e) {
+      console.warn('[dirty] superseded marker cleanup deferred:', e);
+      warnOnce('dirty-v2-superseded-cleanup', 'Old sync markers could not be cleaned up. Free browser storage after current changes sync.');
+    }
+  }
+  _persistDirty();
+}
 
 function saveData() {
   // 1. Write to localStorage immediately - this is the source of truth
@@ -533,6 +1489,34 @@ function saveData() {
   _saveTimer = setTimeout(_flushDirtyToSupabase, 1000);
 }
 
+// Timestamp-only persistence must never write the whole in-memory DB after an
+// await. Another tab may have saved newer bytes meanwhile. Re-read the latest
+// cache and stamp only rows that still byte-match the uploaded snapshot.
+function _persistServerStamps(stamps, label) {
+  if (!stamps.length) return true;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return true;
+    const latest = JSON.parse(raw);
+    let changed = false;
+    for (const stamp of stamps) {
+      const rows = latest && latest[stamp.key];
+      if (!Array.isArray(rows)) continue;
+      const row = rows.find(candidate => candidate && candidate.id === stamp.id);
+      if (row && JSON.stringify(row) === stamp.beforeJson) {
+        row._updatedAt = stamp.ts;
+        changed = true;
+      }
+    }
+    if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(latest));
+    return true;
+  } catch(e) {
+    console.error('[storage] STORAGE_KEY stamp write failed after ' + label + ':', e);
+    warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+    return false;
+  }
+}
+
 async function _flushDirtyToSupabase() {
   // In a local preview (file:// or localhost) every write is gated off so we
   // never touch prod. Bail BEFORE the loop - otherwise the skipped upserts read
@@ -540,58 +1524,69 @@ async function _flushDirtyToSupabase() {
   // the local-only rows (silent data loss). Leaving them dirty makes the merge
   // preserve them across refresh.
   if (isLocalhostPreview()) return;
+  // Corrupt authoritative delete state cannot safely distinguish a legitimate
+  // upsert from stale resurrection. Keep rows visible and dirty, but freeze
+  // every outbound inventory write until the state is repaired.
+  if (!_deleteStateAllowsCloudWrites()) return;
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
   // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
   const toSync = [];
   const flushed = {};
   for (const tbl of tables) {
     const key = _dbKey(tbl);
-    const dirtyIds = new Set(_dirty[key]); // snapshot
-    const dirtyItems = DB[key].filter(i => dirtyIds.has(i.id));
-    if (dirtyItems.length) toSync.push({ tbl, key, items: dirtyItems, dirtyIds });
+    const dirtyIds = new Set(_dirty[key]);
+    const records = DB[key]
+      .filter(row => dirtyIds.has(row.id))
+      .map(row => {
+        const snapshot = JSON.parse(JSON.stringify(row));
+        const json = JSON.stringify(snapshot);
+        return { id: row.id, snapshot, json, tokens: _snapshotDirtyTokens(key, row.id, json) };
+      });
+    if (records.length) toSync.push({ tbl, key, records });
   }
   if (!toSync.length) return;
   setSyncStatus('saving');
   let anyError = false;
-  let anyStamped = false;
-  for (const { tbl, key, items, dirtyIds } of toSync) {
+  const stamps = [];
+  for (const { tbl, key, records } of toSync) {
     try {
       // Chunk into 200-row batches to stay under Supabase body size limits.
-      for (let i = 0; i < items.length; i += 200) {
-        const chunk = items.slice(i, i + 200);
-        const ts = await sbBatchUpsert(tbl, chunk);
+      for (let i = 0; i < records.length; i += 200) {
+        const chunk = records.slice(i, i + 200);
+        // A delete can run while this flush is waiting on an earlier table.
+        // Never dispatch a stale snapshot for a row that is now absent.
+        const currentIds = new Set(DB[key].map(row => row.id));
+        const dispatch = chunk.filter(record => currentIds.has(record.id) &&
+          !_deleteBlocksRow(tbl, record.snapshot));
+        if (!dispatch.length) continue;
+        const ts = await sbBatchUpsert(tbl, dispatch.map(record => record.snapshot));
+        if (!flushed[key]) flushed[key] = new Map();
+        for (const record of dispatch) flushed[key].set(record.id, record.tokens);
         // Stamp the cloud timestamp back onto the in-memory rows so the next
         // mergeTable pass sees this edit's real base time, not the stale one -
         // otherwise a same-row edit right after sync reads as a fake conflict
         // and gets discarded on the next load (B1).
         if (ts) {
-          const ids = new Set(chunk.map(r => r.id));
-          for (const row of DB[key]) if (ids.has(row.id)) row._updatedAt = ts;
-          anyStamped = true;
+          for (const record of dispatch) {
+            const row = DB[key].find(candidate => candidate.id === record.id);
+            const currentToken = _dirtyRevisions[key].get(record.id);
+            if (row && currentToken && record.tokens.has(currentToken) && JSON.stringify(row) === record.json) {
+              row._updatedAt = ts;
+              stamps.push({ key, id: record.id, beforeJson: record.json, ts });
+            }
+          }
         }
       }
-      // Only clear the IDs we successfully uploaded - new mutations since snapshot stay dirty
-      dirtyIds.forEach(id => _dirty[key].delete(id));
-      flushed[key] = dirtyIds;
     } catch(e) {
       anyError = true;
       setSyncStatus('error', e.message);
       console.error('Flush failed for ' + tbl + ':', e);
-      // IDs remain in _dirty so next saveData() will retry them
+      // Revisions not included in `flushed` remain dirty for the next retry.
     }
   }
   // Persist the stamped timestamps directly - NOT via the debounced saveData(),
   // which would re-arm _saveTimer and re-enter _flushDirtyToSupabase.
-  if (anyStamped) {
-    // Data integrity: the row data itself already synced to Supabase above -
-    // this write only stamps the server timestamp back onto the local cache.
-    // If it fails the local copy keeps a stale _updatedAt, which can make a
-    // genuinely-synced row misread as a conflict on the next load (B1).
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
-      console.error('[storage] STORAGE_KEY stamp write failed after dirty flush:', e);
-      warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
-    }
-  }
+  _persistServerStamps(stamps, 'dirty flush');
   _persistDirty(flushed);
   if (!anyError) setSyncStatus('ok');
   // Opportunistic: retry any deletes and trash writes that failed previously.
@@ -603,46 +1598,60 @@ async function _flushDirtyToSupabase() {
 // ── saveAllToSupabase: batch upload everything (used after import) ──
 async function saveAllToSupabase() {
   if (isLocalhostPreview()) { console.info('[Preview] sync off - saveAllToSupabase skipped'); return; }
+  // Bail before taking snapshots or showing success. Unlike the row-visibility
+  // filter, cloud writes must fail closed while delete state is unreadable.
+  if (!_deleteStateAllowsCloudWrites()) return false;
   setSyncStatus('saving');
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
+  // Snapshot every table before the first await. Later chunks must not read
+  // live objects that may have been edited or deleted while an earlier table
+  // was uploading.
+  const snapshots = {};
+  for (const tbl of tables) {
+    const key = _dbKey(tbl);
+    snapshots[key] = DB[key].map(row => JSON.parse(JSON.stringify(row)));
+  }
   // NOTE: DB is keyed by camelCase (see TABLE_TO_DB_KEY), so this must go
   // through _dbKey - indexing DB directly with the snake_case name (e.g.
   // DB['booster_boxes']) is undefined and throws on .length. Pre-existing bug,
   // fixed here because it sits directly on this function's only anchor line.
-  const total = tables.reduce((s, t) => s + DB[_dbKey(t)].length, 0);
+  const total = tables.reduce((s, t) => s + snapshots[_dbKey(t)].length, 0);
   let done = 0;
-  let anyStamped = false;
+  const stamps = [];
   showSyncProgress(0, total, 'Uploading to cloud…');
   try {
     for (const tbl of tables) {
       const key = _dbKey(tbl);
-      if (!DB[key].length) continue;
+      if (!snapshots[key].length) continue;
       // Chunk into batches of 200 to stay under Supabase body size limits
       const chunks = [];
-      for (let i = 0; i < DB[key].length; i += 200) chunks.push(DB[key].slice(i, i + 200));
+      for (let i = 0; i < snapshots[key].length; i += 200) chunks.push(snapshots[key].slice(i, i + 200));
       for (const chunk of chunks) {
-        const ts = await sbBatchUpsert(tbl, chunk);
+        // If a row changed or was deleted while a prior chunk awaited, skip
+        // this stale snapshot. Normal markDirty/saveData will upload the newer
+        // state, while sbDelete owns absent rows.
+        const dispatch = chunk.filter(snapshot => {
+          const current = DB[key].find(row => row.id === snapshot.id);
+          return current && !_deleteBlocksRow(tbl, snapshot) && JSON.stringify(current) === JSON.stringify(snapshot);
+        });
+        const ts = dispatch.length ? await sbBatchUpsert(tbl, dispatch) : null;
         // Stamp back so a same-row edit right after this bulk sync doesn't
         // misread as a fake conflict on the next load (see A1 / B1).
         if (ts) {
-          const ids = new Set(chunk.map(r => r.id));
-          for (const row of DB[key]) if (ids.has(row.id)) row._updatedAt = ts;
-          anyStamped = true;
+          for (const snapshot of dispatch) {
+            const row = DB[key].find(candidate => candidate.id === snapshot.id);
+            if (row && JSON.stringify(row) === JSON.stringify(snapshot)) {
+              row._updatedAt = ts;
+              stamps.push({ key, id: snapshot.id, beforeJson: JSON.stringify(snapshot), ts });
+            }
+          }
         }
         done += chunk.length;
         showSyncProgress(done, total, 'Uploading ' + tbl + ' to cloud…');
       }
     }
     // Persist stamped timestamps directly, not via the debounced saveData().
-    if (anyStamped) {
-      // Same reasoning as _flushDirtyToSupabase: rows already synced above,
-      // this only refreshes the local timestamp cache to avoid a fake
-      // conflict on next load.
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
-        console.error('[storage] STORAGE_KEY stamp write failed after saveAllToSupabase:', e);
-        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
-      }
-    }
+    _persistServerStamps(stamps, 'saveAllToSupabase');
     hideSyncProgress();
     setSyncStatus('ok');
     toast('All data synced to cloud ✓');
@@ -670,11 +1679,15 @@ function _loadLocalTrash() {
 }
 
 function _saveLocalTrash() {
-  try { localStorage.setItem(LOCAL_TRASH_KEY, JSON.stringify(DB.trash)); }
-  catch(e) { console.warn('Local trash save failed:', e); }
+  try {
+    const payload = JSON.stringify(DB.trash);
+    localStorage.setItem(LOCAL_TRASH_KEY, payload);
+    return localStorage.getItem(LOCAL_TRASH_KEY) === payload;
+  } catch(e) {
+    console.warn('Local trash save failed:', e);
+    return false;
+  }
 }
-
-function genId(prefix) { return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
 
 // ── Async DB init ────────────────────────────────────────────
 // ── One-time data migration: backfill marketPrice from listPrice ──
@@ -948,6 +1961,7 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
   }
   if (!dirtySet || dirtySet.size === 0) return cloudRows;
   const byId = new Map(cloudRows.map(r => [r.id, r]));
+  const discarded = new Map();
   for (const id of [...dirtySet]) {
     const localRow = localRows.find(r => r.id === id);
     if (!localRow) continue;
@@ -964,7 +1978,10 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
     const cloudMs = cloudRow && cloudRow._updatedAt ? new Date(cloudRow._updatedAt).getTime() : 0;
     const baseMs  = localRow._updatedAt ? new Date(localRow._updatedAt).getTime() : 0;
     if (cloudRow && baseMs && cloudMs > baseMs) {
+      const localJson = JSON.stringify(localRow);
+      discarded.set(id, _snapshotDirtyTokens(tableKey, id, localJson));
       dirtySet.delete(id);
+      if (_dirtyRevisions[tableKey]) _dirtyRevisions[tableKey].delete(id);
       const label = localRow.name || localRow.product || id;
       const diff = (typeof _clDiff === 'function') ? _clDiff(tableKey, cloudRow, localRow) : '';
       // An empty diff means only untracked fields (priceHistory, tcgdexId,
@@ -973,7 +1990,7 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
       // edit. Still log it honestly, but skip the toast so the user isn't
       // warned about nothing.
       if (diff) {
-        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + diff);
+        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + diff + ' · discarded snapshot: ' + localJson);
         if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
       } else {
         if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, tracked fields identical');
@@ -982,7 +1999,7 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
     }
     byId.set(id, localRow);
   }
-  _persistDirty();
+  _persistDirty(discarded.size ? { [tableKey]: discarded } : undefined);
   return [...byId.values()];
 }
 
@@ -1002,13 +2019,13 @@ async function initDB() {
     if (raw) {
       const local = JSON.parse(raw);
       if (local.singles?.length || local.slabs?.length || local.sales?.length) {
-        DB.singles       = local.singles       || [];
-        DB.slabs         = local.slabs         || [];
-        DB.sales         = local.sales         || [];
-        DB.etbs          = local.etbs          || [];
-        DB.boosterBoxes  = local.boosterBoxes  || [];
-        DB.boosterPacks  = local.boosterPacks  || [];
-        DB.ebayPurchases = local.ebayPurchases || [];
+        DB.singles       = _withoutPendingDeletes('singles',        local.singles       || []);
+        DB.slabs         = _withoutPendingDeletes('slabs',          local.slabs         || []);
+        DB.sales         = _withoutPendingDeletes('sales',          local.sales         || []);
+        DB.etbs          = _withoutPendingDeletes('etbs',           local.etbs          || []);
+        DB.boosterBoxes  = _withoutPendingDeletes('booster_boxes',  local.boosterBoxes  || []);
+        DB.boosterPacks  = _withoutPendingDeletes('booster_packs',  local.boosterPacks  || []);
+        DB.ebayPurchases = _withoutPendingDeletes('ebay_purchases', local.ebayPurchases || []);
         showPage('dashboard');
         shownLocal = true;
       }
@@ -1018,6 +2035,32 @@ async function initDB() {
     // cache while the real cloud fetch (below) is in flight. A parse failure
     // here just means we skip straight to the loading spinner.
     console.warn('[initDB] local cache quick-paint failed:', e);
+  }
+
+  // The synchronous quick-paint above deliberately stays before initDB's
+  // first await. features.js has one-time migrations that run immediately
+  // after app.js and expect the cached DB to be hydrated already. When v2 is
+  // absent, _readDeleteState uses both legacy arrays for this first filter.
+  // Migrate them under the shared lock now, before any cloud merge or retry.
+  await _ensureDeleteStateV2();
+
+  // DB is now initialised and the shared cache has been hydrated. Only at
+  // this point can a legacy v1 dirty ID be upgraded to a v2 marker carrying
+  // its exact row bytes. Existing recoverable foreign markers suppress a
+  // synthetic cache-derived marker, so stale shared bytes cannot outrank an
+  // orphan edit from another tab.
+  _persistDirty();
+
+  // Per-token dirty snapshots are the durable recovery source for edits that
+  // another tab overwrote in the shared whole-DB cache. Replay them before any
+  // cloud merge or flush, including when the cached row is absent entirely.
+  // The cloud conflict rule below may still replace a recovered row when its
+  // server timestamp is strictly newer.
+  const recoveredDirtyRows = _recoverDirtyV2Snapshots();
+  if (recoveredDirtyRows.length > 0) {
+    _persistRecoveredDirtyRows(recoveredDirtyRows);
+    if (!shownLocal) showPage('dashboard');
+    shownLocal = true;
   }
 
   if (!shownLocal) {
@@ -1193,6 +2236,7 @@ function _rowTime(row) {
 }
 function mergeIntoMemory(key, incomingRows) {
   if (!Array.isArray(incomingRows)) return;
+  incomingRows = _withoutPendingDeletes(_tblName(key), incomingRows);
   const mineById = new Map((DB[key] || []).map(r => [r.id, r]));
   for (const inRow of incomingRows) {
     const mine = mineById.get(inRow.id);
@@ -1225,14 +2269,24 @@ window.addEventListener('storage', (e) => {
     if (e.key === STORAGE_KEY && e.newValue) {
       const incoming = JSON.parse(e.newValue);
       const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
-      for (const k of keys) mergeIntoMemory(k, incoming[k]);
+      for (const k of keys) mergeIntoMemory(k, _withoutPendingDeletes(_tblName(k), incoming[k]));
       // Reload our own dirty set too - _persistDirty's read-merge-write means
       // the stored blob may now include ids the other tab queued.
-      const reloaded = _loadDirtyFromLS();
+      const reloaded = _loadDirtyStateFromLS();
       for (const k of keys) {
         if (!_dirty[k]) continue;
-        for (const id of reloaded[k]) _dirty[k].add(id);
+        for (const id of reloaded.dirty[k]) {
+          _dirty[k].add(id);
+          if (!_dirtyRevisions[k].has(id)) _dirtyRevisions[k].set(id, _newDirtyRevision());
+        }
       }
+      const name = document.querySelector('.page.active')?.id?.replace('page-', '');
+      if (name && typeof showPage === 'function') showPage(name);
+      _kjrCrossTabToast();
+    } else if (e.key === DELETE_STATE_V2_KEY ||
+               ((e.key === PENDING_DEL_KEY || e.key === CONFIRMED_DEL_KEY) && localStorage.getItem(DELETE_STATE_V2_KEY) === null)) {
+      const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
+      for (const key of keys) DB[key] = _withoutPendingDeletes(_tblName(key), DB[key]);
       const name = document.querySelector('.page.active')?.id?.replace('page-', '');
       if (name && typeof showPage === 'function') showPage(name);
       _kjrCrossTabToast();
@@ -1318,23 +2372,34 @@ async function deleteSelected(table) {
     );
   }
 
-  snapshotForUndo();
+  const itemsToTrash = DB[table].filter(i => ids.has(i.id));
+  if (!await sendBatchToTrash(table, itemsToTrash, 'bulk')) return;
+  let linkedTrashReady = false;
   if (voidLinkedSales) {
+    linkedTrashReady = await sendBatchToTrash('sales', linkedSales, 'linked-item-bulk-deleted');
+    if (!linkedTrashReady) {
+      toastError('Linked sales were kept because their Trash copies could not be saved');
+    }
+  }
+
+  const deleteTargets = await _preflightSourceDeletes([
+    { table, rows: itemsToTrash },
+    ...(linkedTrashReady ? [{ table: 'sales', rows: linkedSales }] : []),
+  ]);
+  if (!deleteTargets) {
+    toastError('Delete stopped because its cloud rows could not be queued safely');
+    return;
+  }
+
+  snapshotForUndo();
+  if (voidLinkedSales && linkedTrashReady) {
     const linkedIds = new Set(linkedSales.map(s => s.id));
     DB.sales = DB.sales.filter(s => !linkedIds.has(s.id));
     linkedSales.forEach(s => {
-      // sendToTrash/sbDelete already catch their own errors internally and
-      // queue to _kjrPendingTrashWrites / the pending-delete queue for retry
-      // on next load (see app.js top). These outer catches are a defensive
-      // backstop only, the retry queue already owns recovery here.
-      sendToTrash('sales', s, 'linked-item-bulk-deleted').catch(e => console.warn('sendToTrash (bulk-deleted sale) rejected unexpectedly:', e));
-      sbDelete('sales', s.id).catch(e => console.warn('sbDelete (bulk-deleted sale) rejected unexpectedly:', e));
       clLog('delete', 'sales', s.product, 'auto-trashed (linked item bulk-deleted)');
     });
     renderSales();
   }
-  const itemsToTrash = DB[table].filter(i => ids.has(i.id));
-  const idsCopy = new Set(ids);
 
   // ── Optimistic update: remove from UI immediately ──
   DB[table] = DB[table].filter(i => !ids.has(i.id));
@@ -1354,14 +2419,10 @@ async function deleteSelected(table) {
   const extraBulk = sample.join(' · ') + (itemsToTrash.length > sample.length ? ' · …+' + (itemsToTrash.length - sample.length) + ' more' : '');
   clLog('delete', table, count + ' items deleted (bulk)', extraBulk);
 
-  // ── Background: batch trash + parallel Supabase deletes ──
-  Promise.all([
-    sendBatchToTrash(table, itemsToTrash, 'bulk'),
-    ...itemsToTrash.map(item => sbDelete(table, item.id))
-  ]).catch(e => {
-    setSyncStatus('error', 'Delete sync failed: ' + e.message);
-    console.error('Bulk delete background sync failed:', e);
-  });
+  // Trash copies are already confirmed or durably queued above. Only now may
+  // source deletes start. Await every attempt so no caller can observe a
+  // completed bulk operation before its retry obligations exist.
+  await _runPreflightedDeletes(deleteTargets);
 }
 
 // =========== COLUMN VISIBILITY & ORDER ===========
@@ -2780,7 +3841,7 @@ const CL_LIMIT = 500;
 
 function clLog(action, table, detail, extra) {
   const log = clLoad();
-  log.unshift({ id: 'cl_' + Date.now(), ts: Date.now(), action, table: table||'', detail: detail||'', extra: extra||'' });
+  log.unshift({ id: genId('cl'), ts: Date.now(), action, table: table||'', detail: detail||'', extra: extra||'' });
   if (log.length > CL_LIMIT) log.splice(CL_LIMIT);
   // Changelog is an audit trail, not the source of truth for any row - a
   // failed write here loses one log entry, not inventory data.
@@ -2903,6 +3964,13 @@ function renderChangelog() {
 const undoStack = [];
 const redoStack = [];
 const UNDO_LIMIT = 30;
+let _undoRedoOp = Promise.resolve();
+
+function _queueUndoRedoOp(task) {
+  const run = _undoRedoOp.catch(() => undefined).then(task);
+  _undoRedoOp = run.catch(() => undefined);
+  return run;
+}
 
 // Cap the *total* serialized size of the undo stack so a large inventory
 // (e.g. 5000 rows) doesn't blow past localStorage / memory limits.
@@ -2920,34 +3988,38 @@ function snapshotForUndo() {
 }
 
 function undoLast() {
+  return _queueUndoRedoOp(_undoLastBody);
+}
+
+async function _undoLastBody() {
   if (undoStack.length === 0) { toast('Nothing to undo'); return; }
   // Snapshot the *current* state into redo before mutating.
   const beforeUndo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
+  const prev = JSON.parse(undoStack[undoStack.length - 1]);
+  if (!await _prepareExplicitRowRestores(beforeUndo, prev, 'additions')) {
+    toastError('Undo stopped because delete recovery state could not be saved safely');
+    return;
+  }
+  const deleteTargets = _stateReplacementDeleteTargets(beforeUndo, prev);
+  if (!await _preflightPendingDeletes(deleteTargets)) {
+    toastError('Undo stopped because its cloud deletes could not be queued safely');
+    return;
+  }
   redoStack.push(JSON.stringify(beforeUndo));
-  const prev = JSON.parse(undoStack.pop());
-  // Capture id sets BEFORE applying the undo, so any row present now but
-  // absent after can be deleted from Supabase too - otherwise the flush only
-  // ever uploads rows that still exist, and the deleted-cloud row re-merges
-  // back into local state on the next load, undoing the undo (B3).
-  const _before = {};
-  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
+  undoStack.pop();
   // Diff old vs new so we only mark records that actually changed (or were
   // added/removed) as dirty, instead of re-uploading the entire DB.
-  const diffIds = (oldArr, newArr) => {
+  const changedRows = (oldArr, newArr) => {
     const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
-    const newMap = new Map(newArr.map(r => [r.id, JSON.stringify(r)]));
-    const ids = new Set();
-    for (const [id, json] of newMap) if (oldMap.get(id) !== json) ids.add(id);
-    for (const id of oldMap.keys()) if (!newMap.has(id)) ids.add(id); // deletions also need to sync
-    return ids;
+    return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
   };
-  diffIds(beforeUndo.singles,        prev.singles       ).forEach(id => markDirty('singles', id));
-  diffIds(beforeUndo.slabs,          prev.slabs         ).forEach(id => markDirty('slabs',   id));
-  diffIds(beforeUndo.sales,          prev.sales         ).forEach(id => markDirty('sales',   id));
-  diffIds(beforeUndo.etbs||[],       prev.etbs||[]      ).forEach(id => markDirty('etbs',           id));
-  diffIds(beforeUndo.boosterBoxes||[], prev.boosterBoxes||[]).forEach(id => markDirty('boosterBoxes', id));
-  diffIds(beforeUndo.boosterPacks||[], prev.boosterPacks||[]).forEach(id => markDirty('boosterPacks', id));
-  diffIds(beforeUndo.ebayPurchases||[], prev.ebayPurchases||[]).forEach(id => markDirty('ebayPurchases', id));
+  changedRows(beforeUndo.singles,        prev.singles       ).forEach(row => markDirty('singles', row.id, row));
+  changedRows(beforeUndo.slabs,          prev.slabs         ).forEach(row => markDirty('slabs',   row.id, row));
+  changedRows(beforeUndo.sales,          prev.sales         ).forEach(row => markDirty('sales',   row.id, row));
+  changedRows(beforeUndo.etbs||[],       prev.etbs||[]      ).forEach(row => markDirty('etbs',           row.id, row));
+  changedRows(beforeUndo.boosterBoxes||[], prev.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
+  changedRows(beforeUndo.boosterPacks||[], prev.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
+  changedRows(beforeUndo.ebayPurchases||[], prev.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
   DB.singles       = prev.singles;
   DB.slabs         = prev.slabs;
   DB.sales         = prev.sales;
@@ -2959,10 +4031,7 @@ function undoLast() {
   // Delete from Supabase any id that existed before the undo but not after -
   // routed directly through sbDelete (which already queues its own retries),
   // NOT through the dirty system, since a removed row has nothing to upload.
-  for (const tbl of SYNCED_TABLES) {
-    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
-    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
-  }
+  await _runPreflightedDeletes(deleteTargets);
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -2972,31 +4041,36 @@ function undoLast() {
 }
 
 function redoLast() {
+  return _queueUndoRedoOp(_redoLastBody);
+}
+
+async function _redoLastBody() {
   if (redoStack.length === 0) { toast('Nothing to redo'); return; }
   const beforeRedo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
+  const next = JSON.parse(redoStack[redoStack.length - 1]);
+  if (!await _prepareExplicitRowRestores(beforeRedo, next, 'additions')) {
+    toastError('Redo stopped because delete recovery state could not be saved safely');
+    return;
+  }
+  const deleteTargets = _stateReplacementDeleteTargets(beforeRedo, next);
+  if (!await _preflightPendingDeletes(deleteTargets)) {
+    toastError('Redo stopped because its cloud deletes could not be queued safely');
+    return;
+  }
   undoStack.push(JSON.stringify(beforeRedo));
-  const next = JSON.parse(redoStack.pop());
-  // Same before/after id-diff as undoLast, so a redo that re-deletes a row
-  // (e.g. redoing a delete that a prior undo had restored) removes it from
-  // Supabase too instead of letting the cloud copy silently re-merge (B3).
-  const _before = {};
-  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
+  redoStack.pop();
   // Same diff approach as undoLast - only sync records that changed.
-  const diffIds = (oldArr, newArr) => {
+  const changedRows = (oldArr, newArr) => {
     const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
-    const newMap = new Map(newArr.map(r => [r.id, JSON.stringify(r)]));
-    const ids = new Set();
-    for (const [id, json] of newMap) if (oldMap.get(id) !== json) ids.add(id);
-    for (const id of oldMap.keys()) if (!newMap.has(id)) ids.add(id);
-    return ids;
+    return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
   };
-  diffIds(beforeRedo.singles,         next.singles        ).forEach(id => markDirty('singles', id));
-  diffIds(beforeRedo.slabs,           next.slabs          ).forEach(id => markDirty('slabs',   id));
-  diffIds(beforeRedo.sales,           next.sales          ).forEach(id => markDirty('sales',   id));
-  diffIds(beforeRedo.etbs||[],        next.etbs||[]       ).forEach(id => markDirty('etbs',          id));
-  diffIds(beforeRedo.boosterBoxes||[], next.boosterBoxes||[]).forEach(id => markDirty('boosterBoxes', id));
-  diffIds(beforeRedo.boosterPacks||[], next.boosterPacks||[]).forEach(id => markDirty('boosterPacks', id));
-  diffIds(beforeRedo.ebayPurchases||[], next.ebayPurchases||[]).forEach(id => markDirty('ebayPurchases', id));
+  changedRows(beforeRedo.singles,         next.singles        ).forEach(row => markDirty('singles', row.id, row));
+  changedRows(beforeRedo.slabs,           next.slabs          ).forEach(row => markDirty('slabs',   row.id, row));
+  changedRows(beforeRedo.sales,           next.sales          ).forEach(row => markDirty('sales',   row.id, row));
+  changedRows(beforeRedo.etbs||[],        next.etbs||[]       ).forEach(row => markDirty('etbs',          row.id, row));
+  changedRows(beforeRedo.boosterBoxes||[], next.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
+  changedRows(beforeRedo.boosterPacks||[], next.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
+  changedRows(beforeRedo.ebayPurchases||[], next.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
   DB.singles       = next.singles;
   DB.slabs         = next.slabs;
   DB.sales         = next.sales;
@@ -3005,10 +4079,7 @@ function redoLast() {
   DB.boosterPacks  = next.boosterPacks  || DB.boosterPacks;
   DB.ebayPurchases = next.ebayPurchases || DB.ebayPurchases;
   saveData();
-  for (const tbl of SYNCED_TABLES) {
-    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
-    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
-  }
+  await _runPreflightedDeletes(deleteTargets);
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -3132,7 +4203,7 @@ async function saveVersion() {
 // automatic daily snapshot. Skips the toast / input clear.
 async function _saveVersionWithName(name){
   const ver = {
-    id: 'v_' + Date.now(),
+    id: genId('v'),
     name,
     ts: Date.now(),
     data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })
@@ -3227,7 +4298,7 @@ async function restoreVersion(id) {
   if (!await kjrConfirm('Restore "' + esc(ver.name) + '"? Current data will be overwritten (a backup version will be saved first).', {ok:'Restore'})) return;
   // Auto-save current state before restoring
   const backup = {
-    id: 'v_' + Date.now(),
+    id: genId('v'),
     name: 'Auto-backup before restore',
     ts: Date.now(),
     data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })
@@ -3242,8 +4313,6 @@ async function restoreVersion(id) {
   // stick (B3).
   const backupCloudSaved = await sbSaveVersion(backup);
   if (backupCloudSaved) await _pruneCloudVersions();
-  const _before = {};
-  for (const tbl of SYNCED_TABLES) _before[tbl] = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
   // Apply the restored snapshot. Restore ALL seven tables that the snapshot
   // captures - previously only singles/slabs/sales were applied, so the other
   // four tables stayed at their current state and the version restore was lying.
@@ -3255,6 +4324,19 @@ async function restoreVersion(id) {
     restored = JSON.parse(ver.data);
   } catch(e) {
     toast('⚠ This version\'s snapshot is unreadable - restore cancelled');
+    return;
+  }
+  const beforeRestoreState = {
+    singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases,
+  };
+  if (!await _prepareExplicitRowRestores(beforeRestoreState, restored, 'additions')) {
+    toastError('Version restore stopped because delete recovery state could not be saved safely');
+    return;
+  }
+  const deleteTargets = _stateReplacementDeleteTargets(beforeRestoreState, restored);
+  if (!await _preflightPendingDeletes(deleteTargets)) {
+    toastError('Version restore stopped because its cloud deletes could not be queued safely');
     return;
   }
   DB.singles       = restored.singles       || [];
@@ -3276,10 +4358,7 @@ async function restoreVersion(id) {
   // Delete from Supabase any id that existed before the restore but is gone
   // afterwards - routed directly through sbDelete (its own retry queue),
   // NOT through the dirty system, since a removed row has nothing to upload.
-  for (const tbl of SYNCED_TABLES) {
-    const now = new Set((DB[_dbKey(tbl)] || []).map(r => r.id));
-    for (const id of _before[tbl]) if (!now.has(id)) sbDelete(tbl, id);
-  }
+  await _runPreflightedDeletes(deleteTargets);
   renderSingles(); renderSlabs(); renderSales(); renderDashboard();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
@@ -3468,6 +4547,14 @@ async function markStatus(table, id, status) {
         {ok:'Remove sales', cancel:'Keep sales'}
       );
     }
+    if (removeSales && !await sendBatchToTrash('sales', linked, 'item-re-availed')) return;
+    const deleteTargets = removeSales
+      ? await _preflightSourceDeletes([{ table: 'sales', rows: linked }])
+      : [];
+    if (deleteTargets === null) {
+      toastError('Re-availability stopped because linked cloud deletes could not be queued safely');
+      return;
+    }
     snapshotForUndo();
     const prevStatus = item.status;
     item.status = status;
@@ -3477,17 +4564,13 @@ async function markStatus(table, id, status) {
         const idx = DB.sales.findIndex(x => x.id === s.id);
         if (idx >= 0) {
           DB.sales.splice(idx, 1);
-          markDirty('sales', s.id);
-          // sendToTrash/sbDelete already catch internally and queue for
-          // retry (pending-trash / pending-delete). Backstop only.
-          sendToTrash('sales', s, 'item-re-availed').catch(e => console.warn('sendToTrash (re-availed sale) rejected unexpectedly:', e));
-          sbDelete('sales', s.id).catch(e => console.warn('sbDelete (re-availed sale) rejected unexpectedly:', e));
           clLog('delete', 'sales', s.product, 'auto-removed (item re-availed)');
         }
       });
       renderSales();
     }
     saveData();
+    if (removeSales) await _runPreflightedDeletes(deleteTargets);
     // Audit trail: log the status flip itself so the changelog reflects
     // the re-avail (was silently missing before).
     if (typeof clLog === 'function') {
@@ -4224,17 +5307,51 @@ function showPage(name) {
   // filter, so it can never sit silently active after a tab change.
   if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-btn, .btb-item, .nav-dd-item').forEach(b => b.classList.remove('active'));
+  const desktopButtons = document.querySelectorAll('.nav-btn');
+  const bottomButtons = document.querySelectorAll('.btb-item');
+  const dropdownItems = document.querySelectorAll('.nav-dd-item');
+  const sheetItems = document.querySelectorAll('#more-sheet .sheet-item[data-page]');
+  const navControls = [...desktopButtons, ...bottomButtons, ...dropdownItems, ...sheetItems];
+  navControls.forEach(b => {
+    b.classList.remove('active');
+    b.removeAttribute('aria-current');
+  });
   document.querySelectorAll('.nav-dd').forEach(d => d.classList.remove('contains-active'));
   const pageEl = document.getElementById('page-' + name);
   if (pageEl) pageEl.classList.add('active');
   if (name !== _kjrCurrentPage) { window.scrollTo(0, 0); _kjrCurrentPage = name; }
-  // Find the nav button or dropdown item whose onclick references this page
-  // name and mark it (and its parent dropdown trigger) active.
-  document.querySelectorAll('.nav-btn, .btb-item, .nav-dd-item').forEach(b => {
+  const markCurrent = b => {
+    if (!b) return;
+    b.classList.add('active');
+    b.setAttribute('aria-current', 'page');
+  };
+  const matchesPage = b => {
     const oc = b.getAttribute('onclick') || '';
-    if (oc.indexOf("'" + name + "'") !== -1 || oc.indexOf('"' + name + '"') !== -1) {
-      b.classList.add('active');
+    return oc.indexOf("'" + name + "'") !== -1 || oc.indexOf('"' + name + '"') !== -1;
+  };
+  if (MORE_PAGES.has(name)) {
+    // Desktop and mobile are distinct navigation regions. Their More controls
+    // represent the active grouped destination even when there is no exact
+    // child item, such as Booster Packs in the desktop dropdown.
+    desktopButtons.forEach(b => {
+      if (b.classList.contains('nav-dd-trigger')) {
+        markCurrent(b);
+        const parentDD = b.closest('.nav-dd');
+        if (parentDD) parentDD.classList.add('contains-active');
+      }
+    });
+    bottomButtons.forEach(b => {
+      if (b.id === 'btb-more') markCurrent(b);
+    });
+  } else {
+    desktopButtons.forEach(b => { if (matchesPage(b)) markCurrent(b); });
+    bottomButtons.forEach(b => { if (matchesPage(b)) markCurrent(b); });
+  }
+  // Menu items are a third, transient navigation region. Mark the exact page
+  // where it is present without forcing a synthetic item for grouped pages.
+  [...dropdownItems, ...sheetItems].forEach(b => {
+    if (matchesPage(b) || b.getAttribute('data-page') === name) {
+      markCurrent(b);
       const parentDD = b.closest('.nav-dd');
       if (parentDD) parentDD.classList.add('contains-active');
     }
@@ -5117,7 +6234,7 @@ function updateField(table, id, field, val) {
 
 async function sendToTrash(table, item, reason) {
   const trashEntry = {
-    id: 'trash_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+    id: genId('trash'),
     data: {
       originalTable: table,
       originalId: item.id,
@@ -5132,8 +6249,10 @@ async function sendToTrash(table, item, reason) {
     // local instead (DB.trash + localStorage) so the Trash tab and restore
     // still work on localhost. See LOCAL_TRASH_KEY above.
     DB.trash.push(trashEntry);
-    _saveLocalTrash();
-    return;
+    if (_saveLocalTrash()) return true;
+    DB.trash = DB.trash.filter(entry => entry.id !== trashEntry.id);
+    toastError('Delete stopped because its local Trash copy could not be saved');
+    return false;
   }
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
@@ -5143,15 +6262,22 @@ async function sendToTrash(table, item, reason) {
       signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
+    return true;
   } catch(e) {
-    console.warn('Trash write failed, queued for retry:', e);
-    _queuePendingTrash(trashEntry); // keep the snapshot until the cloud write lands
+    if (_queuePendingTrash(trashEntry)) {
+      console.warn('Trash write failed, queued for retry:', e);
+      return true;
+    }
+    console.error('Trash write and local retry queue both failed:', e);
+    setSyncStatus('error', 'Trash snapshot could not be saved');
+    toastError('Delete stopped because no recoverable Trash copy could be saved');
+    return false;
   }
 }
 
 async function sendBatchToTrash(table, items, reason) {
   const rows = items.map(item => ({
-    id: 'trash_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) + '_' + item.id.slice(-4),
+    id: genId('trash') + '_' + item.id.slice(-4),
     data: { originalTable: table, originalId: item.id, item, reason: reason || 'bulk', deletedAt: new Date().toISOString() },
     updated_at: new Date().toISOString()
   }));
@@ -5159,8 +6285,11 @@ async function sendBatchToTrash(table, items, reason) {
     // Never write to prod from a local preview - keep the snapshots entirely
     // local instead (DB.trash + localStorage), same treatment as sendToTrash.
     DB.trash.push(...rows);
-    _saveLocalTrash();
-    return;
+    if (_saveLocalTrash()) return true;
+    const failedIds = new Set(rows.map(row => row.id));
+    DB.trash = DB.trash.filter(entry => !failedIds.has(entry.id));
+    toastError('Bulk delete stopped because local Trash copies could not be saved');
+    return false;
   }
   try {
     const r = await fetch(SB_URL + '/rest/v1/trash', {
@@ -5169,9 +6298,16 @@ async function sendBatchToTrash(table, items, reason) {
       signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) throw new Error(await r.text());
+    return true;
   } catch(e) {
-    console.warn('Batch trash failed, queued for retry:', e);
-    rows.forEach(row => _queuePendingTrash(row));
+    if (_queuePendingTrashBatch(rows)) {
+      console.warn('Batch trash failed, queued for retry:', e);
+      return true;
+    }
+    console.error('Batch trash write and local retry queue both failed:', e);
+    setSyncStatus('error', 'Trash snapshots could not be saved');
+    toastError('Bulk delete stopped because no recoverable Trash copies could be saved');
+    return false;
   }
 }
 
@@ -5227,8 +6363,22 @@ async function restoreFromTrash(trashId) {
     if (!DB[originalTable]) { toastError('Unknown table: ' + originalTable); return; }
     // Guard against a double-click (or a retry after a prior failed cloud
     // push) re-inserting a row that's already back in DB - would duplicate it.
-    const alreadyRestored = DB[originalTable].some(r => r.id === item.id);
-    if (alreadyRestored) {
+    const sbTable = (typeof _tblName === 'function') ? _tblName(originalTable) : originalTable;
+    const existingRow = DB[originalTable].find(r => r.id === item.id);
+    if (existingRow) {
+      const existingRestoreToken = existingRow._restoreToken || genId('restore');
+      let cancelOk = false;
+      try { cancelOk = await _queueDeleteStateOp(() => _cancelPendingDelete(sbTable, item.id, existingRestoreToken)); }
+      catch(e) { console.warn('Restore delete-state lock failed:', e); }
+      if (!cancelOk) {
+        toastError('Restore stopped because an older delete retry could not be cancelled safely');
+        return;
+      }
+      if (!existingRow._restoreToken) {
+        existingRow._restoreToken = existingRestoreToken;
+        markDirty(originalTable, existingRow.id);
+        saveData();
+      }
       await hardDeleteTrashEntry(trashId);
       toast('Already restored');
       renderTrash();
@@ -5240,6 +6390,21 @@ async function restoreFromTrash(trashId) {
     // way back in so restoring an old singles row can't reintroduce the
     // legacy short form after the one-shot migration flag has already burned.
     if (originalTable === 'singles') item.condition = canonicalCondition(item.condition);
+    // Restore is a newer, explicit write for the same id. Cancel any failed
+    // delete retry before queuing the upsert, otherwise a later retry could
+    // silently delete the row again after it was restored.
+    const restoreToken = genId('restore');
+    let cancelOk = false;
+    try { cancelOk = await _queueDeleteStateOp(() => _cancelPendingDelete(sbTable, item.id, restoreToken)); }
+    catch(e) { console.warn('Restore delete-state lock failed:', e); }
+    if (!cancelOk) {
+      toastError('Restore stopped because an older delete retry could not be cancelled safely');
+      return;
+    }
+    // This internal token is copied to cloud with the row. A browser holding
+    // an older confirmed-delete tombstone can then distinguish this explicit
+    // restore from a stale same-row upsert, including across devices.
+    item._restoreToken = restoreToken;
     DB[originalTable].push(item);
     markDirty(originalTable, item.id);
     saveData();
@@ -5249,8 +6414,8 @@ async function restoreFromTrash(trashId) {
     // trash entry, refresh the list) and tell the user cloud sync will retry.
     let _ts = null;
     let _cloudFailed = false;
+    const _beforeStampJson = JSON.stringify(item);
     try {
-      const sbTable = (typeof _tblName === 'function') ? _tblName(originalTable) : originalTable;
       _ts = await sbUpsert(sbTable, item.id, (() => { const { id, ...d } = item; return d; })());
     } catch(e) {
       _cloudFailed = true;
@@ -5260,10 +6425,10 @@ async function restoreFromTrash(trashId) {
     // this restored row's stale base timestamp as a fake conflict (see A1).
     if (_ts) {
       const _row = DB[originalTable].find(r => r.id === item.id);
-      if (_row) { _row._updatedAt = _ts; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })); } catch(e) {
-        console.error('[storage] STORAGE_KEY stamp write failed after trash restore:', e);
-        warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
-      } }
+      if (_row && JSON.stringify(_row) === _beforeStampJson) {
+        _row._updatedAt = _ts;
+        _persistServerStamps([{ key: originalTable, id: item.id, beforeJson: _beforeStampJson, ts: _ts }], 'trash restore');
+      }
     }
     if (originalTable === 'singles') renderSingles();
     if (originalTable === 'slabs')   renderSlabs();
@@ -5404,14 +6569,26 @@ async function deleteItem(id, table) {
     );
   }
 
-  snapshotForUndo();
+  if (!await sendToTrash(table, item, 'single')) return;
+  let linkedTrashReady = false;
   if (voidLinkedSales) {
+    linkedTrashReady = await sendBatchToTrash('sales', linkedSales, 'linked-item-deleted');
+    if (!linkedTrashReady) toastError('Linked sales were kept because their Trash copies could not be saved');
+  }
+
+  const deleteTargets = await _preflightSourceDeletes([
+    { table, rows: [item] },
+    ...(linkedTrashReady ? [{ table: 'sales', rows: linkedSales }] : []),
+  ]);
+  if (!deleteTargets) {
+    toastError('Delete stopped because its cloud rows could not be queued safely');
+    return;
+  }
+
+  snapshotForUndo();
+  if (voidLinkedSales && linkedTrashReady) {
     linkedSales.forEach(s => {
       DB.sales = DB.sales.filter(x => x.id !== s.id);
-      // sendToTrash/sbDelete already catch internally and queue for retry
-      // (pending-trash / pending-delete). Backstop only.
-      sendToTrash('sales', s, 'linked-item-deleted').catch(e => console.warn('sendToTrash (linked-deleted sale) rejected unexpectedly:', e));
-      sbDelete('sales', s.id).catch(e => console.warn('sbDelete (linked-deleted sale) rejected unexpectedly:', e));
       clLog('delete', 'sales', s.product, 'auto-trashed (linked item deleted)');
     });
     renderSales();
@@ -5429,14 +6606,7 @@ async function deleteItem(id, table) {
   // still has the audit trail of what existed.
   clLog('delete', table, item.name || item.product || id, _clSummary(table, item));
 
-  // ── Background: write to trash + delete from Supabase ──
-  Promise.all([
-    sendToTrash(table, item, 'single'),
-    sbDelete(table, id)
-  ]).catch(e => {
-    setSyncStatus('error', 'Delete sync failed: ' + e.message);
-    console.error('Delete background sync failed:', e);
-  });
+  await _runPreflightedDeletes(deleteTargets);
 }
 
 function openAddSingle() {
@@ -6696,10 +7866,12 @@ function renderDashboard() {
   window._toggleExposureSub = function(key){
     const sub = document.getElementById('exp-sub-' + key);
     const caret = document.getElementById('exp-caret-' + key);
+    const toggle = document.getElementById('exp-toggle-' + key);
     if (!sub) return;
     const open = sub.style.display !== 'none';
     sub.style.display = open ? 'none' : 'block';
     if (caret) caret.style.transform = open ? '' : 'rotate(90deg)';
+    if (toggle) toggle.setAttribute('aria-expanded', String(!open));
   };
 
   // ── Capital Exposure + Inventory (merged) ──────────────────────────
@@ -6741,8 +7913,13 @@ function renderDashboard() {
         const caret = hasSub
           ? `<span id="exp-caret-${s.key}" style="color:var(--accent);font-size:18px;font-weight:700;width:18px;display:inline-block;text-align:center;line-height:1;transition:transform 0.15s">▸</span>`
           : '<span style="width:18px;display:inline-block"></span>';
-        const clickAttr = hasSub ? `onclick="_toggleExposureSub('${s.key}')" style="cursor:pointer"` : 'style="cursor:default"';
-        const mainRow = `<div class="exp-row" ${clickAttr}>
+        const mainRow = hasSub
+          ? `<button type="button" class="exp-row" id="exp-toggle-${s.key}" aria-controls="exp-sub-${s.key}" aria-expanded="false" onclick="_toggleExposureSub('${s.key}')" style="cursor:pointer;border:0;background:transparent;color:inherit;font:inherit;text-align:left;width:100%">
+          ${caret}
+          <span class="exp-legend-dot" style="background:${s.color}"></span>
+          <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt).toLocaleString('en-SG')}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
+        </button>`
+          : `<div class="exp-row" style="cursor:default">
           ${caret}
           <span class="exp-legend-dot" style="background:${s.color}"></span>
           <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt).toLocaleString('en-SG')}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
@@ -6792,6 +7969,7 @@ const AI_QUICK_PROMPTS = [
 ];
 
 function initAiAnalyst() {
+  syncAiPanelToggle();
   const chips = document.getElementById('ai-quick-chips');
   // Update the subline to show which provider is actually active right now
   // (e.g. "Using Gemini - free" vs "No key - click 🔑 to add one").
@@ -6822,12 +8000,21 @@ function initAiAnalyst() {
   });
 }
 
+function syncAiPanelToggle() {
+  const body = document.getElementById('ai-analyst-body');
+  const toggle = document.getElementById('ai-panel-toggle');
+  if (!body || !toggle) return;
+  toggle.setAttribute('aria-expanded', String(body.style.display !== 'none'));
+}
+
 function toggleAiPanel() {
   const body = document.getElementById('ai-analyst-body');
   const icon = document.getElementById('ai-panel-toggle-icon');
+  if (!body || !icon) return;
   const hidden = body.style.display === 'none';
   body.style.display = hidden ? '' : 'none';
   icon.textContent = hidden ? '▲ Hide' : '▼ Show';
+  syncAiPanelToggle();
 }
 
 function clearAiChat() {
@@ -6855,6 +8042,7 @@ function _resetEphemeralUi(){
   const aiIcon = document.getElementById('ai-panel-toggle-icon');
   if (aiBody) aiBody.style.display = 'none';
   if (aiIcon) aiIcon.textContent = '▼ Show';
+  syncAiPanelToggle();
   // API settings modal (re-injected each time it's opened, so just remove)
   const apiM = document.getElementById('api-key-modal');
   if (apiM) apiM.remove();
@@ -7701,7 +8889,7 @@ function openApiSettings() {
           </div>
 
           <div>
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokemonPriceTracker API Key</div>
+            <label for="ppt-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokemonPriceTracker API Key</label>
             <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
               <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free lookups/day
@@ -7712,7 +8900,7 @@ function openApiSettings() {
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">🤖 AI Analyst &amp; Import</div>
             <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.6">Pick any one provider. Free options work great for casual analysis. Keys stored only in this browser.</div>
 
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">Preferred Provider</div>
+            <label for="ai-provider-select" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">Preferred Provider</label>
             <select id="ai-provider-select" class="fi" style="margin-bottom:16px">
               <option value="auto" ${getAIProvider()==='auto'?'selected':''}>Auto - pick best free key available</option>
               <option value="gemini" ${getAIProvider()==='gemini'?'selected':''}>Google Gemini (free · recommended)</option>
@@ -7721,33 +8909,33 @@ function openApiSettings() {
               <option value="anthropic" ${getAIProvider()==='anthropic'?'selected':''}>Anthropic Claude (paid)</option>
             </select>
 
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="gemini-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
               Google Gemini Key <span style="color:var(--green);text-transform:none;letter-spacing:0;font-weight:400">- free, 15 req/min</span>
-            </div>
+            </label>
             <input type="password" id="gemini-key-input" class="fi" placeholder="AIzaSy..." value="${getGeminiKey()}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/app/apikey</a> - no credit card required.
             </div>
 
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="groq-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
               Groq Key <span style="color:var(--green);text-transform:none;letter-spacing:0;font-weight:400">- free, 30 req/min, ultra fast</span>
-            </div>
+            </label>
             <input type="password" id="groq-key-input" class="fi" placeholder="gsk_..." value="${getGroqKey()}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent)">console.groq.com/keys</a>.
             </div>
 
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="openrouter-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
               OpenRouter Key <span style="color:var(--text3);text-transform:none;letter-spacing:0;font-weight:400">- free tier + paid models</span>
-            </div>
+            </label>
             <input type="password" id="openrouter-key-input" class="fi" placeholder="sk-or-..." value="${getOpenRouterKey()}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">openrouter.ai/keys</a>.
             </div>
 
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="anthropic-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
               Anthropic Key <span style="color:var(--amber);text-transform:none;letter-spacing:0;font-weight:400">- paid, best quality</span>
-            </div>
+            </label>
             <input type="password" id="anthropic-key-input" class="fi" placeholder="sk-ant-..." value="${anth}" style="font-family:monospace;font-size:12px">
             <div style="font-size:11px;color:var(--amber);margin-top:6px;line-height:1.5">
               ⚠ Keys are stored in your browser only. For production, proxy AI calls through a backend you control.
@@ -10013,22 +11201,45 @@ async function importData() {
 
   if (mode === 'replace') {
     const existingArr = (type === 'sales' ? DB.sales : DB[type]);
+    const replaceKey = type === 'sales' ? 'sales' : type;
+    const sbTable = (typeof _tblName === 'function') ? _tblName(type === 'sales' ? 'sales' : type) : (type === 'sales' ? 'sales' : type);
+    const replacementIds = new Set(newItems.map(row => row.id));
+    const oldRows = existingArr
+      .filter(row => !replacementIds.has(row.id))
+      .map(row => ({ table: sbTable, id: row.id, restoreToken: row._restoreToken || '' }));
+    // Preflight every restore/delete-state mutation before deleting anything
+    // locally or in Supabase. If browser storage cannot preserve the recovery
+    // state, the existing table stays byte-for-byte untouched.
+    if (!await _prepareReplacementSafety({ [replaceKey]: newItems }, oldRows)) {
+      toastError('Import stopped because its restore and delete recovery state could not be saved safely');
+      return;
+    }
     snapshotForUndo();
     // Capture the old IDs so we can DELETE them from Supabase - otherwise
     // "Replace" leaves orphan rows in the cloud and on the next page load
     // those orphans merge back in, silently un-doing the replacement.
-    const sbTable = (typeof _tblName === 'function') ? _tblName(type === 'sales' ? 'sales' : type) : (type === 'sales' ? 'sales' : type);
-    const oldIds = existingArr.map(r => r.id);
     // Await all deletes before overwriting local state. If any fail, warn the
     // user - orphaned cloud rows would otherwise merge back on next load.
-    if (typeof sbDelete === 'function' && oldIds.length) {
+    if (typeof sbDelete === 'function' && oldRows.length) {
       // sbDelete returns false on failure and auto-queues the ID for retry on
       // next sync, so orphans cannot linger in Supabase across sessions.
-      const delResults = await Promise.all(oldIds.map(id => sbDelete(sbTable, id)));
+      const delResults = await _runPreflightedDeletes(oldRows);
       const failCount = delResults.filter(r => r === false).length;
-      if (failCount > 0) toast('⚠ ' + failCount + ' old record(s) queued for retry - they will be removed once cloud connection recovers.', 5000, true);
+      if (failCount > 0) {
+        const pending = (() => {
+          const state = _readDeleteState();
+          return state.valid ? state.state.pending : [];
+        })();
+        const queuedCount = oldRows.filter(row => Array.isArray(pending) && pending.some(item =>
+          item && item.table === sbTable && item.id === row.id)).length;
+        if (queuedCount === failCount) {
+          toast('⚠ ' + failCount + ' old record deletion(s) are pending and will retry when cloud access recovers.', 5000, true);
+        } else {
+          toastError((failCount - queuedCount) + ' old record deletion(s) could not be queued safely. Check sync before reloading.');
+        }
+      }
     }
-    DB[type === 'sales' ? 'sales' : type] = newItems;
+    DB[replaceKey] = newItems;
   }
   else {
     snapshotForUndo();
@@ -11077,7 +12288,7 @@ function saveChartToDashboard() {
   if (title === null) return; // cancelled
 
   const config = {
-    id: 'sc_' + Date.now(),
+    id: genId('sc'),
     title: title || 'Custom Chart',
     xFields:   [...cbState.x],
     yFields:   [...cbState.y],
@@ -11171,7 +12382,7 @@ async function deleteSavedChart(id) {
   if (!await kjrConfirm('Delete <strong>' + esc(config.title||'this chart') + '</strong>?<br><span style="font-size:11px;color:var(--text3)">Moved to trash, recoverable within 30 days.</span>', {ok:'Delete', danger:true})) return;
 
   // Send to trash for 30-day recovery
-  await sendToTrash('savedChart', config, 'manual');
+  if (!await sendToTrash('savedChart', config, 'manual')) return;
 
   // Remove from DOM and storage immediately
   const remaining = charts.filter(c => c.id !== id);
@@ -11276,10 +12487,7 @@ async function deleteAllSavedCharts() {
     : `Move all ${deletable.length} saved chart${deletable.length!==1?'s':''} to trash? Restore within 30 days from the Trash tab.`;
   if (!await kjrConfirm(msg, {ok:'Move to trash', danger:true})) return;
 
-  // Batch send to trash
-  for (const c of deletable) {
-    await sendToTrash('savedChart', c, 'bulk');
-  }
+  if (!await sendBatchToTrash('savedChart', deletable, 'bulk')) return;
   // Keep only pinned in localStorage
   persistSavedCharts(pinned);
   // Destroy instances and remove DOM nodes for deletable charts

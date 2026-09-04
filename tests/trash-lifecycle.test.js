@@ -35,6 +35,28 @@ function getDeleteStateV2(localStorage) {
   return JSON.parse(localStorage.getItem('_kjrDeleteStateV2'));
 }
 
+async function queuedRestoreFixture(id, tombstoneVersion) {
+  const deletedAt = '2026-09-04T00:00:00.000Z';
+  const tombstone = { table: 'singles', id, row_version: tombstoneVersion, deleted_at: deletedAt };
+  const entry = {
+    id: 'trash_' + id,
+    data: {
+      originalTable: 'singles', originalId: id,
+      item: { id, name: 'Queued restore ' + id, status: 'Available' },
+      deletedAt,
+    },
+    updated_at: deletedAt,
+  };
+  const first = await loadApp();
+  first.grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
+  first.ctx._serverTombstones = [tombstone];
+  first.ctx._syncPullLoaded = true;
+  await first.ctx.restoreFromTrash(entry.id);
+  const storage = copyStorage(first.localStorage);
+  storage._kjrServerTombstonesV1 = JSON.stringify([tombstone]);
+  return { storage, tombstone, restored: entry.data.item };
+}
+
 test('trash-lifecycle: sendToTrash (localhost, local path) - entry shape and DB.trash push', async () => {
   const { ctx, grab } = await loadApp({ location: LOCALHOST_LOCATION });
   const item = { id: 's1', name: 'Test Card', costPrice: 10 };
@@ -322,6 +344,8 @@ test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore'
   ctx._serverTombstones = [{ table: 'singles', id: 'restore_1', row_version: 4, deleted_at: entry.data.deletedAt }];
   ctx._syncPullLoaded = true;
 
+  const messages = [];
+  ctx.toast = message => messages.push(message);
   await ctx.restoreFromTrash('trash_restore_1');
   const { DB } = grab('DB');
   assert.ok(DB.singles.some(row => row.id === 'restore_1'));
@@ -331,6 +355,57 @@ test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore'
     ['restore', 'singles', 'restore_1', 4, 'trash_restore_1'],
   ]);
   assert.strictEqual(syncCalls(fetchMock).length, 0, 'restore is durable locally before its debounced CAS request');
+  assert.ok(messages.some(message => message.includes('Restore queued locally')),
+    'optimistic UI says the restore is queued, not already confirmed');
+
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  assert.strictEqual(await ctx._flushMutationGroups(), true);
+  assert.ok(messages.includes('Restore synced'), 'final success appears only after the server acknowledgement');
+});
+
+test('trash-lifecycle: matching restore tombstone is suppressed across a fresh-tab pull while CAS remains queued', async () => {
+  const fixture = await queuedRestoreFixture('restore_fresh_matching', 4);
+  const serverControl = {
+    id: 'server_control_matching', data: { name: 'Server control', status: 'Available' },
+    row_version: 1, updated_at: '2026-09-04T00:00:00.000Z',
+  };
+  const reloaded = await loadApp({
+    seed: null,
+    localStorage: fixture.storage,
+    fetch: async (url) => url.includes('/sync/v2/pull')
+      ? syncPullResponse({ singles: [serverControl] }, [fixture.tombstone])
+      : jsonResponse({ rates: { SGD: 1.3 } }),
+  });
+
+  assert.ok(reloaded.grab('DB').DB.singles.some(row => row.id === fixture.restored.id),
+    'the matching cached and pulled tombstone cannot erase the queued restore');
+  assert.strictEqual(reloaded.ctx._serverTombstones.some(row =>
+    row.table === fixture.tombstone.table && row.id === fixture.tombstone.id &&
+    row.row_version === fixture.tombstone.row_version), false);
+  assert.strictEqual(JSON.parse(reloaded.localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
+    'the restore remains queued until its CAS request is acknowledged');
+});
+
+test('trash-lifecycle: a newer tombstone still wins over a queued restore after a fresh-tab pull', async () => {
+  const fixture = await queuedRestoreFixture('restore_fresh_newer_delete', 4);
+  const newerTombstone = { ...fixture.tombstone, row_version: 5, deleted_at: '2026-09-04T00:01:00.000Z' };
+  const serverControl = {
+    id: 'server_control_newer', data: { name: 'Server control', status: 'Available' },
+    row_version: 1, updated_at: '2026-09-04T00:00:00.000Z',
+  };
+  const reloaded = await loadApp({
+    seed: null,
+    localStorage: fixture.storage,
+    fetch: async (url) => url.includes('/sync/v2/pull')
+      ? syncPullResponse({ singles: [serverControl] }, [newerTombstone])
+      : jsonResponse({ rates: { SGD: 1.3 } }),
+  });
+
+  assert.strictEqual(reloaded.grab('DB').DB.singles.some(row => row.id === fixture.restored.id), false,
+    'a later server delete is authoritative');
+  assert.ok(reloaded.ctx._serverTombstones.some(row =>
+    row.table === newerTombstone.table && row.id === newerTombstone.id &&
+    row.row_version === newerTombstone.row_version));
 });
 
 test('trash-lifecycle: restore queued during a stale delete retry survives that response', async () => {

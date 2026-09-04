@@ -1417,8 +1417,12 @@ async function _pullSyncState() {
       tables[table] = rows.map(row => _normalisePulledRow(row, table)).filter(Boolean);
       if (tables[table].length !== rows.length) throw new Error('invalid_sync_response');
     }
-    const tombstones = body.tombstones.map(_normaliseTombstone).filter(Boolean);
-    if (tombstones.length !== body.tombstones.length) throw new Error('invalid_sync_response');
+    const pulledTombstones = body.tombstones.map(_normaliseTombstone).filter(Boolean);
+    if (pulledTombstones.length !== body.tombstones.length) throw new Error('invalid_sync_response');
+    // A queued restore is already a durable CAS attempt against one exact
+    // tombstone version. Keep that row visible while it waits for the server,
+    // but never suppress a later delete carrying a newer version.
+    const tombstones = _suppressPendingRestoreTombstones(pulledTombstones);
     _serverTombstones = tombstones;
     _syncPullLoaded = true;
     if (typeof DB !== 'undefined' && DB) DB.trash = tables.trash.slice();
@@ -1579,14 +1583,56 @@ function _dirtyMarkerHasValidSnapshot(marker) {
   } catch(_) { return false; }
 }
 
+function _materialiseDirtyV2Snapshot(marker) {
+  if (!marker || typeof marker.key !== 'string' || typeof marker.rowJson === 'string') return marker && marker.rowJson;
+  let rowJson = _dirtyRowJson(marker.table, marker.id);
+  // The quick-paint gate may leave a secondary-only cache out of DB until its
+  // cloud read finishes. Recover directly from the same persisted cache, but
+  // still honour durable delete state before treating those bytes as live.
+  if (typeof rowJson !== 'string') {
+    try {
+      const cache = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      const cachedRow = cache && Array.isArray(cache[marker.table])
+        ? cache[marker.table].find(candidate => candidate && candidate.id === marker.id)
+        : null;
+      if (cachedRow && !_deleteBlocksRow(_tblName(marker.table), cachedRow)) rowJson = JSON.stringify(cachedRow);
+    } catch (_) {}
+  }
+  if (typeof rowJson !== 'string') return null;
+  try {
+    const raw = localStorage.getItem(marker.key);
+    if (raw === null) return null;
+    const latest = JSON.parse(raw);
+    if (!latest || latest.table !== marker.table || latest.id !== marker.id || latest.token !== marker.token) return null;
+    // Another tab may already have repaired this marker. Never replace its
+    // durable bytes with this tab's shared-cache copy.
+    if (typeof latest.rowJson === 'string') return latest.rowJson;
+    const updated = { ...latest, rowJson };
+    const nextRaw = JSON.stringify(updated);
+    localStorage.setItem(marker.key, nextRaw);
+    const saved = JSON.parse(localStorage.getItem(marker.key) || 'null');
+    if (!saved || saved.table !== marker.table || saved.id !== marker.id || saved.token !== marker.token ||
+        saved.rowJson !== rowJson) throw new Error('snapshot_materialisation_not_confirmed');
+    return rowJson;
+  } catch(e) {
+    console.warn('[dirty] v2 marker snapshot could not be materialised and remains pending:', marker.key, e);
+    warnOnce('dirty-v2-snapshot-upgrade-failed', 'An older sync marker could not be upgraded. Avoid closing the tab until sync is checked.');
+    return null;
+  }
+}
+
 function _recoverDirtyV2Snapshots() {
   const markers = _readDirtyV2Markers();
   const groups = new Map();
   for (const marker of markers) {
     if (typeof marker.rowJson !== 'string') {
-      console.warn('[dirty] v2 marker has no recoverable row snapshot and remains pending:', marker.key);
-      warnOnce('dirty-v2-no-snapshot', 'Some older sync markers have no row snapshot. Their cached rows will stay queued for sync.');
-      continue;
+      const materialised = _materialiseDirtyV2Snapshot(marker);
+      if (typeof materialised === 'string') marker.rowJson = materialised;
+      else {
+        console.warn('[dirty] v2 marker has no recoverable row snapshot and remains pending:', marker.key);
+        warnOnce('dirty-v2-no-snapshot', 'Some older sync markers have no row snapshot. Their cached rows will stay queued for sync.');
+        continue;
+      }
     }
     let row;
     try { row = JSON.parse(marker.rowJson); }
@@ -1714,8 +1760,15 @@ function _loadDirtyStateFromLS() {
         const markerTokens = markerRows.filter(marker => marker.id === id).map(marker => marker.token);
         // A current tab owns one revision token. Existing tokens from another
         // tab stay independently queued and are never claimed by this flush.
+        // One exception is an older marker with no valid snapshot. Reusing
+        // that exact token lets post-hydration recovery materialise the cached
+        // row in place, without manufacturing one new marker per fresh tab.
         let revision = markerTokens.find(token => token.startsWith(_dirtyTabId + ':')) ||
           tokens.find(token => token.startsWith(_dirtyTabId + ':'));
+        if (!revision) {
+          const quarantined = markerRows.find(marker => marker.id === id && !_dirtyMarkerHasValidSnapshot(marker));
+          if (quarantined) revision = quarantined.token;
+        }
         if (!revision) {
           revision = _newDirtyRevision();
           _syntheticDirtyRevisionTokens.add(revision);
@@ -2082,6 +2135,25 @@ function _pendingMutationRowKeys() {
   return keys;
 }
 
+function _restoreMatchesTombstone(operation, tombstone) {
+  return !!operation && operation.type === 'restore' && !!tombstone &&
+    tombstone.table === operation.table && tombstone.id === operation.id &&
+    tombstone.row_version === operation.tombstone_version;
+}
+
+function _suppressPendingRestoreTombstones(tombstones) {
+  const groups = _readMutationGroups();
+  if (!groups) return Array.isArray(tombstones) ? tombstones.slice() : [];
+  const restores = [];
+  for (const group of groups) {
+    const plan = _mutationReplayPlan(group);
+    if (!plan) continue;
+    for (const { op } of plan) if (op.type === 'restore') restores.push(op);
+  }
+  if (!restores.length) return Array.isArray(tombstones) ? tombstones.slice() : [];
+  return (tombstones || []).filter(tombstone => !restores.some(op => _restoreMatchesTombstone(op, tombstone)));
+}
+
 function _replayPendingMutationGroupsLocally() {
   let changed = 0;
   const groups = _readMutationGroups();
@@ -2097,6 +2169,11 @@ function _replayPendingMutationGroupsLocally() {
       continue;
     }
     for (const { op, before, key } of plan) {
+      if (op.type === 'restore') {
+        // Run before the byte-equality fast path. The optimistic restore is
+        // normally already present in the whole-DB cache on a fresh tab.
+        _serverTombstones = _serverTombstones.filter(tombstone => !_restoreMatchesTombstone(op, tombstone));
+      }
       const next = { ...JSON.parse(JSON.stringify(op.data)), id: op.id, _serverVersion: op.expected_version || 0 };
       const index = DB[key].findIndex(row => row.id === op.id);
       if (index >= 0 && _mutationDataEqual(_stripInternalData(DB[key][index]), op.data)) continue;
@@ -2217,6 +2294,9 @@ async function _flushMutationGroups() {
     if (!handled) return false;
     _persistDirty(cleared);
     if (!_removeMutationGroup(group.mutation_id)) return false;
+    if (outcome.ok && group.operations.some(op => op.type === 'restore') && typeof toast === 'function') {
+      toast('Restore synced');
+    }
   }
   return true;
 }
@@ -7345,7 +7425,7 @@ async function restoreFromTrash(trashId) {
     saveData();
     _kjrRerenderTable(originalTable);
     clLog('restore', originalTable, restored.name || restored.product || restored.id, _clSummary(originalTable, restored) || 'restored from trash');
-    toast('Restored locally, syncing…');
+    toast('Restore queued locally. Waiting for server confirmation…');
     renderTrash();
     return;
   }

@@ -2725,15 +2725,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  window._kjrSetGuideSearchStatus = function(noResults) {
+    const status = document.getElementById('guide-search-status');
+    if (!status) return;
+    status.hidden = !noResults;
+    status.textContent = noResults ? 'No guide results. Clear the search to view the full guide.' : '';
+  };
+
   window.kjrGuideSearch = function(query) {
     const q = (query || '').trim().toLowerCase();
     const content = document.getElementById('guide-content');
-    if (!content) return;
+    if (!content) {
+      window._kjrSetGuideSearchStatus(false);
+      return;
+    }
     // Remove any existing highlights
     content.querySelectorAll('mark.guide-hl').forEach(m => {
       const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize();
     });
-    if (!q) return;
+    if (!q) {
+      window._kjrSetGuideSearchStatus(false);
+      return;
+    }
     // Walk text nodes, wrap matches
     const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
       acceptNode: n => (n.nodeValue.trim() && n.parentNode.tagName !== 'SCRIPT' && n.parentNode.tagName !== 'STYLE') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
@@ -2760,6 +2773,7 @@ document.addEventListener('DOMContentLoaded', () => {
       node.parentNode.replaceChild(frag, node);
     });
     if (firstMatch) firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window._kjrSetGuideSearchStatus(!firstMatch);
   };
 
   // Hook showPage so the guide renders the first time you open it

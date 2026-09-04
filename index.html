@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.42',
+    release: 'kujira-collectibles@3.43',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.42">
+<link rel="stylesheet" href="styles.css?v=3.43">
 </head>
 <body>
 
@@ -129,33 +129,33 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.42 (4 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.43 (4 Sep)</span>
     </div>
   </button>
   <nav class="nav">
-    <button class="nav-btn active" onclick="showPage('dashboard')">
+    <button class="nav-btn active" aria-label="Dashboard" onclick="showPage('dashboard')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
       <span>Dashboard</span>
     </button>
-    <button class="nav-btn" onclick="showPage('inventory')">
+    <button class="nav-btn" aria-label="Singles" onclick="showPage('inventory')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="16" y2="11"/><line x1="8" y1="15" x2="12" y2="15"/><rect x="6" y="4" width="5" height="5" rx="0.5" stroke-width="1.5"/></svg>
       <span>Singles</span>
     </button>
-    <button class="nav-btn" onclick="showPage('slabs')">
+    <button class="nav-btn" aria-label="Slabs" onclick="showPage('slabs')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="1" width="20" height="22" rx="2" stroke-width="2.5"/><rect x="5" y="4" width="14" height="16" rx="1" stroke-width="1.5"/><line x1="8" y1="8" x2="16" y2="8" stroke-width="1"/><line x1="8" y1="11" x2="16" y2="11" stroke-width="1"/><line x1="8" y1="14" x2="12" y2="14" stroke-width="1"/></svg>
       <span>Slabs</span>
     </button>
-    <button class="nav-btn" onclick="showPage('sales')">
+    <button class="nav-btn" aria-label="Sales" onclick="showPage('sales')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
       <span>Sales</span>
     </button>
-    <button class="nav-btn" onclick="showPage('ebay')">
+    <button class="nav-btn" aria-label="eBay" onclick="showPage('ebay')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18l-1.5 11a2 2 0 0 1-2 1.7H6.5a2 2 0 0 1-2-1.7L3 7z"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       <span>eBay</span>
     </button>
     <!-- More dropdown: Sealed (ETBs, Boxes & Packs) / Listings / Guide / Import / Changelog / Trash -->
     <div class="nav-dd" data-dd="more">
-      <button class="nav-btn nav-dd-trigger" type="button" onclick="toggleNavDD('more', event)">
+      <button class="nav-btn nav-dd-trigger" type="button" aria-label="More" onclick="toggleNavDD('more', event)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
         <span>More</span>
         <svg class="nav-dd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:11px;height:11px;margin-left:-2px"><polyline points="6 9 12 15 18 9"/></svg>
@@ -272,7 +272,7 @@
   </div>
   <div class="inv-stats" id="singles-stats"></div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="singles-search" oninput="renderSingles()" title='Search across name, set, language, type, condition, status, notes, dates. Numbers match ±$1 on any price; use &gt;50, &lt;100, &gt;=20 for ranges.'>
+    <input class="search-input" type="text" placeholder="Search" id="singles-search" aria-label="Search singles inventory" oninput="renderSingles()" title='Search across name, set, language, type, condition, status, notes, dates. Numbers match ±$1 on any price; use &gt;50, &lt;100, &gt;=20 for ranges.'>
     <div class="filters-wrap" id="fw-singles">
       <button class="btn btn-sm" onclick="toggleFiltersMenu('singles')" title="Filter by language, type and status">⚲ Filters<span class="filters-badge" id="filters-badge-singles"></span></button>
       <div class="filters-dropdown" id="fd-singles">
@@ -377,7 +377,7 @@
   <div class="section-title">Graded Slabs</div>
   <div class="inv-stats" id="slabs-stats"></div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="slabs-search" oninput="renderSlabs()" title='Search across name, grader, grade, cert, rank, notes. Numbers match ±$1 on any price; use &gt;100 / &lt;500 / &gt;=20 for ranges.'>
+    <input class="search-input" type="text" placeholder="Search" id="slabs-search" aria-label="Search graded slabs" oninput="renderSlabs()" title='Search across name, grader, grade, cert, rank, notes. Numbers match ±$1 on any price; use &gt;100 / &lt;500 / &gt;=20 for ranges.'>
     <div class="filters-wrap" id="fw-slabs">
       <button class="btn btn-sm" onclick="toggleFiltersMenu('slabs')" title="Filter by grader and grade">⚲ Filters<span class="filters-badge" id="filters-badge-slabs"></span></button>
       <div class="filters-dropdown" id="fd-slabs">
@@ -485,7 +485,7 @@
   <div id="sales-sub" style="display:none"></div>
   <div class="metrics" id="sales-metrics"></div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="sales-search" oninput="renderSales()" title='Search across product, buyer, dates. Numbers match ±$1 on cost/revenue/profit; use &lt;0 to find losses or &gt;100 for big sales.'>
+    <input class="search-input" type="text" placeholder="Search" id="sales-search" aria-label="Search sales history" oninput="renderSales()" title='Search across product, buyer, dates. Numbers match ±$1 on cost/revenue/profit; use &lt;0 to find losses or &gt;100 for big sales.'>
     <button class="btn btn-sm" id="clear-filters-sales" style="display:none" onclick="clearAllFilters('sales')" title="Clear search and column filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('sales')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-sales">
@@ -915,7 +915,8 @@
   <div class="guide-wrap">
     <aside class="guide-toc">
       <div class="guide-toc-title">Contents</div>
-      <input type="text" class="guide-search" id="guide-search" placeholder="Search guide..." oninput="kjrGuideSearch(this.value)">
+      <input type="text" class="guide-search" id="guide-search" aria-label="Search guide" placeholder="Search guide..." oninput="kjrGuideSearch(this.value)">
+      <div id="guide-search-status" class="guide-search-status" role="status" aria-live="polite" hidden></div>
       <div id="guide-toc-list"></div>
     </aside>
     <article class="guide-content" id="guide-content">
@@ -1344,7 +1345,7 @@
   <div style="margin-bottom:16px"></div>
   <div class="inv-stats" id="kjr-etb-stats"></div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="kjr-etb-search" oninput="renderEtbs()" title='Search across product, status, condition, dates, notes. Numbers match ±$1 on price; use &gt;50 / &lt;100 for ranges.'>
+    <input class="search-input" type="text" placeholder="Search" id="kjr-etb-search" aria-label="Search ETBs" oninput="renderEtbs()" title='Search across product, status, condition, dates, notes. Numbers match ±$1 on price; use &gt;50 / &lt;100 for ranges.'>
     <div class="filters-wrap" id="fw-etbs">
       <button class="btn btn-sm" onclick="toggleFiltersMenu('etbs')" title="Filter by status and condition">⚲ Filters<span class="filters-badge" id="filters-badge-etbs"></span></button>
       <div class="filters-dropdown" id="fd-etbs">
@@ -1416,7 +1417,7 @@
     <span id="kjr-bb-count-badge" style="font-size:11px;color:var(--text3)"></span>
   </div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="kjr-bb-search" oninput="renderBoosterBoxes()" title='Search across product, status, notes, dates. Numbers match ±$1 on price.'>
+    <input class="search-input" type="text" placeholder="Search" id="kjr-bb-search" aria-label="Search booster boxes" oninput="renderBoosterBoxes()" title='Search across product, status, notes, dates. Numbers match ±$1 on price.'>
     <div class="filters-wrap" id="fw-boosterBoxes">
       <button class="btn btn-sm" onclick="toggleFiltersMenu('boosterBoxes')" title="Filter by status">⚲ Filters<span class="filters-badge" id="filters-badge-boosterBoxes"></span></button>
       <div class="filters-dropdown" id="fd-boosterBoxes">
@@ -1527,7 +1528,7 @@
   <div class="section-title">eBay Purchases</div>
   <div class="inv-stats" id="kjr-ebay-stats"></div>
   <div class="toolbar">
-    <input class="search-input" type="text" placeholder="Search" id="kjr-ebay-search" oninput="renderEbayPurchases()" title='Search across product, status, tracking, dates. Numbers match ±$1 on USD/freight/total.'>
+    <input class="search-input" type="text" placeholder="Search" id="kjr-ebay-search" aria-label="Search eBay purchases" oninput="renderEbayPurchases()" title='Search across product, status, tracking, dates. Numbers match ±$1 on USD/freight/total.'>
     <div class="filters-wrap" id="fw-ebay">
       <button class="btn btn-sm" onclick="toggleFiltersMenu('ebay')" title="Filter by status">⚲ Filters<span class="filters-badge" id="filters-badge-ebay"></span></button>
       <div class="filters-dropdown" id="fd-ebay">
@@ -1690,7 +1691,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.42"></script>
-<script src="features.js?v=3.42"></script>
+<script src="app.js?v=3.43"></script>
+<script src="features.js?v=3.43"></script>
 </body>
 </html>

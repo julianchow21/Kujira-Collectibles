@@ -1186,6 +1186,7 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 .guide-content blockquote p:last-child{margin-bottom:0}
 .guide-search{width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:10px}
 .guide-search:focus{outline:none;border-color:var(--accent)}
+.guide-search-status{margin:0 0 10px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:12px;line-height:1.45}
 .guide-empty{padding:60px 20px;text-align:center;color:var(--text3)}
 .guide-toc-toggle-btn{display:none}
 @media(max-width:900px){

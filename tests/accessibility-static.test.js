@@ -20,3 +20,28 @@ test('static accessibility controls and modal labels', () => {
     }
   }
 });
+
+test('static accessibility: primary navigation and unlabelled searches have stable names', () => {
+  for (const [label, action] of [
+    ['Dashboard', "showPage('dashboard')"],
+    ['Singles', "showPage('inventory')"],
+    ['Slabs', "showPage('slabs')"],
+    ['Sales', "showPage('sales')"],
+    ['eBay', "showPage('ebay')"],
+    ['More', "toggleNavDD('more', event)"],
+  ]) {
+    assert.match(html, new RegExp(`<button class="nav-btn[^>]*aria-label="${label}"[^>]*onclick="${action.replace(/[()]/g, '\\$&')}"`));
+  }
+
+  for (const [id, label] of [
+    ['singles-search', 'Search singles inventory'],
+    ['slabs-search', 'Search graded slabs'],
+    ['sales-search', 'Search sales history'],
+    ['kjr-etb-search', 'Search ETBs'],
+    ['kjr-bb-search', 'Search booster boxes'],
+    ['kjr-ebay-search', 'Search eBay purchases'],
+    ['guide-search', 'Search guide'],
+  ]) {
+    assert.match(html, new RegExp(`<input[^>]*id="${id}"[^>]*aria-label="${label}"[^>]*>`));
+  }
+});

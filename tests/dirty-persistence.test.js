@@ -186,3 +186,72 @@ test('dirty-persistence: legacy v1 dirty rows upgrade after cache hydration with
   assert.strictEqual(operation.data.name, 'Legacy unsynced money edit');
   assert.strictEqual(operation.data.costPrice, 777);
 });
+
+test('dirty-persistence: snapshotless v2 marker materialises cached row bytes onto its original token', async () => {
+  const row = { id: 'snapshotless_cached', product: 'Cached unsynced ETB', costPrice: 321, status: 'In Stock' };
+  const token = 'older-tab:cached';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const marker = {
+    table: 'etbs', id: row.id, token, owner: 'older-tab', createdAt: 123,
+  };
+  const loaded = await loadApp({
+    seed: { singles: [], etbs: [row] },
+    localStorage: {
+      [markerKey]: JSON.stringify(marker),
+      pokeinv_dirty_v1: JSON.stringify({ etbs: [row.id] }),
+    },
+  });
+
+  const saved = JSON.parse(loaded.localStorage.getItem(markerKey));
+  assert.strictEqual(saved.token, token);
+  assert.strictEqual(saved.rowJson, JSON.stringify(row),
+    'post-hydration repair preserves the exact cached JSON on the original marker');
+  const matchingKeys = [];
+  for (let i = 0; i < loaded.localStorage.length; i++) {
+    const key = loaded.localStorage.key(i);
+    if (!key || !key.startsWith('pokeinv_dirty_v2:')) continue;
+    const candidate = JSON.parse(loaded.localStorage.getItem(key));
+    if (candidate.table === 'etbs' && candidate.id === row.id) matchingKeys.push(key);
+  }
+  assert.deepStrictEqual(matchingKeys, [markerKey], 'fresh startup does not mint a second marker');
+  const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.deepStrictEqual(legacy._revisions.etbs[row.id], [token]);
+});
+
+test('dirty-persistence: snapshotless v2 marker without a cached row stays quarantined without multiplying', async () => {
+  const id = 'snapshotless_missing';
+  const token = 'older-tab:missing';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'older-tab', createdAt: 456 });
+  const loaded = await loadApp({
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id] }),
+    },
+  });
+
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), markerRaw,
+    'the unrecoverable original marker is retained byte-for-byte');
+  const matchingKeys = [];
+  for (let i = 0; i < loaded.localStorage.length; i++) {
+    const key = loaded.localStorage.key(i);
+    if (!key || !key.startsWith('pokeinv_dirty_v2:')) continue;
+    const candidate = JSON.parse(loaded.localStorage.getItem(key));
+    if (candidate.table === 'singles' && candidate.id === id) matchingKeys.push(key);
+  }
+  assert.deepStrictEqual(matchingKeys, [markerKey], 'fresh startup does not mint a synthetic token or marker');
+  const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.deepStrictEqual(legacy._revisions.singles[id], [token]);
+  assert.ok(loaded.consoleWarnings.some(line => line.includes('has no recoverable row snapshot and remains pending')),
+    'the quarantined marker remains visible for review');
+
+  const reloaded = await loadApp({ seed: null, localStorage: copyStorage(loaded.localStorage) });
+  const repeatedKeys = [];
+  for (let i = 0; i < reloaded.localStorage.length; i++) {
+    const key = reloaded.localStorage.key(i);
+    if (!key || !key.startsWith('pokeinv_dirty_v2:')) continue;
+    const candidate = JSON.parse(reloaded.localStorage.getItem(key));
+    if (candidate.table === 'singles' && candidate.id === id) repeatedKeys.push(key);
+  }
+  assert.deepStrictEqual(repeatedKeys, [markerKey], 'repeated fresh startups retain one quarantined marker');
+});

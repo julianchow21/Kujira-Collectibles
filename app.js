@@ -1618,30 +1618,40 @@ function _listDirtyV2MarkerKeys() {
   } catch (_) { return null; }
 }
 
-function _orphanDirtyMarkerHasPendingRecovery(table, id) {
+function _orphanDirtyMarkerRecoveryStatus(table, id) {
   const groups = _readMutationGroups();
-  if (!groups) return true;
+  if (!groups) return { blocked: true, confirmedDeleted: false };
   for (const group of groups) {
     const plan = _mutationReplayPlan(group);
-    if (!plan) return true;
-    if (plan.some(({ op }) => op && op.table === table && op.id === id)) return true;
+    if (!plan) return { blocked: true, confirmedDeleted: false };
+    if (plan.some(({ op }) => op && op.table === table && op.id === id)) {
+      return { blocked: true, confirmedDeleted: false };
+    }
   }
 
   const deleteState = _readDeleteState();
-  if (!deleteState.valid) return true;
+  if (!deleteState.valid) return { blocked: true, confirmedDeleted: false };
   for (const entry of deleteState.state.pending) {
-    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') return true;
-    if (entry.table === table && entry.id === id) return true;
+    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') {
+      return { blocked: true, confirmedDeleted: false };
+    }
+    if (entry.table === table && entry.id === id) return { blocked: true, confirmedDeleted: false };
   }
+  let confirmedDeleted = false;
   for (const entry of deleteState.state.confirmed) {
-    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') return true;
+    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') {
+      return { blocked: true, confirmedDeleted: false };
+    }
     // A confirmed deletion is durable protective evidence for this same
     // tombstoned id, not a recoverable restore. Keep its record intact while
     // allowing the obsolete snapshotless upsert marker to settle. Any other
     // confirmed state might protect an active restore, so it blocks cleanup.
-    if (entry.table === table && entry.id === id && entry.state !== 'deleted') return true;
+    if (entry.table === table && entry.id === id) {
+      if (entry.state !== 'deleted') return { blocked: true, confirmedDeleted: false };
+      confirmedDeleted = true;
+    }
   }
-  return false;
+  return { blocked: false, confirmedDeleted };
 }
 
 function _readOrphanDirtyCache(marker) {
@@ -1677,10 +1687,14 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
 
   // A same-row marker, a later revision token, or any pending transaction
   // means this is not an abandoned orphan. Leave all of those states intact.
+  const recovery = _orphanDirtyMarkerRecoveryStatus(serverTable, marker.id);
   if (allMarkers.filter(candidate => candidate.table === marker.table && candidate.id === marker.id).length !== 1 ||
-      _orphanDirtyMarkerHasPendingRecovery(serverTable, marker.id)) return null;
+      recovery.blocked) return null;
   const cache = _readOrphanDirtyCache(marker);
-  if (!cache || cache.hasRow) return null;
+  // A current pull tombstone plus a matching confirmed deletion means the
+  // pre-pull cache row is already hidden by delete state. It cannot be a
+  // later UI edit, so it must not retain an otherwise abandoned marker.
+  if (!cache || (cache.hasRow && !recovery.confirmedDeleted)) return null;
 
   let markerRaw;
   let legacyRaw;

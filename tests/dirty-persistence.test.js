@@ -306,29 +306,66 @@ test('dirty-persistence: a current authenticated tombstone pull clears only a sn
   assert.ok(!reloaded.grab('DB').DB.singles.some(row => row.id === id), 'the tombstoned row stays absent after reload');
 });
 
-test('dirty-persistence: confirmed deleted state remains byte-for-byte while a current tombstone pull clears its orphan marker', async () => {
-  const id = 'confirmed_deleted_orphan';
-  const token = 'older-tab:confirmed-deleted';
-  const markerKey = 'pokeinv_dirty_v2:' + token;
+test('dirty-persistence: a current tombstone clears legacy hidden cache markers after confirmed deletes', async () => {
+  const singlesId = 's_f73519c7-72e3-43b7-8121-c2165dcf6e15';
+  const salesId = 'sale_243efe29-e69f-4165-b98a-815bb9773dbb';
+  const singlesToken = 'older-tab:confirmed-deleted-single';
+  const salesToken = 'older-tab:confirmed-deleted-sale';
+  const singlesMarkerKey = 'pokeinv_dirty_v2:' + singlesToken;
+  const salesMarkerKey = 'pokeinv_dirty_v2:' + salesToken;
   const confirmedDeletedRaw = JSON.stringify({
     schema: 2,
     revision: 'confirmed-delete-proof',
     pending: [],
-    confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'original-delete-token', state: 'deleted' }],
+    confirmed: [
+      { table: 'singles', id: singlesId, ts: 456, restoreToken: 'original-single-delete-token', state: 'deleted' },
+      { table: 'sales', id: salesId, ts: 457, restoreToken: 'original-sale-delete-token', state: 'deleted' },
+    ],
   });
   const loaded = await loadApp({
-    seed: null,
-    fetch: currentPullWith([{ table: 'singles', id, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+    seed: {
+      singles: [{ id: singlesId, name: 'Stale pre-delete cache row', status: 'Available' }],
+      sales: [{ id: salesId, product: 'Stale pre-delete cached sale' }],
+    },
+    fetch: currentPullWith([
+      { table: 'singles', id: singlesId, row_version: 22, deleted_at: '2026-09-04T00:00:00.000Z' },
+      { table: 'sales', id: salesId, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' },
+    ]),
     localStorage: {
-      [markerKey]: JSON.stringify(orphanMarker(id, token)),
+      [singlesMarkerKey]: JSON.stringify(orphanMarker(singlesId, singlesToken)),
+      [salesMarkerKey]: JSON.stringify({ ...orphanMarker(salesId, salesToken), table: 'sales' }),
       _kjrDeleteStateV2: confirmedDeletedRaw,
-      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      pokeinv_dirty_v1: JSON.stringify({
+        singles: [singlesId],
+        sales: [salesId],
+        _revisions: { singles: { [singlesId]: [singlesToken] }, sales: { [salesId]: [salesToken] } },
+      }),
     },
   });
 
-  assert.strictEqual(loaded.localStorage.getItem(markerKey), null);
+  assert.strictEqual(loaded.localStorage.getItem(singlesMarkerKey), null);
+  assert.strictEqual(loaded.localStorage.getItem(salesMarkerKey), null);
   assert.strictEqual(loaded.localStorage.getItem('_kjrDeleteStateV2'), confirmedDeletedRaw,
     'orphan cleanup must not rewrite or remove confirmed deletion evidence');
+  const { DB, _dirty } = loaded.grab('DB', '_dirty');
+  assert.ok(!DB.singles.some(row => row.id === singlesId));
+  assert.ok(!DB.sales.some(row => row.id === salesId));
+  assert.ok(!_dirty.singles.has(singlesId));
+  assert.ok(!_dirty.sales.has(salesId));
+
+  const reloaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([
+      { table: 'singles', id: singlesId, row_version: 22, deleted_at: '2026-09-04T00:00:00.000Z' },
+      { table: 'sales', id: salesId, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' },
+    ]),
+    localStorage: copyStorage(loaded.localStorage),
+  });
+  const reloadedState = reloaded.grab('DB', '_dirty');
+  assert.ok(!reloadedState.DB.singles.some(row => row.id === singlesId));
+  assert.ok(!reloadedState.DB.sales.some(row => row.id === salesId));
+  assert.ok(!reloadedState._dirty.singles.has(singlesId));
+  assert.ok(!reloadedState._dirty.sales.has(salesId));
 });
 
 test('dirty-persistence: cached or untombstoned snapshotless markers stay queued, including any marker with row bytes', async () => {

@@ -150,14 +150,318 @@ const LS_VERSION_KEY = 'pokeinventory_version'; // monotonic write counter
 // no other code changes.
 const USE_WORKER_DB    = true; // flipped 03/07/2026 - proxy verified by curl (200 + origin gate 403) before the flip
 const SB_DIRECT_URL    = 'https://eywncywatxtlqtrvxjsi.supabase.co';
-const SB_DB_PROXY_BASE = 'https://kujira-prices.julianchow21.workers.dev/db';
+const SB_WORKER_ORIGIN = 'https://kujira-prices.julianchow21.workers.dev';
+const SB_DB_PROXY_BASE = SB_WORKER_ORIGIN + '/db';
 // Anon key - only sent on the legacy (USE_WORKER_DB=false) path. Remove it once
 // the Worker path is verified and RLS denies anon (it will then be dead weight).
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5d25jeXdhdHh0bHF0cnZ4anNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjE0NjEsImV4cCI6MjA5Mzk5NzQ2MX0.3fB6T38Ra22nFu7tNaWoYVgi0JtGxw9_fVwM1rQMYLc';
 const SB_URL = USE_WORKER_DB ? SB_DB_PROXY_BASE : SB_DIRECT_URL;
-const SB_HDR = USE_WORKER_DB
-  ? { 'Content-Type': 'application/json' }
-  : { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+const SYNC_PROTOCOL = 2;
+const SYNC_PULL_URL = SB_WORKER_ORIGIN + '/sync/v2/pull';
+const SYNC_MUTATE_URL = SB_WORKER_ORIGIN + '/sync/v2/mutate';
+const KJR_AUTH_KEY = '_kjrOwnerSessionV1';
+const KJR_AUTH_CALLBACK_KEY = '_kjrAuthCallback';
+const KJR_OWNER_VERIFIED_KEY = '_kjrOwnerVerifiedV1';
+const KJR_AUTH_REDIRECT = 'https://julianchow21.github.io/Kujira-Collectibles/';
+const SB_HDR = { 'Content-Type': 'application/json' };
+let _kjrAuthSession = null;
+let _kjrRefreshPromise = null;
+let _kjrAuthCallbackFailed = false;
+let _kjrAuthGeneration = 0;
+
+function _kjrSessionShape(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.access_token !== 'string' || typeof value.refresh_token !== 'string') return null;
+  const expiresAt = Number(value.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  const clean = { access_token: value.access_token, refresh_token: value.refresh_token, expires_at: expiresAt };
+  if (typeof value.user_id === 'string' && value.user_id) clean.user_id = value.user_id;
+  if (typeof value.session_id === 'string' && value.session_id) clean.session_id = value.session_id;
+  return clean;
+}
+
+function _kjrReadSession() {
+  try { return _kjrSessionShape(JSON.parse(localStorage.getItem(KJR_AUTH_KEY) || 'null')); }
+  catch (_) { return null; }
+}
+
+function _kjrSaveSession(value, generation) {
+  if (Number.isSafeInteger(generation) && generation !== _kjrAuthGeneration) return false;
+  const clean = _kjrSessionShape(value);
+  if (!clean) return false;
+  try {
+    localStorage.setItem(KJR_AUTH_KEY, JSON.stringify(clean));
+    if (Number.isSafeInteger(generation) && generation !== _kjrAuthGeneration) {
+      localStorage.removeItem(KJR_AUTH_KEY);
+      return false;
+    }
+    _kjrAuthSession = clean;
+    SB_HDR.Authorization = 'Bearer ' + clean.access_token;
+    return true;
+  } catch (_) { return false; }
+}
+
+function _kjrReadOwnerVerified() {
+  try {
+    const value = JSON.parse(localStorage.getItem(KJR_OWNER_VERIFIED_KEY) || 'null');
+    return value && typeof value.user_id === 'string' && typeof value.session_id === 'string' ? value : null;
+  } catch (_) { return null; }
+}
+
+function _kjrOwnerVerifiedFor(session) {
+  const marker = _kjrReadOwnerVerified();
+  return !!marker && !!session && marker.user_id === session.user_id && marker.session_id === session.session_id;
+}
+
+function _kjrWriteOwnerVerified(session, generation) {
+  if (generation !== _kjrAuthGeneration || !session || !session.user_id || !session.session_id) return false;
+  try {
+    const raw = JSON.stringify({ user_id: session.user_id, session_id: session.session_id });
+    localStorage.setItem(KJR_OWNER_VERIFIED_KEY, raw);
+    return generation === _kjrAuthGeneration && localStorage.getItem(KJR_OWNER_VERIFIED_KEY) === raw;
+  } catch (_) { return false; }
+}
+
+function _kjrClearSession(clearOwnerVerified) {
+  _kjrAuthGeneration += 1;
+  _kjrAuthSession = null;
+  delete SB_HDR.Authorization;
+  try { localStorage.removeItem(KJR_AUTH_KEY); } catch (_) {}
+  if (clearOwnerVerified) {
+    try { localStorage.removeItem(KJR_OWNER_VERIFIED_KEY); } catch (_) {}
+  }
+}
+
+function _kjrSetAuthGate(active) {
+  const gate = document.getElementById('kjr-auth-gate');
+  document.documentElement.classList.toggle('auth-gated', !!active);
+  if (gate) gate.hidden = !active;
+  if (!document.body) return;
+  for (const child of document.body.children) {
+    if (child === gate) continue;
+    if (active) child.setAttribute('inert', '');
+    else child.removeAttribute('inert');
+  }
+}
+
+function _kjrHideOwnerData() {
+  _syncPullPromise = null;
+  _syncPullLoaded = false;
+  _serverTombstones = [];
+  _versionsCache = null;
+  if (typeof DB === 'object' && DB) {
+    ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases', 'trash']
+      .forEach(key => { DB[key] = []; });
+  }
+}
+
+function _kjrExpireOwnerSession(clearOwnerVerified) {
+  _kjrClearSession(!!clearOwnerVerified);
+  _kjrHideOwnerData();
+  _kjrSetAuthGate(true);
+  _kjrShowAuthState('kjr-auth-expired');
+}
+
+function _kjrAuthHeaders(token) {
+  return { 'Content-Type': 'application/json', apikey: SB_KEY, Authorization: 'Bearer ' + token };
+}
+
+function _kjrShowAuthState(id, message) {
+  const gate = document.getElementById('kjr-auth-gate');
+  if (!gate) return;
+  _kjrSetAuthGate(true);
+  gate.setAttribute('aria-busy', id === 'kjr-auth-loading' ? 'true' : 'false');
+  gate.querySelectorAll('.kjr-auth-state').forEach(el => { el.hidden = el.id !== id; });
+  const copy = document.getElementById('kjr-auth-error-copy');
+  if (copy && message) copy.textContent = message;
+  setTimeout(() => {
+    const state = document.getElementById(id);
+    const target = state && state.querySelector('[data-auth-focus]');
+    if (target && typeof target.focus === 'function') target.focus();
+  }, 0);
+}
+
+function kjrShowAuthForm() {
+  _kjrShowAuthState('kjr-auth-form');
+}
+
+async function kjrRequestMagicLink(event) {
+  if (event) event.preventDefault();
+  const email = String((document.getElementById('kjr-auth-email') || {}).value || '').trim();
+  if (!email) return;
+  const button = document.getElementById('kjr-auth-submit');
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(SB_DIRECT_URL + '/auth/v1/otp?redirect_to=' + encodeURIComponent(KJR_AUTH_REDIRECT), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SB_KEY },
+      body: JSON.stringify({ email, create_user: false }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error('request_failed');
+    _kjrShowAuthState('kjr-auth-sent');
+  } catch (_) {
+    _kjrShowAuthState('kjr-auth-error', 'The sign-in email could not be sent. Check your connection and try again.');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function _kjrSessionFromCallback() {
+  _kjrAuthCallbackFailed = false;
+  let raw = '';
+  try {
+    raw = sessionStorage.getItem(KJR_AUTH_CALLBACK_KEY) || '';
+    sessionStorage.removeItem(KJR_AUTH_CALLBACK_KEY);
+  } catch (_) {}
+  if (!raw) return null;
+  const p = new URLSearchParams(raw);
+  if (p.get('error') || p.get('error_description') || p.get('type') !== 'magiclink') {
+    _kjrAuthCallbackFailed = true;
+    return null;
+  }
+  const expiresIn = Number(p.get('expires_in'));
+  return _kjrSessionShape({
+    access_token: p.get('access_token'),
+    refresh_token: p.get('refresh_token'),
+    expires_at: Number(p.get('expires_at')) || Math.floor(Date.now() / 1000) + (Number.isFinite(expiresIn) ? expiresIn : 3600),
+    session_id: _newMutationId()
+  });
+}
+
+async function _kjrRefreshSessionOnce(session) {
+  const r = await fetch(SB_DIRECT_URL + '/auth/v1/token?grant_type=refresh_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SB_KEY },
+    body: JSON.stringify({ refresh_token: session.refresh_token }),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!r.ok) return null;
+  const body = await r.json().catch(() => null);
+  if (!body || typeof body !== 'object' || typeof body.access_token !== 'string' ||
+      typeof body.refresh_token !== 'string' || !Number.isFinite(Number(body.expires_in)) ||
+      Number(body.expires_in) <= 0) return null;
+  return _kjrSessionShape({
+    access_token: body.access_token,
+    refresh_token: body.refresh_token,
+    expires_at: Math.floor(Date.now() / 1000) + Number(body.expires_in),
+    user_id: session.user_id,
+    session_id: session.session_id
+  });
+}
+
+function _kjrRefreshSession(session, generation) {
+  const expectedGeneration = Number.isSafeInteger(generation) ? generation : _kjrAuthGeneration;
+  const sessionId = session && session.session_id;
+  if (_kjrRefreshPromise) {
+    if (_kjrRefreshPromise.generation === expectedGeneration && _kjrRefreshPromise.sessionId === sessionId) {
+      return _kjrRefreshPromise.promise;
+    }
+    return Promise.resolve(null);
+  }
+  const promise = _kjrRefreshSessionOnce(session)
+    .then(fresh => expectedGeneration === _kjrAuthGeneration ? fresh : null)
+    .finally(() => {
+      if (_kjrRefreshPromise && _kjrRefreshPromise.promise === promise) _kjrRefreshPromise = null;
+    });
+  _kjrRefreshPromise = { generation: expectedGeneration, sessionId, promise };
+  return promise;
+}
+
+async function _kjrValidateSession(session) {
+  const r = await fetch(SB_DIRECT_URL + '/auth/v1/user', {
+    headers: _kjrAuthHeaders(session.access_token),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (r.ok) {
+    const body = await r.json().catch(() => null);
+    if (body && typeof body === 'object' && typeof body.id === 'string' && body.id) return body.id;
+    throw new Error('invalid_auth_response');
+  }
+  if (r.status === 401) throw new Error('owner_session_expired');
+  if (r.status === 403) throw new Error('owner_forbidden');
+  throw new Error('auth_unavailable');
+}
+
+function _kjrScheduleRefresh(generation, sessionId) {
+  if (!_kjrAuthSession) return;
+  const expectedGeneration = Number.isSafeInteger(generation) ? generation : _kjrAuthGeneration;
+  const expectedSessionId = sessionId || _kjrAuthSession.session_id;
+  const delay = Math.max(30000, Math.min(2147483647, (_kjrAuthSession.expires_at * 1000) - Date.now() - 60000));
+  setTimeout(async () => {
+    if (expectedGeneration !== _kjrAuthGeneration || !_kjrAuthSession ||
+        _kjrAuthSession.session_id !== expectedSessionId) return;
+    try {
+      const fresh = await _kjrRefreshSession(_kjrAuthSession, expectedGeneration);
+      if (!fresh || !_kjrSaveSession(fresh, expectedGeneration)) throw new Error('refresh_failed');
+      _kjrScheduleRefresh(expectedGeneration, expectedSessionId);
+    } catch (_) {
+      if (expectedGeneration === _kjrAuthGeneration) _kjrExpireOwnerSession(false);
+    }
+  }, delay);
+}
+
+async function kjrAuthBoot() {
+  const gate = document.getElementById('kjr-auth-gate');
+  if (!gate || gate.tagName !== 'SECTION') return true;
+  const generation = _kjrAuthGeneration;
+  _kjrShowAuthState('kjr-auth-loading');
+  const callbackSession = _kjrSessionFromCallback();
+  if (_kjrAuthCallbackFailed) {
+    _kjrShowAuthState('kjr-auth-expired');
+    return false;
+  }
+  let session = callbackSession || _kjrReadSession();
+  if (!session) { kjrShowAuthForm(); return false; }
+  if (!session.session_id) session.session_id = _newMutationId();
+  try {
+    if (session.expires_at <= Math.floor(Date.now() / 1000) + 60) session = await _kjrRefreshSession(session, generation);
+    if (!session || generation !== _kjrAuthGeneration) throw new Error('expired');
+    let userId = null;
+    try {
+      userId = await _kjrValidateSession(session);
+    } catch (error) {
+      const offlineReopen = !callbackSession && error.message === 'auth_unavailable' &&
+        typeof navigator !== 'undefined' && navigator.onLine === false && _kjrOwnerVerifiedFor(session);
+      if (!offlineReopen) throw error;
+      if (!_kjrSaveSession(session, generation)) throw new Error('storage');
+      _kjrSetAuthGate(false);
+      _kjrScheduleRefresh(generation, session.session_id);
+      return true;
+    }
+    session.user_id = userId;
+    if (!_kjrSaveSession(session, generation)) throw new Error('storage');
+    await _pullSyncState();
+    if (generation !== _kjrAuthGeneration) throw new Error('expired');
+    if (!_kjrWriteOwnerVerified(session, generation)) throw new Error('storage');
+    _kjrSetAuthGate(false);
+    _kjrScheduleRefresh(generation, session.session_id);
+    return true;
+  } catch (error) {
+    const forbidden = error && error.message === 'owner_forbidden';
+    if (generation === _kjrAuthGeneration) _kjrClearSession(forbidden);
+    if (error && error.message === 'auth_unavailable') {
+      _kjrShowAuthState('kjr-auth-error', 'Your sign-in link could not be verified. Check your connection and try again.');
+    } else {
+      _kjrShowAuthState('kjr-auth-expired');
+    }
+    return false;
+  }
+}
+
+async function kjrSignOut() {
+  const session = _kjrAuthSession;
+  const logout = session
+    ? fetch(SB_DIRECT_URL + '/auth/v1/logout?scope=local', {
+      method: 'POST', headers: _kjrAuthHeaders(session.access_token), signal: AbortSignal.timeout(10000)
+    }).catch(() => undefined)
+    : Promise.resolve();
+  _kjrClearSession(true);
+  _kjrHideOwnerData();
+  _kjrSetAuthGate(true);
+  kjrShowAuthForm();
+  await logout;
+}
 
 // ── KJR: table-name translator (Supabase ↔ DB key) ──────────────
 const TABLE_TO_DB_KEY = {
@@ -200,6 +504,24 @@ function genId(prefix) {
   } catch(_) {}
   if (!entropy) entropy = Math.random().toString(36).slice(2, 12);
   return prefix + '_' + Date.now().toString(36) + '_' + _kjrFallbackIdCounter.toString(36) + '_' + entropy;
+}
+
+function _newMutationId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch (_) {}
+  const bytes = new Uint8Array(16);
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
+    else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  } catch (_) {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' +
+    hex.slice(16, 20) + '-' + hex.slice(20);
 }
 
 // Supabase has no awareness of the order in which browser promises were
@@ -273,99 +595,94 @@ function hideSyncProgress() {
   if (bar) { bar.style.opacity = '0'; bar.style.transition = 'opacity 0.4s'; setTimeout(() => bar.remove(), 400); }
 }
 
-// ── Supabase: the server owns `updated_at` ───────────────────
-// The client NEVER sends updated_at. Postgres writes it (column default now()
-// plus a BEFORE INSERT OR UPDATE trigger, so no caller can spoof it) and the
-// write asks for the row back, so we stamp the SERVER value onto the in-memory
-// row. Both sides of the conflict check in mergeTable then sit on one clock,
-// the database's. Before this, a device running fast wrote a future timestamp
-// and its stale edit beat a genuinely newer edit from the other device.
-//
-// Both writes carry `Prefer: resolution=merge-duplicates, return=representation`
-// (PostgREST reads a comma-separated Prefer list) plus `select=updated_at`, the
-// documented vertical filter on the returned representation - so the response
-// body is just the timestamps, not a full copy of every row written.
-const _SB_UPSERT_PREFER = 'resolution=merge-duplicates, return=representation';
-
-// Pulls the authoritative timestamp out of a PostgREST representation body.
-// now() is the transaction timestamp, so every row of one upsert shares it,
-// max() is belt-and-braces in case that ever stops being true.
-function _serverUpdatedAt(body) {
-  const rows = Array.isArray(body) ? body : (body ? [body] : []);
-  let best = null, bestMs = -1;
-  for (const row of rows) {
-    const v = row && row.updated_at;
-    if (!v) continue;
-    const ms = new Date(v).getTime();
-    if (!isNaN(ms) && ms > bestMs) { bestMs = ms; best = v; }
+// ── Authenticated CAS sync ───────────────────────────────────
+// Only the Worker may mutate database rows. Internal client fields never enter
+// the stored JSON data, and every write names the server version it read.
+function _stripInternalData(item) {
+  const data = {};
+  for (const [key, value] of Object.entries(item || {})) {
+    if (key === 'id' || key.startsWith('_')) continue;
+    data[key] = value;
   }
-  return best;
-}
-// Degraded path only (body missing or unparseable, e.g. an intermediary that
-// strips Prefer). Falling back to the client clock keeps the OLD behaviour,
-// imperfect but strictly better than returning null: an unstamped row keeps a
-// stale base _updatedAt, and mergeTable then reads the next local edit as a
-// fake conflict and discards it (B1).
-async function _readServerTs(resp, label) {
-  let ts = null;
-  try { ts = _serverUpdatedAt(await resp.json()); } catch(e) { console.warn('[sync] response body was not JSON for ' + label + ':', e); }
-  if (!ts) {
-    ts = new Date().toISOString();
-    console.warn('[sync] no server updated_at came back for ' + label + ' - fell back to the client clock');
-  }
-  return ts;
+  return JSON.parse(JSON.stringify(data));
 }
 
-// ── Supabase: BATCH upsert (single request for all records) ──
-// Returns the SERVER `updated_at` for this batch (or null on the preview-guard
-// / empty-input paths) so callers can stamp it back onto the in-memory rows -
-// without this, DB rows keep their stale base _updatedAt and mergeTable later
-// misreads the next local edit as a fake conflict (B1).
-async function sbBatchUpsert(table, items) {
-  if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
-  if (!items.length) return null;
+function _upsertOperation(table, item) {
+  return {
+    type: 'upsert',
+    table,
+    id: String(item.id),
+    expected_version: Number.isSafeInteger(item._serverVersion) ? item._serverVersion : 0,
+    data: _stripInternalData(item)
+  };
+}
+
+function _validSyncResult(result) {
+  return result && typeof result === 'object' && ['upsert', 'delete', 'restore'].includes(result.type) &&
+    [...SYNCED_TABLES, 'trash', 'versions'].includes(result.table) && typeof result.id === 'string' &&
+    Number.isSafeInteger(result.row_version) && result.row_version >= 1;
+}
+
+function _validConflict(conflict) {
+  return conflict && typeof conflict === 'object' && [...SYNCED_TABLES, 'trash', 'versions'].includes(conflict.table) &&
+    typeof conflict.id === 'string' &&
+    (conflict.current === null || (typeof conflict.current === 'object' &&
+      conflict.current.id === conflict.id && conflict.current.data && typeof conflict.current.data === 'object' &&
+      !Array.isArray(conflict.current.data) && Number.isSafeInteger(conflict.current.row_version) && conflict.current.row_version >= 1)) &&
+    (conflict.tombstone === null || (typeof conflict.tombstone === 'object' &&
+      conflict.tombstone.table === conflict.table && conflict.tombstone.id === conflict.id &&
+      Number.isSafeInteger(conflict.tombstone.row_version) && conflict.tombstone.row_version >= 1));
+}
+
+async function _syncMutate(operations, mutationId) {
+  if (isLocalhostPreview()) return { ok: true, skipped: true, mutation_id: mutationId, results: [] };
+  if (!_kjrAuthSession || !SB_HDR.Authorization) throw new Error('owner_session_required');
+  const generation = _kjrAuthGeneration;
+  const sessionId = _kjrAuthSession.session_id;
+  const payload = { client_protocol: SYNC_PROTOCOL, mutation_id: mutationId || _newMutationId(), operations };
+  const r = await fetch(SYNC_MUTATE_URL, {
+    method: 'POST', headers: { ...SB_HDR }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20000)
+  });
+  if (generation !== _kjrAuthGeneration || !_kjrAuthSession || _kjrAuthSession.session_id !== sessionId) {
+    throw new Error('owner_session_changed');
+  }
+  const body = await r.json().catch(() => null);
+  if (r.status === 401 || r.status === 403) {
+    _kjrExpireOwnerSession(r.status === 403);
+    throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
+  }
+  if (!body || typeof body !== 'object') throw new Error('invalid_sync_response');
+  if (body.ok === false && body.code === 'version_conflict' && Array.isArray(body.conflicts) && body.conflicts.every(_validConflict)) {
+    return { ok: false, code: 'version_conflict', mutation_id: payload.mutation_id, conflicts: body.conflicts };
+  }
+  if (!r.ok || body.ok !== true || body.mutation_id !== payload.mutation_id ||
+      !Array.isArray(body.results) || !body.results.every(_validSyncResult)) {
+    throw new Error('sync_request_failed');
+  }
+  return { ok: true, mutation_id: body.mutation_id, results: body.results };
+}
+
+async function sbBatchUpsert(table, items, mutationQueueEpoch) {
+  if (isLocalhostPreview()) return { ok: true, skipped: true, results: [] };
+  if (!items.length) return { ok: true, results: [] };
   if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
-  // Clone before the first await. Callers may mutate the live DB objects while
-  // this operation waits behind an older write, but the request must contain
-  // the exact state that its dirty revision represents.
+  if (mutationQueueEpoch !== undefined && mutationQueueEpoch !== _mutationQueueEpoch) throw new Error('mutation_queue_changed');
   const snapshot = items.map(item => JSON.parse(JSON.stringify(item)));
   return _queueCloudRowOp(table, snapshot.map(item => item.id), async () => {
-    // State can become corrupt while this batch waits behind an older row
-    // operation. Recheck at dispatch so no stale snapshot crosses the wire.
     if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
-    const rows = snapshot.map(item => {
-      const { id, ...data } = item;
-      return { id, data };
-    });
-    const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
-      body: JSON.stringify(rows),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error('Batch upsert failed: ' + await r.text());
-    return await _readServerTs(r, 'batch upsert on ' + table);
+    if (mutationQueueEpoch !== undefined && mutationQueueEpoch !== _mutationQueueEpoch) throw new Error('mutation_queue_changed');
+    return _syncMutate(snapshot.map(item => _upsertOperation(table, item)), _newMutationId());
   });
 }
 
-// ── Supabase: single upsert (for individual edits/adds) ──────
-// Returns the SERVER `updated_at` written (or null if the preview guard skipped
-// the write) - see sbBatchUpsert for why callers must stamp this back.
 async function sbUpsert(table, id, data) {
-  if (isLocalhostPreview()) { return null; } // never write to prod from a local preview
+  if (isLocalhostPreview()) return null;
   if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
-  const snapshot = JSON.parse(JSON.stringify(data));
+  const snapshot = { id, ...JSON.parse(JSON.stringify(data)) };
   try {
     return await _queueCloudRowOp(table, [id], async () => {
       if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
-      const r = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=id&select=updated_at', {
-        method: 'POST',
-        headers: { ...SB_HDR, 'Prefer': _SB_UPSERT_PREFER },
-        body: JSON.stringify({ id, data: snapshot }),
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!r.ok) throw new Error(await r.text());
-      return await _readServerTs(r, table + '/' + id);
+      return _syncMutate([_upsertOperation(table, snapshot)], _newMutationId());
     });
   } catch(e) { setSyncStatus('error', e.message); throw e; }
 }
@@ -567,6 +884,15 @@ async function _preflightSourceDeletes(sources) {
   for (const source of sources) {
     const table = _tblName(source.table);
     for (const row of (source.rows || [])) {
+      if (!isLocalhostPreview() && !_pendingTrashForSource(table, row.id)) {
+        const entry = {
+          id: genId('trash'),
+          data: { originalTable: _dbKey(table), originalId: row.id, item: JSON.parse(JSON.stringify(row)),
+            reason: 'replacement', deletedAt: new Date().toISOString() },
+          updated_at: new Date().toISOString()
+        };
+        if (!_queuePendingTrash(entry)) return null;
+      }
       targets.push({ table, id: row.id, restoreToken: row._restoreToken || '' });
     }
   }
@@ -659,7 +985,8 @@ function _deleteBlocksRow(table, row) {
 }
 function _withoutPendingDeletes(table, rows) {
   if (!Array.isArray(rows)) return [];
-  return rows.filter(row => !_deleteBlocksRow(table, row));
+  const tombstoned = new Set((_serverTombstones || []).filter(item => item.table === table).map(item => item.id));
+  return rows.filter(row => !tombstoned.has(row.id) && !_deleteBlocksRow(table, row));
 }
 
 function _confirmDeleteLocally(table, id, ts, restoreToken) {
@@ -763,26 +1090,111 @@ async function _prepareExplicitRowRestores(_currentState, nextState, _mode) {
 }
 
 async function _prepareReplacementSafety(nextState, deleteTargets) {
+  if (isLocalhostPreview()) return true;
   const candidates = _explicitRestoreCandidates(nextState);
   let applied = null;
   try {
     applied = await _queueDeleteStateOp(() => {
-      const current = _readDeleteState();
-      if (!current.valid) return null;
-      const active = _activeExplicitRestores(candidates, current.state.pending, current.state.confirmed);
-      const next = _stateAfterExplicitRestores(current.state.pending, current.state.confirmed, active);
-      for (const target of deleteTargets) {
-        if (!next.pending.some(item => item && item.table === target.table && item.id === target.id)) {
-          next.pending.push({
-            table: target.table,
-            id: target.id,
-            ts: Date.now(),
-            restoreToken: target.restoreToken || '',
-          });
+      const touchedKeys = [PENDING_TRASH_KEY, DELETE_STATE_V2_KEY, PENDING_DEL_KEY, CONFIRMED_DEL_KEY];
+      const before = new Map();
+      for (const key of touchedKeys) before.set(key, localStorage.getItem(key));
+      const restorePreviousBytes = () => {
+        let restored = true;
+        for (const key of touchedKeys) {
+          try {
+            const raw = before.get(key);
+            if (raw === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, raw);
+            if (localStorage.getItem(key) !== raw) restored = false;
+          } catch (_) { restored = false; }
         }
+        return restored;
+      };
+
+      try {
+        const current = _readDeleteState();
+        if (!current.valid) throw new Error('delete_state_unavailable');
+        const active = _activeExplicitRestores(candidates, current.state.pending, current.state.confirmed);
+        const next = _stateAfterExplicitRestores(current.state.pending, current.state.confirmed, active);
+        const plans = [];
+        const newTrashEntries = [];
+
+        for (const target of deleteTargets) {
+          if (!target || !SYNCED_TABLES.includes(target.table) || typeof target.id !== 'string' || !target.id) {
+            throw new Error('invalid_replace_delete_target');
+          }
+          const expectedToken = target.restoreToken || '';
+          const existingMarker = next.pending.find(item => item && item.table === target.table && item.id === target.id);
+          if (existingMarker && (existingMarker.restoreToken || '') !== expectedToken) {
+            throw new Error('replace_delete_token_mismatch');
+          }
+
+          const key = _dbKey(target.table);
+          const source = Array.isArray(DB[key]) ? DB[key].find(row => row && row.id === target.id) : null;
+          if (!source) throw new Error('replace_source_missing');
+          let trashEntry = _pendingTrashForSource(target.table, target.id);
+          if (trashEntry) {
+            if (typeof trashEntry.id !== 'string' || !trashEntry.id ||
+                !trashEntry.data || Array.isArray(trashEntry.data) || trashEntry.data.originalId !== target.id ||
+                _tblName(trashEntry.data.originalTable) !== target.table ||
+                !trashEntry.data.item || typeof trashEntry.data.item !== 'object' ||
+                Array.isArray(trashEntry.data.item) || trashEntry.data.item.id !== target.id) {
+              throw new Error('invalid_replace_trash_snapshot');
+            }
+          } else {
+            const deletedAt = new Date().toISOString();
+            trashEntry = {
+              id: genId('trash'),
+              data: {
+                originalTable: key,
+                originalId: target.id,
+                item: JSON.parse(JSON.stringify(source)),
+                reason: 'replacement',
+                deletedAt,
+              },
+              updated_at: deletedAt,
+            };
+            newTrashEntries.push(trashEntry);
+          }
+          plans.push({ target, trashEntry });
+
+          if (!existingMarker) {
+            next.pending.push({
+              table: target.table,
+              id: target.id,
+              ts: Date.now(),
+              restoreToken: expectedToken,
+            });
+          }
+        }
+
+        // The recoverable snapshot must exist before its destructive marker.
+        // If the marker write then fails, the exact prior pending state is
+        // restored below before Replace is allowed to touch inventory.
+        if (newTrashEntries.length && !_queuePendingTrashBatch(newTrashEntries)) {
+          throw new Error('replace_trash_snapshot_unavailable');
+        }
+        const savedTrash = _readPendingTrashEntries().concat(Array.isArray(DB.trash) ? DB.trash : []);
+        if (!plans.every(plan => savedTrash.some(entry => entry && entry.id === plan.trashEntry.id &&
+            JSON.stringify(entry) === JSON.stringify(plan.trashEntry)))) {
+          throw new Error('replace_trash_snapshot_unverified');
+        }
+
+        if (!_commitDeleteStateV2(next)) throw new Error('replace_delete_marker_unavailable');
+        const savedState = _readDeleteState();
+        if (!savedState.valid || !plans.every(({ target }) => savedState.state.pending.some(item => item &&
+            item.table === target.table && item.id === target.id &&
+            (item.restoreToken || '') === (target.restoreToken || '')))) {
+          throw new Error('replace_delete_marker_unverified');
+        }
+        return active;
+      } catch (error) {
+        if (!restorePreviousBytes()) {
+          console.error('[replace] pending recovery state rollback failed:', error);
+          setSyncStatus('error', 'Replace recovery state needs repair');
+        }
+        throw error;
       }
-      if (!_commitDeleteStateV2(next)) return null;
-      return active;
     });
   } catch(e) {
     console.warn('Replace safety state could not be saved:', e);
@@ -797,69 +1209,10 @@ async function flushPendingDeletes() {
   if (isLocalhostPreview()) { return; } // never write to prod from a local preview
   const initial = _readDeleteState();
   if (!initial.valid || !initial.state.pending.length) return;
-  const list = initial.state.pending;
-  const stillPending = [];
-  const completed = [];
-  let removedCount = 0;
-  for (const item of list) {
-    try {
-      const r = await _queueCloudRowOp(item.table, [item.id], () => {
-        // A restore may cancel this retry while it waits behind a prior row
-        // operation. Recheck inside the lock before issuing the DELETE.
-        if (!_pendingDeleteStillQueued(item)) return null;
-        return fetch(SB_URL + '/rest/v1/' + item.table + '?id=eq.' + encodeURIComponent(item.id), {
-          method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-        });
-      });
-      if (!r) continue;
-      if (!r.ok) throw new Error(await r.text());
-      const confirmation = await _queueDeleteStateOp(() => {
-        // The DELETE response can arrive after an explicit restore cancelled
-        // this exact queued attempt. Cancellation wins, so never let a stale
-        // success evict the restored row or overwrite its restore marker.
-        if (!_pendingDeleteStillQueued(item)) return 'cancelled';
-        return _confirmDeleteLocally(item.table, item.id, item.ts, item.restoreToken) ? 'confirmed' : 'failed';
-      });
-      if (confirmation === 'cancelled') continue;
-      if (confirmation !== 'confirmed') {
-        throw new Error('confirmed delete could not be saved locally');
-      }
-      completed.push(item);
-    } catch(e) {
-      // A failed delete remains a live data-integrity obligation regardless
-      // of age. Old failures are surfaced, never discarded or counted as
-      // cleared, because the cloud row can otherwise resurrect on reload.
-      stillPending.push(item);
-      if (Date.now() - (item.ts || 0) >= 7 * 86400 * 1000) {
-        console.warn('[Cloud] pending delete is over 7 days old and will keep retrying:', item.table + '/' + item.id, e.message);
-      }
-    }
+  for (const item of initial.state.pending) {
+    if (!_pendingDeleteStillQueued(item)) continue;
+    await sbDelete(item.table, item.id, item.restoreToken);
   }
-  try {
-    // Re-read after the awaits so a delete queued by another tab during this
-    // flush is preserved. Remove only the exact timestamped attempts that
-    // this run confirmed, never a newer delete for the same row.
-    await _queueDeleteStateOp(() => {
-      const current = _readDeleteState();
-      if (!current.valid) return false;
-      const latest = current.state.pending;
-      const wasCompleted = candidate => completed.some(item =>
-        item.table === candidate.table && item.id === candidate.id && (item.ts || 0) === (candidate.ts || 0)
-      );
-      const remaining = latest.filter(item => !wasCompleted(item));
-      if (!_commitDeleteStateV2({ pending: remaining, confirmed: current.state.confirmed })) return false;
-      removedCount = latest.length - remaining.length;
-      return true;
-    });
-  } catch(e) {
-    // Data integrity: if this write-back fails the old (pre-flush) pending
-    // list survives untouched, so already-cleared deletes just get retried
-    // again next run - wasteful but not lossy. Still surface it once, a
-    // wholesale localStorage failure here usually means quota exhaustion.
-    console.error('[queue] pending-delete write-back failed:', e);
-    warnOnce('pending-del-writeback', 'Delete queue could not save. Retries may repeat next session.');
-  }
-  if (removedCount > 0) console.info('[Cloud] Cleared ' + removedCount + ' pending delete(s) from previous session(s)');
 }
 
 // Persistent retry queue for TRASH writes that failed (offline, 5xx).
@@ -889,51 +1242,44 @@ function _queuePendingTrashBatch(entries) {
 
 function _queuePendingTrash(entry) { return _queuePendingTrashBatch([entry]); }
 
+function _readPendingTrashEntries() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(PENDING_TRASH_KEY) || '[]');
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
+}
+
+function _pendingTrashForSource(table, id) {
+  const rows = _readPendingTrashEntries().concat(DB && Array.isArray(DB.trash) ? DB.trash : []);
+  return rows.find(entry => entry && entry.data &&
+    _tblName(entry.data.originalTable) === table && entry.data.originalId === id) || null;
+}
+
+function _removePendingTrashEntry(id) {
+  try {
+    const remaining = _readPendingTrashEntries().filter(entry => entry && entry.id !== id);
+    localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(remaining));
+    return true;
+  } catch (_) { return false; }
+}
+
 async function flushPendingTrash() {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
-  let list;
-  try { list = JSON.parse(localStorage.getItem(PENDING_TRASH_KEY) || '[]'); }
-  catch { return; }
-  if (!Array.isArray(list) || !list.length) return;
-  const stillPending = [];
-  for (const entry of list) {
-    try {
-      const r = await fetch(SB_URL + '/rest/v1/trash', {
-        method: 'POST',
-        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify(entry),
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!r.ok) throw new Error(await r.text());
-    } catch(e) {
-      // Keep retrying for the full 30-day trash retention window. Dropping
-      // sooner would silently discard the only remaining copy of the item.
-      const ts = new Date(entry.data?.deletedAt || entry.updated_at || 0).getTime();
-      if (Date.now() - ts < 30 * 86400 * 1000) stillPending.push(entry);
-      else console.warn('[Trash] dropping expired pending trash write:', entry.id, e.message);
-    }
-  }
-  try { localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(stillPending)); } catch(e) {
-    // Same reasoning as the pending-delete write-back above: the old list
-    // survives untouched on failure, so entries just get retried again next
-    // run rather than lost. Surface once, this is usually quota exhaustion.
-    console.error('[queue] pending-trash write-back failed:', e);
-    warnOnce('pending-trash-writeback', 'Trash queue could not save. Retries may repeat next session.');
-  }
-  const cleared = list.length - stillPending.length;
-  if (cleared > 0) console.info('[Trash] Flushed ' + cleared + ' pending trash write(s) from previous session(s)');
+  // Trash snapshots are committed only inside the matching CAS delete. Keeping
+  // this compatibility hook avoids an older call site attempting a second,
+  // non-atomic write.
+  return;
 }
 
 async function sbDelete(table, id, restoreToken) {
   if (isLocalhostPreview()) { return true; } // never write to prod from a local preview
-  if (restoreToken === undefined) {
-    const existing = DB && Array.isArray(DB[_dbKey(table)])
-      ? DB[_dbKey(table)].find(row => row.id === id)
-      : null;
-    restoreToken = _rowRestoreToken(existing);
+  const trashEntry = _pendingTrashForSource(table, id);
+  if (!trashEntry || !trashEntry.data || !trashEntry.data.item) {
+    setSyncStatus('error', 'Delete has no recoverable Trash snapshot');
+    return false;
   }
-  // Persist the retry obligation before touching either the dirty state or
-  // the server. If browser storage is unavailable, leave both untouched.
+  const sourceSnapshot = trashEntry.data.item;
+  const expectedVersion = Number.isSafeInteger(sourceSnapshot._serverVersion) ? sourceSnapshot._serverVersion : 0;
+  const dirtyTokens = _snapshotDirtyTokens(_dbKey(table), id, JSON.stringify(sourceSnapshot));
   let queued;
   try { queued = await _queueDeleteStateOp(() => _queuePendingDelete(table, id, restoreToken)); }
   catch(e) {
@@ -944,18 +1290,37 @@ async function sbDelete(table, id, restoreToken) {
     setSyncStatus('error', 'Delete could not be queued safely');
     return false;
   }
-  // A delete supersedes dirty revisions already queued for this row. Clear
-  // only the revisions visible now; a later cross-tab edit gets a new token
-  // and remains dirty.
-  _discardDirtyForDelete(_dbKey(table), id);
+  const operation = {
+    type: 'delete', table, id, expected_version: expectedVersion,
+    trash: { id: trashEntry.id, data: JSON.parse(JSON.stringify(trashEntry.data)) }
+  };
   try {
-    const r = await _queueCloudRowOp(table, [id], () => fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
-      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-    }));
-    if (!r.ok) throw new Error(await r.text());
+    const outcome = await _queueCloudRowOp(table, [id], () => _syncMutate([operation], _newMutationId()));
     const completed = await _queueDeleteStateOp(() => {
       if (!_pendingDeleteStillQueued(queued)) return 'cancelled';
-      if (!_confirmDeleteLocally(table, id, queued.ts, queued.restoreToken)) return false;
+      if (!outcome.ok) {
+        const conflict = outcome.conflicts.find(item => item.table === table && item.id === id);
+        const resolution = conflict && _resolveSyncConflict(conflict, operation);
+        if (!resolution || !resolution.ok) return false;
+        _discardDirtyForDelete(_dbKey(table), id, new Set([...dirtyTokens, ...resolution.tokens]));
+        _removePendingTrashEntry(trashEntry.id);
+      } else {
+        if (!_confirmDeleteLocally(table, id, queued.ts, queued.restoreToken)) return false;
+        _discardDirtyForDelete(_dbKey(table), id, dirtyTokens);
+        const deleteResult = outcome.results.find(result => result.table === table && result.id === id);
+        if (deleteResult) {
+          _serverTombstones = _serverTombstones.filter(item => !(item.table === table && item.id === id));
+          _serverTombstones.push({ table, id, row_version: deleteResult.row_version, deleted_at: deleteResult.deleted_at || '' });
+          try { localStorage.setItem(SERVER_TOMBSTONES_KEY, JSON.stringify(_serverTombstones)); } catch (_) {}
+        }
+        const trashResult = outcome.results.find(result => result.table === 'trash' && result.id === trashEntry.id);
+        const savedTrash = { id: trashEntry.id, data: JSON.parse(JSON.stringify(trashEntry.data)),
+          _serverVersion: trashResult ? trashResult.row_version : 1,
+          _updatedAt: trashResult ? (trashResult.updated_at || '') : '' };
+        DB.trash = DB.trash.filter(entry => entry.id !== trashEntry.id);
+        DB.trash.push(savedTrash);
+        _removePendingTrashEntry(trashEntry.id);
+      }
       const current = _readDeleteState();
       if (!current.valid) return false;
       const remaining = current.state.pending.filter(item => !(item && item.table === table && item.id === id && (item.ts || 0) === (queued.ts || 0)));
@@ -964,9 +1329,9 @@ async function sbDelete(table, id, restoreToken) {
     });
     if (completed === 'cancelled') return true;
     if (!completed) throw new Error('confirmed delete could not be saved locally');
-    return true;
+    return outcome.ok;
   } catch(e) {
-    setSyncStatus('error', e.message);
+    setSyncStatus('error', 'Delete will retry');
     // The durable marker was written before the attempt and remains queued.
     return false;
   }
@@ -995,18 +1360,78 @@ async function sbFetchPaged(table, query, safetyCap) {
   return all;
 }
 
+const SERVER_TOMBSTONES_KEY = '_kjrServerTombstonesV1';
+let _syncPullPromise = null;
+let _syncPullLoaded = false;
+let _serverTombstones = [];
+
+function _normalisePulledRow(row, table) {
+  if (!row || typeof row !== 'object' || typeof row.id !== 'string' ||
+      !row.data || typeof row.data !== 'object' || Array.isArray(row.data) ||
+      !Number.isSafeInteger(row.row_version) || row.row_version < 1) return null;
+  const data = JSON.parse(JSON.stringify(row.data));
+  return table === 'trash'
+    ? { id: row.id, data, _serverVersion: row.row_version, _updatedAt: row.updated_at || '' }
+    : { ...data, id: row.id, _serverVersion: row.row_version, _updatedAt: row.updated_at || '' };
+}
+
+function _normaliseTombstone(row) {
+  if (!row || typeof row !== 'object' || !SYNCED_TABLES.includes(row.table) ||
+      typeof row.id !== 'string' || !Number.isSafeInteger(row.row_version) || row.row_version < 1) return null;
+  return { table: row.table, id: row.id, row_version: row.row_version, deleted_at: row.deleted_at || '' };
+}
+
+function _readCachedServerTombstones() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(SERVER_TOMBSTONES_KEY) || '[]');
+    return Array.isArray(rows) ? rows.map(_normaliseTombstone).filter(Boolean) : [];
+  } catch (_) { return []; }
+}
+
+async function _pullSyncState() {
+  if (_syncPullPromise) return _syncPullPromise;
+  _syncPullPromise = (async () => {
+    if (!_kjrAuthSession || !SB_HDR.Authorization) throw new Error('owner_session_required');
+    const generation = _kjrAuthGeneration;
+    const sessionId = _kjrAuthSession.session_id;
+    const r = await fetch(SYNC_PULL_URL, {
+      method: 'POST', headers: { ...SB_HDR }, body: JSON.stringify({ client_protocol: SYNC_PROTOCOL }),
+      signal: AbortSignal.timeout(20000)
+    });
+    if (generation !== _kjrAuthGeneration || !_kjrAuthSession || _kjrAuthSession.session_id !== sessionId) {
+      throw new Error('owner_session_changed');
+    }
+    const body = await r.json().catch(() => null);
+    if (r.status === 401 || r.status === 403) {
+      _kjrExpireOwnerSession(r.status === 403);
+      throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
+    }
+    if (!r.ok || !body || body.ok !== true || body.client_protocol !== SYNC_PROTOCOL ||
+        !body.tables || typeof body.tables !== 'object' || !Array.isArray(body.tombstones)) {
+      throw new Error('invalid_sync_response');
+    }
+    const tables = {};
+    for (const table of [...SYNCED_TABLES, 'trash']) {
+      const rows = body.tables[table];
+      if (!Array.isArray(rows)) throw new Error('invalid_sync_response');
+      tables[table] = rows.map(row => _normalisePulledRow(row, table)).filter(Boolean);
+      if (tables[table].length !== rows.length) throw new Error('invalid_sync_response');
+    }
+    const tombstones = body.tombstones.map(_normaliseTombstone).filter(Boolean);
+    if (tombstones.length !== body.tombstones.length) throw new Error('invalid_sync_response');
+    _serverTombstones = tombstones;
+    _syncPullLoaded = true;
+    if (typeof DB !== 'undefined' && DB) DB.trash = tables.trash.slice();
+    try { localStorage.setItem(SERVER_TOMBSTONES_KEY, JSON.stringify(tombstones)); } catch (_) {}
+    return { tables, tombstones };
+  })();
+  try { return await _syncPullPromise; }
+  catch (error) { _syncPullPromise = null; throw error; }
+}
+
 async function sbFetchAll(table) {
-  // Paginate with limit/offset query params (not Range/Range-Unit headers) -
-  // the Cloudflare Worker DB proxy (USE_WORKER_DB) does not forward Range
-  // headers, which blocked flipping that flag. limit/offset works identically
-  // against Supabase direct and through the Worker. id.asc tiebreak keeps page
-  // boundaries stable if updated_at values collide.
-  const all = await sbFetchPaged(table, 'select=id,data,updated_at&order=updated_at.desc,id.asc');
-  // A queued delete is the local source of truth until Supabase confirms it.
-  // Hide those orphan rows from cloud merges so a retryable outage never makes
-  // an item the user deleted reappear in the interface.
-  return _withoutPendingDeletes(table, all)
-    .map(row => ({ id: row.id, ...row.data, _updatedAt: row.updated_at }));
+  const pulled = await _pullSyncState();
+  return _withoutPendingDeletes(table, pulled.tables[table] || []);
 }
 
 // ── Write version counter to localStorage ────────────────────
@@ -1423,12 +1848,12 @@ function _snapshotDirtyTokens(table, id, rowJson) {
   }
   return tokens;
 }
-function _discardDirtyForDelete(table, id) {
+function _discardDirtyForDelete(table, id, knownTokens) {
   if (!_dirty[table]) return;
   // The delete supersedes this tab's mutation only. Foreign tokens may describe
   // bytes this tab never saw, so another tab must remain responsible for them.
   // The delete/restore marker blocks that tab's stale row from being uploaded.
-  const tokens = _snapshotDirtyTokens(table, id);
+  const tokens = knownTokens || _snapshotDirtyTokens(table, id);
   _dirty[table].delete(id);
   _dirtyRevisions[table].delete(id);
   _persistDirty({ [table]: new Map([[id, tokens]]) });
@@ -1458,6 +1883,342 @@ function markDirty(table, id, rowSnapshot) {
     }
   }
   _persistDirty();
+}
+
+const PENDING_MUTATION_GROUPS_KEY = '_kjrMutationGroupsV2';
+const PENDING_MUTATION_GROUP_KEY_PREFIX = '_kjrMutationGroupV2:';
+const MUTATION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MUTATION_QUEUE_SCAN_ATTEMPTS = 6;
+let _mutationQueueEpoch = 0;
+
+function _captureMutationQueueSnapshot() {
+  const allKeys = [];
+  const mutationEntries = [];
+  const seen = new Set();
+  const length = localStorage.length;
+  if (!Number.isSafeInteger(length) || length < 0) return null;
+  for (let index = 0; index < length; index++) {
+    const storageKey = localStorage.key(index);
+    if (typeof storageKey !== 'string' || seen.has(storageKey)) return null;
+    seen.add(storageKey);
+    allKeys.push(storageKey);
+    if (!storageKey.startsWith(PENDING_MUTATION_GROUP_KEY_PREFIX)) continue;
+    const raw = localStorage.getItem(storageKey);
+    if (typeof raw !== 'string') return null;
+    try { JSON.parse(raw); }
+    catch (_) { return null; }
+    mutationEntries.push([storageKey, raw]);
+  }
+  if (localStorage.length !== length) return null;
+  allKeys.sort();
+  mutationEntries.sort((left, right) => left[0].localeCompare(right[0]));
+  return { allKeys, mutationEntries };
+}
+
+function _sameMutationQueueSnapshot(left, right) {
+  return !!left && !!right &&
+    left.allKeys.length === right.allKeys.length &&
+    left.allKeys.every((key, index) => key === right.allKeys[index]) &&
+    left.mutationEntries.length === right.mutationEntries.length &&
+    left.mutationEntries.every((entry, index) =>
+      entry[0] === right.mutationEntries[index][0] && entry[1] === right.mutationEntries[index][1]);
+}
+
+function _mutationGroupsFromSnapshot(snapshot) {
+  const rows = [];
+  for (const [storageKey, raw] of snapshot.mutationEntries) {
+    const mutationId = storageKey.slice(PENDING_MUTATION_GROUP_KEY_PREFIX.length);
+    const group = JSON.parse(raw);
+    rows.push(group && typeof group === 'object' && !Array.isArray(group) && group.mutation_id === mutationId
+      ? group
+      : { mutation_id: mutationId, operations: [], before_states: null });
+  }
+  return rows.sort((left, right) => {
+    const leftTime = Number.isSafeInteger(left && left.created_at) ? left.created_at : Number.MIN_SAFE_INTEGER;
+    const rightTime = Number.isSafeInteger(right && right.created_at) ? right.created_at : Number.MIN_SAFE_INTEGER;
+    return leftTime - rightTime || String(left && left.mutation_id || '').localeCompare(String(right && right.mutation_id || ''));
+  });
+}
+
+function _readMutationGroups() {
+  let previous = null;
+  const immutableValues = new Map();
+  try {
+    for (let attempt = 0; attempt < MUTATION_QUEUE_SCAN_ATTEMPTS; attempt++) {
+      const current = _captureMutationQueueSnapshot();
+      if (!current) return null;
+      for (const [storageKey, raw] of current.mutationEntries) {
+        if (immutableValues.has(storageKey) && immutableValues.get(storageKey) !== raw) return null;
+        immutableValues.set(storageKey, raw);
+      }
+      if (_sameMutationQueueSnapshot(previous, current)) return _mutationGroupsFromSnapshot(current);
+      previous = current;
+    }
+  } catch (_) { return null; }
+  return null;
+}
+
+function _writeMutationGroups(groups) {
+  // Compatibility/debug mirror only. Per-mutation keys above are authoritative,
+  // so concurrent tabs never replace each other's queued transactions.
+  if (!Array.isArray(groups)) return false;
+  try {
+    const raw = JSON.stringify(groups);
+    localStorage.setItem(PENDING_MUTATION_GROUPS_KEY, raw);
+    return localStorage.getItem(PENDING_MUTATION_GROUPS_KEY) === raw;
+  } catch (_) { return false; }
+}
+
+function _mutationDataEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftArray = Array.isArray(left);
+  if (leftArray !== Array.isArray(right)) return false;
+  if (leftArray) {
+    if (left.length !== right.length) return false;
+    return left.every((value, index) => _mutationDataEqual(value, right[index]));
+  }
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
+  return leftKeys.every(key => _mutationDataEqual(left[key], right[key]));
+}
+
+function _mutationReplayPlan(group) {
+  if (!group || !MUTATION_UUID_RE.test(group.mutation_id) || !Number.isSafeInteger(group.created_at) || group.created_at < 0 ||
+      Object.keys(group).some(key => !['mutation_id', 'created_at', 'operations', 'before_states'].includes(key)) ||
+      !Array.isArray(group.operations) || !group.operations.length ||
+      !Array.isArray(group.before_states) || group.before_states.length !== group.operations.length) return null;
+  const seen = new Set();
+  const plan = [];
+  for (let index = 0; index < group.operations.length; index++) {
+    const op = group.operations[index];
+    const before = group.before_states[index];
+    const allowedOperationKeys = op && op.type === 'restore'
+      ? ['type', 'table', 'id', 'expected_version', 'tombstone_version', 'data', 'trash_id']
+      : ['type', 'table', 'id', 'expected_version', 'data'];
+    if (!op || !['upsert', 'restore'].includes(op.type) || !SYNCED_TABLES.includes(op.table) ||
+        Object.keys(op).some(key => !allowedOperationKeys.includes(key)) ||
+        typeof op.id !== 'string' || !op.id || op.id.length > 256 ||
+        !Number.isSafeInteger(op.expected_version) || op.expected_version < 0 ||
+        (op.type === 'restore' && (op.expected_version !== 0 || !Number.isSafeInteger(op.tombstone_version) ||
+          op.tombstone_version < 1 || typeof op.trash_id !== 'string' || !op.trash_id || op.trash_id.length > 256)) ||
+        !op.data || typeof op.data !== 'object' || Array.isArray(op.data) ||
+        Object.keys(op.data).some(key => key === 'id' || key === 'row_version' || key === 'updated_at' || key.startsWith('_')) ||
+        !_mutationDataEqual(_stripInternalData(op.data), op.data) ||
+        !before || before.table !== op.table || before.id !== op.id || typeof before.present !== 'boolean' ||
+        Object.keys(before).some(key => !['table', 'id', 'present', 'data'].includes(key)) ||
+        (before.present && (!before.data || typeof before.data !== 'object' || Array.isArray(before.data) ||
+          Object.keys(before.data).some(key => key === 'id' || key === 'row_version' || key === 'updated_at' || key.startsWith('_')) ||
+          !_mutationDataEqual(_stripInternalData(before.data), before.data))) ||
+        (!before.present && Object.prototype.hasOwnProperty.call(before, 'data'))) return null;
+    const target = op.table + '/' + op.id;
+    if (seen.has(target)) return null;
+    seen.add(target);
+    if (op.type === 'restore') {
+      const trashTarget = 'trash/' + op.trash_id;
+      if (seen.has(trashTarget)) return null;
+      seen.add(trashTarget);
+    }
+    const key = _dbKey(op.table);
+    if (!Array.isArray(DB[key])) return null;
+    plan.push({ op, before, key });
+  }
+  return plan;
+}
+
+function _queueMutationGroup(operations) {
+  let cloned;
+  try { cloned = JSON.parse(JSON.stringify(operations)); }
+  catch (_) { return null; }
+  if (!Array.isArray(cloned) || !cloned.length) return null;
+  const beforeStates = cloned.map(op => {
+    if (!op || !SYNCED_TABLES.includes(op.table) || typeof op.id !== 'string') return null;
+    const key = _dbKey(op.table);
+    const row = Array.isArray(DB[key]) ? DB[key].find(item => item.id === op.id) : null;
+    return row
+      ? { table: op.table, id: op.id, present: true, data: _stripInternalData(row) }
+      : { table: op.table, id: op.id, present: false };
+  });
+  const group = { mutation_id: _newMutationId(), created_at: Date.now(), operations: cloned, before_states: beforeStates };
+  if (!_mutationReplayPlan(group)) return null;
+  const storageKey = PENDING_MUTATION_GROUP_KEY_PREFIX + group.mutation_id;
+  const raw = JSON.stringify(group);
+  try {
+    if (localStorage.getItem(storageKey) !== null) return null;
+    localStorage.setItem(storageKey, raw);
+    if (localStorage.getItem(storageKey) !== raw) return null;
+  } catch (_) { return null; }
+  _mutationQueueEpoch++;
+  const snapshot = _readMutationGroups();
+  if (!snapshot || !_writeMutationGroups(snapshot)) {
+    console.warn('[sync] Mutation queue mirror could not be refreshed; the transaction remains safely queued');
+  }
+  return group;
+}
+
+function _removeMutationGroup(mutationId) {
+  const storageKey = PENDING_MUTATION_GROUP_KEY_PREFIX + mutationId;
+  try {
+    localStorage.removeItem(storageKey);
+    if (localStorage.getItem(storageKey) !== null) return false;
+  } catch (_) { return false; }
+  _mutationQueueEpoch++;
+  const snapshot = _readMutationGroups();
+  if (!snapshot || !_writeMutationGroups(snapshot)) {
+    console.warn('[sync] Mutation queue mirror could not be refreshed after acknowledgement');
+  }
+  return true;
+}
+
+function _pendingMutationRowKeys() {
+  const groups = _readMutationGroups();
+  if (!groups) return null;
+  const keys = new Set();
+  for (const group of groups) {
+    if (!_mutationReplayPlan(group)) return null;
+    for (const op of group.operations) if (op && op.table && op.id) keys.add(op.table + '/' + op.id);
+  }
+  return keys;
+}
+
+function _replayPendingMutationGroupsLocally() {
+  let changed = 0;
+  const groups = _readMutationGroups();
+  if (!groups) {
+    console.warn('[sync] Pending mutation recovery state is unavailable');
+    setSyncStatus('error', 'Pending sync transaction needs repair');
+    return 0;
+  }
+  for (const group of groups) {
+    const plan = _mutationReplayPlan(group);
+    if (!plan) {
+      console.warn('[sync] Pending mutation recovery guard is invalid; leaving the group queued');
+      continue;
+    }
+    for (const { op, before, key } of plan) {
+      const next = { ...JSON.parse(JSON.stringify(op.data)), id: op.id, _serverVersion: op.expected_version || 0 };
+      const index = DB[key].findIndex(row => row.id === op.id);
+      if (index >= 0 && _mutationDataEqual(_stripInternalData(DB[key][index]), op.data)) continue;
+      const matchesBefore = before.present
+        ? index >= 0 && _mutationDataEqual(_stripInternalData(DB[key][index]), before.data)
+        : index < 0;
+      if (matchesBefore) {
+        if (index >= 0) DB[key][index] = next;
+        else DB[key].push(next);
+        markDirty(key, op.id, next);
+        if (op.type === 'restore') DB.trash = DB.trash.filter(entry => entry.id !== op.trash_id);
+      } else {
+        // The queued transaction still needs its original bytes sent first, but
+        // a later local edit owns the current row. Keep it and make its retry
+        // obligation durable so acknowledgement can rebase it safely.
+        markDirty(key, op.id, index >= 0 ? DB[key][index] : undefined);
+      }
+      changed++;
+    }
+  }
+  if (changed) _persistInventoryCacheDirect('Pending mutation recovery could not be saved');
+  return changed;
+}
+
+function _mutationDataMatchesRow(operation, row) {
+  return !!operation && !!row && operation.data &&
+    _mutationDataEqual(_stripInternalData(row), operation.data);
+}
+
+function _applyMutationAcknowledgement(operation, result) {
+  if (!operation || !result || operation.type === 'delete' || !SYNCED_TABLES.includes(operation.table)) {
+    return null;
+  }
+  const key = _dbKey(operation.table);
+  const row = Array.isArray(DB[key]) ? DB[key].find(item => item.id === operation.id) : null;
+  if (!row) return null;
+  const acknowledgedBytesStillCurrent = _mutationDataMatchesRow(operation, row);
+  const tokens = acknowledgedBytesStillCurrent
+    ? _snapshotDirtyTokens(key, operation.id, JSON.stringify(row))
+    : new Set();
+  row._serverVersion = result.row_version;
+  row._updatedAt = result.updated_at || row._updatedAt || '';
+  if (!acknowledgedBytesStillCurrent) {
+    // The server committed the queued snapshot, but the user edited the row
+    // while that request was in flight. Rebase those later bytes onto the
+    // acknowledged version and replace their durable dirty marker.
+    markDirty(key, operation.id, row);
+  }
+  return { key, id: operation.id, tokens, acknowledgedBytesStillCurrent };
+}
+
+async function _flushMutationGroups() {
+  if (isLocalhostPreview()) return true;
+  const groups = _readMutationGroups();
+  if (!groups) {
+    console.warn('[sync] Pending mutation queue is unavailable; no data was sent');
+    setSyncStatus('error', 'Pending sync transaction needs repair');
+    return false;
+  }
+  for (const group of groups) {
+    if (!_mutationReplayPlan(group)) {
+      console.warn('[sync] Pending mutation is invalid; no data was sent and the transaction remains queued');
+      setSyncStatus('error', 'Pending sync transaction needs repair');
+      return false;
+    }
+    let outcome;
+    try { outcome = await _syncMutate(group.operations, group.mutation_id); }
+    catch (_) { return false; }
+    const cleared = {};
+    let handled = true;
+    if (outcome.ok) {
+      const results = new Map(outcome.results.map(result => [result.table + '/' + result.id, result]));
+      for (const op of group.operations) {
+        if (!SYNCED_TABLES.includes(op.table)) continue;
+        const result = results.get(op.table + '/' + op.id);
+        const acknowledgement = result && _applyMutationAcknowledgement(op, result);
+        if (acknowledgement && acknowledgement.acknowledgedBytesStillCurrent) {
+          if (!cleared[acknowledgement.key]) cleared[acknowledgement.key] = new Map();
+          cleared[acknowledgement.key].set(acknowledgement.id, acknowledgement.tokens);
+        }
+        if (op.type === 'restore') {
+          DB.trash = DB.trash.filter(entry => entry.id !== op.trash_id);
+          _serverTombstones = _serverTombstones.filter(item => !(item.table === op.table && item.id === op.id));
+        }
+      }
+      if (!_persistInventoryCacheDirect('Mutation result could not be saved')) handled = false;
+    } else {
+      const conflictKeys = new Set(outcome.conflicts.map(item => item.table + '/' + item.id));
+      for (const conflict of outcome.conflicts) {
+        const op = group.operations.find(item => item.table === conflict.table && item.id === conflict.id);
+        const resolution = op && _resolveSyncConflict(conflict, op);
+        if (!resolution || !resolution.ok) { handled = false; continue; }
+        if (!cleared[resolution.key]) cleared[resolution.key] = new Map();
+        cleared[resolution.key].set(op.id, resolution.tokens);
+      }
+      // The mutation is one transaction. A companion create in Quick Sale was
+      // not committed when its inventory CAS conflicted, so remove that
+      // optimistic local row instead of later uploading an orphan sale alone.
+      for (const op of group.operations) {
+        if (conflictKeys.has(op.table + '/' + op.id) || op.type !== 'upsert' || op.expected_version !== 0) continue;
+        const key = _dbKey(op.table);
+        if (!Array.isArray(DB[key])) continue;
+        const row = DB[key].find(item => item.id === op.id);
+        if (!row) continue;
+        if (!cleared[key]) cleared[key] = new Map();
+        cleared[key].set(op.id, _snapshotDirtyTokens(key, op.id, JSON.stringify(row)));
+        const latest = { id: op.id, ..._stripInternalData(row) };
+        if (typeof clLog !== 'function' || clLog('conflict', key,
+            latest.product || latest.name || op.id,
+            'atomic mutation cancelled, latest local create preserved here: ' + JSON.stringify(latest)) !== true) {
+          handled = false;
+          continue;
+        }
+        DB[key] = DB[key].filter(item => item.id !== op.id);
+      }
+      if (!_persistInventoryCacheDirect('Conflict rollback could not be saved')) handled = false;
+    }
+    if (!handled) return false;
+    _persistDirty(cleared);
+    if (!_removeMutationGroup(group.mutation_id)) return false;
+  }
+  return true;
 }
 
 function saveData() {
@@ -1504,17 +2265,90 @@ function _persistServerStamps(stamps, label) {
       if (!Array.isArray(rows)) continue;
       const row = rows.find(candidate => candidate && candidate.id === stamp.id);
       if (row && JSON.stringify(row) === stamp.beforeJson) {
-        row._updatedAt = stamp.ts;
+        if (stamp.ts) row._updatedAt = stamp.ts;
+        if (Number.isSafeInteger(stamp.version)) row._serverVersion = stamp.version;
         changed = true;
       }
     }
-    if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(latest));
+    if (changed) {
+      const nextRaw = JSON.stringify(latest);
+      localStorage.setItem(STORAGE_KEY, nextRaw);
+      if (localStorage.getItem(STORAGE_KEY) !== nextRaw) throw new Error('cache_write_not_confirmed');
+    }
     return true;
   } catch(e) {
     console.error('[storage] STORAGE_KEY stamp write failed after ' + label + ':', e);
     warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
     return false;
   }
+}
+
+function _persistInventoryCacheDirect(label) {
+  try {
+    const raw = JSON.stringify({
+      singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+      boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks,
+      ebayPurchases: DB.ebayPurchases
+    });
+    localStorage.setItem(STORAGE_KEY, raw);
+    if (localStorage.getItem(STORAGE_KEY) !== raw) throw new Error('cache_write_not_confirmed');
+    bumpLocalVersion();
+    return true;
+  } catch (_) {
+    warnOnce('storage-key-save-failed', 'Local cache did not save. Your recent edits may not survive a reload.');
+    setSyncStatus('error', label || 'Local cache failed');
+    return false;
+  }
+}
+
+function _serverRowFromConflict(current, table) {
+  if (!current || typeof current !== 'object' || typeof current.id !== 'string' ||
+      !current.data || typeof current.data !== 'object' || Array.isArray(current.data) ||
+      !Number.isSafeInteger(current.row_version)) return null;
+  if (table === 'trash') {
+    return { id: current.id, data: JSON.parse(JSON.stringify(current.data)),
+      _serverVersion: current.row_version, _updatedAt: current.updated_at || '' };
+  }
+  return { ...JSON.parse(JSON.stringify(current.data)), id: current.id,
+    _serverVersion: current.row_version, _updatedAt: current.updated_at || '' };
+}
+
+function _resolveSyncConflict(conflict, operation) {
+  if (!_validConflict(conflict) || !operation) return { ok: false };
+  const key = _dbKey(conflict.table);
+  if (!Array.isArray(DB[key])) return { ok: false };
+  const index = DB[key].findIndex(row => row.id === conflict.id);
+  const latestRow = index >= 0 ? DB[key][index] : null;
+  const latest = latestRow
+    ? { id: operation.id, ..._stripInternalData(latestRow) }
+    : (operation.data ? { id: operation.id, ...operation.data } : operation);
+  const attempted = JSON.stringify(latest);
+  const label = latest.name || latest.product || operation.id;
+  const tokens = latestRow ? _snapshotDirtyTokens(key, operation.id, JSON.stringify(latestRow)) : new Set();
+  if (typeof clLog !== 'function' || clLog('conflict', key, label,
+      'server copy kept, attempted local change preserved here using the latest local bytes: ' + attempted) !== true) {
+    setSyncStatus('error', 'Conflict copy could not be saved');
+    return { ok: false };
+  }
+  const before = DB[key].slice();
+  const current = _serverRowFromConflict(conflict.current, conflict.table);
+  if (current) {
+    if (index >= 0) DB[key][index] = current;
+    else DB[key].push(current);
+  } else if (index >= 0) {
+    DB[key].splice(index, 1);
+  }
+  if (conflict.table !== 'trash' && !_persistInventoryCacheDirect('Conflict recovery could not be saved')) {
+    DB[key] = before;
+    return { ok: false };
+  }
+  if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": the server copy was restored. Your latest local change is in Changelog.');
+  _kjrRerenderTable(key);
+  return { ok: true, key, tokens };
+}
+
+function _applySyncConflict(conflict, operation) {
+  return _resolveSyncConflict(conflict, operation).ok;
 }
 
 async function _flushDirtyToSupabase() {
@@ -1528,6 +2362,14 @@ async function _flushDirtyToSupabase() {
   // upsert from stale resurrection. Keep rows visible and dirty, but freeze
   // every outbound inventory write until the state is repaired.
   if (!_deleteStateAllowsCloudWrites()) return;
+  if (!await _flushMutationGroups()) return;
+  const groupedRows = _pendingMutationRowKeys();
+  if (!groupedRows) {
+    console.warn('[sync] Pending mutation queue is unavailable; ordinary writes are paused');
+    setSyncStatus('error', 'Pending sync transaction needs repair');
+    return;
+  }
+  const mutationQueueEpoch = _mutationQueueEpoch;
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
   // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
   const toSync = [];
@@ -1547,7 +2389,9 @@ async function _flushDirtyToSupabase() {
   if (!toSync.length) return;
   setSyncStatus('saving');
   let anyError = false;
+  let mutationQueueBlocked = false;
   const stamps = [];
+  syncTables:
   for (const { tbl, key, records } of toSync) {
     try {
       // Chunk into 200-row batches to stay under Supabase body size limits.
@@ -1556,28 +2400,53 @@ async function _flushDirtyToSupabase() {
         // A delete can run while this flush is waiting on an earlier table.
         // Never dispatch a stale snapshot for a row that is now absent.
         const currentIds = new Set(DB[key].map(row => row.id));
+        const latestGroupedRows = _pendingMutationRowKeys();
+        if (!latestGroupedRows || mutationQueueEpoch !== _mutationQueueEpoch) {
+          mutationQueueBlocked = true;
+          anyError = true;
+          break syncTables;
+        }
         const dispatch = chunk.filter(record => currentIds.has(record.id) &&
-          !_deleteBlocksRow(tbl, record.snapshot));
+          !groupedRows.has(tbl + '/' + record.id) &&
+          !latestGroupedRows.has(tbl + '/' + record.id) && !_deleteBlocksRow(tbl, record.snapshot));
         if (!dispatch.length) continue;
-        const ts = await sbBatchUpsert(tbl, dispatch.map(record => record.snapshot));
+        const outcome = await sbBatchUpsert(tbl, dispatch.map(record => record.snapshot), mutationQueueEpoch);
+        if (outcome.skipped) continue;
         if (!flushed[key]) flushed[key] = new Map();
-        for (const record of dispatch) flushed[key].set(record.id, record.tokens);
-        // Stamp the cloud timestamp back onto the in-memory rows so the next
-        // mergeTable pass sees this edit's real base time, not the stale one -
-        // otherwise a same-row edit right after sync reads as a fake conflict
-        // and gets discarded on the next load (B1).
-        if (ts) {
+        if (outcome.ok) {
+          const results = new Map(outcome.results.map(result => [result.id, result]));
           for (const record of dispatch) {
+            const result = results.get(record.id);
+            if (!result) continue;
             const row = DB[key].find(candidate => candidate.id === record.id);
             const currentToken = _dirtyRevisions[key].get(record.id);
             if (row && currentToken && record.tokens.has(currentToken) && JSON.stringify(row) === record.json) {
-              row._updatedAt = ts;
-              stamps.push({ key, id: record.id, beforeJson: record.json, ts });
+              const beforeJson = JSON.stringify(row);
+              row._serverVersion = result.row_version;
+              row._updatedAt = result.updated_at || row._updatedAt || '';
+              stamps.push({ key, id: record.id, beforeJson, version: result.row_version, ts: row._updatedAt });
+              flushed[key].set(record.id, record.tokens);
             }
           }
+        } else {
+          const ops = new Map(dispatch.map(record => [record.id, _upsertOperation(tbl, record.snapshot)]));
+          const recordsById = new Map(dispatch.map(record => [record.id, record]));
+          for (const conflict of outcome.conflicts) {
+            const record = recordsById.get(conflict.id);
+            const resolution = record && _resolveSyncConflict(conflict, ops.get(conflict.id));
+            if (resolution && resolution.ok) {
+              flushed[key].set(conflict.id, new Set([...record.tokens, ...resolution.tokens]));
+            }
+          }
+          anyError = true;
         }
       }
     } catch(e) {
+      if (e && e.message === 'mutation_queue_changed') {
+        mutationQueueBlocked = true;
+        anyError = true;
+        break;
+      }
       anyError = true;
       setSyncStatus('error', e.message);
       console.error('Flush failed for ' + tbl + ':', e);
@@ -1586,8 +2455,14 @@ async function _flushDirtyToSupabase() {
   }
   // Persist the stamped timestamps directly - NOT via the debounced saveData(),
   // which would re-arm _saveTimer and re-enter _flushDirtyToSupabase.
-  _persistServerStamps(stamps, 'dirty flush');
-  _persistDirty(flushed);
+  const stampsSaved = _persistServerStamps(stamps, 'dirty flush');
+  _persistDirty(stampsSaved ? flushed : undefined);
+  if (!stampsSaved) anyError = true;
+  if (mutationQueueBlocked) {
+    console.warn('[sync] Pending mutation queue changed; ordinary writes are paused');
+    setSyncStatus('error', 'Pending sync transaction needs repair');
+    return;
+  }
   if (!anyError) setSyncStatus('ok');
   // Opportunistic: retry any deletes and trash writes that failed previously.
   // Trash first so the snapshot exists before its source row is deleted.
@@ -1634,17 +2509,30 @@ async function saveAllToSupabase() {
           const current = DB[key].find(row => row.id === snapshot.id);
           return current && !_deleteBlocksRow(tbl, snapshot) && JSON.stringify(current) === JSON.stringify(snapshot);
         });
-        const ts = dispatch.length ? await sbBatchUpsert(tbl, dispatch) : null;
-        // Stamp back so a same-row edit right after this bulk sync doesn't
-        // misread as a fake conflict on the next load (see A1 / B1).
-        if (ts) {
+        const outcome = dispatch.length ? await sbBatchUpsert(tbl, dispatch) : null;
+        if (outcome && outcome.ok && !outcome.skipped) {
+          const results = new Map(outcome.results.map(result => [result.id, result]));
           for (const snapshot of dispatch) {
+            const result = results.get(snapshot.id);
             const row = DB[key].find(candidate => candidate.id === snapshot.id);
-            if (row && JSON.stringify(row) === JSON.stringify(snapshot)) {
-              row._updatedAt = ts;
-              stamps.push({ key, id: snapshot.id, beforeJson: JSON.stringify(snapshot), ts });
+            if (result && row && JSON.stringify(row) === JSON.stringify(snapshot)) {
+              const beforeJson = JSON.stringify(row);
+              row._serverVersion = result.row_version;
+              row._updatedAt = result.updated_at || row._updatedAt || '';
+              stamps.push({ key, id: snapshot.id, beforeJson, version: result.row_version, ts: row._updatedAt });
             }
           }
+        } else if (outcome && outcome.code === 'version_conflict') {
+          const ops = new Map(dispatch.map(snapshot => [snapshot.id, _upsertOperation(tbl, snapshot)]));
+          const conflictCleared = {};
+          outcome.conflicts.forEach(conflict => {
+            const resolution = _resolveSyncConflict(conflict, ops.get(conflict.id));
+            if (!resolution.ok) return;
+            if (!conflictCleared[resolution.key]) conflictCleared[resolution.key] = new Map();
+            conflictCleared[resolution.key].set(conflict.id, resolution.tokens);
+          });
+          _persistDirty(conflictCleared);
+          throw new Error('version_conflict');
         }
         done += chunk.length;
         showSyncProgress(done, total, 'Uploading ' + tbl + ' to cloud…');
@@ -1932,6 +2820,54 @@ function normalizeRecord(table, obj) {
   return out;
 }
 
+function _applyTombstonesBeforeMerge(tableKey, localRows, dirtySet) {
+  const table = _tblName(tableKey);
+  const deleted = new Set(_serverTombstones.filter(t => t.table === table).map(t => t.id));
+  if (!deleted.size) return localRows;
+  const affected = (localRows || []).filter(row => deleted.has(row.id));
+  if (!affected.length) return localRows;
+  const removable = new Set();
+  const cleared = new Map();
+  for (const row of affected) {
+    if (!dirtySet || !dirtySet.has(row.id)) {
+      removable.add(row.id);
+      continue;
+    }
+    const localJson = JSON.stringify(row);
+    const label = row.name || row.product || row.id;
+    if (typeof clLog !== 'function' || clLog('conflict', tableKey, label,
+        'server deletion kept, unsynced local edit preserved here: ' + localJson) !== true) {
+      setSyncStatus('error', 'Conflict copy could not be saved');
+      continue;
+    }
+    removable.add(row.id);
+    cleared.set(row.id, _snapshotDirtyTokens(tableKey, row.id, localJson));
+  }
+  if (!removable.size) return localRows;
+  const next = localRows.filter(row => !removable.has(row.id));
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) throw new Error('cache_missing');
+    const cache = JSON.parse(raw);
+    cache[tableKey] = (cache[tableKey] || []).filter(row => !removable.has(row.id));
+    const nextRaw = JSON.stringify(cache);
+    localStorage.setItem(STORAGE_KEY, nextRaw);
+    if (localStorage.getItem(STORAGE_KEY) !== nextRaw) throw new Error('cache_write_not_confirmed');
+  } catch (e) {
+    console.warn('[sync] tombstones could not be saved to the local cache');
+    return localRows;
+  }
+  for (const row of affected) {
+    if (!removable.has(row.id) || !dirtySet || !dirtySet.has(row.id)) continue;
+    dirtySet.delete(row.id);
+    if (_dirtyRevisions[tableKey]) _dirtyRevisions[tableKey].delete(row.id);
+    const label = row.name || row.product || row.id;
+    if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": it was deleted on another device. Your local edit is in Changelog.');
+  }
+  if (cleared.size) _persistDirty({ [tableKey]: cleared });
+  return next;
+}
+
 // ── Cloud/local row merge, shared by every table (primary and secondary) ──
 // Hoisted to module scope (was a const declared inside initDB's "cloud has
 // data" if-block) so the secondary-table merge below (etbs/boosterBoxes/
@@ -1942,6 +2878,7 @@ function normalizeRecord(table, obj) {
 // No closure dependencies on anything block-local: only its own params plus
 // module-level _persistDirty, toastError, clLog, _clDiff.
 function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
+  localRows = _applyTombstonesBeforeMerge(tableKey, localRows || [], dirtySet);
   // Guard against a 200-with-zero-rows response wiping local data (M5).
   // A genuinely empty cloud table is indistinguishable at the HTTP level
   // from a transient RLS/schema hiccup that also returns []. If local
@@ -1961,50 +2898,20 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
   }
   if (!dirtySet || dirtySet.size === 0) return cloudRows;
   const byId = new Map(cloudRows.map(r => [r.id, r]));
-  const discarded = new Map();
   for (const id of [...dirtySet]) {
     const localRow = localRows.find(r => r.id === id);
     if (!localRow) continue;
-    // Conflict check. BOTH sides are Postgres now() values, never a client
-    // clock: cloudRow._updatedAt comes off the fetch (sbFetchAll maps
-    // row.updated_at), and localRow._updatedAt is the value the last write
-    // returned (sbUpsert / sbBatchUpsert stamp the server's response back).
-    // So this compares one clock, and a device with a skewed clock can no
-    // longer win with a stale edit. If the cloud copy is strictly newer,
-    // another device wrote after our unsynced edit: keep the newer cloud copy
-    // rather than silently overwriting it on the next flush, and surface what
-    // was discarded.
-    const cloudRow = byId.get(id);
-    const cloudMs = cloudRow && cloudRow._updatedAt ? new Date(cloudRow._updatedAt).getTime() : 0;
-    const baseMs  = localRow._updatedAt ? new Date(localRow._updatedAt).getTime() : 0;
-    if (cloudRow && baseMs && cloudMs > baseMs) {
-      const localJson = JSON.stringify(localRow);
-      discarded.set(id, _snapshotDirtyTokens(tableKey, id, localJson));
-      dirtySet.delete(id);
-      if (_dirtyRevisions[tableKey]) _dirtyRevisions[tableKey].delete(id);
-      const label = localRow.name || localRow.product || id;
-      const diff = (typeof _clDiff === 'function') ? _clDiff(tableKey, cloudRow, localRow) : '';
-      // An empty diff means only untracked fields (priceHistory, tcgdexId,
-      // the local-only priced-today marker) differ - a phantom "conflict"
-      // from same-value re-pricing on two devices, not a real discarded
-      // edit. Still log it honestly, but skip the toast so the user isn't
-      // warned about nothing.
-      if (diff) {
-        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, discarded local edit: ' + diff + ' · discarded snapshot: ' + localJson);
-        if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": a newer edit from another device was kept. Details in Changelog.');
-      } else {
-        if (typeof clLog === 'function') clLog('conflict', tableKey, label, 'kept newer cloud copy, tracked fields identical');
-      }
-      continue;
-    }
+    // Keep the exact unsynced bytes until the Worker checks _serverVersion.
+    // A stale edit is resolved only by the typed CAS conflict response, which
+    // preserves the attempted snapshot in Changelog before clearing its token.
     byId.set(id, localRow);
   }
-  _persistDirty(discarded.size ? { [tableKey]: discarded } : undefined);
   return [...byId.values()];
 }
 
 async function initDB() {
   const main = document.getElementById('main-content');
+  _serverTombstones = _readCachedServerTombstones();
 
   // Local trash only ever applies on localhost (see LOCAL_TRASH_KEY above);
   // load it regardless so a page that toggles isLocalhostPreview() mid-session
@@ -2035,6 +2942,11 @@ async function initDB() {
     // cache while the real cloud fetch (below) is in flight. A parse failure
     // here just means we skip straight to the loading spinner.
     console.warn('[initDB] local cache quick-paint failed:', e);
+  }
+
+  if (_replayPendingMutationGroupsLocally() > 0 && !shownLocal) {
+    showPage('dashboard');
+    shownLocal = true;
   }
 
   // The synchronous quick-paint above deliberately stays before initDB's
@@ -2069,20 +2981,12 @@ async function initDB() {
 
   setSyncStatus('saving');
   try {
-    // Flush any deletes/trash writes that failed and got queued in a
-    // previous session BEFORE fetching from cloud. If this ran after the
-    // fetch/merge below, a row whose delete failed last session (still sat
-    // in Supabase, unreachable at the time) would be fetched, merged back
-    // into DB, and rendered - resurrecting a row the user already deleted
-    // (FINDING A2). Trash first so the snapshot exists before its source
-    // row is deleted. Awaited (not fire-and-forget) so the fetch below
-    // genuinely runs after Supabase reflects the deletes.
-    await flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e));
-    await flushPendingDeletes().catch(e => console.warn('flushPendingDeletes failed:', e));
-
     const [sbSingles, sbSlabs, sbSales] = await Promise.all([
       sbFetchAll('singles'), sbFetchAll('slabs'), sbFetchAll('sales')
     ]);
+    // The authenticated pull supplies server Trash snapshots first. Pending
+    // CAS deletes can then retry atomically without reconstructing lost data.
+    await flushPendingDeletes().catch(() => undefined);
 
     if (sbSingles.length || sbSlabs.length || sbSales.length) {
       // ✅ Cloud has data - use it as the base, BUT preserve any local rows
@@ -2155,6 +3059,9 @@ async function initDB() {
       if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
       if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
     } catch(e) { console.warn('KJR new-tables load failed:', e); }
+
+    if (typeof kjrMigrateEbayStatuses === 'function') kjrMigrateEbayStatuses();
+    if (typeof kjrRunPostLoadMigrations === 'function') kjrRunPostLoadMigrations();
 
     // ── One-time migration: run only if not already done ──
     if (!localStorage.getItem('pokeinv_migrated_v2')) {
@@ -3177,8 +4084,11 @@ function closeCmdBar() {
   kjrModalCtrl.close(document.getElementById('cmd-overlay'));
   document.getElementById('cmd-add-input').value = '';
   document.getElementById('cmd-sell-search').value = '';
+  document.getElementById('cmd-sell-search').setAttribute('aria-expanded', 'false');
+  document.getElementById('cmd-sell-search').removeAttribute('aria-activedescendant');
   document.getElementById('cmd-add-preview').innerHTML = '';
   document.getElementById('cmd-sell-preview').innerHTML = '';
+  _cmdSellShowStatus('Type to search your inventory...');
   document.getElementById('cmd-sell-form').style.display = 'none';
   document.getElementById('cmd-sell-preview').style.display = '';
   cmdSellCart = [];
@@ -3200,6 +4110,7 @@ function setCmdMode(mode) {
   document.getElementById('cmd-sell-form').style.display = 'none';
   document.getElementById('cmd-sell-preview').style.display = '';
   cmdSellCart = [];
+  if (mode === 'sell') _cmdSellShowStatus('Type to search your inventory...');
   setTimeout(() => {
     const inp = mode === 'sell' ? document.getElementById('cmd-sell-search') : document.getElementById('cmd-add-input');
     inp.focus();
@@ -3301,10 +4212,29 @@ function cmdAddKey(e) {
 // and `certNo` were searched, so any query that included the grader
 // or grade as words returned zero results and the user concluded the
 // sell flow ignored slabs.
+function _cmdSellShowStatus(message) {
+  const list = document.getElementById('cmd-sell-preview');
+  const label = document.getElementById('cmd-sell-results-label');
+  const status = document.getElementById('cmd-sell-status');
+  if (list) { list.innerHTML = ''; list.hidden = true; }
+  if (label) label.hidden = true;
+  if (status) { status.textContent = message || ''; status.hidden = !message; }
+}
+
+function _cmdSellShowResults() {
+  const list = document.getElementById('cmd-sell-preview');
+  const label = document.getElementById('cmd-sell-results-label');
+  const status = document.getElementById('cmd-sell-status');
+  if (list) list.hidden = false;
+  if (label) label.hidden = false;
+  if (status) status.hidden = true;
+}
+
 function cmdSellSearch() {
-  const raw = document.getElementById('cmd-sell-search').value.toLowerCase().trim();
+  const input = document.getElementById('cmd-sell-search');
+  const raw = input.value.toLowerCase().trim();
   const el = document.getElementById('cmd-sell-preview');
-  if (!raw) { el.innerHTML = cmdSellCart.length ? '' : '<div class="cmd-empty">Type to search your inventory...</div>'; cmdSellResults = []; return; }
+  if (!raw) { _cmdSellShowStatus(cmdSellCart.length ? '' : 'Type to search your inventory...'); cmdSellResults = []; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); return; }
   const tokens = raw.split(/\s+/).filter(Boolean);
 
   // Build a single haystack string per row that includes every field a
@@ -3361,18 +4291,23 @@ function cmdSellSearch() {
   cmdSellResults = [].concat(...groupOrder).slice(0, 15);
 
   if (cmdSellResults.length === 0) {
-    el.innerHTML = '<div class="cmd-empty">No available inventory matches "' + esc(raw) + '"</div>';
+    _cmdSellShowStatus('No available inventory matches "' + raw + '"');
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
     return;
   }
 
   cmdSellResultIdx = 0;
+  input.setAttribute('aria-expanded', 'true');
   renderCmdSellResults();
 }
 
 function renderCmdSellResults() {
   const el = document.getElementById('cmd-sell-preview');
-  el.innerHTML = '<div class="cmd-section-label">Available Inventory</div>' +
-    cmdSellResults.map((i, idx) => {
+  const input = document.getElementById('cmd-sell-search');
+  _cmdSellShowResults();
+  if (input) input.setAttribute('aria-activedescendant', 'cmd-sell-option-' + cmdSellResultIdx);
+  el.innerHTML = cmdSellResults.map((i, idx) => {
       const isSlab   = i._table === 'slabs';
       const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(i._table);
       const badge = isSlab
@@ -3396,7 +4331,7 @@ function renderCmdSellResults() {
           : cmdSellCart.find(l => l._table === 'singles' && l.groupKey === cmdSingleGroupKey(i));
       const inCart = line ? '<span class="cmd-result-incart">✓ ' + line.qty + ' in sale</span>' : '';
       const icon = isSlab ? '🏆' : isSealed ? '📦' : '🃏';
-      return '<div class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onclick="cmdSellAddToCart(' + idx + ')">' +
+      return '<div id="cmd-sell-option-' + idx + '" role="option" tabindex="-1" aria-selected="' + (idx === cmdSellResultIdx ? 'true' : 'false') + '" class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onmousedown="event.preventDefault()" onclick="cmdSellAddToCart(' + idx + ')">' +
         '<div class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</div>' +
         '<div class="cmd-result-main">' +
           '<div class="cmd-result-name">' + esc(i.product || i.name || '-') + '</div>' +
@@ -3531,7 +4466,9 @@ function cmdSellAddToCart(idx) {
   // Keep the search box ready for the next item.
   const search = document.getElementById('cmd-sell-search');
   search.value = '';
-  document.getElementById('cmd-sell-preview').innerHTML = '';
+  search.setAttribute('aria-expanded', 'false');
+  search.removeAttribute('aria-activedescendant');
+  _cmdSellShowStatus('Type to search your inventory...');
   cmdSellResults = [];
   setTimeout(() => search.focus(), 30);
 }
@@ -3569,7 +4506,7 @@ function cmdSellClearCart() {
   cmdSellCart = [];
   document.getElementById('cmd-sell-form').style.display = 'none';
   document.getElementById('cmd-sell-preview').style.display = '';
-  document.getElementById('cmd-sell-preview').innerHTML = '<div class="cmd-empty">Type to search your inventory...</div>';
+  _cmdSellShowStatus('Type to search your inventory...');
   cmdSellResults = [];
   document.getElementById('cmd-sell-search').value = '';
   document.getElementById('cmd-sell-search').focus();
@@ -3845,7 +4782,14 @@ function clLog(action, table, detail, extra) {
   if (log.length > CL_LIMIT) log.splice(CL_LIMIT);
   // Changelog is an audit trail, not the source of truth for any row - a
   // failed write here loses one log entry, not inventory data.
-  try { localStorage.setItem(CL_KEY, JSON.stringify(log)); } catch(e) { console.warn('[changelog] entry save failed:', e); }
+  try {
+    const raw = JSON.stringify(log);
+    localStorage.setItem(CL_KEY, raw);
+    return localStorage.getItem(CL_KEY) === raw;
+  } catch(e) {
+    console.warn('[changelog] entry save failed:', e);
+    return false;
+  }
 }
 
 function clLoad() {
@@ -4096,12 +5040,16 @@ let _versionsCache = null; // in-memory cache for this session
 
 async function sbFetchVersions() {
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,data,updated_at&order=updated_at.desc&limit=50', { headers: SB_HDR, signal: AbortSignal.timeout(15000) });
-    if (!r.ok) throw new Error(await r.text());
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,data,updated_at,row_version&order=updated_at.desc&limit=50', { headers: SB_HDR, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error('version_read_failed');
     const rows = await r.json();
-    return rows.map(row => ({ id: row.id, ...row.data, _ts: new Date(row.updated_at).getTime() }));
+    if (!Array.isArray(rows) || !rows.every(row => row && typeof row.id === 'string' &&
+        row.data && typeof row.data === 'object' && !Array.isArray(row.data) &&
+        Number.isSafeInteger(row.row_version) && row.row_version >= 1)) throw new Error('version_read_failed');
+    return rows.map(row => ({ ...JSON.parse(JSON.stringify(row.data)), id: row.id,
+      _serverVersion: row.row_version, _ts: new Date(row.updated_at).getTime() }));
   } catch(e) {
-    console.warn('Could not fetch versions from Supabase:', e.message);
+    console.warn('Could not fetch versions from Supabase');
     // Fall back to localStorage cache
     try { return JSON.parse(localStorage.getItem(VER_KEY) || '[]'); } catch(e2) { return []; }
   }
@@ -4113,31 +5061,34 @@ async function sbFetchVersions() {
 async function sbSaveVersion(ver) {
   if (isLocalhostPreview()) { return false; } // never write to prod from a local preview
   // ver = { id, name, ts, data (stringified snapshot) }
-  const payload = { id: ver.id, data: { name: ver.name, ts: ver.ts, data: ver.data }, updated_at: new Date(ver.ts).toISOString() };
+  const operation = { type: 'upsert', table: 'versions', id: ver.id,
+    expected_version: Number.isSafeInteger(ver._serverVersion) ? ver._serverVersion : 0,
+    data: { name: ver.name, ts: ver.ts, data: ver.data } };
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?on_conflict=id', {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
+    const outcome = await _syncMutate([operation], _newMutationId());
+    if (!outcome.ok) return false;
+    const result = outcome.results.find(row => row.table === 'versions' && row.id === ver.id);
+    if (!result) return false;
+    ver._serverVersion = result.row_version;
     return true;
-  } catch(e) {
-    console.warn('Could not save version to Supabase:', e.message);
+  } catch(_) {
+    console.warn('Could not save version to Supabase');
     // Still persisted in localStorage below
     return false;
   }
 }
 
-async function sbDeleteVersion(id) {
-  if (isLocalhostPreview()) { return; } // never write to prod from a local preview
+async function sbDeleteVersion(id, knownVersion) {
+  if (isLocalhostPreview()) { return false; } // never write to prod from a local preview
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?id=eq.' + encodeURIComponent(id), {
-      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
-  } catch(e) { console.warn('Could not delete version from Supabase:', e.message); }
+    const ver = loadVersions().find(row => row.id === id);
+    const operation = { type: 'delete', table: 'versions', id,
+      expected_version: Number.isSafeInteger(knownVersion) ? knownVersion :
+        (ver && Number.isSafeInteger(ver._serverVersion) ? ver._serverVersion : 0) };
+    const outcome = await _syncMutate([operation], _newMutationId());
+    return outcome.ok && outcome.results.some(result =>
+      result.type === 'delete' && result.table === 'versions' && result.id === id);
+  } catch(_) { console.warn('Could not delete version from Supabase'); return false; }
 }
 
 function loadVersions() {
@@ -4225,14 +5176,15 @@ async function _saveVersionWithName(name){
 async function _pruneCloudVersions() {
   if (isLocalhostPreview()) return; // never write to prod from a local preview
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?select=id&order=updated_at.desc&offset=50&limit=1000', {
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,row_version&order=updated_at.desc&offset=50&limit=1000', {
       headers: SB_HDR
     });
     if (!r.ok) return; // don't throw - pruning failure shouldn't surface as a save error
     const stale = await r.json();
-    if (!Array.isArray(stale)) return; // guard: never loop over a non-array response
+    if (!Array.isArray(stale) || !stale.every(row => row && typeof row.id === 'string' &&
+        Number.isSafeInteger(row.row_version) && row.row_version >= 1)) return;
     for (const row of stale) {
-      await sbDeleteVersion(row.id);
+      if (!await sbDeleteVersion(row.id, row.row_version)) break;
     }
   } catch(e) {
     console.warn('Could not prune old cloud versions:', e.message);
@@ -4269,7 +5221,7 @@ setInterval(maybeRunDailyAutoVersion, 6 * 60 * 60 * 1000);
 // One-time compaction on boot: older installs stored up to 50 full-DB version
 // blobs (~18MB worth) in localStorage, which overflows the quota. Re-write the
 // cached versions through _cacheVersions so only the recent few keep their blob.
-document.addEventListener('DOMContentLoaded', () => {
+function kjrCompactVersionCache() {
   try {
     const raw = localStorage.getItem(VER_KEY);
     if (!raw) return;
@@ -4281,6 +5233,10 @@ document.addEventListener('DOMContentLoaded', () => {
       console.info('[storage] compacted ' + withBlobs + ' local version snapshots → ' + VER_LS_KEEP_FULL + ' full + metadata');
     }
   } catch(e) { /* non-fatal */ }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const gate = document.getElementById('kjr-auth-gate');
+  if (!gate || gate.tagName !== 'SECTION') kjrCompactVersionCache();
 });
 
 async function restoreVersion(id) {
@@ -4373,10 +5329,13 @@ async function deleteVersion(id) {
   const target = all.find(v => v.id === id);
   const label = target ? ('"' + esc(target.name || 'Untitled') + '"') : 'this version';
   if (!await kjrConfirm('Permanently delete ' + label + '?\nThis cannot be undone.', {ok:'Delete', danger:true})) return;
+  if (!isLocalhostPreview() && !await sbDeleteVersion(id, target && target._serverVersion)) {
+    toastError('Version could not be deleted from the cloud. It was kept locally.');
+    return;
+  }
   const versions = all.filter(v => v.id !== id);
   _cacheVersions(versions);
   renderVerList();
-  await sbDeleteVersion(id);
   toast('Version deleted');
 }
 
@@ -4618,18 +5577,17 @@ function confirmQuickSell() {
 
   snapshotForUndo();
 
-  // Mark item as Sold, unless multiple units remain - then decrement qty
-  // and keep it Available. Only the last unit flips status to Sold.
   const arr  = DB[table];
   const item = arr.find(i => i.id === id);
   if (!item) return;
+  const nextItem = JSON.parse(JSON.stringify(item));
   const curQty = parseInt(item.qty) || 1;
   let remainingQty = null;
   if (curQty > 1) {
-    item.qty = curQty - 1;
-    remainingQty = item.qty;
+    nextItem.qty = curQty - 1;
+    remainingQty = nextItem.qty;
   } else {
-    item.status = 'Sold';
+    nextItem.status = 'Sold';
   }
 
   // Create sales record
@@ -4659,6 +5617,15 @@ function confirmQuickSell() {
     inventoryId: id,
     inventoryTable: table
   };
+  const operations = [
+    _upsertOperation(_tblName(table), nextItem),
+    _upsertOperation('sales', saleRecord)
+  ];
+  if (!isLocalhostPreview() && !_queueMutationGroup(operations)) {
+    toastError('Sale stopped because its sync transaction could not be saved safely');
+    return;
+  }
+  Object.assign(item, nextItem);
   DB.sales.unshift(saleRecord);
   markDirty(table, id);           // item status changed to Sold
   markDirty('sales', saleRecord.id); // new sale record
@@ -6254,25 +7221,10 @@ async function sendToTrash(table, item, reason) {
     toastError('Delete stopped because its local Trash copy could not be saved');
     return false;
   }
-  try {
-    const r = await fetch(SB_URL + '/rest/v1/trash', {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(trashEntry),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return true;
-  } catch(e) {
-    if (_queuePendingTrash(trashEntry)) {
-      console.warn('Trash write failed, queued for retry:', e);
-      return true;
-    }
-    console.error('Trash write and local retry queue both failed:', e);
-    setSyncStatus('error', 'Trash snapshot could not be saved');
-    toastError('Delete stopped because no recoverable Trash copy could be saved');
-    return false;
-  }
+  if (_queuePendingTrash(trashEntry)) return true;
+  setSyncStatus('error', 'Trash snapshot could not be saved');
+  toastError('Delete stopped because no recoverable Trash copy could be saved');
+  return false;
 }
 
 async function sendBatchToTrash(table, items, reason) {
@@ -6291,24 +7243,10 @@ async function sendBatchToTrash(table, items, reason) {
     toastError('Bulk delete stopped because local Trash copies could not be saved');
     return false;
   }
-  try {
-    const r = await fetch(SB_URL + '/rest/v1/trash', {
-      method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify(rows),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return true;
-  } catch(e) {
-    if (_queuePendingTrashBatch(rows)) {
-      console.warn('Batch trash failed, queued for retry:', e);
-      return true;
-    }
-    console.error('Batch trash write and local retry queue both failed:', e);
-    setSyncStatus('error', 'Trash snapshots could not be saved');
-    toastError('Bulk delete stopped because no recoverable Trash copies could be saved');
-    return false;
-  }
+  if (_queuePendingTrashBatch(rows)) return true;
+  setSyncStatus('error', 'Trash snapshots could not be saved');
+  toastError('Bulk delete stopped because no recoverable Trash copies could be saved');
+  return false;
 }
 
 async function fetchTrash() {
@@ -6319,10 +7257,8 @@ async function fetchTrash() {
     return [...DB.trash].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   }
   try {
-    // Was a single limit=2000 request - PostgREST caps a single response at
-    // 1000 rows regardless of the requested limit, so trash past the first
-    // 1000 silently never loaded. Paginate the same way as sbFetchAll.
-    return await sbFetchPaged('trash', 'select=id,data,updated_at&order=updated_at.desc', 30000);
+    if (!_syncPullLoaded) await _pullSyncState();
+    return [...DB.trash].sort((a, b) => new Date(b._updatedAt || b.updated_at || 0) - new Date(a._updatedAt || a.updated_at || 0));
   } catch(e) {
     console.warn('Fetch trash failed:', e);
     return null; // signals a failed fetch, distinct from a genuinely empty trash
@@ -6332,16 +7268,28 @@ async function fetchTrash() {
 async function hardDeleteTrashEntry(trashId) {
   if (isLocalhostPreview()) {
     // Never write to prod from a local preview - remove the local-only entry.
+    const before = DB.trash.slice();
     DB.trash = DB.trash.filter(e => e.id !== trashId);
-    _saveLocalTrash();
-    return;
+    if (_saveLocalTrash()) return true;
+    DB.trash = before;
+    return false;
   }
   try {
-    const r = await fetch(SB_URL + '/rest/v1/trash?id=eq.' + encodeURIComponent(trashId), {
-      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
-  } catch(e) { console.warn('Hard delete failed:', e); }
+    const row = DB.trash.find(entry => entry.id === trashId);
+    if (!row) return false;
+    const operation = { type: 'delete', table: 'trash', id: trashId,
+      expected_version: Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0 };
+    const outcome = await _syncMutate([operation], _newMutationId());
+    if (!outcome.ok) {
+      const conflict = outcome.conflicts.find(item => item.table === 'trash' && item.id === trashId);
+      if (conflict) _applySyncConflict(conflict, operation);
+      return false;
+    }
+    if (!outcome.results.some(result =>
+        result.type === 'delete' && result.table === 'trash' && result.id === trashId)) return false;
+    DB.trash = DB.trash.filter(entry => entry.id !== trashId);
+    return true;
+  } catch(_) { console.warn('Hard delete failed'); return false; }
 }
 
 async function restoreFromTrash(trashId) {
@@ -6350,6 +7298,57 @@ async function restoreFromTrash(trashId) {
   const entry   = entries.find(e => e.id === trashId);
   if (!entry) { toastError('Trash entry not found'); return; }
   const { originalTable, item } = entry.data;
+  if (!isLocalhostPreview() && originalTable !== 'savedChart') {
+    if (!DB[originalTable]) { toastError('Unknown inventory table'); return; }
+    const table = _tblName(originalTable);
+    const tombstone = _serverTombstones.find(row => row.table === table && row.id === item.id);
+    if (!tombstone) {
+      toastError('Restore needs the latest server deletion record. Refresh and try again.');
+      return;
+    }
+    if (DB[originalTable].some(row => row.id === item.id)) {
+      toast('Already restored');
+      return;
+    }
+    const restored = JSON.parse(JSON.stringify(item));
+    delete restored._serverVersion;
+    delete restored._updatedAt;
+    if (originalTable === 'singles') restored.condition = canonicalCondition(restored.condition);
+    const operation = {
+      type: 'restore', table, id: restored.id, expected_version: 0,
+      tombstone_version: tombstone.row_version, data: _stripInternalData(restored), trash_id: trashId
+    };
+    const mutationGroup = _queueMutationGroup([operation]);
+    if (!mutationGroup) {
+      toastError('Restore stopped because its sync transaction could not be saved safely');
+      return;
+    }
+    // A restore can be queued while an older direct-delete retry is waiting on
+    // the network. Cancel that exact retry before exposing the restored row.
+    // sbDelete checks the same serialised delete state before applying its
+    // response, so the stale response cannot discard this newer local write.
+    let cancelOk = false;
+    try { cancelOk = await _queueDeleteStateOp(() => _cancelPendingDelete(table, restored.id, '')); }
+    catch(e) { console.warn('Restore delete-state lock failed:', e); }
+    if (!cancelOk) {
+      const removed = _removeMutationGroup(mutationGroup.mutation_id);
+      setSyncStatus('error', 'Restore recovery state needs repair');
+      toastError(removed
+        ? 'Restore stopped because an older delete retry could not be cancelled safely'
+        : 'Restore is queued, but its local recovery state needs repair. Refresh and retry.');
+      return;
+    }
+    DB[originalTable].push(restored);
+    DB.trash = DB.trash.filter(row => row.id !== trashId);
+    _serverTombstones = _serverTombstones.filter(row => !(row.table === table && row.id === restored.id));
+    markDirty(originalTable, restored.id);
+    saveData();
+    _kjrRerenderTable(originalTable);
+    clLog('restore', originalTable, restored.name || restored.product || restored.id, _clSummary(originalTable, restored) || 'restored from trash');
+    toast('Restored locally, syncing…');
+    renderTrash();
+    return;
+  }
   // Saved-chart restoration is special - re-add to localStorage
   if (originalTable === 'savedChart') {
     const charts = loadSavedCharts();
@@ -6379,7 +7378,10 @@ async function restoreFromTrash(trashId) {
         markDirty(originalTable, existingRow.id);
         saveData();
       }
-      await hardDeleteTrashEntry(trashId);
+      if (!await hardDeleteTrashEntry(trashId)) {
+        toastError('Trash entry could not be deleted. The restored item was kept.');
+        return;
+      }
       toast('Already restored');
       renderTrash();
       return;
@@ -6438,7 +7440,10 @@ async function restoreFromTrash(trashId) {
     if (originalTable === 'boosterPacks'  && typeof renderBoosterPacks === 'function')  renderBoosterPacks();
     if (originalTable === 'ebayPurchases' && typeof renderEbayPurchases === 'function') renderEbayPurchases();
     if (_cloudFailed) {
-      await hardDeleteTrashEntry(trashId);
+      if (!await hardDeleteTrashEntry(trashId)) {
+        toastError('Restore was kept locally, but its Trash entry could not be deleted.');
+        return;
+      }
       const extra = _clSummary(originalTable, item) || 'restored from trash';
       clLog('restore', originalTable, item.name || item.product || item.title || item.id, extra);
       toast('Restored locally - cloud sync will retry');
@@ -6446,7 +7451,10 @@ async function restoreFromTrash(trashId) {
       return;
     }
   }
-  await hardDeleteTrashEntry(trashId);
+  if (!await hardDeleteTrashEntry(trashId)) {
+    toastError('Restore completed, but its Trash entry could not be deleted.');
+    return;
+  }
   const restoreExtra = originalTable === 'savedChart'
     ? ('chart "' + (item.title || 'untitled') + '"')
     : (_clSummary(originalTable, item) || 'restored from trash');
@@ -6460,14 +7468,13 @@ async function emptyTrash() {
   if (entries === null) { toastError('Could not reach Trash - check your connection and retry'); return; }
   if (!entries.length) { toast('Trash is already empty'); return; }
   if (!await kjrConfirm('Permanently delete all ' + entries.length + ' items in trash? This cannot be undone.', {ok:'Delete all', danger:true})) return;
-  try {
-    const r = await fetch(SB_URL + '/rest/v1/trash?id=not.is.null', {
-      method: 'DELETE', headers: SB_HDR, signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error(await r.text());
-    toast('Trash emptied');
-    renderTrash();
-  } catch(e) { toastError('Empty failed: ' + e.message); }
+  let failed = 0;
+  for (const entry of entries) {
+    if (!await hardDeleteTrashEntry(entry.id)) failed++;
+  }
+  if (failed) toastError('Some Trash entries could not be deleted. Try again.');
+  else toast('Trash emptied');
+  renderTrash();
 }
 
 async function purgeExpiredTrash() {
@@ -6476,8 +7483,9 @@ async function purgeExpiredTrash() {
   const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
   for (const e of entries) {
     const deletedAt = new Date(e.data?.deletedAt || e.updated_at).getTime();
-    if (deletedAt < thirtyDaysAgo) await hardDeleteTrashEntry(e.id);
+    if (deletedAt < thirtyDaysAgo && !await hardDeleteTrashEntry(e.id)) return false;
   }
+  return true;
 }
 
 function renderTrash() {
@@ -6544,7 +7552,7 @@ function renderTrash() {
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash('${esc(e.id)}')">↻ Restore</button>
-          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { await hardDeleteTrashEntry('${esc(e.id)}'); toast('Permanently deleted'); renderTrash(); } })()">✕ Delete forever</button>
+          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { if(await hardDeleteTrashEntry('${esc(e.id)}')) { toast('Permanently deleted'); renderTrash(); } else toastError('Trash entry could not be deleted. Try again.'); } })()">✕ Delete forever</button>
         </div>
       </div>`;
     }).join('');
@@ -8526,6 +9534,8 @@ function openListingFor(table, id) {
     if (lbl) { lbl.style.display = ''; lbl.textContent = '✓ Selected: ' + plain; }
     const resEl = document.getElementById('lst-search-results');
     if (resEl) resEl.style.display = 'none';
+    const statusEl = document.getElementById('lst-search-status');
+    if (statusEl) statusEl.hidden = true;
   }
   // Pre-fill at 130% of market price (the user-requested markup), with
   // graceful fallbacks: marketPrice → listPrice → blank.
@@ -8546,8 +9556,10 @@ let _lstHitIdx = 0;
 
 function lstSearchItems(q) {
   const res = document.getElementById('lst-search-results');
+  const input = document.getElementById('lst-search');
+  const status = document.getElementById('lst-search-status');
   if (!res) return;
-  if (!q || q.length < 1) { res.style.display = 'none'; _lstHits = []; return; }
+  if (!q || q.length < 1) { res.innerHTML = ''; res.style.display = 'none'; if (status) status.hidden = true; if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); } _lstHits = []; return; }
   const avail = arr => (arr||[]).filter(i => (i.status||'Available') === 'Available');
   const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
 
@@ -8572,14 +9584,18 @@ function lstSearchItems(q) {
   ].slice(0, 12);
   _lstHitIdx = 0;
 
-  if (!_lstHits.length) { res.innerHTML = '<div class="cmd-empty" style="padding:16px">No matches</div>'; res.style.display = 'block'; return; }
+  if (!_lstHits.length) { res.innerHTML = ''; res.style.display = 'none'; if (status) { status.textContent = 'No matches'; status.hidden = false; } if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); } return; }
+  if (status) status.hidden = true;
   _renderLstResults();
   res.style.display = 'block';
+  if (input) input.setAttribute('aria-expanded', 'true');
 }
 
 function _renderLstResults() {
   const res = document.getElementById('lst-search-results');
   if (!res) return;
+  const input = document.getElementById('lst-search');
+  if (input) input.setAttribute('aria-activedescendant', 'lst-search-option-' + _lstHitIdx);
   res.innerHTML = _lstHits.map((h, idx) => {
     const i = h.data, src = h.src;
     const isSlab = src === 'slabs' || i.type === 'slab';
@@ -8599,7 +9615,7 @@ function _renderLstResults() {
       meta  = [(i.language||''), (i.condition||''), (i.set||'')].filter(Boolean).join(' · ') || 'Raw single';
     }
     const name = i.name || i.product || '-';
-    return '<div class="cmd-result' + (idx === _lstHitIdx ? ' selected' : '') + '" data-idx="' + idx + '" onclick="lstSelectItem(\'' + kjrEscape(src) + '\',\'' + kjrEscape(i.id) + '\')">' +
+    return '<div id="lst-search-option-' + idx + '" role="option" tabindex="-1" aria-selected="' + (idx === _lstHitIdx ? 'true' : 'false') + '" class="cmd-result' + (idx === _lstHitIdx ? ' selected' : '') + '" data-idx="' + idx + '" onmousedown="event.preventDefault()" onclick="lstSelectItem(\'' + kjrEscape(src) + '\',\'' + kjrEscape(i.id) + '\')">' +
       '<div class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</div>' +
       '<div class="cmd-result-main">' +
         '<div class="cmd-result-name">' + kjrEscape(name) + '</div>' +
@@ -8628,6 +9644,8 @@ function lstSearchKey(e) {
     if (h) lstSelectItem(h.src, h.data.id);
   } else if (e.key === 'Escape') {
     res.style.display = 'none';
+    document.getElementById('lst-search').setAttribute('aria-expanded', 'false');
+    document.getElementById('lst-search').removeAttribute('aria-activedescendant');
   }
 }
 
@@ -8642,6 +9660,10 @@ function lstSelectItem(src, id) {
   // Title + Description boxes. We just close the dropdown and hand off.
   const res = document.getElementById('lst-search-results');
   if (res) res.style.display = 'none';
+  const input = document.getElementById('lst-search');
+  if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); input.focus(); }
+  const status = document.getElementById('lst-search-status');
+  if (status) status.hidden = true;
   openListingFor(src, id);
 }
 
@@ -12736,9 +13758,17 @@ function applyDetectedType() {
 })();
 
 buildColMenus();
-// Kick off async DB load from Supabase, then render
-initDB();
-// Auto-purge trash items older than 30 days (runs in background)
-setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
-// Auto-run refresh queue (if today's credits not exhausted)
-setTimeout(() => { runRefreshQueue(false); }, 8000); // wait 8s for DB to fully load
+// Inventory never hydrates or paints until the owner session has passed the
+// gate. Test harnesses omit the gate element and continue through this path.
+function kjrStartOwnerApp() {
+  kjrCompactVersionCache();
+  initDB();
+  setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
+  setTimeout(() => { runRefreshQueue(false); }, 8000);
+}
+const _kjrAuthGate = document.getElementById('kjr-auth-gate');
+if (!_kjrAuthGate || _kjrAuthGate.tagName !== 'SECTION') {
+  kjrStartOwnerApp();
+} else {
+  kjrAuthBoot().then(ok => { if (ok) kjrStartOwnerApp(); });
+}

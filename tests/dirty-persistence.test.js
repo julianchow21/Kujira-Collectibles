@@ -3,7 +3,7 @@
 // round-trip via localStorage 'pokeinv_dirty_v1', corrupt JSON survival.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const { loadApp, syncSuccessResponse, syncCalls, syncRequest } = require('./harness.js');
 
 function copyStorage(localStorage) {
   const out = {};
@@ -178,9 +178,11 @@ test('dirty-persistence: legacy v1 dirty rows upgrade after cache hydration with
   const reloaded = await loadApp({ localStorage: copyStorage(loaded.localStorage) });
   assert.strictEqual(reloaded.grab('DB').DB.singles[0].costPrice, 777);
   reloaded.fetchMock.calls.length = 0;
-  reloaded.fetchMock.route('/rest/v1/singles', { ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }] });
+  reloaded.fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await reloaded.ctx._flushDirtyToSupabase();
-  const post = reloaded.fetchMock.calls.find(call => call.opts && call.opts.method === 'POST');
-  assert.strictEqual(JSON.parse(post.opts.body)[0].data.name, 'Legacy unsynced money edit');
-  assert.strictEqual(JSON.parse(post.opts.body)[0].data.costPrice, 777);
+  const post = syncCalls(reloaded.fetchMock)[0];
+  const operation = syncRequest(post.opts).operations[0];
+  assert.strictEqual(operation.table, 'singles');
+  assert.strictEqual(operation.data.name, 'Legacy unsynced money edit');
+  assert.strictEqual(operation.data.costPrice, 777);
 });

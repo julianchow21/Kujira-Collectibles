@@ -3,7 +3,12 @@
 // ran without corrupting the seed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const { loadApp, syncPullResponse } = require('./harness.js');
+
+async function emptyOwnerPull(url) {
+  if (String(url).includes('/sync/v2/pull')) return syncPullResponse();
+  throw new TypeError('offline');
+}
 
 test('smoke: both scripts eval without throwing, DB has all 8 table arrays', async () => {
   const { ctx, grab } = await loadApp();
@@ -30,9 +35,12 @@ test('smoke: seeded single hydrates from localStorage into DB.singles', async ()
 });
 
 test('smoke: migrateEbayStatuses ran without corrupting the seed (legacy status migrated)', async () => {
-  const { grab, localStorage } = await loadApp({
+  const loaded = await loadApp({
     seed: { ebayPurchases: [{ id: 'eb_1', status: 'Ordered', product: 'Test Card', priceUsd: 10, freightSgd: 2 }] },
+    fetch: emptyOwnerPull,
   });
+  await loaded.ctx.initDB();
+  const { grab, localStorage } = loaded;
   const { DB } = grab('DB');
   assert.strictEqual(DB.ebayPurchases.length, 1, 'seed row must survive the migration, not be dropped');
   assert.strictEqual(DB.ebayPurchases[0].status, 'Paid', '"Ordered" legacy status migrates to "Paid"');
@@ -40,9 +48,12 @@ test('smoke: migrateEbayStatuses ran without corrupting the seed (legacy status 
 });
 
 test('smoke: a second legacy status ("Received") migrates to Completed + _historical', async () => {
-  const { grab } = await loadApp({
+  const loaded = await loadApp({
     seed: { ebayPurchases: [{ id: 'eb_2', status: 'Received', product: 'Old Row' }] },
+    fetch: emptyOwnerPull,
   });
+  await loaded.ctx.initDB();
+  const { grab } = loaded;
   const { DB } = grab('DB');
   assert.strictEqual(DB.ebayPurchases[0].status, 'Completed');
   assert.strictEqual(DB.ebayPurchases[0]._historical, true);

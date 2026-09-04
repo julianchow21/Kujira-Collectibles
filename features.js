@@ -1,57 +1,80 @@
 /* Kujira Collectibles, appended features (split from index.html, v3.12, 05/07/2026).
    Ten blocks in original document order: import installer, shared helpers, Booster Packs,
    market read, guide renderer, Sentry errors panel. Loads after app.js. */
-// Register the service worker. Allowed on https + localhost; scoped to this
-// app folder. Network-first HTML means a new deploy still shows immediately.
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('SW register failed:', err));
-  });
-}
+// Register the service worker without taking over an open app. A newly
+// installed worker waits until the owner explicitly accepts the update, then
+// controllerchange reloads once after the new cache is active.
 (function() {
-  let _kjrShellBaseline = null;
-  let _kjrShellLastCheck = 0;
-  const KJR_SHELL_CHECK_MS = 30 * 60 * 1000; // throttle: at most once per 30 min
+  if (!('serviceWorker' in navigator)) return;
+  let _kjrWaitingWorker = null;
+  let _kjrAcceptedWorker = null;
+  let _kjrReloading = false;
+  const _kjrWatchedWorkers = new WeakSet();
 
   function kjrEnsureUpdatePill() {
     let pill = document.getElementById('kjr-update-pill');
     if (pill) return pill;
     pill = document.createElement('div');
     pill.id = 'kjr-update-pill';
-    pill.setAttribute('role', 'status');
-    pill.innerHTML = '<span>Update ready, tap to reload</span>' +
+    pill.setAttribute('aria-live', 'polite');
+    pill.innerHTML = '<span>Update ready</span>' +
+      '<button id="kjr-update-pill-action" class="btn btn-primary btn-sm" type="button">Reload now</button>' +
       '<button id="kjr-update-pill-close" type="button" aria-label="Dismiss">✕</button>';
     pill.addEventListener('click', (e) => {
       if (e.target.id === 'kjr-update-pill-close') { e.stopPropagation(); pill.classList.remove('show'); return; }
-      location.reload();
+      if (e.target.id === 'kjr-update-pill-action' && _kjrWaitingWorker) {
+        e.target.disabled = true;
+        e.target.textContent = 'Updating…';
+        _kjrAcceptedWorker = _kjrWaitingWorker;
+        try {
+          _kjrWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
+        } catch (_) {
+          _kjrAcceptedWorker = null;
+          e.target.disabled = false;
+          e.target.textContent = 'Reload now';
+        }
+      }
     });
+    if (document.documentElement.classList.contains('auth-gated')) pill.setAttribute('inert', '');
     document.body.appendChild(pill);
     return pill;
   }
 
-  async function kjrCheckShellVersion() {
+  function kjrOfferWaitingWorker(worker) {
+    if (!worker) return;
+    _kjrWaitingWorker = worker;
+    kjrEnsureUpdatePill().classList.add('show');
+  }
+
+  function kjrWatchInstallingWorker(worker, reg) {
+    if (!worker || _kjrWatchedWorkers.has(worker)) return;
+    _kjrWatchedWorkers.add(worker);
+    const inspect = () => {
+      if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+        kjrOfferWaitingWorker(reg.waiting || worker);
+      }
+    };
+    inspect();
+    worker.addEventListener('statechange', inspect);
+  }
+
+  window.addEventListener('load', async () => {
     try {
-      const res = await fetch('./index.html', { method: 'HEAD', cache: 'no-store' });
-      if (!res.ok) return; // silent no-op, e.g. offline
-      const stamp = res.headers.get('ETag') || res.headers.get('Last-Modified');
-      if (!stamp) return; // silent no-op, server doesn't expose either header
-      if (_kjrShellBaseline === null) { _kjrShellBaseline = stamp; return; } // first probe just sets the baseline
-      if (stamp !== _kjrShellBaseline) kjrEnsureUpdatePill().classList.add('show');
-    } catch (_) {
-      // offline or blocked - say nothing, this is a background probe
+      const reg = await navigator.serviceWorker.register('./sw.js');
+      if (reg.waiting) kjrOfferWaitingWorker(reg.waiting);
+      if (reg.installing) kjrWatchInstallingWorker(reg.installing, reg);
+      reg.addEventListener('updatefound', () => {
+        kjrWatchInstallingWorker(reg.installing, reg);
+      });
+    } catch (err) {
+      console.warn('SW registration failed');
     }
-  }
-
-  function kjrMaybeCheckShellVersion() {
-    const now = Date.now();
-    if (now - _kjrShellLastCheck < KJR_SHELL_CHECK_MS) return;
-    _kjrShellLastCheck = now;
-    kjrCheckShellVersion();
-  }
-
-  window.addEventListener('load', kjrMaybeCheckShellVersion);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') kjrMaybeCheckShellVersion();
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!_kjrAcceptedWorker || _kjrReloading) return;
+    _kjrReloading = true;
+    _kjrAcceptedWorker = null;
+    location.reload();
   });
 })();
 (function(){
@@ -952,7 +975,7 @@ const KJR_EBAY_PIPELINE = ['Paid','Shipping to Buyandship','At Buyandship','Read
 // Old "Ordered" → "Paid" (the buyer paid; eBay considers it ordered).
 // Old "Received" → "Completed" + _historical so the row won't trigger the
 // inventory-push modal (these are already in the inventory tables).
-(function migrateEbayStatuses(){
+function kjrMigrateEbayStatuses(){
   const flag = 'pokeinv_ebay_status_migration_v1';
   if (localStorage.getItem(flag)) return;
   let changed = 0;
@@ -973,7 +996,7 @@ const KJR_EBAY_PIPELINE = ['Paid','Shipping to Buyandship','At Buyandship','Read
   });
   if (changed) saveData();
   localStorage.setItem(flag, '1');
-})();
+}
 
 // Compute Total SGD = USD × current rate + Freight SGD.
 // `totalSgdOverride` (manual entry that differs from the auto value) is
@@ -1169,7 +1192,7 @@ function kjrOpenEbayModal(idOrItem){
         <label class="lbl" style="display:flex;align-items:center;gap:8px">
           Total (SGD)
           <span id="kjr-eb-rate-chip" style="font-size:10px;font-weight:500;color:var(--text3);text-transform:none;letter-spacing:0">USD:SGD ${rate}</span>
-          <a id="kjr-eb-reset" style="font-size:10px;color:var(--accent);cursor:pointer;text-transform:none;letter-spacing:0;display:none;margin-left:auto" onclick="kjrEbayResetTotal()">↺ use auto-calc</a>
+          <button id="kjr-eb-reset" type="button" class="link-button" style="font-size:10px;color:var(--accent);text-transform:none;letter-spacing:0;display:none;margin-left:auto" onclick="kjrEbayResetTotal()">↺ use auto-calc</button>
         </label>
         <input class="fi" data-k="totalSgd" id="kjr-eb-sgd" type="number" step="0.01" min="0" inputmode="decimal" value="${kjrEscape(target.totalSgd||'')}" oninput="kjrEbayUserEditedSgd()">
       </div>`;
@@ -1361,7 +1384,7 @@ function renderEbayPurchases(){
     // Declared on Buyandship cell - clickable to cycle Yes → No → N/A → Yes.
     const declVal = (r.declared || '').trim();
     const declCol = declVal === 'No' ? 'var(--amber)' : (declVal === 'Yes' ? 'var(--text2)' : 'var(--text3)');
-    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + ';cursor:pointer" title="Click to toggle declared status" onclick="kjrToggleDeclared(\'' + kjrEscape(r.id) + '\')">' + kjrEscape(declVal || '-') + '</td>';
+    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + '"><button type="button" class="eb-declared-button" title="Toggle declared status" onclick="kjrToggleDeclared(\'' + kjrEscape(r.id) + '\')">' + kjrEscape(declVal || '-') + '</button></td>';
 
     const isSel = _kjrEbaySel.has(r.id);
     return '<tr data-id="' + kjrEscape(r.id) + '"' + (sold ? ' class="sold-row"' : '') + (isSel ? ' style="background:var(--accent-soft)"' : '') + '>' +
@@ -2579,11 +2602,16 @@ async function kjrReparseSlabNames(){
   if (typeof renderSlabs === 'function') renderSlabs();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  // wait until cloud load is done before migrating (gives initDB ~2s)
+function kjrRunPostLoadMigrations() {
   setTimeout(() => { kjrMigrateBoxesToPacks().catch(e => console.error('migrate err', e)); }, 2500);
-  // Slab re-parse runs a hair later so the Boxes→Packs prompt isn't stacked on top.
   setTimeout(() => { kjrReparseSlabNames().catch(e => console.error('slab reparse err', e)); }, 3500);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const gate = document.getElementById('kjr-auth-gate');
+  // The dependency-free harness has no real gate. Production migrations are
+  // started by initDB only after the owner session and cloud load succeed.
+  if (!gate || gate.tagName !== 'SECTION') kjrRunPostLoadMigrations();
   // Cosmetic: best-effort re-render, tab just shows stale content on failure.
   setTimeout(() => { try { renderBoosterPacks(); } catch(e) { console.warn('[render] delayed renderBoosterPacks failed:', e); } }, 1500);
 });
@@ -2835,7 +2863,8 @@ document.addEventListener('DOMContentLoaded', () => {
       var levelColor = { error: 'var(--red)', fatal: '#ff4444', warning: '#f59e0b', info: 'var(--accent)', debug: 'var(--text3)' };
       body.innerHTML = issues.map(function(issue) {
         var col = levelColor[issue.level] || 'var(--text3)';
-        return '<div class="sentry-issue" onclick="window.open(\'' + issue.permalink + '\',\'_blank\')" title="Open in Sentry">' +
+        var link = typeof issue.permalink === 'string' && /^https:\/\/sentry\.io\//.test(issue.permalink) ? issue.permalink : 'https://sentry.io/';
+        return '<a class="sentry-issue" href="' + kjrEscape(link) + '" target="_blank" rel="noopener noreferrer" title="Open in Sentry">' +
           '<div style="display:flex;align-items:flex-start;gap:8px">' +
             '<span style="color:' + col + ';font-size:10px;font-weight:700;text-transform:uppercase;flex-shrink:0;margin-top:3px;min-width:36px">' + kjrEscape(issue.level) + '</span>' +
             '<div style="flex:1;min-width:0">' +
@@ -2847,7 +2876,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '<span>×' + Number(issue.count).toLocaleString() + ' events</span>' +
             '<span>' + relTime(issue.lastSeen) + '</span>' +
           '</div>' +
-        '</div>';
+        '</a>';
       }).join('');
 
     } catch(e) {

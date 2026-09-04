@@ -4,7 +4,7 @@
 // defaults, unknown-field preservation.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const { loadApp, syncPullResponse } = require('./harness.js');
 
 test('normalize-record: numeric coercion of price/qty strings, strips currency symbols', async () => {
   const { ctx } = await loadApp();
@@ -187,18 +187,13 @@ test('normalize-record: migration v4 canonicalises legacy short-form condition i
     href: 'http://localhost:3800/', origin: 'http://localhost:3800',
     pathname: '/', search: '',
   };
-  // sbFetchAll('singles'/'slabs'/'sales') is NOT gated by isLocalhostPreview
-  // (only writes are - see flush-guard.test.js) and has no internal .catch, so
-  // the harness's default "everything rejects" fetch would send initDB
-  // straight to its outer catch (app.js ~1023), skipping every migration
-  // block. Resolve just those three to an empty page so the rest of initDB
-  // runs exactly like a real "cloud has nothing new" load; everything else
-  // (etbs/booster*/ebay, FX rate, etc.) keeps the proven-safe default
-  // rejection every other test in this suite already relies on.
+  // The owner-authenticated v2 pull is one atomic snapshot. The harness
+  // installs its deterministic session immediately after script evaluation,
+  // so this migration test explicitly reruns initDB once that session exists.
   const fetchStub = async (url) => {
     const u = String(url);
-    if (u.includes('/rest/v1/singles') || u.includes('/rest/v1/slabs') || u.includes('/rest/v1/sales')) {
-      return { ok: true, status: 200, json: async () => [], text: async () => '[]', headers: { get: () => null } };
+    if (u.includes('/sync/v2/pull')) {
+      return syncPullResponse({ trash: trashSnapshot.map(entry => ({ ...entry, row_version: 1 })) });
     }
     throw new TypeError('offline');
   };
@@ -218,6 +213,7 @@ test('normalize-record: migration v4 canonicalises legacy short-form condition i
       _kjrLocalTrash: JSON.stringify(trashSnapshot),
     },
   });
+  await first.ctx.initDB();
   const { DB: db1 } = first.grab('DB');
   const { _dirty: dirty1 } = first.grab('_dirty');
   assert.strictEqual(db1.singles.find(r => r.id === 's1').condition, 'Near Mint', 'legacy short form is canonicalised on load');
@@ -238,6 +234,7 @@ test('normalize-record: migration v4 canonicalises legacy short-form condition i
       _kjrLocalTrash: JSON.stringify(trashSnapshot),
     },
   });
+  await second.ctx.initDB();
   const { DB: db2 } = second.grab('DB');
   assert.strictEqual(db2.singles.find(r => r.id === 's1').condition, 'NM', 'guarded by the flag - a second load does not touch it');
 });

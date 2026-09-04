@@ -311,6 +311,52 @@ function safeStringify(x) {
   try { return JSON.stringify(x); } catch (e) { return String(x); }
 }
 
+function jsonResponse(json, status) {
+  const resolvedStatus = status === undefined ? 200 : status;
+  return {
+    ok: resolvedStatus >= 200 && resolvedStatus < 300,
+    status: resolvedStatus,
+    json: async () => json,
+    text: async () => JSON.stringify(json),
+    headers: { get: () => null },
+  };
+}
+
+function syncRequest(opts) {
+  return JSON.parse(opts && opts.body || '{}');
+}
+
+function syncSuccessResponse(opts, customise) {
+  const request = syncRequest(opts);
+  let results = (request.operations || []).map((op) => ({
+    type: op.type,
+    table: op.table,
+    id: op.id,
+    row_version: Math.max(1, (Number.isSafeInteger(op.expected_version) ? op.expected_version : 0) + 1),
+    updated_at: '2026-09-04T00:00:00.000Z',
+    ...(op.type === 'delete' ? { deleted_at: '2026-09-04T00:00:00.000Z' } : {}),
+  }));
+  if (typeof customise === 'function') results = customise(results, request) || results;
+  return jsonResponse({ ok: true, mutation_id: request.mutation_id, results });
+}
+
+function syncPullResponse(overrides, tombstones) {
+  const tables = {
+    singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [],
+    booster_packs: [], ebay_purchases: [], trash: [],
+    ...(overrides || {}),
+  };
+  return jsonResponse({ ok: true, client_protocol: 2, tables, tombstones: tombstones || [] });
+}
+
+function syncCalls(fetchMock) {
+  return fetchMock.calls.filter(call => call.url.includes('/sync/v2/mutate') && call.opts && call.opts.method === 'POST');
+}
+
+function syncOperations(fetchMock) {
+  return syncCalls(fetchMock).flatMap(call => syncRequest(call.opts).operations || []);
+}
+
 // Cross-realm-safe "is this a Date". Objects created INSIDE the vm sandbox
 // are instances of THAT context's own Date constructor, not the outer Node
 // realm's - `x instanceof Date` from a test file is always false for them
@@ -414,7 +460,7 @@ async function loadApp(opts) {
     clearInterval: timers.clearIntervalShim,
     queueMicrotask: (fn) => queueMicrotask(fn), // real, per spec
     fetch: (url, fetchOpts) => fetchMock.handle(url, fetchOpts),
-    URL, Blob, crypto, AbortSignal, performance, structuredClone, // real Node built-ins, safe to share (stateless/side-effect-contained)
+    URL, URLSearchParams, Blob, crypto, AbortSignal, performance, structuredClone, // real Node built-ins, safe to share (stateless/side-effect-contained)
     caches: { open: async () => ({ match: async () => undefined, put: async () => {} }) },
     Chart: class ChartStub {
       constructor(ctx, config) { this.ctx = ctx; this.config = config; ChartStub.instances.push(this); }
@@ -476,6 +522,13 @@ async function loadApp(opts) {
     evalErrors.push({ file: 'app.js', error: e });
     throw Object.assign(new Error('app.js failed to eval: ' + (e && e.stack || e)), { cause: e });
   }
+  // Production mutations are owner-authenticated. Most legacy suites exercise
+  // post-boot domain behaviour, so give them a deterministic verified session
+  // instead of preserving the retired anonymous-write assumption. Auth tests
+  // can opt out with { authenticated: false }.
+  if (opts.authenticated !== false) {
+    vm.runInContext("_kjrSaveSession({access_token:'test-owner-token',refresh_token:'test-refresh-token',expires_at:4102444800})", sandbox);
+  }
   try {
     vm.runInContext(FEATURES_SRC, sandbox, { filename: 'features.js' });
   } catch (e) {
@@ -535,4 +588,7 @@ async function loadApp(opts) {
   };
 }
 
-module.exports = { loadApp, makeSeed, createFetchMock, ROOT, isDate, plain };
+module.exports = {
+  loadApp, makeSeed, createFetchMock, ROOT, isDate, plain,
+  jsonResponse, syncRequest, syncSuccessResponse, syncPullResponse, syncCalls, syncOperations,
+};

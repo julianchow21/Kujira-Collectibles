@@ -3,19 +3,33 @@
 // mergeTable, _rowTime, mergeIntoMemory.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const { loadApp, jsonResponse, syncRequest } = require('./harness.js');
 
-test('merge-conflict: (a) cloud strictly newer + row in dirtySet -> cloud wins, discarded edit logged, dirty id cleared', async () => {
-  const { ctx, localStorage } = await loadApp();
-  const localRow = { id: 'x1', name: 'Old Name', costPrice: 100, _updatedAt: '2025-01-01T00:00:00.000Z' };
-  const cloudRow = { id: 'x1', name: 'New Name', costPrice: 150, _updatedAt: '2025-06-01T00:00:00.000Z' };
-  const dirtySet = new Set(['x1']);
-  const result = ctx.mergeTable([cloudRow], [localRow], dirtySet, 'singles');
-  assert.strictEqual(result.length, 1);
-  assert.strictEqual(result[0].name, 'New Name', 'cloud copy wins');
-  assert.strictEqual(dirtySet.has('x1'), false, 'the discarded local edit is no longer dirty (nothing left to flush)');
+test('merge-conflict: (a) server CAS conflict wins, discarded local edit is logged and dirty state clears', async () => {
+  const localRow = { id: 'x1', name: 'Old Name', costPrice: 100, status: 'Available', _serverVersion: 1 };
+  const { ctx, localStorage, fetchMock, grab } = await loadApp({ seed: { singles: [localRow] } });
+  ctx.markDirty('singles', localRow.id, grab('DB').DB.singles[0]);
+  fetchMock.calls.length = 0;
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    assert.strictEqual(request.operations[0].expected_version, 1);
+    return jsonResponse({ ok: false, code: 'version_conflict', conflicts: [{
+      table: 'singles', id: localRow.id,
+      current: {
+        id: localRow.id, data: { name: 'New Name', costPrice: 150, status: 'Available' },
+        row_version: 2, updated_at: '2025-06-01T00:00:00.000Z',
+      },
+      tombstone: null,
+    }] }, 409);
+  });
+
+  await ctx._flushDirtyToSupabase();
+  assert.strictEqual(grab('DB').DB.singles[0].name, 'New Name', 'the server copy wins after its version is checked');
+  assert.strictEqual(grab('_dirty')._dirty.singles.has(localRow.id), false,
+    'the discarded local edit is no longer dirty after conflict recovery');
   const changelog = JSON.parse(localStorage.getItem('pokeinv_changelog') || '[]');
-  assert.ok(changelog.some(e => e.action === 'conflict'), 'a conflict entry was logged to the changelog');
+  assert.ok(changelog.some(e => e.action === 'conflict' && e.extra.includes('Old Name')),
+    'the discarded local bytes are preserved in the changelog');
 });
 
 test('merge-conflict: (b) local dirty + cloud copy is OLDER -> local kept, stays dirty', async () => {

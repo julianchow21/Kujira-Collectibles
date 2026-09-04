@@ -4,7 +4,7 @@
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
    intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v44';
+const CACHE = 'kujira-v45';
 // three.core.min.js has no ?v= query: it's the vendored file's own internal
 // import specifier (three.module.js imports "./three.core.min.js" verbatim,
 // no query), so the real runtime request never carries one either - a query
@@ -13,8 +13,13 @@ const CACHE = 'kujira-v44';
 const CORE = ['./', './index.html', './styles.css', './app.js', './features.js', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/whale-icon-maskable-512.png', './Assets/lib/three.module.js?v=3.31', './Assets/lib/three.core.min.js'];
 
 self.addEventListener('install', (e) => {
-  self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then((c) => Promise.allSettled(CORE.map((u) => c.add(u)))));
+  e.waitUntil(caches.open(CACHE).then((c) =>
+    typeof c.addAll === 'function' ? c.addAll(CORE) : Promise.all(CORE.map((u) => c.add(u)))
+  ));
+});
+
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {

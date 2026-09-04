@@ -3,7 +3,10 @@
 // restoreFromTrash.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp, plain } = require('./harness.js');
+const {
+  loadApp, plain, jsonResponse, syncRequest, syncSuccessResponse,
+  syncPullResponse, syncCalls, syncOperations,
+} = require('./harness.js');
 
 const LOCALHOST_LOCATION = {
   protocol: 'http:', hostname: 'localhost', host: 'localhost:3800',
@@ -57,52 +60,69 @@ test('trash-lifecycle: sendToTrash does NOT itself remove the row from the sourc
   assert.strictEqual(DB.singles.length, 1, 'sendToTrash only writes the snapshot - it never touches DB.singles itself');
 });
 
-test('trash-lifecycle: sendToTrash on github.io with a failing cloud write queues a pending retry in localStorage', async () => {
-  const { ctx, fetchMock, localStorage } = await loadApp(); // default location = github.io
-  fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: false, status: 500, text: 'boom' });
-  await ctx.sendToTrash('singles', { id: 's1', name: 'Test' }, 'manual');
-  const pending = JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]');
-  assert.strictEqual(pending.length, 1, 'the failed cloud write is queued so the 30-day restore snapshot is never silently lost');
-  assert.strictEqual(pending[0].data.originalId, 's1');
-});
-
-test('trash-lifecycle: sendToTrash on github.io with a SUCCESSFUL cloud write does not queue anything', async () => {
+test('trash-lifecycle: sendToTrash on github.io durably queues the snapshot before any CAS delete', async () => {
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, json: {} });
   await ctx.sendToTrash('singles', { id: 's1', name: 'Test' }, 'manual');
-  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), null);
+  const pending = JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]');
+  assert.strictEqual(pending.length, 1, 'the recoverable snapshot is durable before the server transaction starts');
+  assert.strictEqual(pending[0].data.originalId, 's1');
+  assert.strictEqual(syncCalls(fetchMock).length, 0, 'sendToTrash alone never sends a non-atomic cloud write');
+});
+
+test('trash-lifecycle: a successful atomic CAS delete clears the pending Trash snapshot', async () => {
+  const row = { id: 's1', name: 'Test', _serverVersion: 4 };
+  const { ctx, fetchMock, localStorage, grab } = await loadApp({ seed: { singles: [row] } });
+  fetchMock.calls.length = 0;
+  await ctx.sendToTrash('singles', grab('DB').DB.singles[0], 'manual');
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts, (results, request) => [
+    ...results,
+    { type: 'upsert', table: 'trash', id: request.operations[0].trash.id,
+      row_version: 1, updated_at: '2026-09-04T00:00:00.000Z' },
+  ]));
+  assert.strictEqual(await ctx.sbDelete('singles', row.id), true);
+  assert.deepStrictEqual(JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]'), []);
+  assert.ok(grab('DB').DB.trash.some(entry => entry.data.originalId === row.id));
 });
 
 test('trash-lifecycle: a failed cloud delete older than seven days stays queued until confirmed success', async () => {
   const old = { table: 'singles', id: 'old_failed_delete', ts: Date.now() - 8 * 86400000 };
-  const { ctx, fetchMock, localStorage, consoleWarnings } = await loadApp({
-    localStorage: { _kjrPendingCloudDeletes: JSON.stringify([old]) },
+  const { ctx, fetchMock, localStorage, grab } = await loadApp({
+    localStorage: {
+      _kjrPendingCloudDeletes: JSON.stringify([old]),
+      _kjrPendingTrashWrites: JSON.stringify([{ id: 'trash-old-failed', data: {
+        originalTable: 'singles', originalId: old.id, item: { id: old.id, name: 'Old failed delete', _serverVersion: 2 },
+      } }]),
+    },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', { ok: false, status: 503, text: 'still offline' });
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'unavailable' }, 503));
   await ctx.flushPendingDeletes();
   const pending = JSON.parse(localStorage.getItem('_kjrPendingCloudDeletes'));
   assert.strictEqual(pending.length, 1, 'age never converts a failed delete into a cleared delete');
   assert.strictEqual(pending[0].id, 'old_failed_delete');
-  assert.ok(consoleWarnings.some(line => line.includes('over 7 days old') && line.includes('keep retrying')),
-    'an old failure is surfaced without being discarded');
+  assert.strictEqual(grab('_syncStatus')._syncStatus, 'error',
+    'an old failure is surfaced through the sync status without being discarded');
 });
 
 test('trash-lifecycle: a delete queued during retry write-back is not clobbered by an older success', async () => {
   const first = { table: 'singles', id: 'first_delete', ts: Date.now() - 1000 };
   const { ctx, fetchMock, localStorage } = await loadApp({
-    localStorage: { _kjrPendingCloudDeletes: JSON.stringify([first]) },
+    localStorage: {
+      _kjrPendingCloudDeletes: JSON.stringify([first]),
+      _kjrPendingTrashWrites: JSON.stringify([{ id: 'trash-first-delete', data: {
+        originalTable: 'singles', originalId: first.id, item: { id: first.id, name: 'First delete', _serverVersion: 2 },
+      } }]),
+    },
   });
   fetchMock.calls.length = 0;
   let releaseDelete;
   let announceDelete;
   const deleteStarted = new Promise(resolve => { announceDelete = resolve; });
-  fetchMock.route('/rest/v1/singles', () => {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
     announceDelete();
     return new Promise(resolve => {
-      releaseDelete = () => resolve({ ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } });
+      releaseDelete = () => resolve(syncSuccessResponse(opts));
     });
   });
   const flushing = ctx.flushPendingDeletes();
@@ -128,13 +148,17 @@ test('trash-lifecycle: a queued delete stays hidden from cached and cloud rows w
     seed: { singles: [doomed] },
     localStorage: {
       _kjrPendingCloudDeletes: JSON.stringify([{ table: 'singles', id: 'doomed_1', ts: Date.now() }]),
+      _kjrPendingTrashWrites: JSON.stringify([{ id: 'trash-doomed-1', data: {
+        originalTable: 'singles', originalId: doomed.id, item: doomed,
+      } }]),
     },
     fetch: async (url, opts) => {
-      if (opts && opts.method === 'DELETE') return response(503, {}, 'delete still failing');
-      if (url.includes('/rest/v1/singles')) {
-        return response(200, [{ id: 'doomed_1', data: doomed, updated_at: '2026-08-29T12:00:00.000Z' }]);
+      if (url.includes('/sync/v2/mutate')) return response(503, { ok: false }, 'delete still failing');
+      if (url.includes('/sync/v2/pull')) {
+        const data = { ...doomed };
+        delete data.id;
+        return syncPullResponse({ singles: [{ id: doomed.id, data, row_version: 1, updated_at: '2026-08-29T12:00:00.000Z' }] });
       }
-      if (url.includes('/rest/v1/')) return response(200, []);
       return response(200, { rates: { SGD: 1.3 } });
     },
   });
@@ -158,11 +182,21 @@ test('trash-lifecycle: successful retry purges stale cache before its pending ma
   const pending = [{ table: 'singles', id: doomed.id, ts: Date.now(), restoreToken: '' }];
   const first = await loadApp({
     seed: { singles: [doomed] },
-    localStorage: { _kjrPendingCloudDeletes: JSON.stringify(pending) },
+    localStorage: {
+      _kjrPendingCloudDeletes: JSON.stringify(pending),
+      _kjrPendingTrashWrites: JSON.stringify([{ id: 'trash-doomed-retry', data: {
+        originalTable: 'singles', originalId: doomed.id, item: doomed,
+      } }]),
+    },
     fetch: async (url, opts) => {
-      if (opts && opts.method === 'DELETE') return deleteSucceeds ? response(204, {}) : response(503, {}, 'offline');
-      if (url.includes('/rest/v1/singles')) return response(200, [{ id: doomed.id, data: doomed, updated_at: '2026-08-29T12:00:00.000Z' }]);
-      if (url.includes('/rest/v1/')) return response(200, []);
+      if (url.includes('/sync/v2/mutate')) {
+        return deleteSucceeds ? syncSuccessResponse(opts) : response(503, { ok: false }, 'offline');
+      }
+      if (url.includes('/sync/v2/pull')) {
+        const data = { ...doomed };
+        delete data.id;
+        return syncPullResponse({ singles: [{ id: doomed.id, data, row_version: 1, updated_at: '2026-08-29T12:00:00.000Z' }] });
+      }
       return response(200, { rates: { SGD: 1.3 } });
     },
   });
@@ -182,10 +216,10 @@ test('trash-lifecycle: successful retry purges stale cache before its pending ma
       _kjrPendingCloudDeletes: first.localStorage.getItem('_kjrPendingCloudDeletes'),
       _kjrConfirmedCloudDeletes: first.localStorage.getItem('_kjrConfirmedCloudDeletes'),
     },
-    fetch: async (url) => url.includes('/rest/v1/') ? response(200, []) : response(200, { rates: { SGD: 1.3 } }),
+    fetch: async (url) => url.includes('/sync/v2/pull') ? syncPullResponse() : response(200, { rates: { SGD: 1.3 } }),
   });
   assert.strictEqual(reloaded.grab('DB').DB.singles.some(row => row.id === doomed.id), false);
-  assert.strictEqual(reloaded.fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/singles')), false,
+  assert.strictEqual(syncOperations(reloaded.fetchMock).some(op => op.type === 'upsert' && op.table === 'singles'), false,
     'reload never re-uploads a quick-painted stale row');
 });
 
@@ -268,7 +302,7 @@ test('trash-lifecycle: restoreFromTrash - the row returns to its original table 
   assert.strictEqual(DB.trash.length, 0, 'the trash entry is gone after a successful restore');
 });
 
-test('trash-lifecycle: restoring a row cancels its older pending cloud delete before upsert', async () => {
+test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore', async () => {
   const entry = {
     id: 'trash_restore_1',
     data: {
@@ -284,26 +318,22 @@ test('trash-lifecycle: restoring a row cancels its older pending cloud delete be
     },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', (url, opts) => {
-    if (opts && opts.method === 'DELETE') return { ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } };
-    return { ok: true, status: 200, json: async () => [entry], text: async () => JSON.stringify([entry]), headers: { get: () => null } };
-  });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }] });
+  grab('DB').DB.trash = [{ ...entry, _serverVersion: 3 }];
+  ctx._serverTombstones = [{ table: 'singles', id: 'restore_1', row_version: 4, deleted_at: entry.data.deletedAt }];
+  ctx._syncPullLoaded = true;
 
   await ctx.restoreFromTrash('trash_restore_1');
-  const pending = JSON.parse(localStorage.getItem('_kjrPendingCloudDeletes') || '[]');
-  assert.strictEqual(pending.some(item => item.table === 'singles' && item.id === 'restore_1'), false,
-    'the inverse operation removes the obsolete delete retry');
   const { DB } = grab('DB');
   assert.ok(DB.singles.some(row => row.id === 'restore_1'));
-  const calls = fetchMock.calls.filter(c => c.url.includes('/rest/v1/singles'));
-  assert.strictEqual(calls.some(c => c.opts && c.opts.method === 'POST'), true, 'the restored row is upserted after cancellation');
-  const restored = DB.singles.find(row => row.id === 'restore_1');
-  assert.match(restored._restoreToken, /^restore_/,
-    'an explicit restore carries a fresh token that can supersede an older delete marker on another device');
+  const groups = JSON.parse(localStorage.getItem('_kjrMutationGroupsV2'));
+  assert.strictEqual(groups.length, 1);
+  assert.deepStrictEqual(plain(groups[0].operations.map(op => [op.type, op.table, op.id, op.tombstone_version, op.trash_id])), [
+    ['restore', 'singles', 'restore_1', 4, 'trash_restore_1'],
+  ]);
+  assert.strictEqual(syncCalls(fetchMock).length, 0, 'restore is durable locally before its debounced CAS request');
 });
 
-test('trash-lifecycle: restore cancellation during retry prevents stale confirmation eviction when restore POST fails', async () => {
+test('trash-lifecycle: restore queued during a stale delete retry survives that response', async () => {
   const id = 'restore_during_retry';
   const pending = { table: 'singles', id, ts: Date.now(), restoreToken: '' };
   const entry = {
@@ -317,6 +347,9 @@ test('trash-lifecycle: restore cancellation during retry prevents stale confirma
   };
   const { ctx, fetchMock, localStorage, grab } = await loadApp();
   grab('DB').DB.singles = grab('DB').DB.singles.filter(row => row.id !== id);
+  grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
+  ctx._serverTombstones = [{ table: 'singles', id, row_version: 3, deleted_at: entry.data.deletedAt }];
+  ctx._syncPullLoaded = true;
   const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
   cache.singles = cache.singles.filter(row => row.id !== id);
   localStorage.setItem('pokeinventory_v3', JSON.stringify(cache));
@@ -326,44 +359,33 @@ test('trash-lifecycle: restore cancellation during retry prevents stale confirma
   let releaseDelete;
   let announceDelete;
   const deleteStarted = new Promise(resolve => { announceDelete = resolve; });
-  fetchMock.route('/rest/v1/singles', (url, opts) => {
-    if (opts.method === 'DELETE') {
+  ctx._queuePendingTrash(entry);
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const operation = syncRequest(opts).operations[0];
+    if (operation.type === 'delete') {
       announceDelete();
       return new Promise(resolve => {
-        releaseDelete = () => resolve({
-          ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null },
-        });
+        releaseDelete = () => resolve(syncSuccessResponse(opts));
       });
     }
-    return { ok: false, status: 503, json: async () => ({}), text: async () => 'restore offline', headers: { get: () => null } };
-  });
-  fetchMock.route('/rest/v1/trash', (url, opts) => {
-    if (opts && opts.method === 'DELETE') {
-      return { ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } };
-    }
-    return { ok: true, status: 200, json: async () => [entry], text: async () => JSON.stringify([entry]), headers: { get: () => null } };
+    return syncSuccessResponse(opts);
   });
 
   const retrying = ctx.flushPendingDeletes();
   await deleteStarted;
   const restoring = ctx.restoreFromTrash(entry.id);
-  for (let i = 0; i < 10; i++) {
-    const queued = getDeleteStateV2(localStorage).pending;
-    if (!queued.some(item => item.id === id)) break;
-    await new Promise(resolve => setImmediate(resolve));
-  }
-  assert.strictEqual(getDeleteStateV2(localStorage).pending.some(item => item.id === id), false,
-    'restore cancellation becomes durable before the old DELETE response is released');
+  await restoring;
+  assert.strictEqual(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
+    'the inverse transaction is durable before the stale delete response is released');
   releaseDelete();
-  await Promise.all([retrying, restoring]);
+  await retrying;
 
   const restored = grab('DB').DB.singles.find(row => row.id === id);
   assert.ok(restored, 'stale retry confirmation does not evict the restored in-memory row');
   assert.ok(JSON.parse(localStorage.getItem('pokeinventory_v3')).singles.some(row => row.id === id),
-    'the cache retains a recovery copy even though the immediate restore POST failed');
-  assert.strictEqual(grab('_dirty')._dirty.singles.has(id), true, 'dirty retry remains available for a later cloud upsert');
-  assert.strictEqual(fetchMock.calls.some(call => call.url.includes('/rest/v1/trash') && call.opts && call.opts.method === 'DELETE'), true,
-    'Trash may be cleared only because DB, cache and dirty recovery all remain');
+    'the cache retains a recovery copy while the queued restore awaits its CAS flush');
+  assert.strictEqual(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
+    'the queued restore, not an unsafe blind upsert, remains the recovery obligation');
 });
 
 test('trash-lifecycle: direct delete skips stale confirmation after its exact pending attempt is cancelled', async () => {
@@ -374,12 +396,14 @@ test('trash-lifecycle: direct delete skips stale confirmation after its exact pe
   let releaseDelete;
   let announceDelete;
   const deleteStarted = new Promise(resolve => { announceDelete = resolve; });
-  fetchMock.route('/rest/v1/singles', () => {
+  const source = grab('DB').DB.singles[0];
+  ctx._queuePendingTrash({ id: 'trash-direct-cancel', data: {
+    originalTable: 'singles', originalId: id, item: JSON.parse(JSON.stringify(source)),
+  } });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
     announceDelete();
     return new Promise(resolve => {
-      releaseDelete = () => resolve({
-        ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null },
-      });
+      releaseDelete = () => resolve(syncSuccessResponse(opts));
     });
   });
 
@@ -398,7 +422,7 @@ test('trash-lifecycle: direct delete skips stale confirmation after its exact pe
   assert.strictEqual(grab('_dirty')._dirty.singles.has(id), true);
 });
 
-test('trash-lifecycle: restore aborts before DB, cloud, or Trash writes when delete cancellation cannot persist', async () => {
+test('trash-lifecycle: restore aborts before DB or cloud writes when the server tombstone is missing', async () => {
   const entry = {
     id: 'trash_restore_fail_closed',
     data: {
@@ -408,27 +432,20 @@ test('trash-lifecycle: restore aborts before DB, cloud, or Trash writes when del
     },
     updated_at: new Date().toISOString(),
   };
-  const { ctx, fetchMock, localStorage, grab } = await loadApp({
-    localStorage: {
-      _kjrPendingCloudDeletes: JSON.stringify([{ table: 'singles', id: 'restore_fail_closed', ts: Date.now() }]),
-    },
-  });
+  const { ctx, fetchMock, localStorage, grab } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, status: 200, json: [entry] });
-  const realSetItem = localStorage.setItem.bind(localStorage);
-  localStorage.setItem = (key, value) => {
-    if (key === '_kjrDeleteStateV2') throw new Error('storage full');
-    return realSetItem(key, value);
-  };
+  grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
+  ctx._serverTombstones = [];
+  ctx._syncPullLoaded = true;
 
   await ctx.restoreFromTrash(entry.id);
   assert.strictEqual(grab('DB').DB.singles.some(row => row.id === 'restore_fail_closed'), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.url.includes('/rest/v1/singles') && call.opts && call.opts.method === 'POST'), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.url.includes('/rest/v1/trash') && call.opts && call.opts.method === 'DELETE'), false,
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
+  assert.strictEqual(localStorage.getItem('_kjrMutationGroupsV2'), null,
     'Trash remains the recovery copy when cancellation is not durable');
 });
 
-test('trash-lifecycle: restore timestamp write-back preserves a concurrently newer cached row', async () => {
+test('trash-lifecycle: restore acknowledgement rebases onto a later local edit without losing it', async () => {
   const entry = {
     id: 'trash_restore_cache_race',
     data: {
@@ -440,27 +457,39 @@ test('trash-lifecycle: restore timestamp write-back preserves a concurrently new
   };
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', (url, opts) => {
-    if (opts && opts.method === 'DELETE') return { ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } };
-    return { ok: true, status: 200, json: async () => [entry], text: async () => JSON.stringify([entry]), headers: { get: () => null } };
-  });
-  fetchMock.route('/rest/v1/singles', () => ({
-    ok: true, status: 200,
-    json: async () => {
-      const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
-      const row = cache.singles.find(candidate => candidate.id === 'restore_cache_race');
-      row.name = 'Newer cached restore edit';
-      row._updatedAt = '2026-08-29T12:00:03.000Z';
-      localStorage.setItem('pokeinventory_v3', JSON.stringify(cache));
-      return [{ updated_at: '2026-08-29T12:00:00.000Z' }];
-    },
-    text: async () => '', headers: { get: () => null },
-  }));
-
+  const state = ctx.DB;
+  state.trash = [{ ...entry, _serverVersion: 2 }];
+  ctx._serverTombstones = [{ table: 'singles', id: 'restore_cache_race', row_version: 3, deleted_at: entry.data.deletedAt }];
+  ctx._syncPullLoaded = true;
   await ctx.restoreFromTrash(entry.id);
+  let calls = 0;
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    calls += 1;
+    if (calls === 1) {
+      const row = state.singles.find(candidate => candidate.id === 'restore_cache_race');
+      row.name = 'Newer local restore edit';
+      ctx.markDirty('singles', row.id, row);
+      ctx.saveData();
+    }
+    return syncSuccessResponse(opts);
+  });
+
+  assert.strictEqual(await ctx._flushMutationGroups(), true);
+  const rebased = state.singles.find(row => row.id === 'restore_cache_race');
+  assert.strictEqual(rebased.name, 'Newer local restore edit');
+  assert.strictEqual(rebased._serverVersion, 1, 'the later edit rebases onto the acknowledged restore version');
+  assert.strictEqual(ctx._dirty.singles.has(rebased.id), true, 'the later edit remains dirty after restore acknowledgement');
+  assert.strictEqual(localStorage.getItem('_kjrMutationGroupsV2'), '[]');
+
+  await ctx._flushDirtyToSupabase();
+  const ordinaryUpsert = syncOperations(fetchMock).find(op =>
+    op.type === 'upsert' && op.table === 'singles' && op.id === 'restore_cache_race');
+  assert.ok(ordinaryUpsert);
+  assert.strictEqual(ordinaryUpsert.expected_version, 1);
+  assert.strictEqual(ordinaryUpsert.data.name, 'Newer local restore edit');
   const cached = JSON.parse(localStorage.getItem('pokeinventory_v3')).singles.find(row => row.id === 'restore_cache_race');
-  assert.strictEqual(cached.name, 'Newer cached restore edit');
-  assert.strictEqual(cached._updatedAt, '2026-08-29T12:00:03.000Z');
+  assert.strictEqual(cached.name, 'Newer local restore edit');
+  assert.strictEqual(ctx._dirty.singles.has(rebased.id), false);
 });
 
 test('trash-lifecycle: a new explicit restore token supersedes an older confirmed-delete marker across devices', async () => {
@@ -537,7 +566,7 @@ test('trash-lifecycle: corrupt authoritative v2 never falls back to a partial le
   fetchMock.calls.length = 0;
   assert.strictEqual(await ctx.sbDelete('singles', 'single_seed_1'), false,
     'mutations stop when authoritative state is corrupt');
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), '{broken-json');
   assert.ok(consoleWarnings.some(line => line.includes('Delete recovery state is unreadable')));
 });
@@ -617,7 +646,7 @@ test('trash-lifecycle: version restore of a deleted id writes a fresh restore to
   }]);
   ctx.kjrConfirm = async () => true;
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/versions', { ok: false, status: 503, text: 'offline for backup' });
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'offline_for_backup' }, 503));
 
   await ctx.restoreVersion('version_restore_test');
   const restored = grab('DB').DB.singles.find(row => row.id === deleted.id);
@@ -646,7 +675,7 @@ test('trash-lifecycle: same-id version restore replaces a mismatched allowed res
   }]));
   ctx.kjrConfirm = async () => true;
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/versions', { ok: false, status: 503, text: 'offline for backup' });
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'offline_for_backup' }, 503));
 
   await ctx.restoreVersion('version_same_id_test');
   const restored = grab('DB').DB.singles.find(row => row.id === id);
@@ -659,6 +688,61 @@ test('trash-lifecycle: same-id version restore replaces a mismatched allowed res
   assert.strictEqual(marker.state, 'restored');
   assert.strictEqual(marker.restoreToken, restored._restoreToken,
     'the marker follows the deliberate same-id recovery before it can be marked dirty or synced');
+});
+
+test('trash-lifecycle: Replace preflight saves the Trash snapshot before its delete marker and retry does not duplicate either', async () => {
+  const oldRow = { id: 'replace_preflight_order', name: 'Recoverable old row', costPrice: 432, status: 'Available' };
+  const { ctx, grab, localStorage } = await loadApp({ seed: { singles: [oldRow] } });
+  const writes = [];
+  const realSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (key, value) => {
+    if (key === '_kjrPendingTrashWrites' || key === '_kjrDeleteStateV2') writes.push(key);
+    return realSetItem(key, value);
+  };
+  const nextState = { singles: [{ id: 'replace_preflight_new', name: 'Incoming row', status: 'Available' }] };
+  const targets = [{ table: 'singles', id: oldRow.id, restoreToken: '' }];
+
+  assert.strictEqual(await ctx._prepareReplacementSafety(nextState, targets), true);
+  assert.ok(writes.indexOf('_kjrPendingTrashWrites') >= 0);
+  assert.ok(writes.indexOf('_kjrPendingTrashWrites') < writes.indexOf('_kjrDeleteStateV2'),
+    'the recoverable snapshot is durably written before the destructive marker');
+  const firstTrash = JSON.parse(localStorage.getItem('_kjrPendingTrashWrites'));
+  assert.strictEqual(firstTrash.length, 1);
+  assert.deepStrictEqual(plain(firstTrash[0].data.item), oldRow);
+  assert.strictEqual(getDeleteStateV2(localStorage).pending.filter(item => item.id === oldRow.id).length, 1);
+
+  assert.strictEqual(await ctx._prepareReplacementSafety(nextState, targets), true);
+  const retriedTrash = JSON.parse(localStorage.getItem('_kjrPendingTrashWrites'));
+  assert.strictEqual(retriedTrash.length, 1, 'retry reuses the verified Trash snapshot');
+  assert.strictEqual(retriedTrash[0].id, firstTrash[0].id);
+  assert.strictEqual(getDeleteStateV2(localStorage).pending.filter(item => item.id === oldRow.id).length, 1,
+    'retry does not duplicate the pending delete marker');
+  assert.strictEqual(grab('DB').DB.singles[0].id, oldRow.id, 'preflight itself does not mutate inventory');
+});
+
+test('trash-lifecycle: Replace aborts byte-for-byte when its first Trash snapshot cannot persist', async () => {
+  const oldRow = { id: 'replace_snapshot_fail', name: 'Keep snapshot source', costPrice: 654, status: 'Available' };
+  const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [oldRow] } });
+  ctx.kjrConfirm = async () => true;
+  ctx.document.getElementById('import-data').value = 'Name\tCost\nMust not import\t12';
+  ctx.document.getElementById('import-type').value = 'singles';
+  ctx.document.getElementById('import-mode').value = 'replace';
+  fetchMock.calls.length = 0;
+  const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const beforeTrash = localStorage.getItem('_kjrPendingTrashWrites');
+  const beforeDeleteState = localStorage.getItem('_kjrDeleteStateV2');
+  const realSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (key, value) => {
+    if (key === '_kjrPendingTrashWrites') throw new Error('first Trash snapshot unavailable');
+    return realSetItem(key, value);
+  };
+
+  await ctx.importData();
+  assert.deepStrictEqual(plain(grab('DB').DB.singles), [oldRow]);
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), beforeTrash);
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
 });
 
 test('trash-lifecycle: Replace import upserts reused ids without DELETE and deletes old-only ids', async () => {
@@ -680,13 +764,7 @@ test('trash-lifecycle: Replace import upserts reused ids without DELETE and dele
   ctx.document.getElementById('import-type').value = 'singles';
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', (url, opts) => ({
-    ok: true,
-    status: opts && opts.method === 'DELETE' ? 204 : 200,
-    json: async () => opts && opts.method === 'DELETE' ? {} : [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-    text: async () => '',
-    headers: { get: () => null },
-  }));
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   await ctx.importData();
   const replacement = grab('DB').DB.singles.find(row => row.id === existingId);
@@ -696,12 +774,17 @@ test('trash-lifecycle: Replace import upserts reused ids without DELETE and dele
   const marker = getDeleteStateV2(localStorage).confirmed[0];
   assert.strictEqual(marker.state, 'restored');
   assert.strictEqual(marker.restoreToken, replacement._restoreToken);
-  assert.ok(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/singles')),
+  const operations = syncOperations(fetchMock);
+  assert.ok(operations.some(op => op.type === 'upsert' && op.table === 'singles' && op.id === existingId),
     'saveAll dispatches the deliberate replacement instead of blocking it as stale');
-  const deletes = fetchMock.calls.filter(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/singles'));
+  const deletes = operations.filter(op => op.type === 'delete' && op.table === 'singles');
   assert.strictEqual(deletes.length, 1);
-  assert.match(deletes[0].url, new RegExp(oldOnlyId));
-  assert.ok(!deletes[0].url.includes(existingId), 'the reused primary key is replaced by upsert, never deleted first');
+  assert.strictEqual(deletes[0].id, oldOnlyId);
+  assert.ok(deletes[0].trash && deletes[0].trash.id);
+  assert.strictEqual(deletes[0].trash.data.originalId, oldOnlyId);
+  assert.strictEqual(deletes[0].trash.data.item.name, 'Remove me',
+    'the CAS delete carries the exact recoverable old-only snapshot');
+  assert.ok(!deletes.some(op => op.id === existingId), 'the reused primary key is replaced by upsert, never deleted first');
 });
 
 test('trash-lifecycle: Replace import gives a fresh restore token to a deleted id absent from current memory', async () => {
@@ -722,13 +805,7 @@ test('trash-lifecycle: Replace import gives a fresh restore token to a deleted i
   ctx.document.getElementById('import-type').value = 'singles';
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', (url, opts) => ({
-    ok: true,
-    status: opts && opts.method === 'DELETE' ? 204 : 200,
-    json: async () => opts && opts.method === 'DELETE' ? {} : [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-    text: async () => '',
-    headers: { get: () => null },
-  }));
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   await ctx.importData();
   const replacement = grab('DB').DB.singles.find(row => row.id === deletedId);
@@ -738,10 +815,12 @@ test('trash-lifecycle: Replace import gives a fresh restore token to a deleted i
   assert.strictEqual(marker.state, 'restored');
   assert.strictEqual(marker.restoreToken, replacement._restoreToken,
     'marker preflight covers incoming IDs even when no current row reuses the ID');
-  const deletes = fetchMock.calls.filter(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/singles'));
+  const deletes = syncOperations(fetchMock).filter(op => op.type === 'delete' && op.table === 'singles');
   assert.strictEqual(deletes.length, 1);
-  assert.ok(deletes[0].url.includes(oldOnlyId));
-  assert.ok(!deletes[0].url.includes(deletedId));
+  assert.strictEqual(deletes[0].id, oldOnlyId);
+  assert.strictEqual(deletes[0].trash.data.originalId, oldOnlyId);
+  assert.strictEqual(deletes[0].trash.data.item.name, 'Old current row');
+  assert.ok(!deletes.some(op => op.id === deletedId));
 });
 
 test('trash-lifecycle: main Replace aborts before cloud or local deletion when restore-marker preflight cannot persist', async () => {
@@ -763,6 +842,8 @@ test('trash-lifecycle: main Replace aborts before cloud or local deletion when r
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
   const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const beforeTrash = localStorage.getItem('_kjrPendingTrashWrites');
+  const beforeDeleteState = localStorage.getItem('_kjrDeleteStateV2');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrDeleteStateV2') throw new Error('confirmed marker storage unavailable');
@@ -770,10 +851,12 @@ test('trash-lifecycle: main Replace aborts before cloud or local deletion when r
   };
 
   await ctx.importData();
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(grab('DB').DB.singles[0].name, oldRow.name);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache,
     'the persisted inventory is untouched when preflight fails');
+  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), beforeTrash);
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState);
 });
 
 test('trash-lifecycle: features Replace aborts before cloud or local deletion when restore-marker preflight cannot persist', async () => {
@@ -798,6 +881,8 @@ test('trash-lifecycle: features Replace aborts before cloud or local deletion wh
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
   const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const beforeTrash = localStorage.getItem('_kjrPendingTrashWrites');
+  const beforeDeleteState = localStorage.getItem('_kjrDeleteStateV2');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrDeleteStateV2') throw new Error('confirmed marker storage unavailable');
@@ -805,9 +890,11 @@ test('trash-lifecycle: features Replace aborts before cloud or local deletion wh
   };
 
   await ctx.importData();
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(grab('DB').DB.etbs[0].product, oldRow.product);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), beforeTrash);
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState);
 });
 
 test('trash-lifecycle: main Replace A to B aborts before every write when old-only delete preflight cannot persist', async () => {
@@ -822,6 +909,8 @@ test('trash-lifecycle: main Replace A to B aborts before every write when old-on
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
   const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const beforeTrash = localStorage.getItem('_kjrPendingTrashWrites');
+  const beforeDeleteState = localStorage.getItem('_kjrDeleteStateV2');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrDeleteStateV2') throw new Error('delete queue unavailable');
@@ -831,8 +920,11 @@ test('trash-lifecycle: main Replace A to B aborts before every write when old-on
   await ctx.importData();
   assert.deepStrictEqual(plain(grab('DB').DB.singles), [oldRow]);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/singles')), false,
+  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), beforeTrash,
+    'the Trash snapshot is rolled back when the following marker write fails');
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
+  assert.strictEqual(syncOperations(fetchMock).some(op => op.type === 'upsert' && op.table === 'singles'), false,
     'the incoming B row is not uploaded after destructive preflight fails');
   assert.ok(messages.some(message => message.includes('restore and delete recovery state')));
   assert.ok(!messages.some(message => message.includes('Imported')));
@@ -850,6 +942,8 @@ test('trash-lifecycle: features Replace A to B aborts before every write when ol
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
   const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const beforeTrash = localStorage.getItem('_kjrPendingTrashWrites');
+  const beforeDeleteState = localStorage.getItem('_kjrDeleteStateV2');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrDeleteStateV2') throw new Error('delete queue unavailable');
@@ -859,8 +953,10 @@ test('trash-lifecycle: features Replace A to B aborts before every write when ol
   await ctx.importData();
   assert.deepStrictEqual(plain(grab('DB').DB.etbs), [oldRow]);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/etbs')), false,
+  assert.strictEqual(localStorage.getItem('_kjrPendingTrashWrites'), beforeTrash);
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
+  assert.strictEqual(syncOperations(fetchMock).some(op => op.type === 'upsert' && op.table === 'etbs'), false,
     'the incoming ETB B row is not uploaded after destructive preflight fails');
   assert.ok(messages.some(message => message.includes('restore and delete recovery state')));
   assert.ok(!messages.some(message => message.includes('Imported')));
@@ -906,7 +1002,7 @@ test('trash-lifecycle: main mixed Replace rolls back reused restore state when o
   assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState,
     'one failed authoritative write leaves the exact prior combined state intact');
   assert.strictEqual(ctx._deleteBlocksRow('singles', grab('DB').DB.singles[0]), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.ok(!messages.some(message => message.includes('Imported')));
 
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });
@@ -954,7 +1050,7 @@ test('trash-lifecycle: features mixed Replace rolls back reused restore state wh
   assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), beforeDeleteState,
     'the features importer cannot leave half of a Replace safety transaction active');
   assert.strictEqual(ctx._deleteBlocksRow('etbs', grab('DB').DB.etbs[0]), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.ok(!messages.some(message => message.includes('Imported')));
 
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });
@@ -988,13 +1084,7 @@ test('trash-lifecycle: confirmed legacy mirror failure cannot invalidate a commi
     if (key === '_kjrConfirmedCloudDeletes') throw new Error('confirmed write unavailable');
     return realSetItem(key, value);
   };
-  fetchMock.route('/rest/v1/singles', (url, opts) => ({
-    ok: true,
-    status: opts && opts.method === 'DELETE' ? 204 : 200,
-    json: async () => opts && opts.method === 'DELETE' ? {} : [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-    text: async () => '',
-    headers: { get: () => null },
-  }));
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   await ctx.importData();
   assert.strictEqual(grab('DB').DB.singles.length, 1);
@@ -1007,7 +1097,7 @@ test('trash-lifecycle: confirmed legacy mirror failure cannot invalidate a commi
   assert.strictEqual(localStorage.getItem('_kjrConfirmedCloudDeletes'), confirmedRaw);
   assert.strictEqual(ctx._deleteBlocksRow('singles', grab('DB').DB.singles[0]), false,
     'the stale confirmed mirror cannot override authoritative v2 state');
-  assert.ok(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE' && call.url.includes(oldOnly.id)));
+  assert.ok(syncOperations(fetchMock).some(op => op.type === 'delete' && op.table === 'singles' && op.id === oldOnly.id));
 });
 
 test('trash-lifecycle: single delete keeps its source when cloud Trash and durable queue both fail', async () => {
@@ -1017,8 +1107,6 @@ test('trash-lifecycle: single delete keeps its source when cloud Trash and durab
   ctx.kjrConfirm = async () => true;
   ctx.toastError = message => errors.push(message);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: false, status: 503, text: 'trash offline' });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrPendingTrashWrites') throw new Error('trash queue unavailable');
@@ -1027,7 +1115,7 @@ test('trash-lifecycle: single delete keeps its source when cloud Trash and durab
 
   await ctx.deleteItem(row.id, 'singles');
   assert.ok(grab('DB').DB.singles.some(item => item.id === row.id));
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false,
+  assert.strictEqual(syncCalls(fetchMock).length, 0,
     'source DELETE never starts without a recoverable Trash snapshot');
   assert.strictEqual(localStorage.getItem('_kjrPendingCloudDeletes'), null);
   assert.strictEqual(localStorage.getItem('_kjrConfirmedCloudDeletes'), null);
@@ -1046,8 +1134,6 @@ test('trash-lifecycle: batch delete keeps every source when cloud Trash and dura
   const selected = grab('selectedIds').selectedIds.singles;
   rows.forEach(row => selected.add(row.id));
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: false, status: 503, text: 'trash offline' });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
     if (key === '_kjrPendingTrashWrites') throw new Error('trash queue unavailable');
@@ -1056,12 +1142,12 @@ test('trash-lifecycle: batch delete keeps every source when cloud Trash and dura
 
   await ctx.deleteSelected('singles');
   assert.deepStrictEqual(plain(grab('DB').DB.singles.map(row => row.id).sort()), rows.map(row => row.id).sort());
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(localStorage.getItem('_kjrPendingCloudDeletes'), null);
   assert.ok(errors.some(message => message.includes('no recoverable Trash copies')));
 });
 
-test('trash-lifecycle: successful cloud Trash write cannot remove a single source without durable delete preflight', async () => {
+test('trash-lifecycle: durably queued Trash cannot remove a single source without delete preflight', async () => {
   const row = { id: 'source_preflight_single', name: 'Keep single source', costPrice: 901, status: 'Available' };
   const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [row] } });
   const messages = [];
@@ -1069,8 +1155,6 @@ test('trash-lifecycle: successful cloud Trash write cannot remove a single sourc
   ctx.toast = message => messages.push(message);
   ctx.toastError = message => messages.push(message);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, status: 200, json: {}, text: '' });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
   const beforeCache = localStorage.getItem('pokeinventory_v3');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
@@ -1081,14 +1165,15 @@ test('trash-lifecycle: successful cloud Trash write cannot remove a single sourc
   await ctx.deleteItem(row.id, 'singles');
   assert.deepStrictEqual(plain(grab('DB').DB.singles), [row]);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.ok(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/trash')));
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/singles')), false);
+  assert.strictEqual(JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]').length, 1,
+    'the Trash snapshot is durable even though the delete preflight stopped the mutation');
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(localStorage.getItem('_kjrConfirmedCloudDeletes'), null);
   assert.ok(messages.some(message => message.includes('cloud rows could not be queued safely')));
   assert.ok(!messages.some(message => message.includes('Moved to trash')));
 });
 
-test('trash-lifecycle: successful cloud Trash write cannot remove batch sources without durable delete preflight', async () => {
+test('trash-lifecycle: durably queued Trash cannot remove batch sources without delete preflight', async () => {
   const rows = [
     { id: 'source_preflight_batch_a', name: 'Keep batch A', costPrice: 902, status: 'Available' },
     { id: 'source_preflight_batch_b', name: 'Keep batch B', costPrice: 903, status: 'Available' },
@@ -1100,8 +1185,6 @@ test('trash-lifecycle: successful cloud Trash write cannot remove batch sources 
   ctx.toastError = message => messages.push(message);
   rows.forEach(row => grab('selectedIds').selectedIds.singles.add(row.id));
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, status: 200, json: {}, text: '' });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
   const beforeCache = localStorage.getItem('pokeinventory_v3');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
@@ -1112,13 +1195,13 @@ test('trash-lifecycle: successful cloud Trash write cannot remove batch sources 
   await ctx.deleteSelected('singles');
   assert.deepStrictEqual(plain(grab('DB').DB.singles), rows);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.ok(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/trash')));
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/singles')), false);
+  assert.strictEqual(JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]').length, 2);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.ok(messages.some(message => message.includes('cloud rows could not be queued safely')));
   assert.ok(!messages.some(message => message.includes('moved to trash')));
 });
 
-test('trash-lifecycle: features delete keeps its source after cloud Trash succeeds but delete preflight fails', async () => {
+test('trash-lifecycle: features delete keeps its source after Trash queues but delete preflight fails', async () => {
   const row = { id: 'source_preflight_etb', product: 'Keep feature source', totalPrice: 904, status: 'In Stock' };
   const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { etbs: [row] } });
   const messages = [];
@@ -1126,8 +1209,6 @@ test('trash-lifecycle: features delete keeps its source after cloud Trash succee
   ctx.toast = message => messages.push(message);
   ctx.toastError = message => messages.push(message);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, status: 200, json: {}, text: '' });
-  fetchMock.route('/rest/v1/etbs', { ok: true, status: 204, json: {}, text: '' });
   const beforeCache = localStorage.getItem('pokeinventory_v3');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
@@ -1138,7 +1219,7 @@ test('trash-lifecycle: features delete keeps its source after cloud Trash succee
   await ctx.kjrDeleteRow('etbs', row.id);
   assert.deepStrictEqual(plain(grab('DB').DB.etbs), [row]);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/etbs')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.ok(messages.some(message => message.includes('cloud row could not be queued safely')));
   assert.ok(!messages.some(message => message.includes('Moved to trash')));
 });
@@ -1148,8 +1229,6 @@ test('trash-lifecycle: durable local Trash queue still cannot remove a source wh
   const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [row] } });
   ctx.kjrConfirm = async () => true;
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: false, status: 503, text: 'trash offline' });
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
   const beforeCache = localStorage.getItem('pokeinventory_v3');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
@@ -1163,7 +1242,7 @@ test('trash-lifecycle: durable local Trash queue still cannot remove a source wh
   const trashQueue = JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]');
   assert.strictEqual(trashQueue.length, 1);
   assert.strictEqual(trashQueue[0].data.item.costPrice, 905);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE' && call.url.includes('/rest/v1/singles')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
 });
 
 test('trash-lifecycle: linked-sale removal aborts before status or source mutation when delete preflight fails', async () => {
@@ -1172,7 +1251,6 @@ test('trash-lifecycle: linked-sale removal aborts before status or source mutati
   const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [item], sales: [sale] } });
   ctx.kjrConfirm = async () => true;
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/trash', { ok: true, status: 200, json: {}, text: '' });
   const beforeCache = localStorage.getItem('pokeinventory_v3');
   const realSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = (key, value) => {
@@ -1184,7 +1262,7 @@ test('trash-lifecycle: linked-sale removal aborts before status or source mutati
   assert.strictEqual(grab('DB').DB.singles[0].status, 'Sold');
   assert.strictEqual(grab('DB').DB.sales.length, 1);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
 });
 
 test('trash-lifecycle: box-to-pack migration aborts before local move when delete preflight fails', async () => {
@@ -1203,7 +1281,7 @@ test('trash-lifecycle: box-to-pack migration aborts before local move when delet
   assert.deepStrictEqual(plain(grab('DB').DB.boosterBoxes), [row]);
   assert.deepStrictEqual(plain(grab('DB').DB.boosterPacks), []);
   assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'DELETE' || call.opts.method === 'POST')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
 });
 
 test('trash-lifecycle: durably queued Trash copy permits delete and reload retries the snapshot', async () => {
@@ -1211,16 +1289,18 @@ test('trash-lifecycle: durably queued Trash copy permits delete and reload retri
   const first = await loadApp({ seed: { singles: [row] } });
   first.ctx.kjrConfirm = async () => true;
   first.fetchMock.calls.length = 0;
-  first.fetchMock.route('/rest/v1/trash', { ok: false, status: 503, text: 'trash offline' });
-  first.fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {}, text: '' });
+  first.fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'offline' }, 503));
   await first.ctx.deleteItem(row.id, 'singles');
   assert.strictEqual(first.grab('DB').DB.singles.some(item => item.id === row.id), false);
   assert.strictEqual(JSON.parse(first.localStorage.getItem('_kjrPendingTrashWrites')).length, 1);
 
-  const response = json => ({ ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
   const reloaded = await loadApp({
     localStorage: copyStorage(first.localStorage),
-    fetch: async url => String(url).includes('/rest/v1/') ? response([]) : response({ rates: { SGD: 1.3 } }),
+    fetch: async (url, opts) => {
+      if (String(url).includes('/sync/v2/mutate')) return syncSuccessResponse(opts);
+      if (String(url).includes('/sync/v2/pull')) return syncPullResponse();
+      return jsonResponse({ rates: { SGD: 1.3 } });
+    },
   });
   assert.deepStrictEqual(JSON.parse(reloaded.localStorage.getItem('_kjrPendingTrashWrites')), []);
   assert.strictEqual(reloaded.grab('DB').DB.singles.some(item => item.id === row.id), false);
@@ -1256,11 +1336,11 @@ test('trash-lifecycle: rapid double Undo serialises stack reads and uploads the 
   assert.strictEqual(stacks.undoStack.length, 0);
   assert.strictEqual(stacks.redoStack.length, 2);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
-  const posted = JSON.parse(fetchMock.calls.find(call => call.opts && call.opts.method === 'POST').opts.body);
-  assert.strictEqual(posted[0].id, 'undo_mutex_row');
-  assert.strictEqual(posted[0].data.costPrice, 0);
+  const posted = syncOperations(fetchMock).find(op => op.table === 'singles' && op.id === 'undo_mutex_row');
+  assert.strictEqual(posted.id, 'undo_mutex_row');
+  assert.strictEqual(posted.data.costPrice, 0);
 });
 
 test('trash-lifecycle: rapid Undo then Redo waits for preflight and delete, preserving stacks and target id', async () => {
@@ -1269,6 +1349,14 @@ test('trash-lifecycle: rapid Undo then Redo waits for preflight and delete, pres
   ctx.snapshotForUndo();
   grab('DB').DB.singles = [];
   ctx.saveData();
+  assert.strictEqual(ctx._queuePendingTrash({
+    id: 'trash_undo_redo_mutex_row',
+    data: {
+      originalTable: 'singles', originalId: row.id,
+      item: JSON.parse(JSON.stringify(row)), reason: 'test-delete', deletedAt: new Date().toISOString(),
+    },
+    updated_at: new Date().toISOString(),
+  }), true, 'the fixture models the recoverable Trash snapshot written by a real delete');
   const originalPreflight = ctx._prepareExplicitRowRestores;
   let releasePreflight;
   ctx._prepareExplicitRowRestores = (...args) => new Promise(resolve => {
@@ -1279,10 +1367,11 @@ test('trash-lifecycle: rapid Undo then Redo waits for preflight and delete, pres
   let deleteStarted;
   const announced = new Promise(resolve => { deleteStarted = resolve; });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', (url, opts) => {
-    if (!opts || opts.method !== 'DELETE') return { ok: true, status: 200, json: async () => [], text: async () => '', headers: { get: () => null } };
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const operation = syncRequest(opts).operations[0];
+    if (operation.type !== 'delete') return syncSuccessResponse(opts);
     deleteStarted();
-    return new Promise(resolve => { releaseDelete = () => resolve({ ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } }); });
+    return new Promise(resolve => { releaseDelete = () => resolve(syncSuccessResponse(opts)); });
   });
 
   const undoing = ctx.undoLast();
@@ -1297,18 +1386,18 @@ test('trash-lifecycle: rapid Undo then Redo waits for preflight and delete, pres
   const stacks = grab('undoStack', 'redoStack');
   assert.strictEqual(stacks.undoStack.length, 1);
   assert.strictEqual(stacks.redoStack.length, 0);
-  const deletes = fetchMock.calls.filter(call => call.opts && call.opts.method === 'DELETE');
+  const deletes = syncOperations(fetchMock).filter(op => op.type === 'delete');
   assert.strictEqual(deletes.length, 1);
-  assert.ok(deletes[0].url.includes(row.id));
-  const response = json => ({ ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
+  assert.strictEqual(deletes[0].id, row.id);
   const reloaded = await loadApp({
     localStorage: copyStorage(localStorage),
     fetch: async url => {
-      if (String(url).includes('/rest/v1/singles')) {
-        return response([{ id: row.id, data: row, updated_at: '2026-08-29T12:00:00.000Z' }]);
+      if (String(url).includes('/sync/v2/pull')) {
+        const data = { ...row };
+        delete data.id;
+        return syncPullResponse({ singles: [{ id: row.id, data, row_version: 1, updated_at: '2026-08-29T12:00:00.000Z' }] });
       }
-      if (String(url).includes('/rest/v1/')) return response([]);
-      return response({ rates: { SGD: 1.3 } });
+      return jsonResponse({ rates: { SGD: 1.3 } });
     },
   });
   assert.strictEqual(reloaded.grab('DB').DB.singles.some(item => item.id === row.id), false,
@@ -1335,7 +1424,7 @@ test('trash-lifecycle: Undo aborts with intact state and stacks when delete queu
   assert.strictEqual(grab('DB').DB.singles[0].costPrice, 777);
   assert.strictEqual(grab('undoStack').undoStack.length, 1);
   assert.strictEqual(grab('redoStack').redoStack.length, 0);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncOperations(fetchMock).some(op => op.type === 'delete'), false);
   assert.ok(messages.some(message => message.includes('Undo stopped')));
   assert.ok(!messages.some(message => message.includes('Undone')));
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });
@@ -1360,7 +1449,7 @@ test('trash-lifecycle: Redo aborts with intact state and stacks when delete queu
   assert.strictEqual(grab('DB').DB.singles[0].id, row.id);
   assert.strictEqual(grab('redoStack').redoStack.length, 1);
   assert.strictEqual(grab('undoStack').undoStack.length, 0);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncOperations(fetchMock).some(op => op.type === 'delete'), false);
   assert.ok(messages.some(message => message.includes('Redo stopped')));
   assert.ok(!messages.some(message => message.includes('Redone')));
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });
@@ -1387,7 +1476,7 @@ test('trash-lifecycle: version restore aborts before state replacement when dele
   fetchMock.calls.length = 0;
   await ctx.restoreVersion(version.id);
   assert.strictEqual(grab('DB').DB.singles[0].id, row.id);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false);
+  assert.strictEqual(syncOperations(fetchMock).some(op => op.type === 'delete'), false);
   assert.ok(messages.some(message => message.includes('Version restore stopped')));
   assert.ok(!messages.some(message => message.includes('Restored:')));
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });

@@ -3,16 +3,16 @@
 // _flushDirtyToSupabase MUST bail at the top on a localhost preview WITHOUT
 // clearing dirty flags (a guard-skipped upsert must never read as "synced").
 //
-// Note: loadApp() itself triggers initDB()'s own cloud-read attempts
-// (sbFetchAll for all 7 tables) and the FX-rate fetches - none of those are
-// gated by isLocalhostPreview() (only WRITES are guarded, reads are not,
-// confirmed by running this against a localhost location below and still
-// seeing load-time fetch attempts). So every test here resets
+// Note: loadApp() itself triggers the authenticated sync pull and FX-rate
+// fetches. Every test here resets
 // fetchMock.calls to [] right after loadApp() resolves, and only inspects
 // calls made by the explicit _flushDirtyToSupabase() call under test.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const {
+  loadApp, jsonResponse, syncRequest, syncSuccessResponse, syncPullResponse,
+  syncCalls, syncOperations,
+} = require('./harness.js');
 
 const LOCALHOST_LOCATION = {
   protocol: 'http:', hostname: 'localhost', host: 'localhost:3800',
@@ -57,12 +57,13 @@ test('flush-guard: github.io + successful upserts -> dirty flags clear, requests
   });
   assert.strictEqual(ctx.isLocalhostPreview(), false);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, status: 200, json: {} });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
   const { _dirty } = grab('_dirty');
   assert.strictEqual(_dirty.singles.has('single_seed_1'), false, 'dirty flag cleared after a real successful upsert');
-  const upsertCalls = fetchMock.calls.filter(c => c.url.includes('/rest/v1/singles') && c.opts && c.opts.method === 'POST');
-  assert.ok(upsertCalls.length >= 1, 'a POST upsert request was made against the singles table');
+  const operations = syncOperations(fetchMock);
+  assert.ok(operations.some(op => op.type === 'upsert' && op.table === 'singles'),
+    'the CAS mutation contains an upsert against the singles table');
 });
 
 test('flush-guard: fetch failure during flush -> dirty flags are RETAINED, not cleared', async () => {
@@ -70,7 +71,7 @@ test('flush-guard: fetch failure during flush -> dirty flags are RETAINED, not c
     localStorage: { pokeinv_dirty_v1: JSON.stringify({ singles: ['single_seed_1'] }) },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: false, status: 500, text: 'server exploded' });
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'server_error' }, 500));
   await ctx._flushDirtyToSupabase();
   const { _dirty } = grab('_dirty');
   assert.strictEqual(_dirty.singles.has('single_seed_1'), true, 'a failed upsert must leave the row dirty so the next saveData() retries it');
@@ -85,11 +86,11 @@ test('flush-guard: only tables with actually-dirty rows get an upsert request', 
     localStorage: { pokeinv_dirty_v1: JSON.stringify({ singles: ['single_seed_1'] }) }, // slabs NOT dirty
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, json: {} });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
-  const posts = fetchMock.calls.filter(c => c.opts && c.opts.method === 'POST');
-  assert.ok(posts.some(c => c.url.includes('/rest/v1/singles')));
-  assert.ok(!posts.some(c => c.url.includes('/rest/v1/slabs')), 'slabs had no dirty rows, so it must not sync at all');
+  const operations = syncOperations(fetchMock);
+  assert.ok(operations.some(op => op.type === 'upsert' && op.table === 'singles'));
+  assert.ok(!operations.some(op => op.table === 'slabs'), 'slabs had no dirty rows, so it must not sync at all');
 });
 
 test('flush-guard: an edit made during an in-flight upload stays dirty and survives reload', async () => {
@@ -101,15 +102,12 @@ test('flush-guard: an edit made during an in-flight upload stays dirty and survi
   let releasePost;
   let announcePost;
   const postStarted = new Promise(resolve => { announcePost = resolve; });
-  fetchMock.route('/rest/v1/singles', (url, opts) => {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
     assert.strictEqual(opts.method, 'POST');
+    assert.strictEqual(syncRequest(opts).operations[0].table, 'singles');
     announcePost();
     return new Promise(resolve => {
-      releasePost = () => resolve({
-        ok: true, status: 200,
-        json: async () => [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-        text: async () => '', headers: { get: () => null },
-      });
+      releasePost = () => resolve(syncSuccessResponse(opts));
     });
   });
 
@@ -122,7 +120,7 @@ test('flush-guard: an edit made during an in-flight upload stays dirty and survi
   releasePost();
   await flushing;
 
-  const posted = JSON.parse(fetchMock.calls.find(c => c.opts && c.opts.method === 'POST').opts.body);
+  const posted = syncRequest(syncCalls(fetchMock)[0].opts).operations;
   assert.strictEqual(posted[0].data.name, 'Before upload', 'the request body is the exact pre-await snapshot, not a live object reference');
   const dirtyAfter = JSON.parse(localStorage.getItem('pokeinv_dirty_v1'));
   assert.ok(dirtyAfter.singles.includes('single_seed_1'), 'the newer mutation token remains dirty after the older upload succeeds');
@@ -147,14 +145,10 @@ test('flush-guard: another tab mutation token is not cleared by this tab finishi
   let releasePost;
   let announcePost;
   const postStarted = new Promise(resolve => { announcePost = resolve; });
-  fetchMock.route('/rest/v1/singles', () => {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
     announcePost();
     return new Promise(resolve => {
-      releasePost = () => resolve({
-        ok: true, status: 200,
-        json: async () => [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-        text: async () => '', headers: { get: () => null },
-      });
+      releasePost = () => resolve(syncSuccessResponse(opts));
     });
   });
 
@@ -181,10 +175,7 @@ test('flush-guard: a different tab token present before snapshot is never claime
     localStorage: { pokeinv_dirty_v1: JSON.stringify(seededDirty) },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', {
-    ok: true, status: 200,
-    json: [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-  });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
   const after = JSON.parse(localStorage.getItem('pokeinv_dirty_v1'));
   assert.ok(after.singles.includes('single_seed_1'));
@@ -238,9 +229,7 @@ test('flush-guard: matching foreign v2 snapshot clears after upload, while a dif
     rowJson: JSON.stringify({ ...base, name: 'Different newer bytes' }), createdAt: 2,
   }));
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', {
-    ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }],
-  });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   await ctx._flushDirtyToSupabase();
   assert.strictEqual(localStorage.getItem(exactKey), null,
@@ -266,9 +255,9 @@ test('flush-guard: orphan v2 snapshot overrides stale cache bytes and uploads th
 
   assert.strictEqual(grab('DB').DB.singles[0].costPrice, 999, 'the journal snapshot replaces stale shared-cache bytes on reload');
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
-  const posted = JSON.parse(fetchMock.calls.find(call => call.opts && call.opts.method === 'POST').opts.body);
+  const posted = syncRequest(syncCalls(fetchMock)[0].opts).operations;
   assert.strictEqual(posted[0].data.name, 'Unsynced money edit');
   assert.strictEqual(posted[0].data.costPrice, 999, 'the exact durable journal bytes reach the cloud');
 });
@@ -337,15 +326,15 @@ test('flush-guard: identical orphan snapshots share one upload and all matching 
     },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 200, json: [{ updated_at: '2026-08-29T12:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx._flushDirtyToSupabase();
-  const posts = fetchMock.calls.filter(call => call.url.includes('/rest/v1/singles') && call.opts && call.opts.method === 'POST');
-  assert.strictEqual(posts.length, 1);
+  const operations = syncOperations(fetchMock).filter(op => op.table === 'singles' && op.type === 'upsert');
+  assert.strictEqual(operations.length, 1);
   assert.strictEqual(localStorage.getItem(keyA), null);
   assert.strictEqual(localStorage.getItem(keyB), null, 'every token proven to describe the uploaded bytes clears');
 });
 
-test('flush-guard: a strictly newer cloud row beats a recovered snapshot and logs its full discarded bytes', async () => {
+test('flush-guard: a strictly newer server row wins the CAS conflict and logs recovered local bytes', async () => {
   const recovered = { id: 'single_replay_cloud', name: 'Recovered local edit', costPrice: 444, status: 'Available', _updatedAt: '2026-08-29T10:00:00.000Z' };
   const cloud = { ...recovered, name: 'Strictly newer cloud edit', costPrice: 555 };
   const token = 'closed-tab:newer-cloud';
@@ -362,19 +351,38 @@ test('flush-guard: a strictly newer cloud row beats a recovered snapshot and log
       [markerKey]: JSON.stringify({ table: 'singles', id: recovered.id, token, owner: 'closed-tab', createdAt: 30, rowJson: JSON.stringify(recovered) }),
     },
     fetch: async url => {
-      if (String(url).includes('/rest/v1/singles')) {
-        return response([{ id: cloud.id, data: cloud, updated_at: '2026-08-29T12:00:00.000Z' }]);
+      if (String(url).includes('/sync/v2/pull')) {
+        const data = { ...cloud };
+        delete data.id;
+        delete data._updatedAt;
+        return syncPullResponse({ singles: [{ id: cloud.id, data, row_version: 2, updated_at: '2026-08-29T12:00:00.000Z' }] });
       }
-      if (String(url).includes('/rest/v1/')) return response([]);
       return response({ rates: { SGD: 1.3 } });
     },
   });
 
+  assert.strictEqual(loaded.grab('DB').DB.singles[0].name, 'Recovered local edit',
+    'dirty recovered bytes remain visible until the server performs the CAS check');
+  loaded.fetchMock.calls.length = 0;
+  loaded.fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    const data = { ...cloud };
+    delete data.id;
+    delete data._updatedAt;
+    return jsonResponse({ ok: false, code: 'version_conflict', conflicts: [{
+      table: 'singles', id: cloud.id,
+      current: { id: cloud.id, data, row_version: 2, updated_at: '2026-08-29T12:00:00.000Z' },
+      tombstone: null,
+    }] }, 409);
+  });
+  await loaded.ctx._flushDirtyToSupabase();
   assert.strictEqual(loaded.grab('DB').DB.singles[0].name, 'Strictly newer cloud edit');
   assert.strictEqual(loaded.localStorage.getItem(markerKey), null, 'the resolved local snapshot no longer remains queued');
   const log = JSON.parse(loaded.localStorage.getItem('pokeinv_changelog'));
-  assert.ok(log.some(entry => entry.action === 'conflict' && entry.extra.includes(JSON.stringify(recovered))),
-    'the entire discarded recovered snapshot remains in Changelog');
+  const archived = { ...recovered };
+  delete archived._updatedAt;
+  assert.ok(log.some(entry => entry.action === 'conflict' && entry.extra.includes(JSON.stringify(archived))),
+    'all user data from the discarded recovered snapshot remains in Changelog');
 });
 
 test('flush-guard: timestamp write-back preserves a newer same-id cache row saved by another tab', async () => {
@@ -382,17 +390,13 @@ test('flush-guard: timestamp write-back preserves a newer same-id cache row save
     localStorage: { pokeinv_dirty_v1: JSON.stringify({ singles: ['single_seed_1'] }) },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', () => ({
-    ok: true, status: 200,
-    json: async () => {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
       const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
       cache.singles[0].name = 'Newer bytes from another tab';
       cache.singles[0]._updatedAt = '2026-08-29T12:00:01.000Z';
       localStorage.setItem('pokeinventory_v3', JSON.stringify(cache));
-      return [{ updated_at: '2026-08-29T12:00:00.000Z' }];
-    },
-    text: async () => '', headers: { get: () => null },
-  }));
+      return syncSuccessResponse(opts);
+  });
 
   await ctx._flushDirtyToSupabase();
   const cached = JSON.parse(localStorage.getItem('pokeinventory_v3')).singles[0];
@@ -404,17 +408,13 @@ test('flush-guard: timestamp write-back preserves a newer same-id cache row save
 test('flush-guard: saveAll timestamp write-back also preserves a newer same-id cache row', async () => {
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', () => ({
-    ok: true, status: 200,
-    json: async () => {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
       const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
       cache.singles[0].name = 'Concurrent save during saveAll';
       cache.singles[0]._updatedAt = '2026-08-29T12:00:02.000Z';
       localStorage.setItem('pokeinventory_v3', JSON.stringify(cache));
-      return [{ updated_at: '2026-08-29T12:00:00.000Z' }];
-    },
-    text: async () => '', headers: { get: () => null },
-  }));
+      return syncSuccessResponse(opts);
+  });
 
   await ctx.saveAllToSupabase();
   const cached = JSON.parse(localStorage.getItem('pokeinventory_v3')).singles[0];
@@ -432,10 +432,14 @@ test('flush-guard: a delete is not attempted or removed from dirty state when it
     if (key === '_kjrDeleteStateV2') throw new Error('storage full');
     return realSetItem(key, value);
   };
+  const source = grab('DB').DB.singles[0];
+  ctx._queuePendingTrash({ id: 'trash-single-seed-1', data: {
+    originalTable: 'singles', originalId: source.id, item: JSON.parse(JSON.stringify(source)),
+  } });
 
   const result = await ctx.sbDelete('singles', 'single_seed_1');
   assert.strictEqual(result, false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && call.opts.method === 'DELETE'), false,
+  assert.strictEqual(syncCalls(fetchMock).length, 0,
     'cloud deletion is fail-closed when no durable retry can be recorded');
   assert.strictEqual(grab('_dirty')._dirty.singles.has('single_seed_1'), true,
     'the last persisted recovery path is not discarded');
@@ -446,11 +450,15 @@ test('flush-guard: deleting a row clears only this tab dirty token and preserves
     singles: ['single_seed_1'],
     _revisions: { singles: { single_seed_1: ['other-tab:delete-race'] } },
   };
-  const { ctx, fetchMock, localStorage } = await loadApp({
+  const { ctx, fetchMock, localStorage, grab } = await loadApp({
     localStorage: { pokeinv_dirty_v1: JSON.stringify(seededDirty) },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/singles', { ok: true, status: 204, json: {} });
+  const source = grab('DB').DB.singles[0];
+  ctx._queuePendingTrash({ id: 'trash-single-seed-1', data: {
+    originalTable: 'singles', originalId: source.id, item: JSON.parse(JSON.stringify(source)),
+  } });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   assert.strictEqual(await ctx.sbDelete('singles', 'single_seed_1'), true);
   const after = JSON.parse(localStorage.getItem('pokeinv_dirty_v1'));
@@ -469,36 +477,43 @@ test('flush-guard: a delete invoked during an older in-flight upsert runs last, 
   let releasePost;
   let announcePost;
   const postStarted = new Promise(resolve => { announcePost = resolve; });
-  fetchMock.route('/rest/v1/singles', (url, opts) => {
-    if (opts.method === 'POST') {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    const operation = request.operations[0];
+    if (operation.type === 'upsert') {
       events.push('post-start');
       announcePost();
       return new Promise(resolve => {
         releasePost = () => {
           cloudHasRow = true;
           events.push('post-finish');
-          resolve({ ok: true, status: 200, json: async () => [{ updated_at: '2026-08-29T12:00:00.000Z' }], text: async () => '', headers: { get: () => null } });
+          resolve(syncSuccessResponse(opts));
         };
       });
     }
-    if (opts.method === 'DELETE') {
+    if (operation.type === 'delete') {
       events.push('delete');
       cloudHasRow = false;
-      return { ok: true, status: 204, json: async () => ({}), text: async () => '', headers: { get: () => null } };
+      return syncSuccessResponse(opts);
     }
-    throw new Error('unexpected method ' + opts.method);
+    throw new Error('unexpected operation ' + operation.type);
   });
 
   const flushing = ctx._flushDirtyToSupabase();
   await postStarted;
   const { DB } = grab('DB');
+  ctx._queuePendingTrash({ id: 'trash-single-seed-1', data: {
+    originalTable: 'singles', originalId: DB.singles[0].id, item: JSON.parse(JSON.stringify(DB.singles[0])),
+  } });
   DB.singles = [];
   const deleting = ctx.sbDelete('singles', 'single_seed_1');
   await settle(3);
   assert.deepStrictEqual(events, ['post-start'], 'delete waits behind the older upload for the same row');
   releasePost();
   await Promise.all([flushing, deleting]);
-  assert.deepStrictEqual(events, ['post-start', 'post-finish', 'delete']);
+  assert.deepStrictEqual(events.slice(0, 3), ['post-start', 'post-finish', 'delete']);
+  assert.ok(events.slice(2).every(event => event === 'delete'),
+    'any durable retry is also ordered after the older upsert');
   assert.strictEqual(cloudHasRow, false, 'the final server operation is the delete, so the row cannot resurrect');
 });
 
@@ -513,27 +528,32 @@ test('flush-guard: saveAll skips a later-table snapshot deleted while an earlier
   let releaseSingles;
   let announceSingles;
   const singlesStarted = new Promise(resolve => { announceSingles = resolve; });
-  fetchMock.route('/rest/v1/', (url, opts) => {
-    if (opts.method === 'POST' && url.includes('/singles')) {
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const operation = syncRequest(opts).operations[0];
+    if (operation.type === 'upsert' && operation.table === 'singles') {
       announceSingles();
       return new Promise(resolve => {
-        releaseSingles = () => resolve({ ok: true, status: 200, json: async () => [{ updated_at: '2026-08-29T12:00:00.000Z' }], text: async () => '', headers: { get: () => null } });
+        releaseSingles = () => resolve(syncSuccessResponse(opts));
       });
     }
-    return { ok: true, status: opts.method === 'DELETE' ? 204 : 200, json: async () => [{ updated_at: '2026-08-29T12:00:00.000Z' }], text: async () => '', headers: { get: () => null } };
+    return syncSuccessResponse(opts);
   });
 
   const savingAll = ctx.saveAllToSupabase();
   await singlesStarted;
   const { DB } = grab('DB');
+  ctx._queuePendingTrash({ id: 'trash-slab-1', data: {
+    originalTable: 'slabs', originalId: DB.slabs[0].id, item: JSON.parse(JSON.stringify(DB.slabs[0])),
+  } });
   DB.slabs = [];
   const deleting = ctx.sbDelete('slabs', 'slab_1');
   await deleting;
   releaseSingles();
   await savingAll;
-  const slabPosts = fetchMock.calls.filter(c => c.opts && c.opts.method === 'POST' && c.url.includes('/rest/v1/slabs'));
-  assert.strictEqual(slabPosts.length, 0, 'saveAll never uploads the stale slab snapshot after its delete');
-  assert.ok(fetchMock.calls.some(c => c.opts && c.opts.method === 'DELETE' && c.url.includes('/rest/v1/slabs')));
+  const operations = syncOperations(fetchMock);
+  assert.strictEqual(operations.filter(op => op.type === 'upsert' && op.table === 'slabs').length, 0,
+    'saveAll never uploads the stale slab snapshot after its delete');
+  assert.ok(operations.some(op => op.type === 'delete' && op.table === 'slabs' && op.id === 'slab_1'));
 });
 
 test('flush-guard: corrupt authoritative delete state blocks saveAll while rows and dirty recovery stay intact', async () => {
@@ -546,10 +566,10 @@ test('flush-guard: corrupt authoritative delete state blocks saveAll while rows 
   const beforeV1 = localStorage.getItem('pokeinv_dirty_v1');
   const beforeV2 = dirtyV2Snapshot(localStorage);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, status: 200, json: [{ updated_at: '2026-08-30T00:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   assert.strictEqual(await ctx.saveAllToSupabase(), false);
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.ok(grab('DB').DB.singles.some(candidate => candidate.id === row.id), 'corruption never turns into an empty UI');
   assert.strictEqual(grab('_dirty')._dirty.singles.has(row.id), true);
   assert.strictEqual(localStorage.getItem('pokeinv_dirty_v1'), beforeV1);
@@ -569,10 +589,10 @@ test('flush-guard: corrupt authoritative delete state blocks dirty flush without
   const beforeV2 = dirtyV2Snapshot(localStorage);
   assert.ok(Object.keys(beforeV2).length > 0, 'load upgrades the legacy dirty id with exact cached row bytes');
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, status: 200, json: [{ updated_at: '2026-08-30T00:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
 
   await ctx._flushDirtyToSupabase();
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   assert.strictEqual(grab('_dirty')._dirty.singles.has(row.id), true);
   assert.ok(grab('DB').DB.singles.some(candidate => candidate.id === row.id));
   assert.strictEqual(localStorage.getItem('pokeinv_dirty_v1'), beforeV1);
@@ -596,11 +616,11 @@ test('flush-guard: corrupt authoritative delete state blocks init empty-cloud up
     },
     fetch: async (url, opts = {}) => {
       calls.push({ url: String(url), opts });
-      if (String(url).includes('/rest/v1/')) return response([]);
+      if (String(url).includes('/sync/v2/pull')) return syncPullResponse();
       return response({ rates: { SGD: 1.3 } });
     },
   });
-  assert.strictEqual(calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(calls.some(call => call.url.includes('/sync/v2/mutate')), false);
   assert.ok(loaded.grab('DB').DB.singles.some(candidate => candidate.id === row.id));
   assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(row.id), true);
   assert.ok(Object.keys(dirtyV2Snapshot(loaded.localStorage)).length > 0);
@@ -611,7 +631,7 @@ test('flush-guard: direct upsert and append import cannot bypass a corrupt delet
     localStorage: { _kjrDeleteStateV2: '{broken-json' },
   });
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, status: 200, json: [{ updated_at: '2026-08-30T00:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await assert.rejects(
     ctx.sbUpsert('singles', 'single_seed_1', { name: 'Must not upload' }),
     /delete recovery state needs repair/
@@ -623,7 +643,7 @@ test('flush-guard: direct upsert and append import cannot bypass a corrupt delet
   await ctx.importData();
   await settle();
 
-  assert.strictEqual(fetchMock.calls.some(call => call.opts && (call.opts.method === 'POST' || call.opts.method === 'DELETE')), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0);
   const imported = grab('DB').DB.singles.find(candidate => candidate.name === 'Queued import');
   assert.ok(imported, 'append import remains available locally');
   assert.strictEqual(grab('_dirty')._dirty.singles.has(imported.id), true);
@@ -634,7 +654,7 @@ test('flush-guard: valid v2 state leaves normal saveAll uploads unchanged', asyn
   const { ctx, fetchMock, localStorage } = await loadApp();
   assert.strictEqual(JSON.parse(localStorage.getItem('_kjrDeleteStateV2')).schema, 2);
   fetchMock.calls.length = 0;
-  fetchMock.route('/rest/v1/', { ok: true, status: 200, json: [{ updated_at: '2026-08-30T00:00:00.000Z' }] });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   await ctx.saveAllToSupabase();
-  assert.ok(fetchMock.calls.some(call => call.opts && call.opts.method === 'POST' && call.url.includes('/rest/v1/singles')));
+  assert.ok(syncOperations(fetchMock).some(op => op.type === 'upsert' && op.table === 'singles'));
 });

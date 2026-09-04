@@ -3,7 +3,7 @@
 // _monthIdxFromString, _parseHistDate, _kjrDaysHeld.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp, isDate } = require('./harness.js');
+const { loadApp, isDate, plain } = require('./harness.js');
 
 test('dates: toDateMmmYyyy - ISO "2025-08-23" -> "23 Aug 2025"', async () => {
   const { ctx } = await loadApp();
@@ -32,6 +32,20 @@ test('dates: toDateMmmYyyy - single-digit day, no leading zero in output', async
   assert.strictEqual(ctx.toDateMmmYyyy('03 Aug 2025'), '3 Aug 2025');
 });
 
+test('dates: toDateMmmYyyy - impossible calendar dates stay as raw text', async () => {
+  const { ctx } = await loadApp();
+  assert.strictEqual(ctx.toDateMmmYyyy('2025-02-29'), '2025-02-29', 'non-leap-year ISO date remains correctable raw input');
+  assert.strictEqual(ctx.toDateMmmYyyy('30 Feb 2025'), '30 Feb 2025');
+  assert.strictEqual(ctx.toDateMmmYyyy('31/04/2025'), '31/04/2025');
+  assert.strictEqual(ctx.toDateMmmYyyy('2025-08-23 trailing text'), '2025-08-23 trailing text');
+});
+
+test('dates: toDateMmmYyyy - leap-day input is accepted only in a leap year', async () => {
+  const { ctx } = await loadApp();
+  assert.strictEqual(ctx.toDateMmmYyyy('2024-02-29'), '29 Feb 2024');
+  assert.strictEqual(ctx.toDateMmmYyyy('29 Feb 2024'), '29 Feb 2024');
+});
+
 test('dates: toDateMmmYyyy - garbage input returns the trimmed original string unchanged', async () => {
   const { ctx } = await loadApp();
   assert.strictEqual(ctx.toDateMmmYyyy('not a real date'), 'not a real date');
@@ -58,6 +72,14 @@ test('dates: toIsoDateStr - garbage input -> empty string', async () => {
   assert.strictEqual(ctx.toIsoDateStr(''), '');
 });
 
+test('dates: toIsoDateStr - impossible dates -> empty string', async () => {
+  const { ctx } = await loadApp();
+  assert.strictEqual(ctx.toIsoDateStr('2025-02-29'), '');
+  assert.strictEqual(ctx.toIsoDateStr('30 Feb 2025'), '');
+  assert.strictEqual(ctx.toIsoDateStr('31/04/2025'), '');
+  assert.strictEqual(ctx.toIsoDateStr('29 Feb 2024'), '2024-02-29');
+});
+
 test('dates: dateToMs - valid input -> ms consistent with a native Date', async () => {
   const { ctx } = await loadApp();
   const ms = ctx.dateToMs('23 Aug 2025');
@@ -65,27 +87,46 @@ test('dates: dateToMs - valid input -> ms consistent with a native Date', async 
   assert.strictEqual(ms, expected);
 });
 
-test('dates: dateToMs - garbage input -> 0', async () => {
+test('dates: dateToMs - malformed input -> NaN, not epoch zero', async () => {
   const { ctx } = await loadApp();
-  assert.strictEqual(ctx.dateToMs('not a real date'), 0);
-  assert.strictEqual(ctx.dateToMs(''), 0);
+  assert.ok(Number.isNaN(ctx.dateToMs('not a real date')));
+  assert.ok(Number.isNaN(ctx.dateToMs('')));
+  assert.ok(Number.isFinite(ctx.dateToMs('1 Jan 1970')), 'a real epoch-era date remains distinguishable from malformed input');
 });
 
-test('dates: SUSPECT pair - toDateMmmYyyy vs dateToMs diverge on the SAME unparseable input', async () => {
+test('dates: dateToMs - preserves invalid raw text without treating it as a date', async () => {
   const { ctx } = await loadApp();
   const garbage = 'complete nonsense 12345';
   const dateResult = ctx.toDateMmmYyyy(garbage);
   const msResult = ctx.dateToMs(garbage);
-  // SUSPECT: toDateMmmYyyy echoes the original string back (a visible "I could
-  // not parse this" signal an editor can spot), while dateToMs silently
-  // collapses the SAME failure to 0 - which is indistinguishable from a
-  // legitimate "1 Jan 1970" timestamp to any caller that does new Date(ms).
-  // Likely-correct behaviour: dateToMs should signal "unparseable" distinctly
-  // from a real epoch-zero date (e.g. NaN, or null) rather than 0. Severity:
-  // cosmetic/sort-order (an unparseable date silently sorts as "oldest
-  // possible" instead of being flagged), not data-loss.
   assert.strictEqual(dateResult, garbage);
-  assert.strictEqual(msResult, 0);
+  assert.ok(Number.isNaN(msResult));
+});
+
+test('dates: kjrApplySort - eBay default and date directions keep invalid dates last', async () => {
+  const { ctx } = await loadApp();
+  const rows = [
+    { id: 'bad', date: '30 Feb 2025' },
+    { id: 'old', date: '1 Jan 2020' },
+    { id: 'new', date: '1 Jan 2026' },
+  ];
+  const defaultSort = plain(ctx.kjrApplySort(rows, 'ebayPurchases')).map(row => row.id);
+  assert.deepStrictEqual(defaultSort, ['new', 'old', 'bad'], 'default eBay date sort is newest first with invalid dates last');
+
+  ctx._kjrSort.ebayPurchases.k = 'date';
+  ctx._kjrSort.ebayPurchases.dir = 1;
+  assert.deepStrictEqual(plain(ctx.kjrApplySort(rows, 'ebayPurchases')).map(row => row.id), ['old', 'new', 'bad']);
+  ctx._kjrSort.ebayPurchases.dir = -1;
+  assert.deepStrictEqual(plain(ctx.kjrApplySort(rows, 'ebayPurchases')).map(row => row.id), ['new', 'old', 'bad']);
+});
+
+test('dates: _kjrXlsxParseDate - only finite dateToMs values become Dates', async () => {
+  const { ctx } = await loadApp();
+  const valid = ctx._kjrXlsxParseDate('23 Aug 2025');
+  assert.ok(isDate(valid) && Number.isFinite(valid.getTime()));
+  assert.strictEqual(ctx._kjrXlsxParseDate('30 Feb 2025'), null);
+  assert.strictEqual(ctx._kjrXlsxParseDate('not a date at all'), null);
+  assert.strictEqual(ctx._kjrXlsxParseDate(''), null);
 });
 
 test('dates: _monthIdxFromString - exact 3-letter and full month names', async () => {
@@ -110,20 +151,8 @@ test('dates: _monthIdxFromString - ambiguous short prefix rejected (-1)', async 
   assert.strictEqual(ctx._monthIdxFromString(null), -1);
 });
 
-test('dates: SUSPECT - _monthIdxFromString\'s second "unambiguous prefix" branch is dead code', async () => {
+test('dates: _monthIdxFromString - longer month names resolve by their unambiguous prefix', async () => {
   const { ctx } = await loadApp();
-  // MONTHS_LOWER holds only 3-character abbreviations, so
-  // `MONTHS_LOWER.find(m => m.startsWith(s))` (the second branch, guarded by
-  // s.length>=3) can only ever match when s.length===3 - at which point it
-  // degenerates to `m === s`, exactly what the FIRST branch
-  // (`MONTHS_LOWER.indexOf(s.slice(0,3))`) already tried and rejected a line
-  // earlier. Verified empirically across jan/january/june/july/sept/
-  // september/xyz/xyzjun/octo/febr/marc/setp/aung: the second branch never
-  // changes the outcome the first branch alone would give. SUSPECT: this is
-  // unreachable/dead logic, not the "extra disambiguation for longer inputs"
-  // its comment (app.js ~678-686) claims it is. Severity: cosmetic (no wrong
-  // output today - check 1 alone is already correct - but misleading if
-  // MONTHS_LOWER's shape ever changes).
   const MONTHS_LOWER = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
   function checkOneOnly(str) {
     if (!str) return -1;
@@ -155,42 +184,28 @@ test('dates: normaliseToMonthYear - returns null for empty/unparseable input', a
   assert.strictEqual(ctx.normaliseToMonthYear('complete garbage'), null);
 });
 
-test('dates: SUSPECT - normaliseToMonthYear("05/13/2025") warns (day<=12 AND month>12) but STILL returns null', async () => {
+test('dates: normaliseToMonthYear - impossible month warns and returns null', async () => {
   const { ctx, consoleWarnings } = await loadApp();
-  // "05/13/2025" parsed as DD/MM/YYYY means day=05, month=13. The code's own
-  // ambiguity guard (mon>12 && day<=12) correctly fires here and warns that
-  // this looks like a US MM/DD/YYYY date being misread - but the date it then
-  // tries to construct is "2025-13-05", which new Date() rejects outright
-  // (Invalid Date, verified: out-of-range ISO months do NOT roll over,
-  // unlike out-of-range days - see the next test). So the function warns
-  // about a real ambiguity and then silently returns null anyway - the
-  // caller gets nothing usable, and would only know why if they read the
-  // console. SUSPECT: likely-correct behaviour is to actually swap day/month
-  // and return the sensible "May 2025" reading when the warn condition
-  // fires, instead of warning then discarding. Severity: cosmetic (silently
-  // dropped value, not corrupted data), but the warning is currently
-  // pointless from a caller's perspective since nothing recovers from it.
   const result = ctx.normaliseToMonthYear('05/13/2025');
   assert.strictEqual(result, null);
   assert.ok(consoleWarnings.some(w => w.includes('05/13/2025')), 'console.warn should fire for the day<=12/month>12 ambiguity');
 });
 
-test('dates: SUSPECT - normaliseToMonthYear("30/02/2025") silently rolls over to Mar 2025, NO warning', async () => {
+test('dates: normaliseToMonthYear - impossible day warns and returns null', async () => {
   const { ctx, consoleWarnings } = await loadApp();
-  // "30/02/2025" as DD/MM/YYYY = day 30, month 2 (February). Day 30 does not
-  // exist in February, but the warn guard only checks month>12 (never
-  // day-out-of-range-for-the-given-month), so no warning fires here. The
-  // constructed date string "2025-02-30" rolls over via JS's native Date
-  // parser to 2 March 2025 (verified: unlike an out-of-range MONTH, which is
-  // rejected outright, an out-of-range DAY silently overflows into the next
-  // month). So an impossible date is normalised to a real month/year with
-  // zero diagnostic trail. SUSPECT: likely-correct behaviour is to validate
-  // day-of-month against the target month before accepting, or at minimum
-  // warn. Severity: cosmetic/data-quality (a fat-fingered "30/02" import row
-  // silently becomes "Mar 2025" in a report with no trace of the typo).
   const result = ctx.normaliseToMonthYear('30/02/2025');
-  assert.strictEqual(result, 'Mar 2025');
-  assert.strictEqual(consoleWarnings.length, 0, 'no warning fires for this silent rollover');
+  assert.strictEqual(result, null);
+  assert.ok(consoleWarnings.some(w => w.includes('30/02/2025')), 'console.warn should identify the impossible day');
+});
+
+test('dates: normaliseToMonthYear - leap-day validation', async () => {
+  const { ctx, consoleWarnings } = await loadApp();
+  assert.strictEqual(ctx.normaliseToMonthYear('29/02/2024'), 'Feb 2024');
+  assert.strictEqual(ctx.normaliseToMonthYear('2024-02-29'), 'Feb 2024');
+  assert.strictEqual(ctx.normaliseToMonthYear('29/02/2025'), null);
+  assert.strictEqual(ctx.normaliseToMonthYear('2025-02-29'), null);
+  assert.ok(consoleWarnings.some(w => w.includes('29/02/2025')));
+  assert.ok(consoleWarnings.some(w => w.includes('2025-02-29')));
 });
 
 test('dates: _parseHistDate - yearless date later in the year than today rolls back to the prior year', async () => {
@@ -225,28 +240,27 @@ test('dates: _parseHistDate - ISO "YYYY-MM-DD" parses directly, empty -> null', 
   assert.strictEqual(ctx._parseHistDate(''), null);
 });
 
-test('dates: SUSPECT - _parseHistDate\'s "garbage -> null" path is effectively unreachable for ordinary text', async () => {
+test('dates: _parseHistDate - malformed and impossible values return null', async () => {
   const { ctx } = await loadApp();
-  // _parseHistDate always builds `new Date(dateStr + ' ' + currentYear)` for
-  // any non-ISO, non-empty input. Verified directly against the native Date
-  // constructor (see harness research): V8's lenient fallback parser
-  // extracts a bare trailing 4-digit year from almost ANY prefix text and
-  // defaults to 1 Jan of that year, rather than failing - "not a date at
-  // all !!", "{}", "NaN", "----", "undefined", "\t\t\t" all parse "successfully"
-  // this way. Only genuinely bizarre input (control characters) actually
-  // trips isNaN and returns null. SUSPECT: any corrupted/free-text
-  // priceHistory date silently becomes "1 Jan <this year>" instead of being
-  // rejected, which _mktFreshDot then treats as a real, dateable price
-  // refresh. Severity: cosmetic/trust (a freshness dot could show a
-  // plausible age for data that was never a real date), not data-loss.
-  const now = new Date();
-  const result = ctx._parseHistDate('not a date at all !!');
-  assert.ok(isDate(result), 'ordinary garbage text does NOT hit the null path');
-  assert.strictEqual(result.getFullYear(), now.getFullYear());
-  assert.strictEqual(result.getMonth(), 0);
-  assert.strictEqual(result.getDate(), 1);
-  // Only truly bizarre (control-character) input actually fails to parse.
+  assert.strictEqual(ctx._parseHistDate('not a date at all !!'), null);
+  assert.strictEqual(ctx._parseHistDate('2025-02-30'), null);
+  assert.strictEqual(ctx._parseHistDate('30 Feb 2025'), null);
+  assert.strictEqual(ctx._parseHistDate('29/02/2025'), null);
   assert.strictEqual(ctx._parseHistDate(String.fromCharCode(0, 1)), null);
+});
+
+test('dates: _parseHistDate - valid explicit and numeric day-month forms parse', async () => {
+  const { ctx } = await loadApp();
+  const explicit = ctx._parseHistDate('23 Aug 2025');
+  assert.ok(isDate(explicit) && !isNaN(explicit.getTime()));
+  assert.strictEqual(explicit.getFullYear(), 2025);
+  assert.strictEqual(explicit.getMonth(), 7);
+  assert.strictEqual(explicit.getDate(), 23);
+  const numeric = ctx._parseHistDate('23/08/2025');
+  assert.ok(isDate(numeric) && !isNaN(numeric.getTime()));
+  assert.strictEqual(numeric.getFullYear(), 2025);
+  assert.strictEqual(numeric.getMonth(), 7);
+  assert.strictEqual(numeric.getDate(), 23);
 });
 
 test('dates: _kjrDaysHeld - basic day-count between two canonical dates', async () => {
@@ -261,11 +275,13 @@ test('dates: _kjrDaysHeld - missing either date -> null', async () => {
   assert.strictEqual(ctx._kjrDaysHeld(null, null), null);
 });
 
-test('dates: SUSPECT - _kjrDaysHeld clamps a negative span (sold-before-acquired) to 0, not a signed value', async () => {
+test('dates: _kjrDaysHeld returns null for a negative span (sold-before-acquired)', async () => {
   const { ctx } = await loadApp();
-  // dateSold earlier than dateAcquired is a data-entry error, but
-  // Math.max(0, ...) silently reports "0 days held" identically to a
-  // same-day flip, rather than surfacing the impossible ordering.
   const result = ctx._kjrDaysHeld('11 Jan 2025', '1 Jan 2025');
-  assert.strictEqual(result, 0);
+  assert.strictEqual(result, null);
+});
+
+test('dates: _kjrDaysHeld keeps a same-day sale at 0 days', async () => {
+  const { ctx } = await loadApp();
+  assert.strictEqual(ctx._kjrDaysHeld('11 Jan 2025', '11 Jan 2025'), 0);
 });

@@ -90,23 +90,31 @@ test('formatting: features.js kjrMoneyStr() - clean numeric STRING for storage, 
   assert.strictEqual(ctx.kjrMoneyStr(45), '45');
 });
 
-test('formatting: features.js kjrFmt()/fmtUsd() - whole-number currency, "" for zero', async () => {
+test('formatting: features.js kjrFmt()/fmtUsd() - whole-number currency, explicit zero, blank missing', async () => {
   const { ctx } = await loadApp();
   assert.strictEqual(ctx.kjrFmt(45.6), 'S$46', 'rounds to nearest whole number');
-  assert.strictEqual(ctx.kjrFmt(0), '', 'zero renders as empty string, not "S$0"');
+  assert.strictEqual(ctx.kjrFmt(0), 'S$0', 'explicit numeric zero remains visible');
+  assert.strictEqual(ctx.kjrFmt('0.00'), 'S$0', 'explicit string zero remains visible');
   assert.strictEqual(ctx.kjrFmt(1250), 'S$1,250', 'thousands separator via en-SG locale');
   assert.strictEqual(ctx.fmtUsd(45.6), 'US$46');
-  assert.strictEqual(ctx.fmtUsd(0), '');
+  assert.strictEqual(ctx.fmtUsd(0), 'US$0', 'explicit numeric zero remains visible');
+  assert.strictEqual(ctx.fmtUsd('$0.00'), 'US$0', 'explicit string zero remains visible');
+  assert.strictEqual(ctx.kjrFmt(null), '', 'null remains blank');
+  assert.strictEqual(ctx.kjrFmt(undefined), '', 'undefined remains blank');
+  assert.strictEqual(ctx.kjrFmt(''), '', 'blank remains blank');
+  assert.strictEqual(ctx.kjrFmt('garbage'), '', 'non-numeric text remains blank');
+  assert.strictEqual(ctx.fmtUsd(null), '', 'null remains blank');
+  assert.strictEqual(ctx.fmtUsd(undefined), '', 'undefined remains blank');
+  assert.strictEqual(ctx.fmtUsd(''), '', 'blank remains blank');
+  assert.strictEqual(ctx.fmtUsd('.'), '', 'non-numeric punctuation remains blank');
 });
 
-test('formatting: SUSPECT - kjrFmt(0) and fmtUsd(0) are indistinguishable from a genuinely empty/unset price', async () => {
+test('formatting: kjrFmt()/fmtUsd() - explicit zero stays distinct from unset values', async () => {
   const { ctx } = await loadApp();
-  // A real free/zero-cost item (e.g. a promo card that cost literally S$0) and
-  // an unset price both render as the empty string - the UI cannot tell them
-  // apart from the formatted output alone. Severity: cosmetic (display only,
-  // the underlying stored value is unaffected).
-  assert.strictEqual(ctx.kjrFmt(0), ctx.kjrFmt(''));
-  assert.strictEqual(ctx.kjrFmt(0), ctx.kjrFmt(null));
+  assert.notStrictEqual(ctx.kjrFmt(0), ctx.kjrFmt(''));
+  assert.notStrictEqual(ctx.kjrFmt(0), ctx.kjrFmt(null));
+  assert.notStrictEqual(ctx.fmtUsd(0), ctx.fmtUsd(''));
+  assert.notStrictEqual(ctx.fmtUsd(0), ctx.fmtUsd(undefined));
 });
 
 test('formatting: kjrPill() escapes its input and classifies by keyword', async () => {

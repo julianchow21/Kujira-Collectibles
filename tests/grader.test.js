@@ -1,7 +1,8 @@
 'use strict';
 // Suite 5: grader - _resolveGrader against the 7 documented messy shapes
 // (app.js comment ~4351-4358) plus PSA-never-pristine, BGS pristine/black
-// label, unknown grader passthrough, and graderGradeBadge/_graderClass
+// label, unknown grader passthrough, Black Label handling, and
+// graderGradeBadge/_graderClass
 // mapping sanity.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -65,19 +66,47 @@ test('grader: _resolveGrader - BGS 10 + the word "Pristine" sets the pristine fl
   assert.strictEqual(r.pristine, true);
 });
 
-test('grader: SUSPECT - BGS "Black Label" (the real-world term for BGS\'s top grade) does NOT set pristine', async () => {
+test('grader: BGS 10 + exact "Black Label" phrase gets the pristine visual treatment in every signal field', async () => {
   const { ctx } = await loadApp();
-  // Collectors call BGS's perfect-10 tier "Black Label", not "Pristine" (that
-  // word is TAG/CGC terminology). _resolveGrader only recognises the literal
-  // word "PRISTINE" or a standalone "P" token next to a TAG/CGC/BGS 10 - it
-  // has no "black label" synonym, so a BGS 10 Black Label slab renders as a
-  // plain "BGS 10" badge with no distinguishing top-pop marker. Severity:
-  // cosmetic (a real premium grade is visually indistinguishable from an
-  // ordinary BGS 10).
-  const r = ctx._resolveGrader('BGS', '10', 'Black Label');
-  assert.strictEqual(r.grader, 'BGS');
-  assert.strictEqual(r.grade, '10');
-  assert.strictEqual(r.pristine, false);
+  const cases = [
+    ctx._resolveGrader('BGS Black Label', '10'),
+    ctx._resolveGrader('BGS', '10 Black Label'),
+    ctx._resolveGrader('BGS', '10', 'Black Label'),
+    ctx._resolveGrader('BGS', '10', '', 'Black Label')
+  ];
+  cases.forEach(r => {
+    assert.strictEqual(r.grader, 'BGS');
+    assert.strictEqual(r.grade, '10');
+    assert.strictEqual(r.pristine, true);
+  });
+  const badges = [
+    ctx.graderGradeBadge('BGS Black Label', '10'),
+    ctx.graderGradeBadge('BGS', '10 Black Label'),
+    ctx.graderGradeBadge('BGS', '10', 'Black Label'),
+    ctx.graderGradeBadge('BGS', '10', '', 'Black Label')
+  ];
+  badges.forEach(badge => {
+    assert.match(badge, /b-pristine/);
+    assert.match(badge, /★/);
+    assert.match(badge, /title="BGS Black Label 10 - top-pop subgrade"/);
+    assert.match(badge, /aria-label="BGS Black Label 10"/);
+  });
+});
+
+test('grader: Black Label is not pristine for non-BGS, non-10, or non-exact phrases', async () => {
+  const { ctx } = await loadApp();
+  const negative = [
+    ['PSA', '10', 'Black Label'],
+    ['CGC', '10', 'Black Label'],
+    ['BGS', '9', 'Black Label'],
+    ['BGS', '10', 'Black Labelled']
+  ];
+  negative.forEach(args => {
+    assert.strictEqual(ctx._resolveGrader(...args).pristine, false);
+    const badge = ctx.graderGradeBadge(...args);
+    assert.doesNotMatch(badge, /b-pristine/);
+    assert.doesNotMatch(badge, /aria-label="BGS Black Label 10"/);
+  });
 });
 
 test('grader: _resolveGrader - standalone "P" token also triggers pristine for TAG/CGC/BGS 10', async () => {
@@ -113,6 +142,9 @@ test('grader: graderGradeBadge() - resolves messy input to a clean "GRADER GRADE
   assert.match(pristine, /b-pristine/);
   assert.match(pristine, /★/);
   assert.match(pristine, /BGS 10/);
+  assert.match(pristine, /title="BGS Pristine 10 - top-pop subgrade"/);
+  assert.match(pristine, /aria-label="BGS Pristine 10"/);
+  assert.doesNotMatch(pristine, /Black Label/);
 });
 
 test('grader: graderGradeBadge() - unresolvable grader/grade falls back to "?" rather than a blank badge', async () => {

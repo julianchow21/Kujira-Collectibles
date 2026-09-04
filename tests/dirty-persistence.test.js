@@ -3,7 +3,7 @@
 // round-trip via localStorage 'pokeinv_dirty_v1', corrupt JSON survival.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp, syncSuccessResponse, syncCalls, syncRequest } = require('./harness.js');
+const { loadApp, syncPullResponse, syncSuccessResponse, syncCalls, syncRequest } = require('./harness.js');
 
 function copyStorage(localStorage) {
   const out = {};
@@ -254,4 +254,307 @@ test('dirty-persistence: snapshotless v2 marker without a cached row stays quara
     if (candidate.table === 'singles' && candidate.id === id) repeatedKeys.push(key);
   }
   assert.deepStrictEqual(repeatedKeys, [markerKey], 'repeated fresh startups retain one quarantined marker');
+});
+
+function orphanMarker(id, token) {
+  return { table: 'singles', id, token, owner: 'older-tab', createdAt: 456 };
+}
+
+function currentPullWith(tombstones, tables) {
+  return async url => {
+    if (String(url).includes('/sync/v2/pull')) return syncPullResponse(tables, tombstones);
+    throw new TypeError('offline');
+  };
+}
+
+test('dirty-persistence: a current authenticated tombstone pull clears only a snapshotless orphan marker and exact legacy state', async () => {
+  const id = 'orphan_tombstoned_row';
+  const token = 'older-tab:orphan';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const unrelatedToken = 'other-tab:keep';
+  const unrelatedKey = 'pokeinv_dirty_v2:' + unrelatedToken;
+  const loaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([{ table: 'singles', id, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+    localStorage: {
+      [markerKey]: JSON.stringify(orphanMarker(id, token)),
+      [unrelatedKey]: JSON.stringify({ ...orphanMarker('unrelated_row', unrelatedToken), rowJson: JSON.stringify({ id: 'unrelated_row', name: 'Keep me' }) }),
+      pokeinv_dirty_v1: JSON.stringify({
+        singles: [id, 'unrelated_row'],
+        _revisions: { singles: { [id]: [token], unrelated_row: [unrelatedToken] } },
+      }),
+    },
+  });
+
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), null, 'only the proven empty orphan marker is removed');
+  assert.ok(loaded.localStorage.getItem(unrelatedKey), 'an unrelated marker remains durable');
+  const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.ok(!legacy.singles.includes(id));
+  assert.strictEqual(legacy._revisions.singles[id], undefined);
+  assert.ok(legacy.singles.includes('unrelated_row'));
+  assert.ok(legacy._revisions.singles.unrelated_row.includes(unrelatedToken),
+    'the unrelated marker keeps its own revision even if startup adds its local retry token');
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(id), false);
+  assert.strictEqual(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.has(id), false);
+
+  const reloaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([{ table: 'singles', id, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+    localStorage: copyStorage(loaded.localStorage),
+  });
+  assert.strictEqual(reloaded.localStorage.getItem(markerKey), null, 'a fresh load cannot replay the cleared orphan');
+  assert.ok(!reloaded.grab('DB').DB.singles.some(row => row.id === id), 'the tombstoned row stays absent after reload');
+});
+
+test('dirty-persistence: confirmed deleted state remains byte-for-byte while a current tombstone pull clears its orphan marker', async () => {
+  const id = 'confirmed_deleted_orphan';
+  const token = 'older-tab:confirmed-deleted';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const confirmedDeletedRaw = JSON.stringify({
+    schema: 2,
+    revision: 'confirmed-delete-proof',
+    pending: [],
+    confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'original-delete-token', state: 'deleted' }],
+  });
+  const loaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([{ table: 'singles', id, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+    localStorage: {
+      [markerKey]: JSON.stringify(orphanMarker(id, token)),
+      _kjrDeleteStateV2: confirmedDeletedRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), null);
+  assert.strictEqual(loaded.localStorage.getItem('_kjrDeleteStateV2'), confirmedDeletedRaw,
+    'orphan cleanup must not rewrite or remove confirmed deletion evidence');
+});
+
+test('dirty-persistence: cached or untombstoned snapshotless markers stay queued, including any marker with row bytes', async () => {
+  const cases = [
+    {
+      name: 'cached tombstone is not a current pull',
+      id: 'cached_tombstone_only',
+      localStorage: { _kjrServerTombstonesV1: JSON.stringify([{ table: 'singles', id: 'cached_tombstone_only', row_version: 3 }]) },
+      fetch: undefined,
+    },
+    {
+      name: 'current pull has no tombstone',
+      id: 'untombstoned_orphan',
+      localStorage: {},
+      fetch: currentPullWith([]),
+    },
+    {
+      name: 'marker carries recoverable row bytes',
+      id: 'byte_bearing_orphan',
+      localStorage: {},
+      fetch: currentPullWith([{ table: 'singles', id: 'byte_bearing_orphan', row_version: 3 }]),
+      rowJson: JSON.stringify({ id: 'byte_bearing_orphan', name: 'Recoverable bytes' }),
+    },
+  ];
+  for (const item of cases) {
+    const token = 'older-tab:' + item.id;
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const marker = { ...orphanMarker(item.id, token), ...(item.rowJson ? { rowJson: item.rowJson } : {}) };
+    const loaded = await loadApp({
+      seed: null,
+      fetch: item.fetch,
+      localStorage: {
+        ...item.localStorage,
+        [markerKey]: JSON.stringify(marker),
+        pokeinv_dirty_v1: JSON.stringify({ singles: [item.id], _revisions: { singles: { [item.id]: [token] } } }),
+      },
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), item.name + ' keeps its marker');
+    const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+    assert.ok(legacy.singles.includes(item.id), item.name + ' keeps its dirty id');
+  }
+});
+
+test('dirty-persistence: any same-row delete state, cached row, or later token blocks orphan cleanup', async () => {
+  const cases = [
+    {
+      name: 'cached row',
+      id: 'cached_row_blocks',
+      seed: { singles: [{ id: 'cached_row_blocks', name: 'Later cached edit' }] },
+      extra: {},
+    },
+    {
+      name: 'later same-row token',
+      id: 'later_token_blocks',
+      seed: null,
+      extra: { secondMarker: true },
+    },
+    {
+      name: 'pending delete state',
+      id: 'pending_delete_blocks',
+      seed: null,
+      extra: { pendingDelete: true },
+    },
+    {
+      name: 'confirmed restored state',
+      id: 'confirmed_restore_blocks',
+      seed: null,
+      extra: { confirmedRestore: true },
+    },
+  ];
+  for (const item of cases) {
+    const token = 'older-tab:' + item.id;
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const localStorage = {
+      [markerKey]: JSON.stringify(orphanMarker(item.id, token)),
+      pokeinv_dirty_v1: JSON.stringify({ singles: [item.id], _revisions: { singles: { [item.id]: [token] } } }),
+    };
+    if (item.extra.secondMarker) {
+      const laterToken = 'newer-tab:' + item.id;
+      localStorage['pokeinv_dirty_v2:' + laterToken] = JSON.stringify({
+        ...orphanMarker(item.id, laterToken), rowJson: JSON.stringify({ id: item.id, name: 'Later edit' }),
+      });
+      localStorage.pokeinv_dirty_v1 = JSON.stringify({ singles: [item.id], _revisions: { singles: { [item.id]: [token, laterToken] } } });
+    }
+    if (item.extra.pendingDelete) {
+      localStorage._kjrDeleteStateV2 = JSON.stringify({ schema: 2, revision: 'test-delete-state', pending: [{ table: 'singles', id: item.id }], confirmed: [] });
+    }
+    if (item.extra.confirmedRestore) {
+      localStorage._kjrDeleteStateV2 = JSON.stringify({
+        schema: 2,
+        revision: 'test-restored-state',
+        pending: [],
+        confirmed: [{ table: 'singles', id: item.id, ts: 456, restoreToken: 'restore-token', state: 'restored' }],
+      });
+    }
+    const loaded = await loadApp({
+      seed: item.seed,
+      fetch: currentPullWith([{ table: 'singles', id: item.id, row_version: 3 }]),
+      localStorage,
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), item.name + ' keeps the target marker');
+  }
+});
+
+test('dirty-persistence: a pending same-row mutation group blocks orphan cleanup without changing either recovery record', async () => {
+  const id = 'pending_group_blocks';
+  const token = 'older-tab:pending-group';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const mutationId = '11111111-1111-4111-8111-111111111111';
+  const groupKey = '_kjrMutationGroupV2:' + mutationId;
+  const groupRaw = JSON.stringify({
+    mutation_id: mutationId,
+    created_at: 1,
+    operations: [{ type: 'upsert', table: 'singles', id, expected_version: 0, data: { name: 'Pending recovery', status: 'Available' } }],
+    before_states: [{ table: 'singles', id, present: false }],
+  });
+  const loaded = await loadApp({ seed: null });
+  loaded.localStorage.setItem(markerKey, JSON.stringify(orphanMarker(id, token)));
+  loaded.localStorage.setItem(groupKey, groupRaw);
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({
+    singles: [id], _revisions: { singles: { [id]: [token] } },
+  }));
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+  assert.strictEqual(cleared, 0);
+  assert.ok(loaded.localStorage.getItem(markerKey));
+  assert.strictEqual(loaded.localStorage.getItem(groupKey), groupRaw);
+});
+
+test('dirty-persistence: unreadable markers fail closed and are never cleared beside an orphan candidate', async () => {
+  const id = 'malformed_marker_blocks';
+  const token = 'older-tab:malformed-block';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const loaded = await loadApp({ seed: null });
+  loaded.localStorage.setItem(markerKey, JSON.stringify(orphanMarker(id, token)));
+  loaded.localStorage.setItem('pokeinv_dirty_v2:malformed', '{not-json');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }));
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+  assert.strictEqual(cleared, 0);
+  assert.ok(loaded.localStorage.getItem(markerKey));
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v2:malformed'), '{not-json');
+});
+
+test('dirty-persistence: orphan cleanup rolls storage and in-memory state back when its exact legacy write fails', async () => {
+  const id = 'legacy_write_failure';
+  const token = 'older-tab:legacy-write-failure';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify(orphanMarker(id, token));
+  const legacyRaw = JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: { [markerKey]: markerRaw, pokeinv_dirty_v1: legacyRaw },
+  });
+  const dirtyBefore = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const realSetItem = loaded.localStorage.setItem.bind(loaded.localStorage);
+  loaded.localStorage.setItem = (key, value) => {
+    if (key === 'pokeinv_dirty_v1') throw new Error('injected legacy write failure');
+    return realSetItem(key, value);
+  };
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+  assert.strictEqual(cleared, 0);
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), markerRaw);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), dirtyBefore);
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(id), true);
+  assert.strictEqual(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), token);
+});
+
+test('dirty-persistence: orphan cleanup restores the exact legacy bytes when marker removal fails', async () => {
+  const id = 'marker_remove_failure';
+  const token = 'older-tab:marker-remove-failure';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify(orphanMarker(id, token));
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+  const dirtyBefore = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const realRemoveItem = loaded.localStorage.removeItem.bind(loaded.localStorage);
+  loaded.localStorage.removeItem = key => {
+    if (key === markerKey) throw new Error('injected marker removal failure');
+    return realRemoveItem(key);
+  };
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+  assert.strictEqual(cleared, 0);
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), markerRaw);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), dirtyBefore);
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(id), true);
+  assert.strictEqual(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), token);
+});
+
+test('dirty-persistence: cache preflight failure leaves an orphan marker and exact dirty state recoverable', async () => {
+  const id = 'cache_read_failure';
+  const token = 'older-tab:cache-read-failure';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify(orphanMarker(id, token));
+  const legacyRaw = JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: { [markerKey]: markerRaw, pokeinv_dirty_v1: legacyRaw },
+  });
+  const dirtyBefore = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const realGetItem = loaded.localStorage.getItem.bind(loaded.localStorage);
+  loaded.localStorage.getItem = key => {
+    if (key === 'pokeinventory_v3') throw new Error('injected cache read failure');
+    return realGetItem(key);
+  };
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+  assert.strictEqual(cleared, 0);
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), markerRaw);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), dirtyBefore);
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(id), true);
 });

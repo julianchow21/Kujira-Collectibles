@@ -1502,6 +1502,11 @@ async function _pullSyncState() {
     // an exact tombstone proves the restore can never be recovered. Cancel
     // that one local transaction before deciding which tombstones to hide.
     if (typeof DB !== 'undefined' && DB) DB.trash = tables.trash.slice();
+    // An older client could leave a snapshotless dirty marker after its row
+    // and recovery transaction were both gone. Only this authenticated,
+    // successful pull can prove that exact row is still deleted on the
+    // server. Cached tombstones are deliberately insufficient evidence.
+    _clearProvenOrphanDirtyMarkersAfterPull(pulledTombstones, tables);
     _cancelIrrecoverableRestoreGroups(pulledTombstones, tables.trash);
     // A queued restore is already a durable CAS attempt against one exact
     // tombstone version. Keep that row visible while it waits for the server,
@@ -1599,6 +1604,195 @@ function _readDirtyV2Markers() {
     warnOnce('dirty-v2-scan-failed', 'Could not read all sync markers. Avoid closing the tab until sync finishes.');
   }
   return markers;
+}
+
+function _listDirtyV2MarkerKeys() {
+  try {
+    if (typeof localStorage.key !== 'function' || typeof localStorage.length !== 'number') return null;
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (typeof key === 'string' && key.startsWith(DIRTY_V2_PREFIX)) keys.push(key);
+    }
+    return keys.sort();
+  } catch (_) { return null; }
+}
+
+function _orphanDirtyMarkerHasPendingRecovery(table, id) {
+  const groups = _readMutationGroups();
+  if (!groups) return true;
+  for (const group of groups) {
+    const plan = _mutationReplayPlan(group);
+    if (!plan) return true;
+    if (plan.some(({ op }) => op && op.table === table && op.id === id)) return true;
+  }
+
+  const deleteState = _readDeleteState();
+  if (!deleteState.valid) return true;
+  for (const entry of deleteState.state.pending) {
+    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') return true;
+    if (entry.table === table && entry.id === id) return true;
+  }
+  for (const entry of deleteState.state.confirmed) {
+    if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') return true;
+    // A confirmed deletion is durable protective evidence for this same
+    // tombstoned id, not a recoverable restore. Keep its record intact while
+    // allowing the obsolete snapshotless upsert marker to settle. Any other
+    // confirmed state might protect an active restore, so it blocks cleanup.
+    if (entry.table === table && entry.id === id && entry.state !== 'deleted') return true;
+  }
+  return false;
+}
+
+function _readOrphanDirtyCache(marker) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return { raw, hasRow: false };
+    const cache = JSON.parse(raw);
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return null;
+    const rows = cache[marker.table];
+    if (rows === undefined) return { raw, hasRow: false };
+    if (!Array.isArray(rows)) return null;
+    return { raw, hasRow: rows.some(row => row && typeof row === 'object' && row.id === marker.id) };
+  } catch (_) { return null; }
+}
+
+function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tombstones, tables) {
+  // A malformed or byte-bearing marker is potential recovery material. This
+  // narrow repair applies only to the precise old marker shape with no
+  // rowJson property at all.
+  if (!marker || typeof marker.key !== 'string' || typeof marker.table !== 'string' ||
+      typeof marker.id !== 'string' || typeof marker.token !== 'string' ||
+      Object.prototype.hasOwnProperty.call(marker, 'rowJson')) return null;
+  if (!Array.isArray(allMarkers) || !Array.isArray(allMarkerKeys) ||
+      allMarkerKeys.length !== allMarkers.length || !allMarkerKeys.includes(marker.key)) return null;
+
+  const serverTable = _tblName(marker.table);
+  if (!Array.isArray(tombstones) || !tombstones.some(tombstone =>
+      tombstone && tombstone.table === serverTable && tombstone.id === marker.id)) return null;
+  if (!tables || !Array.isArray(tables[serverTable]) ||
+      tables[serverTable].some(row => row && row.id === marker.id)) return null;
+  if (!DB || !Array.isArray(DB[marker.table]) ||
+      DB[marker.table].some(row => row && row.id === marker.id)) return null;
+
+  // A same-row marker, a later revision token, or any pending transaction
+  // means this is not an abandoned orphan. Leave all of those states intact.
+  if (allMarkers.filter(candidate => candidate.table === marker.table && candidate.id === marker.id).length !== 1 ||
+      _orphanDirtyMarkerHasPendingRecovery(serverTable, marker.id)) return null;
+  const cache = _readOrphanDirtyCache(marker);
+  if (!cache || cache.hasRow) return null;
+
+  let markerRaw;
+  let legacyRaw;
+  let legacy;
+  try {
+    markerRaw = localStorage.getItem(marker.key);
+    legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
+    if (typeof markerRaw !== 'string') return null;
+    const savedMarker = JSON.parse(markerRaw);
+    if (!savedMarker || savedMarker.table !== marker.table || savedMarker.id !== marker.id ||
+        savedMarker.token !== marker.token || Object.prototype.hasOwnProperty.call(savedMarker, 'rowJson')) return null;
+    legacy = legacyRaw === null ? {} : JSON.parse(legacyRaw);
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
+  } catch (_) { return null; }
+
+  const legacyIds = legacy[marker.table];
+  if (legacyIds !== undefined && !Array.isArray(legacyIds)) return null;
+  if (Array.isArray(legacyIds) && legacyIds.some(id => typeof id !== 'string')) return null;
+  const revisionsRoot = legacy._revisions;
+  if (revisionsRoot !== undefined && (!revisionsRoot || typeof revisionsRoot !== 'object' || Array.isArray(revisionsRoot))) return null;
+  const revisions = revisionsRoot && revisionsRoot[marker.table];
+  if (revisions !== undefined && (!revisions || typeof revisions !== 'object' || Array.isArray(revisions))) return null;
+  const tokens = revisions && revisions[marker.id];
+  if (tokens !== undefined && (!Array.isArray(tokens) || tokens.some(token => typeof token !== 'string' || !token))) return null;
+  if (Array.isArray(tokens) && tokens.some(token => token !== marker.token)) return null;
+
+  const inMemoryRevision = _dirtyRevisions[marker.table] && _dirtyRevisions[marker.table].get(marker.id);
+  if (inMemoryRevision && inMemoryRevision !== marker.token) return null;
+
+  const nextLegacy = JSON.parse(JSON.stringify(legacy));
+  if (Array.isArray(nextLegacy[marker.table])) {
+    nextLegacy[marker.table] = nextLegacy[marker.table].filter(id => id !== marker.id);
+  }
+  if (nextLegacy._revisions && nextLegacy._revisions[marker.table]) {
+    delete nextLegacy._revisions[marker.table][marker.id];
+  }
+  const nextLegacyRaw = legacyRaw === null ? null : JSON.stringify(nextLegacy);
+  return { marker, markerRaw, legacyRaw, nextLegacyRaw, cacheRaw: cache.raw };
+}
+
+function _restoreProvenOrphanDirtyStorage(prepared, markerRemovalAttempted, legacyWriteAttempted) {
+  let restored = true;
+  try {
+    if (markerRemovalAttempted) {
+      const current = localStorage.getItem(prepared.marker.key);
+      if (current !== null && current !== prepared.markerRaw) restored = false;
+      else if (current !== prepared.markerRaw) {
+        localStorage.setItem(prepared.marker.key, prepared.markerRaw);
+        if (localStorage.getItem(prepared.marker.key) !== prepared.markerRaw) restored = false;
+      }
+    }
+    if (legacyWriteAttempted) {
+      const current = localStorage.getItem(DIRTY_LS_KEY);
+      if (current !== prepared.legacyRaw && current !== prepared.nextLegacyRaw) restored = false;
+      else if (current === prepared.legacyRaw) {
+        // The failing write did not change this exact value, so it already
+        // matches the preflight snapshot and needs no second write.
+      } else if (prepared.legacyRaw === null) {
+        localStorage.removeItem(DIRTY_LS_KEY);
+        if (localStorage.getItem(DIRTY_LS_KEY) !== null) restored = false;
+      } else {
+        localStorage.setItem(DIRTY_LS_KEY, prepared.legacyRaw);
+        if (localStorage.getItem(DIRTY_LS_KEY) !== prepared.legacyRaw) restored = false;
+      }
+    }
+  } catch (_) { restored = false; }
+  return restored;
+}
+
+function _commitProvenOrphanDirtyMarkerCleanup(prepared) {
+  let legacyWriteAttempted = false;
+  let markerRemovalAttempted = false;
+  try {
+    // Re-check every observed byte immediately before the first write. If a
+    // tab changed a marker, legacy mirror, or cache after preflight, retain
+    // recovery state instead of guessing which edit is current.
+    if (localStorage.getItem(prepared.marker.key) !== prepared.markerRaw ||
+        localStorage.getItem(DIRTY_LS_KEY) !== prepared.legacyRaw ||
+        localStorage.getItem(STORAGE_KEY) !== prepared.cacheRaw) return false;
+    if (prepared.nextLegacyRaw !== prepared.legacyRaw) {
+      legacyWriteAttempted = true;
+      if (prepared.nextLegacyRaw === null) localStorage.removeItem(DIRTY_LS_KEY);
+      else localStorage.setItem(DIRTY_LS_KEY, prepared.nextLegacyRaw);
+      if (localStorage.getItem(DIRTY_LS_KEY) !== prepared.nextLegacyRaw) throw new Error('legacy_dirty_write_failed');
+    }
+    markerRemovalAttempted = true;
+    localStorage.removeItem(prepared.marker.key);
+    if (localStorage.getItem(prepared.marker.key) !== null) throw new Error('orphan_dirty_marker_remove_failed');
+
+    _dirty[prepared.marker.table].delete(prepared.marker.id);
+    _dirtyRevisions[prepared.marker.table].delete(prepared.marker.id);
+    _syntheticDirtyRevisionTokens.delete(prepared.marker.token);
+    return true;
+  } catch (error) {
+    const restored = _restoreProvenOrphanDirtyStorage(prepared, markerRemovalAttempted, legacyWriteAttempted);
+    console.warn('[dirty] proven orphan marker cleanup deferred:', error);
+    if (!restored) console.warn('[dirty] proven orphan marker rollback needs repair');
+    warnOnce('dirty-v2-orphan-cleanup-failed', 'A stale sync marker could not be cleared safely. It remains queued.');
+    return false;
+  }
+}
+
+function _clearProvenOrphanDirtyMarkersAfterPull(tombstones, tables) {
+  const markers = _readDirtyV2Markers();
+  const markerKeys = _listDirtyV2MarkerKeys();
+  if (!markerKeys || markerKeys.length !== markers.length) return 0;
+  let cleared = 0;
+  for (const marker of markers) {
+    const prepared = _prepareProvenOrphanDirtyMarker(marker, markers, markerKeys, tombstones, tables);
+    if (prepared && _commitProvenOrphanDirtyMarkerCleanup(prepared)) cleared++;
+  }
+  return cleared;
 }
 
 function _writeDirtyV2Marker(table, id, token, rowJson) {
@@ -3041,39 +3235,63 @@ function _monthIdxFromString(str){
   }
   return -1;
 }
+
+// Construct a local-calendar date only when the supplied parts name a real
+// day. Date's normal constructor silently carries an out-of-range day into
+// the following month (for example, 30 Feb becomes 2 Mar), so every parser
+// and sorter goes through this check instead of trusting native rollover.
+function _dateFromCalendarParts(year, monthIndex, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(monthIndex) || !Number.isInteger(day)) return null;
+  if (year < 0 || year > 9999 || monthIndex < 0 || monthIndex > 11 || day < 1 || day > 31) return null;
+  const d = new Date(0);
+  d.setHours(0, 0, 0, 0);
+  d.setFullYear(year, monthIndex, day);
+  if (d.getFullYear() !== year || d.getMonth() !== monthIndex || d.getDate() !== day) return null;
+  return d;
+}
+
 function toDateMmmYyyy(val){
   if (val == null) return '';
   const s = String(val).trim();
   if (!s) return '';
   // 1. ISO: 2025-05-19 → "19 May 2025"
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (m) {
+    const day = parseInt(m[3],10);
+    const year = parseInt(m[1],10);
     const mi = parseInt(m[2],10) - 1;
-    if (mi >= 0 && mi < 12) return parseInt(m[3],10) + ' ' + MONTHS_ABBR[mi] + ' ' + m[1];
+    if (_dateFromCalendarParts(year, mi, day)) return day + ' ' + MONTHS_ABBR[mi] + ' ' + m[1];
   }
   // 2. "D MMM YYYY" or "D MMMM YYYY" or "D <typo> YYYY"
-  m = s.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
   if (m) {
+    const day = parseInt(m[1],10);
+    const year = parseInt(m[3],10);
     const mi = _monthIdxFromString(m[2]);
-    if (mi >= 0) return parseInt(m[1],10) + ' ' + MONTHS_ABBR[mi] + ' ' + m[3];
+    if (_dateFromCalendarParts(year, mi, day)) return day + ' ' + MONTHS_ABBR[mi] + ' ' + m[3];
   }
   // 3. "D MMM" (no year) - assume current year
   m = s.match(/^(\d{1,2})\s+([A-Za-z]+)$/);
   if (m) {
+    const day = parseInt(m[1],10);
+    const year = new Date().getFullYear();
     const mi = _monthIdxFromString(m[2]);
-    if (mi >= 0) return parseInt(m[1],10) + ' ' + MONTHS_ABBR[mi] + ' ' + new Date().getFullYear();
+    if (_dateFromCalendarParts(year, mi, day)) return day + ' ' + MONTHS_ABBR[mi] + ' ' + year;
   }
   // 4. "DD/MM/YYYY" or "D-M-YYYY" - assume DD/MM (international)
-  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) {
+    const day = parseInt(m[1],10);
+    const year = parseInt(m[3],10);
     const mi = parseInt(m[2],10) - 1;
-    if (mi >= 0 && mi < 12) return parseInt(m[1],10) + ' ' + MONTHS_ABBR[mi] + ' ' + m[3];
+    if (_dateFromCalendarParts(year, mi, day)) return day + ' ' + MONTHS_ABBR[mi] + ' ' + m[3];
   }
   // 5. "MMM YYYY" only → "1 MMM YYYY"
   m = s.match(/^([A-Za-z]+)\s+(\d{4})$/);
   if (m) {
+    const year = parseInt(m[2],10);
     const mi = _monthIdxFromString(m[1]);
-    if (mi >= 0) return '1 ' + MONTHS_ABBR[mi] + ' ' + m[2];
+    if (_dateFromCalendarParts(year, mi, 1)) return '1 ' + MONTHS_ABBR[mi] + ' ' + m[2];
   }
   // Couldn't parse - return original so user can correct it
   return s;
@@ -3081,12 +3299,12 @@ function toDateMmmYyyy(val){
 // Convert any stored date back to a millisecond timestamp for proper sorting.
 function dateToMs(val){
   const s = toDateMmmYyyy(val);
-  if (!s) return 0;
+  if (!s) return NaN;
   const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
-  if (!m) return 0;
+  if (!m) return NaN;
   const mi = _monthIdxFromString(m[2]);
-  if (mi < 0) return 0;
-  return new Date(parseInt(m[3],10), mi, parseInt(m[1],10)).getTime();
+  const d = _dateFromCalendarParts(parseInt(m[3],10), mi, parseInt(m[1],10));
+  return d ? d.getTime() : NaN;
 }
 
 function formatDateInput(val) {
@@ -3101,6 +3319,7 @@ function toIsoDateStr(val) {
   const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
   if (!m) return '';
   const mi = _monthIdxFromString(m[2]);
+  if (!_dateFromCalendarParts(parseInt(m[3],10), mi, parseInt(m[1],10))) return '';
   if (mi < 0) return '';
   return m[3] + '-' + String(mi + 1).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
 }
@@ -4675,7 +4894,7 @@ function renderCmdSellResults() {
       const isSlab   = i._table === 'slabs';
       const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(i._table);
       const badge = isSlab
-        ? graderGradeBadge(i.grader, i.grade, i.notes)
+        ? graderGradeBadge(i.grader, i.grade, i.notes, i.name)
         : isSealed
           ? '<span class="badge b-sealed">Sealed</span>'
           : (i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
@@ -4890,7 +5109,7 @@ function renderCmdSellCart() {
       const isSlab   = l._table === 'slabs';
       const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(l._table);
       const badge = isSlab
-        ? (typeof graderGradeBadge === 'function' ? graderGradeBadge(l.grader, l.grade, '') : '')
+        ? (typeof graderGradeBadge === 'function' ? graderGradeBadge(l.grader, l.grade, '', l.name) : '')
         : isSealed
           ? '<span class="badge b-sealed">Sealed</span>'
           : (l.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>');
@@ -5026,6 +5245,11 @@ function cmdConfirmSell() {
   const channel = document.getElementById('cmd-sell-channel').value || 'Carousell';
   const buyer   = document.getElementById('cmd-sell-buyer').value;
   const dateSold = formatDateInput(document.getElementById('cmd-sell-date').value);
+
+  if (planned.some(p => _kjrSaleDateIsBeforeAcquisition(p.dateAcquired, dateSold))) {
+    toast('Sale date cannot be earlier than acquisition date');
+    return;
+  }
 
   // Total revenue drives the pro-rata shipping split across every unit.
   const totalUnits = planned.length;
@@ -5810,8 +6034,12 @@ function pickHigherCostDuplicate(table, item) {
   candidates.sort((a,b) => {
     const ca = parseFloat(a.costPrice)||0, cb = parseFloat(b.costPrice)||0;
     if (cb !== ca) return cb - ca;
-    const ma = dateToMs(a.datePurchased || a.dateListed) || 0;
-    const mb = dateToMs(b.datePurchased || b.dateListed) || 0;
+    const ma = dateToMs(a.datePurchased || a.dateListed);
+    const mb = dateToMs(b.datePurchased || b.dateListed);
+    const aInvalidDate = !Number.isFinite(ma), bInvalidDate = !Number.isFinite(mb);
+    if (aInvalidDate && bInvalidDate) return 0;
+    if (aInvalidDate) return 1; // malformed or missing dates sort after valid dates
+    if (bInvalidDate) return -1;
     return ma - mb; // oldest first
   });
   return candidates[0];
@@ -5907,15 +6135,28 @@ async function markStatus(table, id, status) {
   }
 }
 
+// Returns true when both dates parse and the sale happened before acquisition.
+// Missing or unparseable dates stay outside this ordering check, as they leave
+// the holding period unknown rather than proving an impossible sequence.
+function _kjrSaleDateIsBeforeAcquisition(dateAcquired, dateSold) {
+  if (!dateAcquired || !dateSold) return false;
+  const acquiredMs = dateToMs(dateAcquired);
+  const soldMs = dateToMs(dateSold);
+  if (!Number.isFinite(acquiredMs) || !Number.isFinite(soldMs)) return false;
+  return soldMs < acquiredMs;
+}
+
 // Returns number of days between two "D MMM YYYY" date strings, or null if
-// either date is missing or unparseable. Used by all sell flows to compute
-// how long an item was held before sale.
+// either date is missing, unparseable, or the sale predates acquisition. Used
+// by all sell flows to compute how long an item was held before sale.
 function _kjrDaysHeld(dateAcquired, dateSold) {
   if (!dateAcquired || !dateSold) return null;
-  const a = new Date(dateAcquired);
-  const b = new Date(dateSold);
-  if (isNaN(a) || isNaN(b)) return null;
-  return Math.max(0, Math.round((b - a) / 86400000));
+  const acquiredMs = dateToMs(dateAcquired);
+  const soldMs = dateToMs(dateSold);
+  if (!Number.isFinite(acquiredMs) || !Number.isFinite(soldMs)) return null;
+  const diffMs = soldMs - acquiredMs;
+  if (diffMs < 0) return null;
+  return Math.round(diffMs / 86400000);
 }
 
 function calcQsProfit() {
@@ -5939,8 +6180,6 @@ function confirmQuickSell() {
   if (totalRaw == null || String(totalRaw).trim() === '') { toast('Enter the sold price'); return; }
   if (total < 0) { toast('Enter the sold price'); return; }
 
-  snapshotForUndo();
-
   const arr  = DB[table];
   const item = arr.find(i => i.id === id);
   if (!item) return;
@@ -5961,8 +6200,13 @@ function confirmQuickSell() {
   const channel = document.getElementById('qs-channel').value || 'Carousell';
   const profit  = total - cost - ship - fees;
   const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '-';
-  const dateSold = formatDateInput(document.getElementById('qs-date').value);
   const dateAcquired = toDateMmmYyyy(item.datePurchased || item.dateListed || item.date || '') || '';
+  const dateSold = formatDateInput(document.getElementById('qs-date').value);
+  if (_kjrSaleDateIsBeforeAcquisition(dateAcquired, dateSold)) {
+    toast('Sale date cannot be earlier than acquisition date');
+    return;
+  }
+  snapshotForUndo();
   const daysHeld = _kjrDaysHeld(dateAcquired, dateSold);
   const saleRecord = {
     id: genId('sale'),
@@ -6551,8 +6795,10 @@ function sortItems(items, table) {
     if (bEmpty) return -1;
     if (_DATE_COLS.has(col)) {
       const ma = dateToMs(av), mb = dateToMs(bv);
-      if (ma === 0 && mb === 0) return 0;
-      if (ma === 0) return 1; if (mb === 0) return -1;
+      const aInvalidDate = !Number.isFinite(ma), bInvalidDate = !Number.isFinite(mb);
+      if (aInvalidDate && bInvalidDate) return 0;
+      if (aInvalidDate) return 1; // invalid dates stay last in either direction
+      if (bInvalidDate) return -1;
       return (ma - mb) * dir;
     }
     if (_NUM_COLS.has(col)) {
@@ -7061,12 +7307,17 @@ function pnlHtml(cost, market) {
 // PSA grader filter. Every grader-aware code path must go through this
 // resolver so the rules live in one place.
 const _CANONICAL_GRADERS = ['PSA','CGC','TAG','ACE','BGS','SGC'];
-function _resolveGrader(grader, grade, extraText) {
+function _kjrHasBlackLabelPhrase(...values) {
+  return values.some(value => value != null && /\bBLACK\s+LABEL\b/i.test(String(value)));
+}
+function _resolveGrader(grader, grade, extraText, extraText2) {
   // 1. Combine all signal sources. extraText is optional - pass `notes` or
-  //    `name` to pick up Pristine markers stored outside grader/grade.
+  //    `name` to pick up Pristine/Black Label markers stored outside
+  //    grader/grade. extraText2 lets callers pass both fields distinctly.
   const blob = ((grader||'').toString() + ' ' +
                 (grade ||'').toString() + ' ' +
-                (extraText||'').toString()).toUpperCase();
+                (extraText||'').toString() + ' ' +
+                (extraText2||'').toString()).toUpperCase();
   // 2. Pick the first canonical grader code that appears anywhere in the blob.
   let canonGrader = '';
   for (const g of _CANONICAL_GRADERS) {
@@ -7088,8 +7339,11 @@ function _resolveGrader(grader, grade, extraText) {
   //    Restricted to those graders + grade 10 to prevent false positives
   //    from a stray " P" in a card name like "Pikachu V".
   const PRISTINE_GRADERS = new Set(['TAG','CGC','BGS']);
+  const isBlackLabel = canonGrader === 'BGS' && canonGrade === '10' &&
+    _kjrHasBlackLabelPhrase(grader, grade, extraText, extraText2);
   const isPristine =
     /\bPRISTINE\b/.test(blob) ||
+    isBlackLabel ||
     (PRISTINE_GRADERS.has(canonGrader) && canonGrade === '10' && (/\bP\b/.test(blob) || /\bP\b/.test(splitBlob)));
   return {
     grader:   canonGrader,
@@ -7105,9 +7359,10 @@ function _graderClass(canonGrader) {
   return 'b-slab';
 }
 
-function graderGradeBadge(grader, grade, notes) {
-  // Pass notes as extraText so Pristine markers stored in notes are caught.
-  const r = _resolveGrader(grader, grade, notes);
+function graderGradeBadge(grader, grade, notes, name) {
+  // Pass notes and name as extra text so top-tier markers stored outside the
+  // canonical grader/grade fields are caught.
+  const r = _resolveGrader(grader, grade, notes, name);
   // Pristine gets its OWN class (gold gradient). Otherwise use the standard
   // PSA/CGC/TAG colour. Pristine badges show a small ★ before the grade so
   // they're instantly distinguishable from regular PSA 10s in the table.
@@ -7115,20 +7370,53 @@ function graderGradeBadge(grader, grade, notes) {
   const displayGrader = r.grader || ((grader||'').toString().trim().toUpperCase()) || '?';
   const displayGrade  = r.grade  || ((grade ||'').toString().trim()) || '?';
   const pristineMark  = r.pristine ? ' ★' : '';
-  const title         = r.pristine ? ' title="' + (r.grader || 'Slab') + ' Pristine 10 - top-pop subgrade"' : '';
+  const isBlackLabel  = r.pristine && r.grader === 'BGS' && r.grade === '10' &&
+    _kjrHasBlackLabelPhrase(grader, grade, notes, name);
+  const topTierLabel  = isBlackLabel ? 'BGS Black Label 10' : ((r.grader || 'Slab') + ' Pristine 10');
+  const title         = r.pristine
+    ? ' title="' + esc(topTierLabel + ' - top-pop subgrade') + '" aria-label="' + esc(topTierLabel) + '"'
+    : '';
   return '<span class="badge ' + cls + '"' + title + ' style="font-size:13px;font-weight:600;letter-spacing:0.2px;padding:3px 10px">' +
     esc(displayGrader) + ' ' + esc(displayGrade) + pristineMark + '</span>';
 }
 
 // =========== SINGLES ===========
 function _parseHistDate(dateStr) {
-  if (!dateStr) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return new Date(dateStr + 'T00:00:00');
-  const now = new Date();
-  let d = new Date(dateStr + ' ' + now.getFullYear());
-  if (isNaN(d.getTime())) return null;
-  if (d > now) d = new Date(dateStr + ' ' + (now.getFullYear() - 1));
-  return isNaN(d.getTime()) ? null : d;
+  if (typeof dateStr !== 'string') return null;
+  const s = dateStr.trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    return _dateFromCalendarParts(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  }
+
+  // Legacy price history used a yearless day-month label such as "23 Aug".
+  // Keep its current-year / prior-year rollover, but only after validating the
+  // calendar date so native Date cannot turn garbage or 30 Feb into a real day.
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?$/);
+  if (m) {
+    const day = parseInt(m[1], 10);
+    const monthIndex = _monthIdxFromString(m[2]);
+    if (monthIndex < 0) return null;
+    const now = new Date();
+    const explicitYear = m[3] !== undefined;
+    let year = explicitYear ? parseInt(m[3], 10) : now.getFullYear();
+    let d = _dateFromCalendarParts(year, monthIndex, day);
+    if (!d) return null;
+    if (!explicitYear && d > now) {
+      d = _dateFromCalendarParts(year - 1, monthIndex, day);
+    }
+    return d;
+  }
+
+  // Numeric day-month values were accepted by the stored-date normaliser, so
+  // retain them here too, with the same strict calendar validation.
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    return _dateFromCalendarParts(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+  }
+
+  return null;
 }
 
 function _mktFreshDot(item) {
@@ -8244,7 +8532,7 @@ function renderSlabs() {
     const tagUrl = (i.certNo && _isTag) ? 'https://my.taggrading.com/card/' + encodeURIComponent(i.certNo) : null;
     const chk = selectedIds.slabs.has(i.id);
     // Grade badge (separate column) + cert number (separate column with TAG link).
-    const badge = graderGradeBadge(i.grader, i.grade, i.notes);
+    const badge = graderGradeBadge(i.grader, i.grade, i.notes, i.name);
     const certText = i.certNo ? esc(i.certNo) : '-';
     const certHtml = tagUrl
       ? '<a href="' + esc(tagUrl) + '" target="_blank" style="text-decoration:none;color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:2px">' + certText + ' <span style="color:var(--text3);font-size:10px">↗</span></a>'
@@ -8769,7 +9057,6 @@ function calcSaleProfit() {
 function saveSale() {
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
-  snapshotForUndo();
   const cost    = kjrNum(document.getElementById('msa-cost').value);
   const total   = kjrNum(document.getElementById('msa-total').value);
   const ship    = kjrNum(document.getElementById('msa-ship').value);
@@ -8777,6 +9064,7 @@ function saveSale() {
   const channel = document.getElementById('msa-channel').value || 'Carousell';
   const profit  = total - cost - ship - fees;
   const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '-';
+  const dateSold = formatDateInput(document.getElementById('msa-date').value);
   const id = document.getElementById('msa-id').value;
   const itemCosts = msaReadItemCosts();
   const prevForLink = id ? DB.sales.find(s => s.id === id) : null;
@@ -8788,13 +9076,17 @@ function saveSale() {
     const srcRow = (DB[prevForLink.inventoryTable] || []).find(r => r.id === prevForLink.inventoryId);
     if (srcRow) {
       dateAcquired = toDateMmmYyyy(srcRow.datePurchased || srcRow.dateListed || srcRow.date || '') || '';
-      const ds = formatDateInput(document.getElementById('msa-date').value);
-      daysHeld = _kjrDaysHeld(dateAcquired, ds);
     }
   }
+  if (_kjrSaleDateIsBeforeAcquisition(dateAcquired, dateSold)) {
+    toast('Sale date cannot be earlier than acquisition date');
+    return;
+  }
+  if (dateAcquired) daysHeld = _kjrDaysHeld(dateAcquired, dateSold);
+  snapshotForUndo();
   const item = {
     id: id || genId('sale'),
-    dateSold: formatDateInput(document.getElementById('msa-date').value),
+    dateSold,
     product,
     buyer: document.getElementById('msa-buyer').value,
     costPrice: cost, totalCollected: total, shippingCost: ship,
@@ -9820,22 +10112,48 @@ function renderAiChart(cd) {
 
 // expose normaliseToMonthYear globally (used by dashboard)
 function normaliseToMonthYear(raw) {
-  if (!raw || !raw.trim()) return null;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
   const s = raw.trim();
-  const m1 = s.match(/^(\w{3,9})\s+(\d{4})$/i); if (m1) return m1[1].slice(0,3) + ' ' + m1[2];
-  const m2 = s.match(/\d{1,2}\s+(\w{3,9})\s+(\d{4})/i); if (m2) return m2[1].slice(0,3) + ' ' + m2[2];
-  const m3 = s.match(/^(\d{4})-(\d{2})-\d{2}/); if (m3) { const d = new Date(s+'T00:00:00'); if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'})+' '+d.getFullYear(); }
+  const warnInvalid = () => console.warn('[normaliseToMonthYear] invalid calendar date "' + s + '".');
+  const formatMonth = (monthIndex, year) => MONTHS_ABBR[monthIndex] + ' ' + year;
+
+  const m1 = s.match(/^([A-Za-z]{3,9})\s+(\d{4})$/i);
+  if (m1) {
+    const mi = _monthIdxFromString(m1[1]);
+    if (mi < 0) return null;
+    return formatMonth(mi, m1[2]);
+  }
+
+  const m2 = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/i);
+  if (m2) {
+    const day = parseInt(m2[1], 10), year = parseInt(m2[3], 10);
+    const mi = _monthIdxFromString(m2[2]);
+    if (!_dateFromCalendarParts(year, mi, day)) { warnInvalid(); return null; }
+    return formatMonth(mi, year);
+  }
+
+  const m3 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m3) {
+    const year = parseInt(m3[1], 10), mi = parseInt(m3[2], 10) - 1, day = parseInt(m3[3], 10);
+    if (!_dateFromCalendarParts(year, mi, day)) { warnInvalid(); return null; }
+    return formatMonth(mi, year);
+  }
+
   // Always parse as DD/MM/YYYY (en-GB / SG convention - per owner preference).
   // The old m5 (MM/DD) branch was unreachable because m4 always matched first.
   // For US-style imports, transform the file before paste rather than guess here.
-  const m4 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  const m4 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m4) {
     const day = parseInt(m4[1], 10), mon = parseInt(m4[2], 10);
+    let warnedAmbiguity = false;
     if (mon > 12 && day <= 12) {
       console.warn('[normaliseToMonthYear] "' + s + '" looks like MM/DD/YYYY but we parse DD/MM/YYYY. Treating as month=' + day + ', day=' + mon + '.');
+      warnedAmbiguity = true;
     }
-    const d = new Date(m4[3]+'-'+m4[2].padStart(2,'0')+'-'+m4[1].padStart(2,'0'));
-    if (!isNaN(d)) return d.toLocaleString('en-GB',{month:'short'})+' '+d.getFullYear();
+    const year = parseInt(m4[3], 10);
+    const d = _dateFromCalendarParts(year, mon - 1, day);
+    if (d) return formatMonth(mon - 1, year);
+    if (!warnedAmbiguity) warnInvalid();
   }
   return null;
 }
@@ -9966,7 +10284,7 @@ function _renderLstResults() {
     let icon, badge, meta;
     if (isSlab) {
       icon  = '🏆';
-      badge = graderGradeBadge(i.grader, i.grade, i.notes);
+      badge = graderGradeBadge(i.grader, i.grade, i.notes, i.name);
       meta  = [(i.certNo ? '#' + i.certNo : ''), (i.rank||''), (i.set||'')].filter(Boolean).join(' · ') || 'Graded slab';
     } else if (src === 'etbs' || src === 'boosterBoxes' || i.type === 'sealed') {
       icon  = '📦';

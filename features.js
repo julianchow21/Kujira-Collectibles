@@ -338,9 +338,18 @@ function kjrMoneyStr(val){
   return isNaN(n) ? '' : String(n);
 }
 // Whole-number currency display by default (the app standardised on whole
-// numbers everywhere - cents are noise for a collectibles tracker).
-function kjrFmt(n){ const x=kjrNum(n); return x===0?'':'S$'+Math.round(x).toLocaleString('en-SG'); }
-function fmtUsd(n){ const x=kjrNum(n); return x===0?'':'US$'+Math.round(x).toLocaleString('en-SG'); }
+// numbers everywhere - cents are noise for a collectibles tracker). Keep
+// explicit numeric zero visible, while blank and non-numeric values stay blank.
+function _kjrFmtCurrency(n, prefix){
+  if (n == null || String(n).trim() === '') return '';
+  const cleaned = String(n).replace(/[^0-9.\-]/g, '');
+  if (cleaned === '' || cleaned === '-' || cleaned === '.') return '';
+  const x = parseFloat(cleaned);
+  if (!Number.isFinite(x)) return '';
+  return prefix + Math.round(x).toLocaleString('en-SG');
+}
+function kjrFmt(n){ return _kjrFmtCurrency(n, 'S$'); }
+function fmtUsd(n){ return _kjrFmtCurrency(n, 'US$'); }
 function kjrPill(s){
   const c = (s||'').toLowerCase(); const v = kjrEscape(s);
   if (c.includes('sold'))                         return '<span class="kjr-status-pill kjr-pill-sold">'+v+'</span>';
@@ -377,7 +386,14 @@ function kjrApplySort(rows, dbKey){
   // ebayPurchases default: date DESC (newest purchase at top) so pushing a
   // pipeline status never rearranges rows.
   if (!s.k && dbKey === 'ebayPurchases') {
-    return [...rows].sort((a, b) => (dateToMs(b.date) || 0) - (dateToMs(a.date) || 0));
+    return [...rows].sort((a, b) => {
+      const ma = dateToMs(a.date), mb = dateToMs(b.date);
+      const aInvalidDate = !Number.isFinite(ma), bInvalidDate = !Number.isFinite(mb);
+      if (aInvalidDate && bInvalidDate) return 0;
+      if (aInvalidDate) return 1; // invalid dates stay last in descending order
+      if (bInvalidDate) return -1;
+      return mb - ma;
+    });
   }
   const dir = s.k ? s.dir : 1;
   const DATE_KEYS = new Set(['date','dateListed','datePurchased','dateSold','receivedAt']);
@@ -393,8 +409,10 @@ function kjrApplySort(rows, dbKey){
     if (aE) return 1; if (bE) return -1;
     if (isDate) {
       const ma = dateToMs(va), mb = dateToMs(vb);
-      if (ma === 0 && mb === 0) return 0;
-      if (ma === 0) return 1; if (mb === 0) return -1;
+      const aInvalidDate = !Number.isFinite(ma), bInvalidDate = !Number.isFinite(mb);
+      if (aInvalidDate && bInvalidDate) return 0;
+      if (aInvalidDate) return 1; // invalid dates stay last in either direction
+      if (bInvalidDate) return -1;
       return (ma - mb) * dir;
     }
     if (isNum) {
@@ -2988,17 +3006,12 @@ const _KJR_XLSX_DATE_KEYS = new Set(['datePurchased','dateListed','dateSold','da
 const _KJR_XLSX_INT_KEYS = new Set(['qty','grade']);
 const _KJR_XLSX_PCT_KEYS = new Set(['marginFraction','roiPct']);
 
-// Parse a stored date value into a real Date for Excel, via the app's own
-// date helpers (dateToMs handles the canonical "D MMM YYYY" form and common
-// input variants). Falls back to toDateMmmYyyy→Date, then null for anything
-// genuinely unparseable so the cell stays blank rather than showing "Invalid Date".
+// Parse a stored date value into a real Date for Excel via the app's strict
+// date helper. Invalid values stay blank rather than showing "Invalid Date".
 function _kjrXlsxParseDate(val) {
   if (val == null || val === '') return null;
   const ms = dateToMs(val);
-  if (ms) return new Date(ms);
-  const alt = new Date(toDateMmmYyyy(val));
-  if (!isNaN(alt.getTime())) return alt;
-  return null;
+  return Number.isFinite(ms) ? new Date(ms) : null;
 }
 
 // Apply per-column number format + alignment, then set the header row's own

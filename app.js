@@ -1620,38 +1620,47 @@ function _listDirtyV2MarkerKeys() {
 
 function _orphanDirtyMarkerRecoveryStatus(table, id) {
   const groups = _readMutationGroups();
-  if (!groups) return { blocked: true, confirmedDeleted: false };
+  if (!groups) return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
   for (const group of groups) {
     const plan = _mutationReplayPlan(group);
-    if (!plan) return { blocked: true, confirmedDeleted: false };
+    if (!plan) return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
     if (plan.some(({ op }) => op && op.table === table && op.id === id)) {
-      return { blocked: true, confirmedDeleted: false };
+      return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
     }
   }
 
   const deleteState = _readDeleteState();
-  if (!deleteState.valid) return { blocked: true, confirmedDeleted: false };
+  if (!deleteState.valid) return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
   for (const entry of deleteState.state.pending) {
     if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') {
-      return { blocked: true, confirmedDeleted: false };
+      return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
     }
-    if (entry.table === table && entry.id === id) return { blocked: true, confirmedDeleted: false };
+    if (entry.table === table && entry.id === id) {
+      return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
+    }
   }
   let confirmedDeleted = false;
+  let confirmedRestored = null;
   for (const entry of deleteState.state.confirmed) {
     if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string') {
-      return { blocked: true, confirmedDeleted: false };
+      return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
     }
-    // A confirmed deletion is durable protective evidence for this same
-    // tombstoned id, not a recoverable restore. Keep its record intact while
-    // allowing the obsolete snapshotless upsert marker to settle. Any other
-    // confirmed state might protect an active restore, so it blocks cleanup.
     if (entry.table === table && entry.id === id) {
-      if (entry.state !== 'deleted') return { blocked: true, confirmedDeleted: false };
-      confirmedDeleted = true;
+      if (entry.state === 'deleted') {
+        if (confirmedRestored) return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
+        confirmedDeleted = true;
+      } else if (entry.state === 'restored') {
+        if (confirmedDeleted || confirmedRestored || typeof entry.restoreToken !== 'string' ||
+            !entry.restoreToken || !Number.isFinite(entry.ts)) {
+          return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
+        }
+        confirmedRestored = entry;
+      } else {
+        return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
+      }
     }
   }
-  return { blocked: false, confirmedDeleted };
+  return { blocked: false, confirmedDeleted, confirmedRestored, deleteState };
 }
 
 function _readOrphanDirtyCache(marker) {
@@ -1665,6 +1674,12 @@ function _readOrphanDirtyCache(marker) {
     if (!Array.isArray(rows)) return null;
     return { raw, hasRow: rows.some(row => row && typeof row === 'object' && row.id === marker.id) };
   } catch (_) { return null; }
+}
+
+function _currentPullHasTrashSource(table, id, tables) {
+  if (!tables || !Array.isArray(tables.trash)) return true;
+  return tables.trash.some(entry => entry && entry.data && typeof entry.data === 'object' &&
+    !Array.isArray(entry.data) && _tblName(entry.data.originalTable) === table && entry.data.originalId === id);
 }
 
 function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tombstones, tables) {
@@ -1685,27 +1700,62 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
   if (!DB || !Array.isArray(DB[marker.table]) ||
       DB[marker.table].some(row => row && row.id === marker.id)) return null;
 
-  // A same-row marker, a later revision token, or any pending transaction
-  // means this is not an abandoned orphan. Leave all of those states intact.
+  const sameRowMarkers = allMarkers.filter(candidate =>
+    candidate.table === marker.table && candidate.id === marker.id);
+  const markerTokens = new Set(sameRowMarkers.map(candidate => candidate.token));
+  const snapshotless = sameRowMarkers.length > 0 && sameRowMarkers.every(candidate =>
+    !Object.prototype.hasOwnProperty.call(candidate, 'rowJson'));
   const recovery = _orphanDirtyMarkerRecoveryStatus(serverTable, marker.id);
-  if (allMarkers.filter(candidate => candidate.table === marker.table && candidate.id === marker.id).length !== 1 ||
-      recovery.blocked) return null;
+  if (recovery.blocked || !snapshotless) return null;
   const cache = _readOrphanDirtyCache(marker);
-  // A current pull tombstone plus a matching confirmed deletion means the
-  // pre-pull cache row is already hidden by delete state. It cannot be a
-  // later UI edit, so it must not retain an otherwise abandoned marker.
-  if (!cache || (cache.hasRow && !recovery.confirmedDeleted)) return null;
+  if (!cache) return null;
 
-  let markerRaw;
+  let deleteStateBefore = null;
+  let nextDeleteState = null;
+  if (recovery.confirmedRestored) {
+    // A restored marker normally protects a live restore. It becomes stale
+    // only after the restore group is gone, the exact current pull tombstone
+    // remains, no local or remote row exists, and its Trash source is gone.
+    // Multiple old snapshotless tokens may describe that one failed restore,
+    // so settle them together, never one at a time.
+    if (recovery.deleteState.source !== 'v2' || cache.hasRow ||
+        _currentPullHasTrashSource(serverTable, marker.id, tables)) return null;
+    const confirmed = recovery.deleteState.state.confirmed.filter(entry =>
+      entry && entry.table === serverTable && entry.id === marker.id);
+    if (confirmed.length !== 1 || confirmed[0] !== recovery.confirmedRestored) return null;
+    try {
+      deleteStateBefore = new Map([
+        [DELETE_STATE_V2_KEY, localStorage.getItem(DELETE_STATE_V2_KEY)],
+        [PENDING_DEL_KEY, localStorage.getItem(PENDING_DEL_KEY)],
+        [CONFIRMED_DEL_KEY, localStorage.getItem(CONFIRMED_DEL_KEY)],
+      ]);
+    } catch (_) { return null; }
+    if (deleteStateBefore.get(DELETE_STATE_V2_KEY) !== recovery.deleteState.raw) return null;
+    nextDeleteState = {
+      pending: recovery.deleteState.state.pending.slice(),
+      confirmed: recovery.deleteState.state.confirmed.filter(entry =>
+        !(entry && entry.table === serverTable && entry.id === marker.id)),
+    };
+  } else {
+    // A current pull tombstone plus a matching confirmed deletion means the
+    // pre-pull cache row is already hidden by delete state. It cannot be a
+    // later UI edit, so it must not retain an otherwise abandoned marker.
+    if (sameRowMarkers.length !== 1 || (cache.hasRow && !recovery.confirmedDeleted)) return null;
+  }
+
+  const markerRaws = new Map();
   let legacyRaw;
   let legacy;
   try {
-    markerRaw = localStorage.getItem(marker.key);
+    for (const candidate of sameRowMarkers) {
+      const markerRaw = localStorage.getItem(candidate.key);
+      if (typeof markerRaw !== 'string') return null;
+      const savedMarker = JSON.parse(markerRaw);
+      if (!savedMarker || savedMarker.table !== candidate.table || savedMarker.id !== candidate.id ||
+          savedMarker.token !== candidate.token || Object.prototype.hasOwnProperty.call(savedMarker, 'rowJson')) return null;
+      markerRaws.set(candidate.key, markerRaw);
+    }
     legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
-    if (typeof markerRaw !== 'string') return null;
-    const savedMarker = JSON.parse(markerRaw);
-    if (!savedMarker || savedMarker.table !== marker.table || savedMarker.id !== marker.id ||
-        savedMarker.token !== marker.token || Object.prototype.hasOwnProperty.call(savedMarker, 'rowJson')) return null;
     legacy = legacyRaw === null ? {} : JSON.parse(legacyRaw);
     if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
   } catch (_) { return null; }
@@ -1719,10 +1769,10 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
   if (revisions !== undefined && (!revisions || typeof revisions !== 'object' || Array.isArray(revisions))) return null;
   const tokens = revisions && revisions[marker.id];
   if (tokens !== undefined && (!Array.isArray(tokens) || tokens.some(token => typeof token !== 'string' || !token))) return null;
-  if (Array.isArray(tokens) && tokens.some(token => token !== marker.token)) return null;
+  if (Array.isArray(tokens) && tokens.some(token => !markerTokens.has(token))) return null;
 
   const inMemoryRevision = _dirtyRevisions[marker.table] && _dirtyRevisions[marker.table].get(marker.id);
-  if (inMemoryRevision && inMemoryRevision !== marker.token) return null;
+  if (inMemoryRevision && !markerTokens.has(inMemoryRevision)) return null;
 
   const nextLegacy = JSON.parse(JSON.stringify(legacy));
   if (Array.isArray(nextLegacy[marker.table])) {
@@ -1732,21 +1782,51 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
     delete nextLegacy._revisions[marker.table][marker.id];
   }
   const nextLegacyRaw = legacyRaw === null ? null : JSON.stringify(nextLegacy);
-  return { marker, markerRaw, legacyRaw, nextLegacyRaw, cacheRaw: cache.raw };
+  return {
+    marker,
+    markers: sameRowMarkers,
+    markerRaws,
+    markerTokens,
+    legacyRaw,
+    nextLegacyRaw,
+    cacheRaw: cache.raw,
+    deleteStateBefore,
+    nextDeleteState,
+  };
 }
 
-function _restoreProvenOrphanDirtyStorage(prepared, markerRemovalAttempted, legacyWriteAttempted) {
+function _restoreProvenOrphanDirtyStorage(prepared, writes) {
   let restored = true;
   try {
-    if (markerRemovalAttempted) {
-      const current = localStorage.getItem(prepared.marker.key);
-      if (current !== null && current !== prepared.markerRaw) restored = false;
-      else if (current !== prepared.markerRaw) {
-        localStorage.setItem(prepared.marker.key, prepared.markerRaw);
-        if (localStorage.getItem(prepared.marker.key) !== prepared.markerRaw) restored = false;
+    if (writes.deleteStateAttempted && prepared.deleteStateBefore) {
+      for (const [key, before] of prepared.deleteStateBefore) {
+        const current = localStorage.getItem(key);
+        const after = writes.deleteStateAfter && writes.deleteStateAfter.get(key);
+        if (current !== before && current !== after) {
+          restored = false;
+          continue;
+        }
+        if (current !== before) {
+          if (before === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, before);
+          if (localStorage.getItem(key) !== before) restored = false;
+        }
       }
     }
-    if (legacyWriteAttempted) {
+    if (writes.markerRemovalAttempted) {
+      for (const [key, markerRaw] of prepared.markerRaws) {
+        const current = localStorage.getItem(key);
+        if (current !== null && current !== markerRaw) {
+          restored = false;
+          continue;
+        }
+        if (current !== markerRaw) {
+          localStorage.setItem(key, markerRaw);
+          if (localStorage.getItem(key) !== markerRaw) restored = false;
+        }
+      }
+    }
+    if (writes.legacyWriteAttempted) {
       const current = localStorage.getItem(DIRTY_LS_KEY);
       if (current !== prepared.legacyRaw && current !== prepared.nextLegacyRaw) restored = false;
       else if (current === prepared.legacyRaw) {
@@ -1765,31 +1845,53 @@ function _restoreProvenOrphanDirtyStorage(prepared, markerRemovalAttempted, lega
 }
 
 function _commitProvenOrphanDirtyMarkerCleanup(prepared) {
-  let legacyWriteAttempted = false;
-  let markerRemovalAttempted = false;
+  const writes = {
+    deleteStateAttempted: false,
+    deleteStateAfter: null,
+    legacyWriteAttempted: false,
+    markerRemovalAttempted: false,
+  };
   try {
     // Re-check every observed byte immediately before the first write. If a
     // tab changed a marker, legacy mirror, or cache after preflight, retain
     // recovery state instead of guessing which edit is current.
-    if (localStorage.getItem(prepared.marker.key) !== prepared.markerRaw ||
+    if ([...prepared.markerRaws].some(([key, raw]) => localStorage.getItem(key) !== raw) ||
         localStorage.getItem(DIRTY_LS_KEY) !== prepared.legacyRaw ||
         localStorage.getItem(STORAGE_KEY) !== prepared.cacheRaw) return false;
+    if (prepared.deleteStateBefore && [...prepared.deleteStateBefore]
+      .some(([key, raw]) => localStorage.getItem(key) !== raw)) return false;
     if (prepared.nextLegacyRaw !== prepared.legacyRaw) {
-      legacyWriteAttempted = true;
+      writes.legacyWriteAttempted = true;
       if (prepared.nextLegacyRaw === null) localStorage.removeItem(DIRTY_LS_KEY);
       else localStorage.setItem(DIRTY_LS_KEY, prepared.nextLegacyRaw);
       if (localStorage.getItem(DIRTY_LS_KEY) !== prepared.nextLegacyRaw) throw new Error('legacy_dirty_write_failed');
     }
-    markerRemovalAttempted = true;
-    localStorage.removeItem(prepared.marker.key);
-    if (localStorage.getItem(prepared.marker.key) !== null) throw new Error('orphan_dirty_marker_remove_failed');
+    for (const marker of prepared.markers) {
+      writes.markerRemovalAttempted = true;
+      localStorage.removeItem(marker.key);
+      if (localStorage.getItem(marker.key) !== null) throw new Error('orphan_dirty_marker_remove_failed');
+    }
+    if (prepared.nextDeleteState) {
+      writes.deleteStateAttempted = true;
+      const committed = _commitDeleteStateV2(prepared.nextDeleteState);
+      writes.deleteStateAfter = new Map([
+        [DELETE_STATE_V2_KEY, localStorage.getItem(DELETE_STATE_V2_KEY)],
+        [PENDING_DEL_KEY, localStorage.getItem(PENDING_DEL_KEY)],
+        [CONFIRMED_DEL_KEY, localStorage.getItem(CONFIRMED_DEL_KEY)],
+      ]);
+      if (!committed || writes.deleteStateAfter.get(DELETE_STATE_V2_KEY) !== JSON.stringify(committed) ||
+          writes.deleteStateAfter.get(PENDING_DEL_KEY) !== JSON.stringify(prepared.nextDeleteState.pending) ||
+          writes.deleteStateAfter.get(CONFIRMED_DEL_KEY) !== JSON.stringify(prepared.nextDeleteState.confirmed)) {
+        throw new Error('restored_delete_state_write_failed');
+      }
+    }
 
     _dirty[prepared.marker.table].delete(prepared.marker.id);
     _dirtyRevisions[prepared.marker.table].delete(prepared.marker.id);
-    _syntheticDirtyRevisionTokens.delete(prepared.marker.token);
+    for (const token of prepared.markerTokens) _syntheticDirtyRevisionTokens.delete(token);
     return true;
   } catch (error) {
-    const restored = _restoreProvenOrphanDirtyStorage(prepared, markerRemovalAttempted, legacyWriteAttempted);
+    const restored = _restoreProvenOrphanDirtyStorage(prepared, writes);
     console.warn('[dirty] proven orphan marker cleanup deferred:', error);
     if (!restored) console.warn('[dirty] proven orphan marker rollback needs repair');
     warnOnce('dirty-v2-orphan-cleanup-failed', 'A stale sync marker could not be cleared safely. It remains queued.');

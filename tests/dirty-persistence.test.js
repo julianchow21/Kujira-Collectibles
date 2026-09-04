@@ -430,10 +430,16 @@ test('dirty-persistence: any same-row delete state, cached row, or later token b
       extra: { pendingDelete: true },
     },
     {
-      name: 'confirmed restored state',
+      name: 'active confirmed restore',
       id: 'confirmed_restore_blocks',
-      seed: null,
+      seed: { singles: [{ id: 'confirmed_restore_blocks', name: 'Active restored row', _restoreToken: 'restore-token' }] },
       extra: { confirmedRestore: true },
+    },
+    {
+      name: 'matching Trash source',
+      id: 'restored_trash_blocks',
+      seed: null,
+      extra: { confirmedRestore: true, trashSource: true },
     },
   ];
   for (const item of cases) {
@@ -463,11 +469,131 @@ test('dirty-persistence: any same-row delete state, cached row, or later token b
     }
     const loaded = await loadApp({
       seed: item.seed,
-      fetch: currentPullWith([{ table: 'singles', id: item.id, row_version: 3 }]),
+      fetch: currentPullWith(
+        [{ table: 'singles', id: item.id, row_version: 3 }],
+        item.extra.trashSource ? { trash: [{
+          id: 'trash_' + item.id,
+          data: { originalTable: 'singles', originalId: item.id, item: { id: item.id, name: 'Recoverable Trash row' } },
+        }] } : undefined,
+      ),
       localStorage,
     });
     assert.ok(loaded.localStorage.getItem(markerKey), item.name + ' keeps the target marker');
   }
+});
+
+test('dirty-persistence: a current tombstone settles post-v3.44 restored state with four snapshotless markers', async () => {
+  const singlesId = 's_f73519c7-72e3-43b7-8121-c2165dcf6e15';
+  const salesId = 'sale_243efe29-e69f-4165-b98a-815bb9773dbb';
+  const markers = [
+    { table: 'singles', id: singlesId, token: 'old-tab-a:1' },
+    { table: 'singles', id: singlesId, token: 'old-tab-b:1' },
+    { table: 'sales', id: salesId, token: 'old-tab-c:1' },
+    { table: 'sales', id: salesId, token: 'old-tab-d:1' },
+  ];
+  const unrelatedConfirmed = { table: 'slabs', id: 'unrelated_confirmed_delete', ts: 88, restoreToken: '', state: 'deleted' };
+  const restoredStateRaw = JSON.stringify({
+    schema: 2,
+    revision: 'v341-restored-proof-left-after-v344-cancellation',
+    pending: [],
+    confirmed: [
+      { table: 'singles', id: singlesId, ts: 41, restoreToken: 'v341-restore-single', state: 'restored' },
+      { table: 'sales', id: salesId, ts: 42, restoreToken: 'v341-restore-sale', state: 'restored' },
+      unrelatedConfirmed,
+    ],
+  });
+  const localStorage = {
+    _kjrDeleteStateV2: restoredStateRaw,
+    pokeinv_dirty_v1: JSON.stringify({
+      singles: [singlesId],
+      sales: [salesId],
+      _revisions: {
+        singles: { [singlesId]: markers.slice(0, 2).map(marker => marker.token) },
+        sales: { [salesId]: markers.slice(2).map(marker => marker.token) },
+      },
+    }),
+  };
+  for (const marker of markers) {
+    localStorage['pokeinv_dirty_v2:' + marker.token] = JSON.stringify({
+      ...marker,
+      owner: marker.token.split(':')[0],
+      createdAt: 41,
+    });
+  }
+  const tombstones = [
+    { table: 'singles', id: singlesId, row_version: 22, deleted_at: '2026-09-04T00:00:00.000Z' },
+    { table: 'sales', id: salesId, row_version: 3, deleted_at: '2026-09-04T00:00:00.000Z' },
+  ];
+  const loaded = await loadApp({ seed: null, localStorage, fetch: currentPullWith(tombstones, { trash: [] }) });
+
+  for (const marker of markers) assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v2:' + marker.token), null);
+  const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.ok(!legacy.singles.includes(singlesId));
+  assert.ok(!legacy.sales.includes(salesId));
+  assert.strictEqual(legacy._revisions.singles[singlesId], undefined);
+  assert.strictEqual(legacy._revisions.sales[salesId], undefined);
+  const deleteState = JSON.parse(loaded.localStorage.getItem('_kjrDeleteStateV2'));
+  assert.deepStrictEqual(deleteState.confirmed, [unrelatedConfirmed], 'only stale restored evidence is removed');
+  const { DB, _dirty } = loaded.grab('DB', '_dirty');
+  assert.ok(!DB.singles.some(row => row.id === singlesId));
+  assert.ok(!DB.sales.some(row => row.id === salesId));
+  assert.ok(!_dirty.singles.has(singlesId));
+  assert.ok(!_dirty.sales.has(salesId));
+
+  const reloaded = await loadApp({
+    seed: null,
+    localStorage: copyStorage(loaded.localStorage),
+    fetch: currentPullWith(tombstones, { trash: [] }),
+  });
+  const reloadedState = reloaded.grab('DB', '_dirty');
+  assert.ok(!reloadedState.DB.singles.some(row => row.id === singlesId));
+  assert.ok(!reloadedState.DB.sales.some(row => row.id === salesId));
+  assert.ok(!reloadedState._dirty.singles.has(singlesId));
+  assert.ok(!reloadedState._dirty.sales.has(salesId));
+});
+
+test('dirty-persistence: stale restored cleanup rolls every local record back after a partial delete-state mirror failure', async () => {
+  const id = 'restored_cleanup_mirror_failure';
+  const tokens = ['old-tab-a:mirror', 'old-tab-b:mirror'];
+  const markerRaws = tokens.map(token => JSON.stringify({ table: 'singles', id, token, owner: 'old-tab', createdAt: 41 }));
+  const dirtyRaw = JSON.stringify({ singles: [id], _revisions: { singles: { [id]: tokens } } });
+  const deleteRaw = JSON.stringify({
+    schema: 2,
+    revision: 'restored-cleanup-mirror-failure',
+    pending: [],
+    confirmed: [{ table: 'singles', id, ts: 41, restoreToken: 'restore-token', state: 'restored' }],
+  });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      _kjrDeleteStateV2: deleteRaw,
+      pokeinv_dirty_v1: dirtyRaw,
+      ['pokeinv_dirty_v2:' + tokens[0]]: markerRaws[0],
+      ['pokeinv_dirty_v2:' + tokens[1]]: markerRaws[1],
+    },
+  });
+  const state = loaded.grab('_dirty', '_dirtyRevisions');
+  const dirtyBefore = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  state._dirty.singles.add(id);
+  state._dirtyRevisions.singles.set(id, tokens[0]);
+  const realSetItem = loaded.localStorage.setItem.bind(loaded.localStorage);
+  loaded.localStorage.setItem = (key, value) => {
+    if (key === '_kjrConfirmedCloudDeletes') throw new Error('injected confirmed mirror failure');
+    return realSetItem(key, value);
+  };
+  const cleared = loaded.ctx._clearProvenOrphanDirtyMarkersAfterPull(
+    [{ table: 'singles', id, row_version: 3 }],
+    { singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [], booster_packs: [], ebay_purchases: [], trash: [] },
+  );
+
+  assert.strictEqual(cleared, 0);
+  assert.strictEqual(loaded.localStorage.getItem('_kjrDeleteStateV2'), deleteRaw);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), dirtyBefore);
+  for (let index = 0; index < tokens.length; index++) {
+    assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v2:' + tokens[index]), markerRaws[index]);
+  }
+  assert.strictEqual(state._dirty.singles.has(id), true);
+  assert.strictEqual(state._dirtyRevisions.singles.get(id), tokens[0]);
 });
 
 test('dirty-persistence: a pending same-row mutation group blocks orphan cleanup without changing either recovery record', async () => {

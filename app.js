@@ -1021,6 +1021,56 @@ function _pendingDeleteStillQueued(item) {
     (candidate.ts || 0) === (item.ts || 0));
 }
 
+function _settleAlreadyTombstonedDelete(table, id, restoreToken) {
+  const current = _readDeleteState();
+  if (!current.valid) return false;
+  const matching = current.state.pending.filter(item => item && item.table === table && item.id === id);
+  if (!matching.length) return true;
+  const latest = matching.reduce((winner, item) => (item.ts || 0) > (winner.ts || 0) ? item : winner);
+  const pending = current.state.pending.filter(item => !(item && item.table === table && item.id === id));
+  const confirmed = current.state.confirmed.filter(item => !(item && item.table === table && item.id === id));
+  confirmed.push({
+    table,
+    id,
+    ts: latest.ts || Date.now(),
+    restoreToken: restoreToken || latest.restoreToken || '',
+    state: 'deleted',
+  });
+  const key = _dbKey(table);
+  const beforeRows = DB && Array.isArray(DB[key]) ? DB[key].slice() : null;
+  let cacheBefore = null;
+  let cacheAfter = null;
+  try {
+    cacheBefore = localStorage.getItem(STORAGE_KEY);
+    if (!cacheBefore) {
+      if (!_commitDeleteStateV2({ pending, confirmed })) return false;
+      if (beforeRows) DB[key] = beforeRows.filter(row => row.id !== id);
+      return true;
+    }
+    const cache = JSON.parse(cacheBefore);
+    if (Array.isArray(cache[key])) cache[key] = cache[key].filter(row => row.id !== id);
+    cacheAfter = JSON.stringify(cache);
+    localStorage.setItem(STORAGE_KEY, cacheAfter);
+    if (localStorage.getItem(STORAGE_KEY) !== cacheAfter) throw new Error('cache_write_not_confirmed');
+  } catch(e) {
+    console.warn('[sync] already-tombstoned delete cache cleanup failed:', e);
+    return false;
+  }
+  if (!_commitDeleteStateV2({ pending, confirmed })) {
+    try {
+      localStorage.setItem(STORAGE_KEY, cacheBefore);
+      if (localStorage.getItem(STORAGE_KEY) !== cacheBefore) throw new Error('cache_rollback_not_confirmed');
+    } catch(e) {
+      console.error('[sync] already-tombstoned delete cache rollback failed:', e);
+      setSyncStatus('error', 'Delete recovery state needs repair');
+    }
+    if (beforeRows) DB[key] = beforeRows;
+    return false;
+  }
+  if (beforeRows) DB[key] = beforeRows.filter(row => row.id !== id);
+  return true;
+}
+
 function _explicitRestoreCandidates(nextState) {
   const candidates = [];
   for (const table of SYNCED_TABLES) {
@@ -1272,6 +1322,34 @@ async function flushPendingTrash() {
 
 async function sbDelete(table, id, restoreToken) {
   if (isLocalhostPreview()) { return true; } // never write to prod from a local preview
+  // Cached tombstones quick-paint the delete state before the authenticated
+  // pull finishes, but they can be stale after a restore on another device.
+  // Only a tombstone from this session's completed pull is authoritative
+  // enough to settle a retry without asking the Worker again.
+  const knownTombstone = _syncPullLoaded &&
+    _serverTombstones.find(item => item.table === table && item.id === id);
+  if (knownTombstone) {
+    // A prior request may have reached the Worker even though this tab lost
+    // its acknowledgement. Repeating a delete needs no Trash snapshot when
+    // the authoritative pull already proves the row is gone. Settle only the
+    // matching durable retry, so unrelated delete markers stay untouched.
+    const key = _dbKey(table);
+    const localRow = Array.isArray(DB[key]) ? DB[key].find(row => row.id === id) : null;
+    const dirtyTokens = localRow ? _snapshotDirtyTokens(key, id, JSON.stringify(localRow)) : new Set();
+    let settled = false;
+    try {
+      settled = await _queueDeleteStateOp(() => _settleAlreadyTombstonedDelete(table, id, restoreToken));
+    } catch(e) {
+      setSyncStatus('error', e.message || 'Delete queue lock failed');
+      return false;
+    }
+    if (!settled) {
+      setSyncStatus('error', 'Delete recovery state needs repair');
+      return false;
+    }
+    _discardDirtyForDelete(key, id, dirtyTokens);
+    return true;
+  }
   const trashEntry = _pendingTrashForSource(table, id);
   if (!trashEntry || !trashEntry.data || !trashEntry.data.item) {
     setSyncStatus('error', 'Delete has no recoverable Trash snapshot');
@@ -1419,13 +1497,19 @@ async function _pullSyncState() {
     }
     const pulledTombstones = body.tombstones.map(_normaliseTombstone).filter(Boolean);
     if (pulledTombstones.length !== body.tombstones.length) throw new Error('invalid_sync_response');
+    // A queued restore is valid only while its exact server Trash snapshot
+    // remains present. When the source snapshot has been permanently deleted,
+    // an exact tombstone proves the restore can never be recovered. Cancel
+    // that one local transaction before deciding which tombstones to hide.
+    if (typeof DB !== 'undefined' && DB) DB.trash = tables.trash.slice();
+    _cancelIrrecoverableRestoreGroups(pulledTombstones, tables.trash);
     // A queued restore is already a durable CAS attempt against one exact
     // tombstone version. Keep that row visible while it waits for the server,
-    // but never suppress a later delete carrying a newer version.
-    const tombstones = _suppressPendingRestoreTombstones(pulledTombstones);
+    // but never suppress a later delete carrying a newer version or a restore
+    // whose source Trash snapshot is no longer on the server.
+    const tombstones = _suppressPendingRestoreTombstones(pulledTombstones, tables.trash);
     _serverTombstones = tombstones;
     _syncPullLoaded = true;
-    if (typeof DB !== 'undefined' && DB) DB.trash = tables.trash.slice();
     try { localStorage.setItem(SERVER_TOMBSTONES_KEY, JSON.stringify(tombstones)); } catch (_) {}
     return { tables, tombstones };
   })();
@@ -1702,7 +1786,10 @@ function _recoverDirtyV2Snapshots() {
       }
     }
 
-    if (_deleteBlocksRow(_tblName(winner.marker.table), winner.row)) continue;
+    const table = _tblName(winner.marker.table);
+    const serverDeleted = _serverTombstones.some(tombstone =>
+      tombstone.table === table && tombstone.id === winner.row.id);
+    if (serverDeleted || _deleteBlocksRow(table, winner.row)) continue;
     const rows = DB[winner.marker.table];
     if (!Array.isArray(rows)) continue;
     const index = rows.findIndex(row => row.id === winner.row.id);
@@ -2141,14 +2228,202 @@ function _restoreMatchesTombstone(operation, tombstone) {
     tombstone.row_version === operation.tombstone_version;
 }
 
-function _suppressPendingRestoreTombstones(tombstones) {
+function _restoreHasPulledTrashSnapshot(operation, trashRows) {
+  return Array.isArray(trashRows) && trashRows.some(entry => entry && entry.id === operation.trash_id &&
+    entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) &&
+    _tblName(entry.data.originalTable) === operation.table && entry.data.originalId === operation.id &&
+    entry.data.item && typeof entry.data.item === 'object' && !Array.isArray(entry.data.item) &&
+    entry.data.item.id === operation.id &&
+    _mutationDataEqual(_stripInternalData(entry.data.item), operation.data));
+}
+
+function _restoreIsIrrecoverable(operation, tombstones, trashRows) {
+  return operation && operation.type === 'restore' &&
+    (tombstones || []).some(tombstone => _restoreMatchesTombstone(operation, tombstone)) &&
+    !_restoreHasPulledTrashSnapshot(operation, trashRows);
+}
+
+function _restoreGroupIsIrrecoverable(plan, tombstones, trashRows) {
+  return Array.isArray(plan) && plan.length > 0 && plan.every(({ op }) =>
+    _restoreIsIrrecoverable(op, tombstones, trashRows));
+}
+
+function _operationMatchesDirtyMarker(operation, marker) {
+  if (!marker || marker.table !== _dbKey(operation.table) || marker.id !== operation.id ||
+      typeof marker.rowJson !== 'string') return false;
+  try {
+    const row = JSON.parse(marker.rowJson);
+    return !!row && row.id === operation.id && _mutationDataEqual(_stripInternalData(row), operation.data);
+  } catch (_) { return false; }
+}
+
+function _snapshotStorageValues(keys) {
+  const snapshot = new Map();
+  try {
+    for (const key of keys) snapshot.set(key, localStorage.getItem(key));
+    return snapshot;
+  } catch(e) {
+    console.warn('[sync] abandoned restore storage preflight failed:', e);
+    return null;
+  }
+}
+
+function _restoreStorageValues(snapshot) {
+  let restored = true;
+  for (const [key, raw] of snapshot || []) {
+    try {
+      if (raw === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, raw);
+      if (localStorage.getItem(key) !== raw) restored = false;
+    } catch (_) { restored = false; }
+  }
+  return restored;
+}
+
+function _prepareCancelledRestoreCleanup(group, plan) {
+  const entries = [];
+  const allMarkers = _readDirtyV2Markers();
+  for (const { op, key } of plan) {
+    const row = Array.isArray(DB[key]) ? DB[key].find(candidate => candidate.id === op.id) : null;
+    const markers = allMarkers.filter(marker => _operationMatchesDirtyMarker(op, marker));
+    const tokens = new Set(markers.map(marker => marker.token));
+    const current = _dirtyRevisions[key] && _dirtyRevisions[key].get(op.id);
+    const rowMatches = !!row && _mutationDataMatchesRow(op, row);
+    if (current && rowMatches) tokens.add(current);
+    entries.push({ op, key, row, rowMatches, markers, tokens });
+  }
+  let legacy = {};
+  let legacyRaw = null;
+  try {
+    legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
+    legacy = legacyRaw ? JSON.parse(legacyRaw) : {};
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
+  } catch (_) { return null; }
+  const keys = new Set([
+    STORAGE_KEY,
+    LS_VERSION_KEY,
+    LS_VERSION_KEY + '_time',
+    DIRTY_LS_KEY,
+    PENDING_MUTATION_GROUPS_KEY,
+    PENDING_MUTATION_GROUP_KEY_PREFIX + group.mutation_id,
+  ]);
+  for (const entry of entries) for (const marker of entry.markers) keys.add(marker.key);
+  const storage = _snapshotStorageValues(keys);
+  if (!storage) return null;
+  const dbBefore = new Map();
+  const dirtyBefore = new Map();
+  const revisionsBefore = new Map();
+  for (const { key } of entries) {
+    if (!dbBefore.has(key)) dbBefore.set(key, DB[key].slice());
+    if (!dirtyBefore.has(key)) dirtyBefore.set(key, new Set(_dirty[key]));
+    if (!revisionsBefore.has(key)) revisionsBefore.set(key, new Map(_dirtyRevisions[key]));
+  }
+  return { entries, allMarkers, legacy, legacyRaw, storage, dbBefore, dirtyBefore, revisionsBefore };
+}
+
+function _writeCancelledRestoreDirtyState(cleanup) {
+  const next = JSON.parse(JSON.stringify(cleanup.legacy));
+  if (!next._revisions || typeof next._revisions !== 'object' || Array.isArray(next._revisions)) next._revisions = {};
+  const removedMarkerKeys = new Set(cleanup.entries.flatMap(entry => entry.markers.map(marker => marker.key)));
+  for (const entry of cleanup.entries) {
+    const key = entry.key;
+    const id = entry.op.id;
+    const ids = new Set(Array.isArray(next[key]) ? next[key] : []);
+    const revisions = next._revisions[key] && typeof next._revisions[key] === 'object' && !Array.isArray(next._revisions[key])
+      ? { ...next._revisions[key] }
+      : {};
+    const retainedTokens = new Set((Array.isArray(revisions[id]) ? revisions[id] : [])
+      .filter(token => typeof token === 'string' && !entry.tokens.has(token)));
+    const survivingMarkers = cleanup.allMarkers.filter(marker => marker.table === key && marker.id === id &&
+      !removedMarkerKeys.has(marker.key));
+    for (const marker of survivingMarkers) retainedTokens.add(marker.token);
+    if (entry.rowMatches && retainedTokens.size === 0) {
+      ids.delete(id);
+      delete revisions[id];
+    } else {
+      ids.add(id);
+      if (retainedTokens.size) revisions[id] = [...retainedTokens];
+      else delete revisions[id];
+    }
+    next[key] = [...ids];
+    next._revisions[key] = revisions;
+  }
+  const raw = JSON.stringify(next);
+  try {
+    for (const entry of cleanup.entries) {
+      for (const marker of entry.markers) {
+        localStorage.removeItem(marker.key);
+        if (localStorage.getItem(marker.key) !== null) throw new Error('dirty_marker_remove_failed');
+      }
+    }
+    localStorage.setItem(DIRTY_LS_KEY, raw);
+    return localStorage.getItem(DIRTY_LS_KEY) === raw;
+  } catch(e) {
+    console.warn('[sync] abandoned restore dirty cleanup failed:', e);
+    return false;
+  }
+}
+
+function _restoreCancelledRestoreCleanup(cleanup) {
+  for (const [key, rows] of cleanup.dbBefore) DB[key] = rows;
+  for (const [key, dirty] of cleanup.dirtyBefore) _dirty[key] = new Set(dirty);
+  for (const [key, revisions] of cleanup.revisionsBefore) _dirtyRevisions[key] = new Map(revisions);
+  const restored = _restoreStorageValues(cleanup.storage);
+  if (!restored) setSyncStatus('error', 'Abandoned restore recovery needs repair');
+  return restored;
+}
+
+function _applyCancelledRestoreCleanup(cleanup) {
+  if (!_writeCancelledRestoreDirtyState(cleanup)) return false;
+  for (const entry of cleanup.entries) {
+    if (!entry.rowMatches) continue;
+    const survivingMarkers = cleanup.allMarkers.some(marker => marker.table === entry.key && marker.id === entry.op.id &&
+      !entry.markers.some(removed => removed.key === marker.key));
+    if (!survivingMarkers) {
+      _dirty[entry.key].delete(entry.op.id);
+      _dirtyRevisions[entry.key].delete(entry.op.id);
+    }
+    DB[entry.key] = DB[entry.key].filter(row => row.id !== entry.op.id);
+  }
+  return _persistInventoryCacheDirect('Abandoned restore cleanup could not be saved');
+}
+
+function _cancelIrrecoverableRestoreGroups(tombstones, trashRows) {
+  const groups = _readMutationGroups();
+  if (!groups) return 0;
+  let cancelled = 0;
+  for (const group of groups) {
+    const plan = _mutationReplayPlan(group);
+    if (!plan || !_restoreGroupIsIrrecoverable(plan, tombstones, trashRows)) continue;
+    const cleanup = _prepareCancelledRestoreCleanup(group, plan);
+    if (!cleanup || !_applyCancelledRestoreCleanup(cleanup)) {
+      if (cleanup) _restoreCancelledRestoreCleanup(cleanup);
+      setSyncStatus('error', 'Abandoned restore recovery needs repair');
+      continue;
+    }
+    if (!_removeMutationGroup(group.mutation_id)) {
+      _restoreCancelledRestoreCleanup(cleanup);
+      setSyncStatus('error', 'Abandoned restore queue needs repair');
+      continue;
+    }
+    cancelled++;
+  }
+  if (cancelled && typeof toastError === 'function') {
+    toastError('An abandoned restore was cancelled because its Trash snapshot was permanently deleted.');
+  }
+  return cancelled;
+}
+
+function _suppressPendingRestoreTombstones(tombstones, trashRows) {
   const groups = _readMutationGroups();
   if (!groups) return Array.isArray(tombstones) ? tombstones.slice() : [];
   const restores = [];
   for (const group of groups) {
     const plan = _mutationReplayPlan(group);
     if (!plan) continue;
-    for (const { op } of plan) if (op.type === 'restore') restores.push(op);
+    for (const { op } of plan) {
+      if (op.type === 'restore' && !_restoreIsIrrecoverable(op, tombstones, trashRows)) restores.push(op);
+    }
   }
   if (!restores.length) return Array.isArray(tombstones) ? tombstones.slice() : [];
   return (tombstones || []).filter(tombstone => !restores.some(op => _restoreMatchesTombstone(op, tombstone)));
@@ -2234,10 +2509,19 @@ async function _flushMutationGroups() {
     return false;
   }
   for (const group of groups) {
-    if (!_mutationReplayPlan(group)) {
+    const plan = _mutationReplayPlan(group);
+    if (!plan) {
       console.warn('[sync] Pending mutation is invalid; no data was sent and the transaction remains queued');
       setSyncStatus('error', 'Pending sync transaction needs repair');
       return false;
+    }
+    if (_restoreGroupIsIrrecoverable(plan, _serverTombstones, DB.trash)) {
+      _cancelIrrecoverableRestoreGroups(_serverTombstones, DB.trash);
+      if (_readMutationGroups()?.some(candidate => candidate.mutation_id === group.mutation_id)) {
+        setSyncStatus('error', 'Abandoned restore recovery needs repair');
+        return false;
+      }
+      continue;
     }
     let outcome;
     try { outcome = await _syncMutate(group.operations, group.mutation_id); }

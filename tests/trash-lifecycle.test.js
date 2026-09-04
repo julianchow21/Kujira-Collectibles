@@ -373,7 +373,17 @@ test('trash-lifecycle: matching restore tombstone is suppressed across a fresh-t
     seed: null,
     localStorage: fixture.storage,
     fetch: async (url) => url.includes('/sync/v2/pull')
-      ? syncPullResponse({ singles: [serverControl] }, [fixture.tombstone])
+      ? syncPullResponse({
+        singles: [serverControl],
+        trash: [{
+          id: 'trash_' + fixture.restored.id,
+          data: {
+            originalTable: 'singles', originalId: fixture.restored.id,
+            item: fixture.restored, deletedAt: fixture.tombstone.deleted_at,
+          },
+          row_version: 2, updated_at: fixture.tombstone.deleted_at,
+        }],
+      }, [fixture.tombstone])
       : jsonResponse({ rates: { SGD: 1.3 } }),
   });
 
@@ -384,6 +394,159 @@ test('trash-lifecycle: matching restore tombstone is suppressed across a fresh-t
     row.row_version === fixture.tombstone.row_version), false);
   assert.strictEqual(JSON.parse(reloaded.localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
     'the restore remains queued until its CAS request is acknowledged');
+});
+
+test('trash-lifecycle: an exact restore tombstone without its server Trash snapshot cancels only that stale restore', async () => {
+  const fixture = await queuedRestoreFixture('restore_missing_trash', 4);
+  const unrelatedToken = 'foreign-unrelated:1';
+  const unrelatedGroupId = '11111111-1111-4111-8111-111111111111';
+  const unrelatedGroup = {
+    mutation_id: unrelatedGroupId,
+    created_at: 1,
+    operations: [{
+      type: 'upsert', table: 'sales', id: 'unrelated_group_sale', expected_version: 0,
+      data: { name: 'Unrelated durable mutation', status: 'Available' },
+    }],
+    before_states: [{ table: 'sales', id: 'unrelated_group_sale', present: false }],
+  };
+  fixture.storage['pokeinv_dirty_v2:' + unrelatedToken] = JSON.stringify({
+    table: 'sales', id: 'unrelated_dirty_sale', token: unrelatedToken,
+    owner: 'foreign-unrelated', createdAt: 1, sequence: 1,
+    rowJson: JSON.stringify({ id: 'unrelated_dirty_sale', name: 'Unrelated dirty snapshot', status: 'Available' }),
+  });
+  fixture.storage['_kjrMutationGroupV2:' + unrelatedGroupId] = JSON.stringify(unrelatedGroup);
+  const existingGroups = JSON.parse(fixture.storage._kjrMutationGroupsV2 || '[]');
+  fixture.storage._kjrMutationGroupsV2 = JSON.stringify([...existingGroups, unrelatedGroup]);
+  const serverControl = {
+    id: 'server_control_missing_trash', data: { name: 'Server control', status: 'Available' },
+    row_version: 1, updated_at: '2026-09-04T00:00:00.000Z',
+  };
+
+  const reloaded = await loadApp({
+    seed: null,
+    localStorage: fixture.storage,
+    fetch: async (url) => url.includes('/sync/v2/pull')
+      ? syncPullResponse({ singles: [serverControl] }, [fixture.tombstone])
+      : jsonResponse({ rates: { SGD: 1.3 } }),
+  });
+
+  const { DB } = reloaded.grab('DB');
+  assert.strictEqual(DB.singles.some(row => row.id === fixture.restored.id), false,
+    'the abandoned optimistic restore is removed from the live cache');
+  assert.strictEqual(reloaded.ctx._serverTombstones.some(row =>
+    row.table === fixture.tombstone.table && row.id === fixture.tombstone.id &&
+    row.row_version === fixture.tombstone.row_version), true,
+  'the authoritative tombstone remains visible after cancellation');
+  assert.strictEqual(JSON.parse(reloaded.localStorage.getItem('_kjrMutationGroupsV2')).some(group =>
+    group.operations.some(op => op.id === fixture.restored.id)), false,
+  'only the abandoned restore group is removed');
+  assert.ok(reloaded.localStorage.getItem('_kjrMutationGroupV2:' + unrelatedGroupId),
+    'an unrelated mutation group remains durable');
+  assert.ok(reloaded.localStorage.getItem('pokeinv_dirty_v2:' + unrelatedToken),
+    'an unrelated dirty marker remains durable');
+  assert.ok(DB.sales.some(row => row.id === 'unrelated_dirty_sale'),
+    'an unrelated dirty snapshot is still recovered');
+  assert.strictEqual(Object.keys(copyStorage(reloaded.localStorage)).some(key => {
+    if (!key.startsWith('pokeinv_dirty_v2:')) return false;
+    const marker = JSON.parse(reloaded.localStorage.getItem(key));
+    return marker.id === fixture.restored.id;
+  }), false, 'only exact restore dirty markers are cleared');
+
+  const second = await loadApp({
+    seed: null,
+    localStorage: copyStorage(reloaded.localStorage),
+    fetch: async (url) => url.includes('/sync/v2/pull')
+      ? syncPullResponse({ singles: [serverControl] }, [fixture.tombstone])
+      : jsonResponse({ rates: { SGD: 1.3 } }),
+  });
+  assert.strictEqual(second.grab('DB').DB.singles.some(row => row.id === fixture.restored.id), false,
+    'a later reload keeps the abandoned restore deleted');
+});
+
+test('trash-lifecycle: abandoned restore cancellation rolls back its exact markers and row when cache persistence fails', async () => {
+  const fixture = await queuedRestoreFixture('restore_cancel_cache_failure', 4);
+  const loaded = await loadApp({ seed: null, localStorage: fixture.storage });
+  const group = JSON.parse(loaded.localStorage.getItem('_kjrMutationGroupsV2'))[0];
+  const groupKey = '_kjrMutationGroupV2:' + group.mutation_id;
+  const markerKey = Object.keys(copyStorage(loaded.localStorage)).find(key => {
+    if (!key.startsWith('pokeinv_dirty_v2:')) return false;
+    return JSON.parse(loaded.localStorage.getItem(key)).id === fixture.restored.id;
+  });
+  const beforeGroup = loaded.localStorage.getItem(groupKey);
+  const beforeMarker = loaded.localStorage.getItem(markerKey);
+  const beforeDirty = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const beforeCache = loaded.localStorage.getItem('pokeinventory_v3');
+  const realSetItem = loaded.localStorage.setItem.bind(loaded.localStorage);
+  loaded.localStorage.setItem = (key, value) => {
+    if (key === 'pokeinventory_v3') throw new Error('cache unavailable');
+    return realSetItem(key, value);
+  };
+
+  assert.strictEqual(loaded.ctx._cancelIrrecoverableRestoreGroups([fixture.tombstone], []), 0);
+  assert.strictEqual(loaded.localStorage.getItem(groupKey), beforeGroup);
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), beforeMarker);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), beforeDirty);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.ok(loaded.grab('DB').DB.singles.some(row => row.id === fixture.restored.id),
+    'the optimistic row stays recoverable when the cache write fails');
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(fixture.restored.id), true,
+    'the in-memory dirty obligation is restored with its row');
+});
+
+test('trash-lifecycle: abandoned restore cancellation rolls back its exact markers and row when group removal fails', async () => {
+  const fixture = await queuedRestoreFixture('restore_cancel_group_failure', 4);
+  const loaded = await loadApp({ seed: null, localStorage: fixture.storage });
+  const group = JSON.parse(loaded.localStorage.getItem('_kjrMutationGroupsV2'))[0];
+  const groupKey = '_kjrMutationGroupV2:' + group.mutation_id;
+  const markerKey = Object.keys(copyStorage(loaded.localStorage)).find(key => {
+    if (!key.startsWith('pokeinv_dirty_v2:')) return false;
+    return JSON.parse(loaded.localStorage.getItem(key)).id === fixture.restored.id;
+  });
+  const beforeGroup = loaded.localStorage.getItem(groupKey);
+  const beforeMarker = loaded.localStorage.getItem(markerKey);
+  const beforeDirty = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const beforeCache = loaded.localStorage.getItem('pokeinventory_v3');
+  const realRemoveItem = loaded.localStorage.removeItem.bind(loaded.localStorage);
+  loaded.localStorage.removeItem = key => {
+    if (key === groupKey) return undefined;
+    return realRemoveItem(key);
+  };
+
+  assert.strictEqual(loaded.ctx._cancelIrrecoverableRestoreGroups([fixture.tombstone], []), 0);
+  assert.strictEqual(loaded.localStorage.getItem(groupKey), beforeGroup);
+  assert.strictEqual(loaded.localStorage.getItem(markerKey), beforeMarker);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinv_dirty_v1'), beforeDirty);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.ok(loaded.grab('DB').DB.singles.some(row => row.id === fixture.restored.id),
+    'the optimistic row stays recoverable when group removal fails');
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(fixture.restored.id), true,
+    'the in-memory dirty obligation is restored when the group remains queued');
+});
+
+test('trash-lifecycle: abandoned restore cancellation preserves a later local edit to the same row', async () => {
+  const fixture = await queuedRestoreFixture('restore_cancel_later_edit', 4);
+  const loaded = await loadApp({ seed: null, localStorage: fixture.storage });
+  const row = loaded.grab('DB').DB.singles.find(candidate => candidate.id === fixture.restored.id);
+  row.name = 'Later local edit survives cancellation';
+  loaded.ctx.markDirty('singles', row.id, row);
+  loaded.ctx.saveData();
+  const laterMarker = Object.keys(copyStorage(loaded.localStorage)).find(key => {
+    if (!key.startsWith('pokeinv_dirty_v2:')) return false;
+    const marker = JSON.parse(loaded.localStorage.getItem(key));
+    return marker.id === row.id && JSON.parse(marker.rowJson).name === row.name;
+  });
+
+  assert.strictEqual(loaded.ctx._cancelIrrecoverableRestoreGroups([fixture.tombstone], []), 1);
+  assert.strictEqual(JSON.parse(loaded.localStorage.getItem('_kjrMutationGroupsV2')).length, 0,
+    'only the unreplayable restore transaction is removed');
+  assert.strictEqual(loaded.grab('DB').DB.singles.find(candidate => candidate.id === row.id).name, row.name,
+    'later in-memory bytes are not mistaken for the abandoned optimistic restore');
+  assert.strictEqual(JSON.parse(loaded.localStorage.getItem('pokeinventory_v3')).singles
+    .find(candidate => candidate.id === row.id).name, row.name,
+  'later cached bytes remain recoverable');
+  assert.ok(loaded.localStorage.getItem(laterMarker), 'the later dirty marker remains durable');
+  assert.strictEqual(loaded.grab('_dirty')._dirty.singles.has(row.id), true,
+    'the later edit remains queued for conflict handling');
 });
 
 test('trash-lifecycle: a newer tombstone still wins over a queued restore after a fresh-tab pull', async () => {
@@ -408,14 +571,56 @@ test('trash-lifecycle: a newer tombstone still wins over a queued restore after 
     row.row_version === newerTombstone.row_version));
 });
 
-test('trash-lifecycle: restore queued during a stale delete retry survives that response', async () => {
-  const id = 'restore_during_retry';
+test('trash-lifecycle: a pending delete settles without a Trash snapshot when the server already tombstoned it', async () => {
+  const id = 'already_tombstoned_delete';
+  const { ctx, grab, localStorage, fetchMock } = await loadApp({
+    seed: { singles: [{ id, name: 'Already deleted on server', status: 'Available' }] },
+  });
+  setDeleteStateV2(localStorage, [{ table: 'singles', id, ts: 77, restoreToken: '' }]);
+  ctx._serverTombstones = [{ table: 'singles', id, row_version: 9, deleted_at: '2026-09-04T00:00:00.000Z' }];
+  ctx._syncPullLoaded = true;
+  fetchMock.calls.length = 0;
+
+  assert.strictEqual(await ctx.sbDelete('singles', id), true);
+  const state = getDeleteStateV2(localStorage);
+  assert.strictEqual(state.pending.some(item => item.table === 'singles' && item.id === id), false);
+  assert.strictEqual(state.confirmed.some(item => item.table === 'singles' && item.id === id && item.state === 'deleted'), true);
+  assert.strictEqual(grab('DB').DB.singles.some(row => row.id === id), false);
+  assert.strictEqual(JSON.parse(localStorage.getItem('pokeinventory_v3')).singles.some(row => row.id === id), false);
+  assert.strictEqual(syncCalls(fetchMock).length, 0, 'the proven delete settles locally without another mutation');
+});
+
+test('trash-lifecycle: an already-tombstoned pending delete keeps its retry state when cache cleanup cannot persist', async () => {
+  const id = 'already_tombstoned_cache_failure';
+  const { ctx, grab, localStorage } = await loadApp({
+    seed: { singles: [{ id, name: 'Keep retry state', status: 'Available' }] },
+  });
+  setDeleteStateV2(localStorage, [{ table: 'singles', id, ts: 88, restoreToken: '' }]);
+  ctx._serverTombstones = [{ table: 'singles', id, row_version: 10, deleted_at: '2026-09-04T00:00:00.000Z' }];
+  ctx._syncPullLoaded = true;
+  const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const realSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (key, value) => {
+    if (key === 'pokeinventory_v3') throw new Error('cache unavailable');
+    return realSetItem(key, value);
+  };
+
+  assert.strictEqual(await ctx.sbDelete('singles', id), false);
+  const state = getDeleteStateV2(localStorage);
+  assert.strictEqual(state.pending.some(item => item.table === 'singles' && item.id === id), true);
+  assert.strictEqual(state.confirmed.some(item => item.table === 'singles' && item.id === id), false);
+  assert.ok(grab('DB').DB.singles.some(row => row.id === id));
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
+});
+
+test('trash-lifecycle: restore queued immediately after an already-tombstoned delete settles remains durable', async () => {
+  const id = 'restore_after_settlement';
   const pending = { table: 'singles', id, ts: Date.now(), restoreToken: '' };
   const entry = {
-    id: 'trash_restore_during_retry',
+    id: 'trash_restore_after_settlement',
     data: {
       originalTable: 'singles', originalId: id,
-      item: { id, name: 'Recovered during retry', status: 'Available' },
+      item: { id, name: 'Recovered after settlement', status: 'Available' },
       deletedAt: new Date().toISOString(),
     },
     updated_at: new Date().toISOString(),
@@ -431,36 +636,63 @@ test('trash-lifecycle: restore queued during a stale delete retry survives that 
   setDeleteStateV2(localStorage, [pending]);
   fetchMock.calls.length = 0;
 
-  let releaseDelete;
-  let announceDelete;
-  const deleteStarted = new Promise(resolve => { announceDelete = resolve; });
   ctx._queuePendingTrash(entry);
-  fetchMock.route('/sync/v2/mutate', (url, opts) => {
-    const operation = syncRequest(opts).operations[0];
-    if (operation.type === 'delete') {
-      announceDelete();
-      return new Promise(resolve => {
-        releaseDelete = () => resolve(syncSuccessResponse(opts));
-      });
-    }
-    return syncSuccessResponse(opts);
-  });
+  await ctx.flushPendingDeletes();
+  assert.strictEqual(syncCalls(fetchMock).length, 0,
+    'the authoritative tombstone settles the retry without another mutation');
+  assert.strictEqual(getDeleteStateV2(localStorage).pending.length, 0,
+    'the obsolete delete retry is settled before restore begins');
+  assert.strictEqual(grab('DB').DB.singles.some(row => row.id === id), false);
 
-  const retrying = ctx.flushPendingDeletes();
-  await deleteStarted;
-  const restoring = ctx.restoreFromTrash(entry.id);
-  await restoring;
+  await ctx.restoreFromTrash(entry.id);
   assert.strictEqual(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
-    'the inverse transaction is durable before the stale delete response is released');
-  releaseDelete();
-  await retrying;
+    'the inverse transaction is durable immediately after local settlement');
 
   const restored = grab('DB').DB.singles.find(row => row.id === id);
-  assert.ok(restored, 'stale retry confirmation does not evict the restored in-memory row');
+  assert.ok(restored, 'the restored row remains present in memory');
   assert.ok(JSON.parse(localStorage.getItem('pokeinventory_v3')).singles.some(row => row.id === id),
     'the cache retains a recovery copy while the queued restore awaits its CAS flush');
   assert.strictEqual(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
     'the queued restore, not an unsafe blind upsert, remains the recovery obligation');
+
+  const reloaded = await loadApp({
+    seed: null,
+    localStorage: copyStorage(localStorage),
+    fetch: async (url) => url.includes('/sync/v2/pull')
+      ? syncPullResponse({
+        trash: [{ ...entry, row_version: 2 }],
+      }, [{ table: 'singles', id, row_version: 3, deleted_at: entry.data.deletedAt }])
+      : jsonResponse({ rates: { SGD: 1.3 } }),
+  });
+  assert.ok(reloaded.grab('DB').DB.singles.some(row => row.id === id),
+    'a fresh tab recovers the queued restore without losing the row');
+  assert.strictEqual(JSON.parse(reloaded.localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
+    'the fresh tab keeps the restore queued until its CAS acknowledgement');
+});
+
+test('trash-lifecycle: a cached tombstone cannot settle a pending delete before the current pull completes', async () => {
+  const row = { id: 'stale_cached_tombstone', name: 'Restored elsewhere', status: 'Available', _serverVersion: 4 };
+  const entry = {
+    id: 'trash_stale_cached_tombstone',
+    data: {
+      originalTable: 'singles', originalId: row.id, item: row,
+      deletedAt: '2026-09-04T00:00:00.000Z',
+    },
+    updated_at: '2026-09-04T00:00:00.000Z',
+  };
+  const { ctx, fetchMock, localStorage } = await loadApp({ seed: { singles: [row] } });
+  setDeleteStateV2(localStorage, [{ table: 'singles', id: row.id, ts: 99, restoreToken: '' }]);
+  ctx._queuePendingTrash(entry);
+  ctx._serverTombstones = [{
+    table: 'singles', id: row.id, row_version: 3, deleted_at: entry.data.deletedAt,
+  }];
+  ctx._syncPullLoaded = false;
+  fetchMock.calls.length = 0;
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+
+  assert.strictEqual(await ctx.sbDelete('singles', row.id), true);
+  assert.strictEqual(syncCalls(fetchMock).length, 1,
+    'a pre-pull cached tombstone cannot bypass the Worker CAS check');
 });
 
 test('trash-lifecycle: direct delete skips stale confirmation after its exact pending attempt is cancelled', async () => {

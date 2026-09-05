@@ -191,27 +191,50 @@
     // Numeric fields that should be stored as numbers (not "$10.00" strings)
     // so downstream maths and Supabase types stay consistent.
     const NUMERIC = new Set(['totalPrice','unitPrice','priceUsd','freightSgd','totalSgd','qty','marketPrice']);
-    const cleanNum = v => {
-      const x = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
-      return isNaN(x) ? '' : x;
+    const LABELS = {
+      totalPrice: 'Total price', unitPrice: 'Unit price', priceUsd: 'USD price',
+      freightSgd: 'Freight', totalSgd: 'Total SGD', qty: 'Quantity', marketPrice: 'Market price'
     };
+    const skippedRowsHtml = () => skipped.map(row =>
+      '<div class="skipped-row-item"><span class="skipped-row-num">Row ' + row.lineNum + '</span>' +
+      kjrEscape(row.raw) + '<span style="display:block;color:var(--red);margin-top:2px">' + kjrEscape(row.reason) + '</span></div>'
+    ).join('');
     parsed.rows.forEach((vals, i) => {
       const obj = { id: kjrGenId(schema.idPrefix), ...schema.defaults };
+      let invalidReason = '';
       mapping.forEach(m => {
         if (m.idx >= 0 && vals[m.idx] !== undefined && vals[m.idx] !== '') {
-          obj[m.out] = NUMERIC.has(m.out) ? cleanNum(vals[m.idx]) : vals[m.idx];
+          if (!NUMERIC.has(m.out)) {
+            obj[m.out] = vals[m.idx];
+            return;
+          }
+          const parsedNumber = kjrParseNonNegativeNumber(vals[m.idx], {
+            label: LABELS[m.out] || m.out,
+            positiveInteger: m.out === 'qty'
+          });
+          if (!parsedNumber.ok) invalidReason = invalidReason || parsedNumber.reason;
+          else obj[m.out] = parsedNumber.value;
         }
       });
+      if (invalidReason) {
+        skipped.push({ lineNum: i + 2, raw: parsed.rows[i].join('\t'), reason: invalidReason });
+        return;
+      }
       // require product/name to keep a row
       if (!obj.product) {
-        skipped.push({ lineNum: i + 2, raw: parsed.rows[i].join('\t') });
+        skipped.push({ lineNum: i + 2, raw: parsed.rows[i].join('\t'), reason: 'Product is required' });
         return;
       }
       newItems.push(obj);
     });
 
     if (!newItems.length) {
-      toast('Nothing imported (no rows with a product name)');
+      const el = document.getElementById('import-result');
+      el.style.display = 'block';
+      el.style.color = 'var(--amber)';
+      el.innerHTML = '<span style="color:var(--amber)">Nothing imported · ' + skipped.length + ' skipped</span>' +
+        (skipped.length ? '<div class="skipped-box"><button class="skipped-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">▶ Show ' + skipped.length + ' skipped rows</button><div class="skipped-rows open">' + skippedRowsHtml() + '</div></div>' : '');
+      toast('Nothing imported (' + skipped.length + ' invalid row' + (skipped.length === 1 ? '' : 's') + ')');
       return;
     }
 
@@ -278,12 +301,9 @@
     const el = document.getElementById('import-result');
     el.style.display = 'block';
     el.style.color = 'var(--green)';
-    let h = '<span style="color:var(--green)">✓ Imported ' + newItems.length + ' ' + type + ' records' + (skipped.length ? ' · <span style="color:var(--amber)">' + skipped.length + ' skipped (no product)</span>' : '') + '</span>';
+    let h = '<span style="color:var(--green)">✓ Imported ' + newItems.length + ' ' + type + ' records' + (skipped.length ? ' · <span style="color:var(--amber)">' + skipped.length + ' skipped</span>' : '') + '</span>';
     if (skipped.length) {
-      const rowsHtml = skipped.map(r =>
-        '<div class="skipped-row-item"><span class="skipped-row-num">Row ' + r.lineNum + '</span>' +
-        r.raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>'
-      ).join('');
+      const rowsHtml = skippedRowsHtml();
       h += '<div class="skipped-box"><button class="skipped-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">▶ Show ' + skipped.length + ' skipped rows</button>' +
            '<div class="skipped-rows">' + rowsHtml + '</div></div>';
     }
@@ -976,6 +996,8 @@ function renderBoosterBoxes(){
   body += kjrSoldToggleRow('boosterBoxes', inactive.length, 10);
   if (_kjrSoldOpen.boosterBoxes) body += inactive.map(r => rowHtml(r, true)).join('');
   document.getElementById('kjr-bb-body').innerHTML = body;
+  const bbTable = document.getElementById('kjr-bb-table');
+  if (bbTable) bbTable.classList.toggle('kjr-bb-empty', active.length === 0 && inactive.length === 0);
   if (typeof _kjrColApply === 'function')  _kjrColApply('boosterBoxes');
   if (typeof _kjrColAttach === 'function') _kjrColAttach('boosterBoxes');
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('boosterBoxes');
@@ -2309,6 +2331,7 @@ async function kjrConfirmCompletion(){
   const today = new Date().toISOString().slice(0,10);
   const norm = (table, raw) => (typeof normalizeRecord === 'function') ? normalizeRecord(table, raw) : raw;
   const newIds = [];
+  const stagedInventory = [];
   ctx.items.forEach(it => {
     const cost = parseFloat(it.cost)||0;
     const rawName = String(it.name).trim();
@@ -2339,7 +2362,7 @@ async function kjrConfirmCompletion(){
         notes: note,
         priceHistory: []
       });
-      DB.singles.push(item); markDirty('singles', item.id); newIds.push({table:'singles', id:item.id});
+      stagedInventory.push({ table: 'singles', item }); newIds.push({table:'singles', id:item.id});
     } else if (it.table === 'slabs') {
       // Explicit language typed in the modal wins; parseSmartLine fills the rest.
       const lang = it.language || (parsed && parsed.language) || 'EN';
@@ -2358,23 +2381,40 @@ async function kjrConfirmCompletion(){
         notes: note,
         priceHistory: []
       });
-      DB.slabs.push(item); markDirty('slabs', item.id); newIds.push({table:'slabs', id:item.id});
+      stagedInventory.push({ table: 'slabs', item }); newIds.push({table:'slabs', id:item.id});
     } else if (it.table === 'etbs') {
       const item = norm('etbs', { id: kjrId('etb'), product: cleanName, status:'In Stock', totalPrice: cost, condition:'Mint', date: today });
-      DB.etbs = DB.etbs || []; DB.etbs.push(item); markDirty('etbs', item.id); newIds.push({table:'etbs', id:item.id});
+      stagedInventory.push({ table: 'etbs', item }); newIds.push({table:'etbs', id:item.id});
     } else if (it.table === 'boosterBoxes') {
       const item = norm('boosterBoxes', { id: kjrId('bb'), product: cleanName, status:'Unopened Stock', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
-      DB.boosterBoxes = DB.boosterBoxes || []; DB.boosterBoxes.push(item); markDirty('boosterBoxes', item.id); newIds.push({table:'boosterBoxes', id:item.id});
+      stagedInventory.push({ table: 'boosterBoxes', item }); newIds.push({table:'boosterBoxes', id:item.id});
     } else if (it.table === 'boosterPacks') {
       const item = norm('boosterPacks', { id: kjrId('bp'), product: cleanName, status:'Sealed', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
-      DB.boosterPacks = DB.boosterPacks || []; DB.boosterPacks.push(item); markDirty('boosterPacks', item.id); newIds.push({table:'boosterPacks', id:item.id});
+      stagedInventory.push({ table: 'boosterPacks', item }); newIds.push({table:'boosterPacks', id:item.id});
     }
   });
-  // Mark the eBay row Completed
-  p.status = 'Completed';
-  p.completedAt = today;
-  p.lastUpdated = Date.now();
-  p._linkedInventory = newIds; // audit trail for future debugging
+  const nextPurchase = {
+    ...JSON.parse(JSON.stringify(p)),
+    status: 'Completed',
+    completedAt: today,
+    lastUpdated: Date.now(),
+    _linkedInventory: newIds
+  };
+  const operations = [
+    ...stagedInventory.map(entry => _upsertOperation(_tblName(entry.table), entry.item)),
+    _upsertOperation('ebay_purchases', nextPurchase)
+  ];
+  if (!isLocalhostPreview() && !_queueMutationGroup(operations)) {
+    toastError('Completion stopped because its sync transaction could not be saved safely');
+    return;
+  }
+  snapshotForUndo();
+  stagedInventory.forEach(({ table, item }) => {
+    DB[table] = DB[table] || [];
+    DB[table].push(item);
+    markDirty(table, item.id);
+  });
+  Object.assign(p, nextPurchase);
   markDirty('ebayPurchases', p.id);
   saveData();
   // Notify the recent-add pinning helper so new rows surface at the top of

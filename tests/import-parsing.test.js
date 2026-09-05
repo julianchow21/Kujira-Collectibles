@@ -104,3 +104,77 @@ test('import-parsing: unknown headers are simply ignored (no alias match -> that
   assert.strictEqual(row.totalPrice, 99);
   assert.ok(!Object.values(row).includes('whatever'), 'the unrecognised column\'s value never lands anywhere on the row');
 });
+
+test('import-parsing: sealed import rejects invalid quantities and money with row reasons, while quoted currency remains valid', async () => {
+  const { ctx, grab } = await loadApp();
+  ctx.document.getElementById('import-data').value = [
+    'Product\tQty\tUnit Price\tTotal Price',
+    'Negative quantity\t-4\t5\t20',
+    'Zero quantity\t0\t5\t20',
+    'Fractional quantity\t1.5\t5\t20',
+    'Negative money\t1\t-5\t20',
+    'Overflow money\t1\t5\t1e309',
+    'Valid currency\t2\t"S$1,200"\t"SGD 2,400"',
+  ].join('\n');
+  ctx.document.getElementById('import-type').value = 'booster_packs';
+  ctx.document.getElementById('import-mode').value = 'append';
+  await ctx.importData();
+
+  const rows = grab('DB').DB.boosterPacks;
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].product, 'Valid currency');
+  assert.strictEqual(rows[0].qty, 2);
+  assert.strictEqual(rows[0].unitPrice, 1200);
+  assert.strictEqual(rows[0].totalPrice, 2400);
+  const result = ctx.document.getElementById('import-result').innerHTML;
+  assert.match(result, /5 skipped/);
+  assert.match(result, /Quantity must be a whole number of 1 or more/);
+  assert.match(result, /Unit price must be a finite number at or above 0/);
+  assert.doesNotMatch(result, /skipped \(no product\)/);
+});
+
+test('import-parsing: all-invalid sealed replacement preserves existing rows and reports the rejected values', async () => {
+  const existing = { id: 'keep-pack', product: 'Keep existing pack', qty: 2, unitPrice: 4,
+    totalPrice: 8, status: 'Sealed' };
+  const { ctx, grab, localStorage } = await loadApp({ seed: { boosterPacks: [existing] } });
+  const cacheBefore = localStorage.getItem('pokeinventory_v3');
+  ctx.document.getElementById('import-data').value = [
+    'Product\tQty\tTotal Price',
+    'Bad pack\t0\t-20',
+  ].join('\n');
+  ctx.document.getElementById('import-type').value = 'booster_packs';
+  ctx.document.getElementById('import-mode').value = 'replace';
+  await ctx.importData();
+
+  assert.deepStrictEqual(plain(grab('DB').DB.boosterPacks), [existing]);
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), cacheBefore);
+  assert.match(ctx.document.getElementById('import-result').innerHTML, /Row 2/);
+  assert.match(ctx.document.getElementById('import-result').innerHTML, /Quantity must be a whole number of 1 or more/);
+});
+
+test('import-parsing: legacy singles import rejects invalid quantities and money before accepting valid quoted currency', async () => {
+  const { ctx, grab } = await loadApp({ seed: { singles: [] } });
+  ctx.kjrConfirm = async () => true;
+  ctx.document.getElementById('import-data').value = [
+    'Name\tQty\tCost\tMarket',
+    'Negative lot\t-3\t10\t20',
+    'Zero lot\t0\t10\t20',
+    'Fractional lot\t1.5\t10\t20',
+    'Negative cost\t1\t-10\t20',
+    'Overflow market\t1\t10\t1e309',
+    'Valid lot\t2\t"$1,200"\t"SGD 1,500"',
+  ].join('\n');
+  ctx.document.getElementById('import-type').value = 'singles';
+  ctx.document.getElementById('import-mode').value = 'append';
+  await ctx.importData();
+
+  const rows = grab('DB').DB.singles;
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].name, 'Valid lot');
+  assert.strictEqual(rows[0].qty, 2);
+  assert.strictEqual(rows[0].costPrice, 1200);
+  assert.strictEqual(rows[0].marketPrice, '1500');
+  const result = ctx.document.getElementById('import-result').innerHTML;
+  assert.match(result, /5 skipped/);
+  assert.match(result, /Market price must be a finite number at or above 0/);
+});

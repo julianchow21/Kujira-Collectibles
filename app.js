@@ -3462,6 +3462,31 @@ function canonicalCondition(val) {
     val;
 }
 
+// Parse a user-entered quantity or money value without accepting partial,
+// non-finite or negative values. Currency symbols/codes and grouping commas
+// are accepted, while a blank optional field keeps its caller-supplied default.
+function kjrParseNonNegativeNumber(raw, options) {
+  const opts = options || {};
+  const label = opts.label || 'Value';
+  if (raw == null || String(raw).trim() === '') {
+    if (opts.allowBlank) return { ok: true, value: opts.blankValue === undefined ? 0 : opts.blankValue, blank: true };
+    return { ok: false, reason: opts.blankReason || (label + ' is required') };
+  }
+  let text = String(raw).trim().replace(/,/g, '').replace(/\s+/g, '');
+  text = text.replace(/^(?:SGD|USD|S\$|US\$|\$)/i, '').replace(/(?:SGD|USD)$/i, '');
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) {
+    return { ok: false, reason: opts.allowNegative ? (label + ' must be a finite number') : (label + ' must be a finite number at or above 0') };
+  }
+  const value = Number(text);
+  if (!Number.isFinite(value) || (!opts.allowNegative && value < 0)) {
+    return { ok: false, reason: opts.allowNegative ? (label + ' must be a finite number') : (label + ' must be a finite number at or above 0') };
+  }
+  if (opts.positiveInteger && (!Number.isInteger(value) || value < 1)) {
+    return { ok: false, reason: label + ' must be a whole number of 1 or more' };
+  }
+  return { ok: true, value, blank: false };
+}
+
 // =========== UNIFIED MANUAL-INPUT NORMALIZER ===========
 // Every manual-entry path (Add Single modal, Add Slab modal, Add Sale modal,
 // kjr modal for ETB/BB/Pack/eBay) routes its raw form values through this so
@@ -5375,12 +5400,22 @@ function cmdConfirmSell() {
   // S$0 disposals) is a legitimate sale here - only negative revenue blocks.
   if (totalRev < 0) { toast('Enter a sold price for the items'); return; }
 
-  snapshotForUndo();
-
   const newSales = [];
   let shipAllocated = 0, feesAllocated = 0, unitsDone = 0, grandProfit = 0;
   const retireSingles = {};      // rowId -> units to retire
   const retireBoosterPacks = {}; // rowId -> units to retire
+  const stagedRows = new Map();
+  const stageRow = (table, rowId, update) => {
+    const key = table + '/' + rowId;
+    let staged = stagedRows.get(key);
+    if (!staged) {
+      const current = (DB[table] || []).find(row => row.id === rowId);
+      if (!current) return;
+      staged = { table, current, next: JSON.parse(JSON.stringify(current)) };
+      stagedRows.set(key, staged);
+    }
+    update(staged.next);
+  };
 
   planned.forEach(p => {
     unitsDone++;
@@ -5408,14 +5443,10 @@ function cmdConfirmSell() {
       profit, margin,
       inventoryId: p.rowId, inventoryTable: p.table
     });
-    markDirty('sales', saleId);
-
     if (p.table === 'slabs') {
-      const row = DB.slabs.find(i => i.id === p.rowId);
-      if (row) { row.status = 'Sold'; markDirty('slabs', row.id); }
+      stageRow('slabs', p.rowId, row => { row.status = 'Sold'; });
     } else if (p.table === 'etbs' || p.table === 'boosterBoxes') {
-      const row = DB[p.table].find(i => i.id === p.rowId);
-      if (row) { row.status = 'Sold'; markDirty(p.table, row.id); }
+      stageRow(p.table, p.rowId, row => { row.status = 'Sold'; });
     } else if (p.table === 'boosterPacks') {
       retireBoosterPacks[p.rowId] = (retireBoosterPacks[p.rowId] || 0) + 1;
     } else {
@@ -5425,26 +5456,39 @@ function cmdConfirmSell() {
 
   // Retire the consumed single lots - decrement qty, or mark Sold when emptied.
   Object.keys(retireSingles).forEach(rowId => {
-    const row = DB.singles.find(i => i.id === rowId);
-    if (!row) return;
-    const remaining = (parseInt(row.qty) || 1) - retireSingles[rowId];
-    if (remaining >= 1) row.qty = remaining;
-    else row.status = 'Sold';
-    markDirty('singles', row.id);
+    stageRow('singles', rowId, row => {
+      const remaining = (parseInt(row.qty) || 1) - retireSingles[rowId];
+      if (remaining >= 1) row.qty = remaining;
+      else row.status = 'Sold';
+    });
   });
 
   // Retire booster pack lots - decrement qty, or mark Sold when emptied.
   Object.keys(retireBoosterPacks).forEach(rowId => {
-    const row = DB.boosterPacks.find(i => i.id === rowId);
-    if (!row) return;
-    const remaining = (parseInt(row.qty) || 1) - retireBoosterPacks[rowId];
-    if (remaining >= 1) row.qty = remaining;
-    else { row.qty = 0; row.status = 'Sold'; }
-    markDirty('boosterPacks', row.id);
+    stageRow('boosterPacks', rowId, row => {
+      const remaining = (parseInt(row.qty) || 1) - retireBoosterPacks[rowId];
+      if (remaining >= 1) row.qty = remaining;
+      else { row.qty = 0; row.status = 'Sold'; }
+    });
   });
 
+  const operations = [
+    ...Array.from(stagedRows.values(), staged => _upsertOperation(_tblName(staged.table), staged.next)),
+    ...newSales.map(sale => _upsertOperation('sales', sale))
+  ];
+  if (!isLocalhostPreview() && !_queueMutationGroup(operations)) {
+    toastError('Sale stopped because its sync transaction could not be saved safely');
+    return;
+  }
+
+  snapshotForUndo();
+  stagedRows.forEach(staged => {
+    Object.assign(staged.current, staged.next);
+    markDirty(staged.table, staged.current.id);
+  });
   // Newest first, preserving cart order within this transaction.
   DB.sales.unshift(...newSales);
+  newSales.forEach(sale => markDirty('sales', sale.id));
   saveData();
 
   // Refresh only the views that could have changed.
@@ -5639,6 +5683,58 @@ function undoLast() {
   return _queueUndoRedoOp(_undoLastBody);
 }
 
+function _discardPreviewUndoAdditions(deleteTargets, beforeUndo) {
+  if (!isLocalhostPreview() || !deleteTargets.length) return true;
+  const markers = _readDirtyV2Markers();
+  const markerKeys = _listDirtyV2MarkerKeys();
+  if (!markerKeys || markerKeys.length !== markers.length) return false;
+  const entries = [];
+  for (const target of deleteTargets) {
+    const key = _dbKey(target.table);
+    const row = (beforeUndo[key] || []).find(candidate => candidate.id === target.id);
+    if (!row) continue;
+    const rowJson = JSON.stringify(row);
+    const tokens = _snapshotDirtyTokens(key, target.id, rowJson);
+    if (tokens.size) entries.push({ key, id: target.id, tokens });
+  }
+  if (!entries.length) return true;
+
+  const storageKeys = new Set([DIRTY_LS_KEY]);
+  entries.forEach(entry => entry.tokens.forEach(token => storageKeys.add(_dirtyV2Key(token))));
+  const storageBefore = _snapshotStorageValues(storageKeys);
+  if (!storageBefore) return false;
+  const dirtyBefore = new Map();
+  const revisionsBefore = new Map();
+  entries.forEach(entry => {
+    if (!dirtyBefore.has(entry.key)) dirtyBefore.set(entry.key, new Set(_dirty[entry.key]));
+    if (!revisionsBefore.has(entry.key)) revisionsBefore.set(entry.key, new Map(_dirtyRevisions[entry.key]));
+  });
+
+  try {
+    entries.forEach(entry => _discardDirtyForDelete(entry.key, entry.id, entry.tokens));
+    for (const entry of entries) {
+      for (const token of entry.tokens) {
+        if (localStorage.getItem(_dirtyV2Key(token)) !== null) throw new Error('cancelled dirty marker remains');
+      }
+    }
+    const legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) : {};
+    for (const entry of entries) {
+      const remaining = legacy && legacy._revisions && legacy._revisions[entry.key] && legacy._revisions[entry.key][entry.id];
+      if (Array.isArray(remaining) && remaining.some(token => entry.tokens.has(token))) {
+        throw new Error('cancelled legacy dirty token remains');
+      }
+    }
+    return true;
+  } catch (error) {
+    dirtyBefore.forEach((dirty, key) => { _dirty[key] = new Set(dirty); });
+    revisionsBefore.forEach((revisions, key) => { _dirtyRevisions[key] = new Map(revisions); });
+    _restoreStorageValues(storageBefore);
+    console.warn('[undo] preview dirty cancellation failed:', error);
+    return false;
+  }
+}
+
 async function _undoLastBody() {
   if (undoStack.length === 0) { toast('Nothing to undo'); return; }
   // Snapshot the *current* state into redo before mutating.
@@ -5651,6 +5747,10 @@ async function _undoLastBody() {
   const deleteTargets = _stateReplacementDeleteTargets(beforeUndo, prev);
   if (!await _preflightPendingDeletes(deleteTargets)) {
     toastError('Undo stopped because its cloud deletes could not be queued safely');
+    return;
+  }
+  if (!_discardPreviewUndoAdditions(deleteTargets, beforeUndo)) {
+    toastError('Undo stopped because its local sync state could not be updated safely');
     return;
   }
   redoStack.push(JSON.stringify(beforeUndo));
@@ -6289,12 +6389,15 @@ function confirmQuickSell() {
   const table = document.getElementById('qs-table').value;
   const id    = document.getElementById('qs-id').value;
   const totalRaw = document.getElementById('qs-total').value;
-  const total = kjrNum(totalRaw);
-  // Blank/whitespace stays blocked, but an explicitly entered 0 is a real
-  // disposal (giveaway/trade) and must go through. Only the raw string can
-  // tell blank apart from zero - kjrNum('') and kjrNum('0') both return 0.
-  if (totalRaw == null || String(totalRaw).trim() === '') { toast('Enter the sold price'); return; }
-  if (total < 0) { toast('Enter the sold price'); return; }
+  const money = [
+    kjrParseNonNegativeNumber(totalRaw, { label: 'Sold price', blankReason: 'Enter the sold price' }),
+    kjrParseNonNegativeNumber(document.getElementById('qs-cost').value, { label: 'Cost price', allowBlank: true, blankValue: 0 }),
+    kjrParseNonNegativeNumber(document.getElementById('qs-ship').value, { label: 'Shipping', allowBlank: true, blankValue: 0 }),
+    kjrParseNonNegativeNumber(document.getElementById('qs-fees').value, { label: 'Fees', allowBlank: true, blankValue: 0 })
+  ];
+  const invalidMoney = money.find(result => !result.ok);
+  if (invalidMoney) { toast(invalidMoney.reason); return; }
+  const [total, cost, ship, fees] = money.map(result => result.value);
 
   const arr  = DB[table];
   const item = arr.find(i => i.id === id);
@@ -6310,9 +6413,6 @@ function confirmQuickSell() {
   }
 
   // Create sales record
-  const cost    = kjrNum(document.getElementById('qs-cost').value);
-  const ship    = kjrNum(document.getElementById('qs-ship').value);
-  const fees    = kjrNum(document.getElementById('qs-fees').value);
   const channel = document.getElementById('qs-channel').value || 'Carousell';
   const profit  = total - cost - ship - fees;
   const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '-';
@@ -7781,7 +7881,7 @@ function renderSingles() {
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('singles', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',\'' + safeId + '\',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
@@ -9173,10 +9273,15 @@ function calcSaleProfit() {
 function saveSale() {
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
-  const cost    = kjrNum(document.getElementById('msa-cost').value);
-  const total   = kjrNum(document.getElementById('msa-total').value);
-  const ship    = kjrNum(document.getElementById('msa-ship').value);
-  const fees    = kjrNum(document.getElementById('msa-fees').value);
+  const money = [
+    kjrParseNonNegativeNumber(document.getElementById('msa-cost').value, { label: 'Cost price', allowBlank: true, blankValue: 0 }),
+    kjrParseNonNegativeNumber(document.getElementById('msa-total').value, { label: 'Total collected', allowBlank: true, blankValue: 0 }),
+    kjrParseNonNegativeNumber(document.getElementById('msa-ship').value, { label: 'Shipping', allowBlank: true, blankValue: 0 }),
+    kjrParseNonNegativeNumber(document.getElementById('msa-fees').value, { label: 'Fees', allowBlank: true, blankValue: 0 })
+  ];
+  const invalidMoney = money.find(result => !result.ok);
+  if (invalidMoney) { toast(invalidMoney.reason); return; }
+  const [cost, total, ship, fees] = money.map(result => result.value);
   const channel = document.getElementById('msa-channel').value || 'Carousell';
   const profit  = total - cost - ship - fees;
   const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '-';
@@ -12888,10 +12993,6 @@ async function importData() {
     return h; // keep raw header name as fallback
   }
 
-  function cleanPrice(v) {
-    return parseFloat(String(v||'0').replace(/[$,\s]/g,'')) || 0;
-  }
-
   function cleanLang(v) {
     const u = (v||'').trim().toUpperCase();
     return ['EN','JP','CN','ID'].includes(u) ? u : (u || 'EN');
@@ -12912,41 +13013,71 @@ async function importData() {
   let count = 0, skipped = 0;
   let newItems = [];
   const skippedRows = []; // collect raw content of skipped rows
+  const skipRow = (lineNum, rowRaw, reason) => {
+    skipped++;
+    skippedRows.push({ lineNum, raw: rowRaw, reason });
+  };
+  const skippedRowsHtml = () => skippedRows.map(row =>
+    '<div class="skipped-row-item"><span class="skipped-row-num">Row ' + row.lineNum + '</span>' +
+    esc(row.raw) + '<span style="display:block;color:var(--red);margin-top:2px">' + esc(row.reason) + '</span></div>'
+  ).join('');
+  const showOnlyRejectedRows = message => {
+    if (!skippedRows.length) return;
+    const result = document.getElementById('import-result');
+    result.style.display = 'block';
+    result.style.color = 'var(--amber)';
+    result.innerHTML = '<span style="color:var(--amber)">' + esc(message) + '</span>' +
+      '<div class="skipped-box"><button class="skipped-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">▶ Show ' + skippedRows.length + ' skipped rows</button>' +
+      '<div class="skipped-rows open">' + skippedRowsHtml() + '</div></div>';
+  };
 
   for (let i = 1; i < lines.length; i++) {
     const vals = lines[i].split('\t').map(v => v.trim().replace(/^"|"$/g,''));
     const obj = { id: genId(type === 'sales' ? 'sale' : type === 'slabs' ? 'sl' : 's'), priceHistory: [] };
     fields.forEach((f, idx) => { if (f !== '_ignore' && vals[idx] !== undefined && vals[idx] !== '') obj[f] = vals[idx]; });
 
-    if (type === 'singles' && !obj.name) { skipped++; skippedRows.push({ lineNum: i + 1, raw: lines[i] }); continue; }
-    if (type === 'slabs'   && !obj.name) { skipped++; skippedRows.push({ lineNum: i + 1, raw: lines[i] }); continue; }
-    if (type === 'sales'   && !obj.product && !obj.name) { skipped++; skippedRows.push({ lineNum: i + 1, raw: lines[i] }); continue; }
+    let invalidReason = '';
+    const parseMoneyField = (field, label, blankValue, asString, options) => {
+      if (invalidReason) return;
+      const result = kjrParseNonNegativeNumber(obj[field], { label, allowBlank: true, blankValue, ...(options || {}) });
+      if (!result.ok) invalidReason = result.reason;
+      else obj[field] = asString && !result.blank ? String(result.value) : result.value;
+    };
 
     if (type === 'singles') {
+      const qty = kjrParseNonNegativeNumber(obj.qty, { label: 'Quantity', allowBlank: true, blankValue: 1, positiveInteger: true });
+      if (!qty.ok) invalidReason = qty.reason;
+      parseMoneyField('costPrice', 'Cost price', '');
+      parseMoneyField('listPrice', 'List price', 0);
+      parseMoneyField('marketPrice', 'Market price', '', true);
+      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
+      if (!obj.name) { skipRow(i + 1, lines[i], 'Name is required'); continue; }
       obj.language  = cleanLang(obj.language);
-      // costPrice = what you paid. listPrice/carousellPrice = your Carousell listing price. Keep both.
-      obj.costPrice   = obj.costPrice ? cleanPrice(obj.costPrice) : '';
-      obj.listPrice   = obj.listPrice ? cleanPrice(obj.listPrice) : 0;
-      obj.marketPrice = obj.marketPrice ? String(cleanPrice(obj.marketPrice)) : '';
+      obj.qty = qty.value;
       // date fallback: accept datePurchased, dateListed, or any leftover 'date' key
       if (!obj.datePurchased) obj.datePurchased = obj.dateListed || obj.date || '';
       delete obj.dateListed; delete obj.date;
       obj.type      = detectType(obj.name, obj.type);
       // Normalise shorthand to long form so the edit-modal <select> matches on load.
       obj.condition = canonicalCondition((obj.condition || 'Near Mint').toString().trim());
-      obj.qty       = parseInt(obj.qty) || 1;
       obj.status    = obj.status || 'Available';
       newItems.push(obj);
 
     } else if (type === 'slabs') {
+      parseMoneyField('costPrice', 'Cost price', '');
+      parseMoneyField('listPrice', 'List price', 0);
+      parseMoneyField('marketPrice', 'Market price', '', true);
+      if (obj.unitPrice != null && obj.unitPrice !== '') {
+        const fallbackCost = kjrParseNonNegativeNumber(obj.unitPrice, { label: 'Unit price', allowBlank: true, blankValue: '' });
+        if (!fallbackCost.ok) invalidReason = fallbackCost.reason;
+        else if (obj.costPrice === '') obj.costPrice = fallbackCost.value;
+      }
+      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
+      if (!obj.name) { skipRow(i + 1, lines[i], 'Name is required'); continue; }
       obj.type = 'slab';
       // Normalise grader to uppercase so cert links work (TAG, PSA, CGC etc.)
       if (obj.grader) obj.grader = obj.grader.toString().trim().toUpperCase();
       if (obj.grade)  obj.grade  = obj.grade.toString().trim();
-      // costPrice = what you paid. Keep carousellPrice (listPrice) separate.
-      obj.costPrice   = obj.costPrice ? cleanPrice(obj.costPrice) : (obj.unitPrice ? cleanPrice(obj.unitPrice) : '');
-      obj.listPrice   = obj.listPrice ? cleanPrice(obj.listPrice) : 0;
-      obj.marketPrice = obj.marketPrice ? String(cleanPrice(obj.marketPrice)) : '';
       delete obj.unitPrice;
       // date fallback: accept dateListed or datePurchased (generic 'Date' column)
       if (!obj.dateListed) obj.dateListed = obj.datePurchased || obj.date || '';
@@ -12955,12 +13086,15 @@ async function importData() {
       newItems.push(obj);
 
     } else {
+      parseMoneyField('costPrice', 'Cost price', 0);
+      parseMoneyField('totalCollected', 'Total collected', 0);
+      parseMoneyField('shippingCost', 'Shipping cost', 0);
+      if (obj.fees != null && obj.fees !== '') parseMoneyField('fees', 'Fees', 0);
+      if (obj.profit != null && obj.profit !== '') parseMoneyField('profit', 'Profit', 0, false, { allowNegative: true });
+      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
+      if (!obj.product && !obj.name) { skipRow(i + 1, lines[i], 'Product is required'); continue; }
       if (obj.name && !obj.product) obj.product = obj.name;
-      obj.costPrice      = cleanPrice(obj.costPrice);
-      obj.totalCollected = cleanPrice(obj.totalCollected);
-      obj.shippingCost   = cleanPrice(obj.shippingCost);
-      if (!obj.profit) obj.profit = obj.totalCollected - obj.costPrice - obj.shippingCost;
-      else obj.profit = cleanPrice(obj.profit);
+      if (obj.profit == null || obj.profit === '') obj.profit = obj.totalCollected - obj.costPrice - obj.shippingCost - (obj.fees || 0);
       // Guard against NaN before computing margin - totalCollected or profit
       // may be NaN if the source row had empty/invalid values.
       if (!obj.margin && obj.totalCollected > 0 && !isNaN(obj.profit))
@@ -12986,7 +13120,11 @@ async function importData() {
     // No confirm dialog - just proceed silently
   }
 
-  if (!newItems.length) { toast('Nothing to import - all rows were skipped or duplicates'); return; }
+  if (!newItems.length) {
+    showOnlyRejectedRows('Nothing imported · ' + skippedRows.length + ' skipped');
+    toast('Nothing to import - all rows were skipped or duplicates');
+    return;
+  }
 
   // ── Preview / confirm step (both modes) ──────────────────────
   // Show up to 10 parsed rows plus the total count. Nothing is written until
@@ -13076,10 +13214,7 @@ async function importData() {
   el.style.color = 'var(--green)';
   let resultHtml = '<span style="color:var(--green)">✓ Imported ' + count + ' records' + (skipped ? ' · <span style="color:var(--amber)">' + skipped + ' skipped</span>' : '') + '</span>';
   if (skippedRows.length > 0) {
-    const rowsHtml = skippedRows.map(r =>
-      '<div class="skipped-row-item"><span class="skipped-row-num">Row ' + r.lineNum + '</span>' +
-      r.raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>'
-    ).join('');
+    const rowsHtml = skippedRowsHtml();
     resultHtml += '<div class="skipped-box">' +
       '<button class="skipped-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\');this.textContent=this.nextElementSibling.classList.contains(\'open\')?\'▼ Hide ' + skipped + ' skipped rows\':\'▶ Show ' + skipped + ' skipped rows - click to review\'">▶ Show ' + skipped + ' skipped rows - click to review</button>' +
       '<div class="skipped-rows">' + rowsHtml + '</div>' +

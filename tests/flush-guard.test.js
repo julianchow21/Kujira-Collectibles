@@ -51,6 +51,42 @@ test('flush-guard: localhost preview -> _flushDirtyToSupabase makes ZERO fetch c
   assert.strictEqual(_dirty.singles.has('single_seed_1'), true, 'dirty flag survives - a guard-skipped write must never be treated as synced');
 });
 
+test('flush-guard: preview import then Undo cannot resurrect the addition, while an unrelated foreign edit stays durable', async () => {
+  const foreignBase = { id: 'foreign-row', name: 'Foreign row', costPrice: 10, status: 'Available' };
+  const loaded = await loadApp({ location: LOCALHOST_LOCATION, seed: { singles: [foreignBase], boosterPacks: [] } });
+  loaded.document.getElementById('import-data').value = 'Product\tQty\tUnit Price\tTotal Price\nUndo pack\t2\t5\t10';
+  loaded.document.getElementById('import-type').value = 'booster_packs';
+  loaded.document.getElementById('import-mode').value = 'append';
+  await loaded.ctx.importData();
+  const imported = loaded.grab('DB').DB.boosterPacks[0];
+  assert.ok(imported);
+
+  const foreignToken = 'foreign-tab:1';
+  const foreignEdit = { ...foreignBase, costPrice: 99 };
+  loaded.localStorage.setItem('pokeinv_dirty_v2:' + foreignToken, JSON.stringify({
+    table: 'singles', id: foreignBase.id, token: foreignToken, owner: 'foreign-tab',
+    createdAt: Date.now() + 1000, sequence: 1, rowJson: JSON.stringify(foreignEdit),
+  }));
+  const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1') || '{}');
+  legacy.singles = Array.from(new Set([...(legacy.singles || []), foreignBase.id]));
+  legacy._revisions = legacy._revisions || {};
+  legacy._revisions.singles = legacy._revisions.singles || {};
+  legacy._revisions.singles[foreignBase.id] = [foreignToken];
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify(legacy));
+
+  await loaded.ctx.undoLast();
+  assert.strictEqual(loaded.grab('DB').DB.boosterPacks.some(row => row.id === imported.id), false);
+  assert.ok(loaded.localStorage.getItem('pokeinv_dirty_v2:' + foreignToken),
+    'Undo leaves the unrelated foreign dirty marker untouched');
+  assert.strictEqual(JSON.parse(loaded.localStorage.getItem('pokeinventory_v3')).boosterPacks.some(row => row.id === imported.id), false);
+
+  const reloaded = await loadApp({ location: LOCALHOST_LOCATION, localStorage: copyStorage(loaded.localStorage) });
+  assert.strictEqual(reloaded.grab('DB').DB.boosterPacks.some(row => row.id === imported.id), false,
+    'the cancelled imported row remains absent after reload');
+  assert.strictEqual(reloaded.grab('DB').DB.singles.find(row => row.id === foreignBase.id).costPrice, 99,
+    'the unrelated foreign edit remains recoverable');
+});
+
 test('flush-guard: github.io + successful upserts -> dirty flags clear, requests hit the correct snake_case table names', async () => {
   const { ctx, fetchMock, grab } = await loadApp({
     localStorage: { pokeinv_dirty_v1: JSON.stringify({ singles: ['single_seed_1'] }) },

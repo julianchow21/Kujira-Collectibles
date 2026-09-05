@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  loadApp, plain, syncRequest, syncSuccessResponse, syncCalls, syncOperations,
+  loadApp, plain, jsonResponse, syncRequest, syncSuccessResponse, syncCalls, syncOperations,
 } = require('./harness.js');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -130,6 +130,112 @@ test('sync-v2: Quick Sale queues one atomic mutation group with inventory update
   ]);
   assert.strictEqual(grab('DB').DB.singles[0].qty, 1);
   assert.strictEqual(grab('DB').DB.sales.length, 1);
+});
+
+test('sync-v2: Command Sell groups repeated inventory targets into one atomic transaction', async () => {
+  const item = { id: 'command-repeat', name: 'Pikachu', set: 'Base', language: 'EN', condition: 'Near Mint',
+    type: 'raw', qty: 2, costPrice: 10, status: 'Available', _serverVersion: 4, datePurchased: '1 Jan 2025' };
+  const loaded = await loadApp({ seed: { singles: [item], sales: [] } });
+  authorise(loaded.ctx);
+  const groupKey = loaded.ctx.cmdSingleGroupKey(item);
+  loaded.ctx.cmdSellCart = [
+    { id: 'line-a', _table: 'singles', name: item.name, groupKey, qty: 1, price: 25 },
+    { id: 'line-b', _table: 'singles', name: item.name, groupKey, qty: 1, price: 30 },
+  ];
+  const values = { 'cmd-sell-ship': '0', 'cmd-sell-fees': '0', 'cmd-sell-channel': 'Carousell',
+    'cmd-sell-buyer': 'Test buyer', 'cmd-sell-date': '2026-09-05' };
+  for (const [id, value] of Object.entries(values)) loaded.document.getElementById(id).value = value;
+
+  loaded.ctx.cmdConfirmSell();
+  const groups = JSON.parse(loaded.localStorage.getItem('_kjrMutationGroupsV2'));
+  assert.strictEqual(groups.length, 1);
+  assert.deepStrictEqual(plain(groups[0].operations.map(op => op.table)), ['singles', 'sales', 'sales']);
+  assert.strictEqual(new Set(groups[0].operations.map(op => op.table + '/' + op.id)).size, 3,
+    'the repeated inventory lot appears once while each sale record remains unique');
+  assert.strictEqual(loaded.grab('DB').DB.singles[0].status, 'Sold');
+  assert.strictEqual(loaded.grab('DB').DB.sales.length, 2);
+
+  loaded.fetchMock.calls.length = 0;
+  loaded.fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  assert.strictEqual(await loaded.ctx._flushMutationGroups(), true);
+  assert.strictEqual(syncCalls(loaded.fetchMock).length, 1);
+  assert.strictEqual(syncRequest(syncCalls(loaded.fetchMock)[0].opts).operations.length, 3);
+});
+
+test('sync-v2: transaction queue failure leaves Command Sell and eBay completion data unchanged', async () => {
+  const commandItem = { id: 'command-queue-fail', name: 'Queue card', set: 'Base', language: 'EN',
+    condition: 'Near Mint', type: 'raw', qty: 1, costPrice: 10, status: 'Available', _serverVersion: 2 };
+  const command = await loadApp({ seed: { singles: [commandItem], sales: [] } });
+  command.ctx.cmdSellCart = [{ id: 'line', _table: 'singles', name: commandItem.name,
+    groupKey: command.ctx.cmdSingleGroupKey(commandItem), qty: 1, price: 25 }];
+  for (const [id, value] of Object.entries({ 'cmd-sell-ship': '0', 'cmd-sell-fees': '0',
+    'cmd-sell-channel': 'Carousell', 'cmd-sell-buyer': '', 'cmd-sell-date': '2026-09-05' })) {
+    command.document.getElementById(id).value = value;
+  }
+  const commandDbBefore = JSON.stringify(plain(command.grab('DB').DB));
+  const commandCacheBefore = command.localStorage.getItem('pokeinventory_v3');
+  const commandSet = command.localStorage.setItem.bind(command.localStorage);
+  command.localStorage.setItem = (key, value) => {
+    if (String(key).startsWith('_kjrMutationGroupV2:')) throw new Error('storage full');
+    commandSet(key, value);
+  };
+  command.ctx.cmdConfirmSell();
+  assert.strictEqual(JSON.stringify(plain(command.grab('DB').DB)), commandDbBefore);
+  assert.strictEqual(command.localStorage.getItem('pokeinventory_v3'), commandCacheBefore);
+  assert.strictEqual(command.grab('undoStack').undoStack.length, 0);
+
+  const purchase = { id: 'ebay-queue-fail', product: 'Queue purchase', status: 'Released', totalSgd: 40, _serverVersion: 3 };
+  const ebay = await loadApp({ seed: { ebayPurchases: [purchase], singles: [{ id: 'ebay-queue-gate', name: 'Gate', status: 'Available' }] } });
+  assert.strictEqual(ebay.grab('DB').DB.ebayPurchases.length, 1);
+  ebay.ctx._kjrCompleteCtx = { rowId: purchase.id, sgdCost: 40,
+    items: [{ table: 'singles', name: 'Queued card', cost: 40 }] };
+  const ebayDbBefore = JSON.stringify(plain(ebay.grab('DB').DB));
+  const ebayCacheBefore = ebay.localStorage.getItem('pokeinventory_v3');
+  const ebaySet = ebay.localStorage.setItem.bind(ebay.localStorage);
+  ebay.localStorage.setItem = (key, value) => {
+    if (String(key).startsWith('_kjrMutationGroupV2:')) throw new Error('storage full');
+    ebaySet(key, value);
+  };
+  await ebay.ctx.kjrConfirmCompletion();
+  assert.strictEqual(JSON.stringify(plain(ebay.grab('DB').DB)), ebayDbBefore);
+  assert.strictEqual(ebay.localStorage.getItem('pokeinventory_v3'), ebayCacheBefore);
+  assert.strictEqual(ebay.grab('undoStack').undoStack.length, 0);
+});
+
+test('sync-v2: eBay completion conflict removes companion stock and one retry creates it once', async () => {
+  const purchase = { id: 'ebay-completion-conflict', product: 'Conflict purchase', status: 'Released',
+    totalSgd: 100, _serverVersion: 4 };
+  const loaded = await loadApp({ seed: { ebayPurchases: [purchase], singles: [{ id: 'ebay-conflict-gate', name: 'Gate', status: 'Available' }] } });
+  authorise(loaded.ctx);
+  const completion = () => {
+    loaded.ctx._kjrCompleteCtx = { rowId: purchase.id, sgdCost: 100,
+      items: [{ table: 'singles', name: 'Conflict-created card', cost: 100 }] };
+    return loaded.ctx.kjrConfirmCompletion();
+  };
+  await completion();
+  loaded.fetchMock.calls.length = 0;
+  loaded.fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    return jsonResponse({ ok: false, code: 'version_conflict', mutation_id: request.mutation_id, conflicts: [{
+      table: 'ebay_purchases', id: purchase.id,
+      current: { id: purchase.id, data: { product: purchase.product, status: 'Released', totalSgd: 100 },
+        row_version: 5, updated_at: '2026-09-05T00:00:00.000Z' }, tombstone: null,
+    }] }, 409);
+  });
+  assert.strictEqual(await loaded.ctx._flushMutationGroups(), true);
+  let DB = loaded.grab('DB').DB;
+  assert.strictEqual(DB.ebayPurchases[0].status, 'Released');
+  assert.strictEqual(DB.ebayPurchases[0]._serverVersion, 5);
+  assert.strictEqual(DB.singles.filter(row => row.name === 'Conflict-created card').length, 0,
+    'the rejected transaction rolls back its companion create');
+
+  loaded.fetchMock.calls.length = 0;
+  loaded.fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  await completion();
+  assert.strictEqual(await loaded.ctx._flushMutationGroups(), true);
+  DB = loaded.grab('DB').DB;
+  assert.strictEqual(DB.singles.filter(row => row.name === 'Conflict-created card').length, 1);
+  assert.strictEqual(DB.ebayPurchases[0].status, 'Completed');
 });
 
 test('sync-v2: crash before local apply replays the queued after-state from its exact before-state', async () => {

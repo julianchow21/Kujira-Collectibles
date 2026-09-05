@@ -69,6 +69,52 @@ test('profit-money: calcQsProfit/calcSaleProfit - zero/empty fields do not throw
   assert.strictEqual(ctx.document.getElementById('msa-margin').value, '-', 'total=0 -> margin renders as "-", not a divide-by-zero artefact');
 });
 
+test('profit-money: Quick Sale rejects negative and non-finite raw money before any mutation, while zero and optional blanks remain valid', async () => {
+  const loaded = await loadApp({ seed: { singles: [{ id: 'money-quick', name: 'Money card', qty: 1,
+    costPrice: 10, status: 'Available', datePurchased: '1 Jan 2025' }], sales: [] } });
+  const base = { 'qs-table': 'singles', 'qs-id': 'money-quick', 'qs-total': '25', 'qs-cost': '10',
+    'qs-ship': '0', 'qs-fees': '0', 'qs-channel': 'Carousell', 'qs-date': '2026-09-05', 'qs-buyer': '' };
+  const beforeDb = JSON.stringify(plain(loaded.grab('DB').DB));
+  const beforeCache = loaded.localStorage.getItem('pokeinventory_v3');
+  for (const [field, value] of [['qs-total', '-1'], ['qs-cost', '-1'], ['qs-ship', '1e309'], ['qs-fees', 'Infinity'], ['qs-total', '']]) {
+    for (const [id, fieldValue] of Object.entries(base)) loaded.document.getElementById(id).value = fieldValue;
+    loaded.document.getElementById(field).value = value;
+    loaded.ctx.confirmQuickSell();
+    assert.strictEqual(JSON.stringify(plain(loaded.grab('DB').DB)), beforeDb, field + ' must not change DB');
+    assert.strictEqual(loaded.localStorage.getItem('pokeinventory_v3'), beforeCache, field + ' must not change cache');
+    assert.strictEqual(loaded.grab('undoStack').undoStack.length, 0, field + ' must be rejected before snapshot');
+  }
+
+  for (const [id, value] of Object.entries({ ...base, 'qs-total': '0', 'qs-cost': '', 'qs-ship': '', 'qs-fees': '' })) {
+    loaded.document.getElementById(id).value = value;
+  }
+  loaded.ctx.confirmQuickSell();
+  assert.strictEqual(loaded.grab('DB').DB.sales.length, 1);
+  assert.deepStrictEqual(plain(['costPrice', 'totalCollected', 'shippingCost', 'fees'].map(key => loaded.grab('DB').DB.sales[0][key])), [0, 0, 0, 0]);
+});
+
+test('profit-money: manual sale rejects negative and non-finite raw money before snapshot, while blank optional amounts save as zero', async () => {
+  const loaded = await loadApp({ seed: { sales: [] } });
+  const base = { 'msa-product': 'Manual money sale', 'msa-total': '25', 'msa-cost': '10',
+    'msa-ship': '0', 'msa-fees': '0', 'msa-channel': 'Other', 'msa-date': '2026-09-05', 'msa-id': '', 'msa-buyer': '' };
+  const beforeCache = loaded.localStorage.getItem('pokeinventory_v3');
+  for (const [field, value] of [['msa-cost', '-10'], ['msa-total', '1e309'], ['msa-ship', 'NaN'], ['msa-fees', 'Infinity']]) {
+    for (const [id, fieldValue] of Object.entries(base)) loaded.document.getElementById(id).value = fieldValue;
+    loaded.document.getElementById(field).value = value;
+    loaded.ctx.saveSale();
+    assert.strictEqual(loaded.grab('DB').DB.sales.length, 0);
+    assert.strictEqual(loaded.localStorage.getItem('pokeinventory_v3'), beforeCache);
+    assert.strictEqual(loaded.grab('undoStack').undoStack.length, 0);
+  }
+
+  for (const [id, value] of Object.entries({ ...base, 'msa-total': '0', 'msa-cost': '', 'msa-ship': '', 'msa-fees': '' })) {
+    loaded.document.getElementById(id).value = value;
+  }
+  loaded.ctx.saveSale();
+  const sale = loaded.grab('DB').DB.sales[0];
+  assert.deepStrictEqual(plain([sale.costPrice, sale.totalCollected, sale.shippingCost, sale.fees, sale.profit]), [0, 0, 0, 0, 0]);
+});
+
 test('profit-money: cmdCalcProfit - an empty cart shows the "add items" placeholder rather than S$0', async () => {
   const { ctx } = await loadApp();
   ctx.cmdSellCart = [];

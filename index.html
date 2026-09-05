@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.47',
+    release: 'kujira-collectibles@3.48',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.47">
+<link rel="stylesheet" href="styles.css?v=3.48">
 </head>
 <body>
 
@@ -129,7 +129,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.47 (4 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.48 (5 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -1187,10 +1187,10 @@
         <div class="form-group"><label class="lbl">Date Sold</label><input class="fi" id="msa-date" placeholder="e.g. 8 May 2026"></div>
         <div class="form-group full"><label class="lbl">Product <span style="color:var(--text3);font-weight:400;font-size:11px">- separate items with " | " for bundle</span></label><input class="fi" id="msa-product" placeholder="Card name(s) or Item A | Item B | Item C" oninput="msaOnProductChange()"></div>
         <div class="form-group"><label class="lbl">Buyer</label><input class="fi" id="msa-buyer" placeholder="Username / name"></div>
-        <div class="form-group"><label class="lbl">Cost Price (S$) <span id="msa-cost-lbl-note" style="color:var(--text3);font-weight:400;font-size:11px"></span></label><input class="fi" type="number" id="msa-cost" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
-        <div class="form-group"><label class="lbl">Total Collected (S$)</label><input class="fi" type="number" id="msa-total" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
-        <div class="form-group"><label class="lbl">Shipping (S$)</label><input class="fi" type="number" id="msa-ship" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
-        <div class="form-group"><label class="lbl">Fees (S$)</label><input class="fi" type="number" id="msa-fees" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl" for="msa-cost">Cost Price (S$) <span id="msa-cost-lbl-note" style="color:var(--text3);font-weight:400;font-size:11px"></span></label><input class="fi" type="number" id="msa-cost" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl" for="msa-total">Total Collected (S$)</label><input class="fi" type="number" id="msa-total" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl" for="msa-ship">Shipping (S$)</label><input class="fi" type="number" id="msa-ship" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
+        <div class="form-group"><label class="lbl" for="msa-fees">Fees (S$)</label><input class="fi" type="number" id="msa-fees" min="0" placeholder="0.00" step="0.01" oninput="calcSaleProfit()"></div>
         <div class="form-group"><label class="lbl">Channel</label><select class="fi" id="msa-channel"><option value="Carousell">Carousell</option><option value="eBay">eBay</option><option value="In person">In person</option><option value="Other">Other</option></select></div>
         <div class="form-group"><label class="lbl">Profit (auto)</label><input class="fi" id="msa-profit" readonly style="opacity:0.6"></div>
         <div class="form-group"><label class="lbl">Margin (auto)</label><input class="fi" id="msa-margin" readonly style="opacity:0.6"></div>
@@ -1691,7 +1691,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.47"></script>
-<script src="features.js?v=3.47"></script>
+<script src="app.js?v=3.48"></script>
+<script src="features.js?v=3.48"></script>
 </body>
 </html>

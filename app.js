@@ -9076,7 +9076,7 @@ async function restoreFromTrash(trashId) {
     _kjrRerenderTable(originalTable);
     clLog('restore', originalTable, restored.name || restored.product || restored.id, _clSummary(originalTable, restored) || 'restored from trash');
     toast('Restore queued locally. Waiting for server confirmation…');
-    renderTrash();
+    renderTrash(false);
     return;
   }
   // Saved-chart restoration is special - re-add to localStorage
@@ -9113,7 +9113,7 @@ async function restoreFromTrash(trashId) {
         return;
       }
       toast('Already restored');
-      renderTrash();
+      renderTrash(false);
       return;
     }
     // Trash snapshots can predate the v4 condition migration (which only
@@ -9177,7 +9177,7 @@ async function restoreFromTrash(trashId) {
       const extra = _clSummary(originalTable, item) || 'restored from trash';
       clLog('restore', originalTable, item.name || item.product || item.title || item.id, extra);
       toast('Restored locally - cloud sync will retry');
-      renderTrash();
+      renderTrash(false);
       return;
     }
   }
@@ -9190,7 +9190,7 @@ async function restoreFromTrash(trashId) {
     : (_clSummary(originalTable, item) || 'restored from trash');
   clLog('restore', originalTable, item.name || item.product || item.title || item.id, restoreExtra);
   toast('Restored ✓');
-  renderTrash();
+  renderTrash(false);
 }
 
 async function emptyTrash() {
@@ -9204,7 +9204,7 @@ async function emptyTrash() {
   }
   if (failed) toastError('Some Trash entries could not be deleted. Try again.');
   else toast('Trash emptied');
-  renderTrash();
+  renderTrash(false);
 }
 
 async function purgeExpiredTrash() {
@@ -9224,7 +9224,10 @@ function renderTrash(forcePull) {
   if (!list) return;
   list.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading trash…</div></div>';
 
-  fetchTrash({ force: forcePull === true }).then(entries => {
+  // Opening Trash and changing its filter must see a fresh cloud snapshot by
+  // default. Callers can pass false when they deliberately only want the
+  // current in-memory list rendered.
+  fetchTrash({ force: forcePull !== false }).then(entries => {
     if (entries === null) {
       if (stats) stats.textContent = '';
       list.innerHTML = '<div class="hig-empty"><div class="hig-empty-icon">⚠</div><div class="hig-empty-title">Couldn\'t load Trash</div><div class="hig-empty-sub">Check your connection and retry.</div></div>';
@@ -9282,7 +9285,7 @@ function renderTrash(forcePull) {
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash('${esc(e.id)}')">↻ Restore</button>
-          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { if(await hardDeleteTrashEntry('${esc(e.id)}')) { toast('Permanently deleted'); renderTrash(); } else toastError('Trash entry could not be deleted. Try again.'); } })()">✕ Delete forever</button>
+          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { if(await hardDeleteTrashEntry('${esc(e.id)}')) { toast('Permanently deleted'); renderTrash(false); } else toastError('Trash entry could not be deleted. Try again.'); } })()">✕ Delete forever</button>
         </div>
       </div>`;
     }).join('');

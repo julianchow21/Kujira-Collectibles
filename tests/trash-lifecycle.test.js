@@ -342,6 +342,33 @@ test('trash-lifecycle: Trash Refresh forces a new pull and renders a row committ
   assert.match(app.document.getElementById('trash-list').innerHTML, /Refresh-visible row/);
 });
 
+test('trash-lifecycle: opening Trash without a flag forces a fresh pull after a cached empty snapshot', async () => {
+  const entry = {
+    id: 'trash_navigation_row',
+    data: {
+      originalTable: 'singles', originalId: 's_navigation_row',
+      item: { id: 's_navigation_row', name: 'Navigation-visible row' },
+      deletedAt: '2026-09-11T14:00:24.000Z',
+    },
+    row_version: 1,
+    updated_at: '2026-09-11T14:00:24.000Z',
+  };
+  const app = await loadApp();
+  app.ctx.DB.trash = [];
+  app.ctx._syncPullLoaded = true;
+  app.fetchMock.calls.length = 0;
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({ trash: [entry] }));
+
+  app.ctx.renderTrash();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/pull')).length, 1,
+    'normal Trash navigation does not reuse the cached pull');
+  assert.match(app.document.getElementById('trash-stats').textContent, /^1 deleted item/);
+  assert.match(app.document.getElementById('trash-list').innerHTML, /Navigation-visible row/);
+});
+
 test('trash-lifecycle: concurrent forced Trash Refresh waits for an active pull and shares one replacement request', async () => {
   const entry = {
     id: 'trash_refresh_race',

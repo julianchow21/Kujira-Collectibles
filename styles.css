@@ -286,12 +286,12 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast.toast-warn #toast-bar{background:var(--amber)}
 @media(max-width:768px){#toast{bottom:calc(56px + env(safe-area-inset-bottom) + 12px);right:12px;left:12px;max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
 
-/* STALE-SHELL UPDATE PILL - sits below the bottom tab bar (z-index 150), own
-   element so a sync toast can never overwrite it. Hidden until a HEAD-probe
-   version mismatch is detected. */
+/* STALE-SHELL UPDATE PILL - stays reachable above the auth gate so a signed-out
+   shell can activate a waiting worker. */
 #kjr-update-pill{display:none;position:fixed;bottom:16px;right:16px;z-index:149;background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--accent);color:var(--text);font-size:13px;border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);align-items:center;gap:10px;padding:10px 10px 10px 14px;cursor:pointer;user-select:none}
 #kjr-update-pill.show{display:flex}
 #kjr-update-pill-close{flex-shrink:0;background:none;border:none;color:var(--text3);font-size:15px;line-height:1;padding:4px;cursor:pointer}
+html.auth-gated #kjr-update-pill{z-index:200001}
 @media(max-width:768px){#kjr-update-pill{left:12px;right:12px;bottom:calc(64px + env(safe-area-inset-bottom));justify-content:center}}
 /* ── HIG additions ── */
 .hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:16px;color:var(--text3)}
@@ -1221,7 +1221,7 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 .sentry-issue:last-child{margin-bottom:0}
 
 /* v3.42 owner gate, update action and keyboard focus */
-html.auth-gated body > :not(#kjr-auth-gate){visibility:hidden}
+html.auth-gated body > :not(#kjr-auth-gate):not(#kjr-update-pill){visibility:hidden}
 html.auth-gated #kjr-auth-gate{visibility:visible}
 #kjr-auth-gate{position:fixed;inset:0;z-index:200000;display:grid;place-items:center;padding:24px;background:var(--bg,#12101F);color:var(--text,#f5f3ff);font-family:Lexend,system-ui,sans-serif}
 #kjr-auth-gate[hidden]{display:none}

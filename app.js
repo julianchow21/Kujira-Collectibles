@@ -256,7 +256,7 @@ function _kjrSetAuthGate(active) {
   if (gate) gate.hidden = !active;
   if (!document.body) return;
   for (const child of document.body.children) {
-    if (child === gate) continue;
+    if (child === gate || child.id === 'kjr-update-pill') continue;
     if (active) child.setAttribute('inert', '');
     else child.removeAttribute('inert');
   }
@@ -1944,6 +1944,7 @@ async function sbFetchPaged(table, query, safetyCap) {
 
 const SERVER_TOMBSTONES_KEY = '_kjrServerTombstonesV1';
 let _syncPullPromise = null;
+let _syncPullForcePromise = null;
 let _syncPullLoaded = false;
 let _serverTombstones = [];
 // Authenticated pulls provide the only cross-device evidence that a live row
@@ -2158,7 +2159,45 @@ async function _pullSyncStateAttempt() {
     return { tables, tombstones };
 }
 
-async function _pullSyncState() {
+async function _pullSyncState(options) {
+  if (options && options.force) {
+    // A Trash refresh must wait for an active snapshot rather than clearing
+    // its promise underneath the caller. Concurrent refreshes join one
+    // sequenced forced pull, so an older response cannot win the race.
+    if (_syncPullForcePromise) return _syncPullForcePromise;
+    const forcePromise = (async () => {
+      while (_syncPullPromise) {
+        const active = _syncPullPromise;
+        try { await active; } catch (_) {}
+        // A failed pull clears its own promise. If another caller started a
+        // replacement meanwhile, wait for that replacement before forcing.
+        if (_syncPullPromise !== active) continue;
+        _syncPullPromise = null;
+        _syncPullLoaded = false;
+      }
+      let trashBefore = null;
+      try {
+        if (typeof DB !== 'undefined' && DB && Array.isArray(DB.trash)) {
+          trashBefore = JSON.parse(JSON.stringify(DB.trash));
+        }
+      } catch (_) {}
+      _syncPullLoaded = false;
+      try {
+        return await _pullSyncState();
+      } catch (error) {
+        // A failed forced pull must leave the last recoverable list intact.
+        // The pull validates its response before assignment, but this guard
+        // also covers failures in the post-pull recovery checks.
+        if (trashBefore && typeof DB !== 'undefined' && DB) DB.trash = trashBefore;
+        throw error;
+      }
+    })();
+    _syncPullForcePromise = forcePromise;
+    try { return await forcePromise; }
+    finally {
+      if (_syncPullForcePromise === forcePromise) _syncPullForcePromise = null;
+    }
+  }
   if (_syncPullPromise) return _syncPullPromise;
   _syncPullPromise = (async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -8928,7 +8967,8 @@ async function sendBatchToTrash(table, items, reason) {
   return false;
 }
 
-async function fetchTrash() {
+async function fetchTrash(options) {
+  const force = options === true || !!(options && options.force);
   if (isLocalhostPreview()) {
     // Cloud reads fail outright on localhost by design (no network path to
     // the DB proxy) - serve the local-only trash store instead, newest first,
@@ -8936,7 +8976,8 @@ async function fetchTrash() {
     return [...DB.trash].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   }
   try {
-    if (!_syncPullLoaded) await _pullSyncState();
+    if (force) await _pullSyncState({ force: true });
+    else if (!_syncPullLoaded) await _pullSyncState();
     return [...DB.trash].sort((a, b) => new Date(b._updatedAt || b.updated_at || 0) - new Date(a._updatedAt || a.updated_at || 0));
   } catch(e) {
     console.warn('Fetch trash failed:', e);
@@ -9177,13 +9218,13 @@ async function purgeExpiredTrash() {
   return true;
 }
 
-function renderTrash() {
+function renderTrash(forcePull) {
   const list = document.getElementById('trash-list');
   const stats = document.getElementById('trash-stats');
   if (!list) return;
   list.innerHTML = '<div class="hig-loading"><div class="hig-spinner"></div><div class="hig-loading-text">Loading trash…</div></div>';
 
-  fetchTrash().then(entries => {
+  fetchTrash({ force: forcePull === true }).then(entries => {
     if (entries === null) {
       if (stats) stats.textContent = '';
       list.innerHTML = '<div class="hig-empty"><div class="hig-empty-icon">⚠</div><div class="hig-empty-title">Couldn\'t load Trash</div><div class="hig-empty-sub">Check your connection and retry.</div></div>';

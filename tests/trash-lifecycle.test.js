@@ -306,6 +306,126 @@ test('trash-lifecycle: the app itself schedules purgeExpiredTrash as a captured 
   assert.strictEqual(DB.trash.length, 0, 'driving the captured callback purged the stale entry exactly like calling purgeExpiredTrash() directly');
 });
 
+test('trash-lifecycle: Trash Refresh forces a new pull and renders a row committed after the initial empty snapshot', async () => {
+  const entry = {
+    id: 'trash_refresh_row',
+    data: {
+      originalTable: 'singles', originalId: 's_refresh_row',
+      item: { id: 's_refresh_row', name: 'Refresh-visible row', costPrice: 0, listPrice: 4 },
+      deletedAt: '2026-09-11 14:00:24.551846+00',
+    },
+    row_version: 1,
+    updated_at: '2026-09-11T14:00:24.553631+00:00',
+  };
+  const app = await loadApp();
+  const localDirty = app.grab('DB').DB.singles[0];
+  localDirty.name = 'Unrelated local edit';
+  app.ctx.markDirty('singles', localDirty.id, localDirty);
+  app.fetchMock.calls.length = 0;
+  app.fetchMock.route('/sync/v2/pull', [
+    () => syncPullResponse({ trash: [] }),
+    () => syncPullResponse({ trash: [entry] }),
+  ]);
+
+  assert.deepStrictEqual(plain(await app.ctx.fetchTrash()), [], 'the first pull is genuinely empty');
+  const refreshed = await app.ctx.fetchTrash({ force: true });
+  assert.deepStrictEqual(plain(refreshed).map(row => row.id), [entry.id]);
+  assert.strictEqual(app.grab('DB').DB.trash.length, 1);
+  assert.strictEqual(app.grab('DB').DB.singles.find(row => row.id === localDirty.id).name, 'Unrelated local edit',
+    'a full forced pull does not overwrite an unrelated dirty row');
+  assert.strictEqual(app.grab('_dirty')._dirty.singles.has(localDirty.id), true,
+    'the unrelated dirty obligation remains queued');
+
+  app.ctx.renderTrash(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(app.document.getElementById('trash-stats').textContent, /^1 deleted item/);
+  assert.match(app.document.getElementById('trash-list').innerHTML, /Refresh-visible row/);
+});
+
+test('trash-lifecycle: concurrent forced Trash Refresh waits for an active pull and shares one replacement request', async () => {
+  const entry = {
+    id: 'trash_refresh_race',
+    data: {
+      originalTable: 'singles', originalId: 's_refresh_race',
+      item: { id: 's_refresh_race', name: 'Sequenced row' },
+      deletedAt: '2026-09-11T14:00:24.000Z',
+    },
+    row_version: 1,
+    updated_at: '2026-09-11T14:00:24.000Z',
+  };
+  const app = await loadApp();
+  app.fetchMock.calls.length = 0;
+  let releaseFirst;
+  app.fetchMock.route('/sync/v2/pull', [
+    () => new Promise(resolve => { releaseFirst = resolve; }),
+    () => syncPullResponse({ trash: [entry] }),
+  ]);
+
+  const firstPull = app.ctx._pullSyncState();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/pull')).length, 1);
+
+  const refreshA = app.ctx.fetchTrash({ force: true });
+  const refreshB = app.ctx.fetchTrash({ force: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/pull')).length, 1,
+    'refreshes wait for the active snapshot instead of starting an overlapping request');
+
+  releaseFirst(syncPullResponse({ trash: [] }));
+  await firstPull;
+  const [resultA, resultB] = await Promise.all([refreshA, refreshB]);
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/pull')).length, 2,
+    'concurrent refreshes share one sequenced replacement pull');
+  assert.deepStrictEqual(plain(resultA).map(row => row.id), [entry.id]);
+  assert.deepStrictEqual(plain(resultB).map(row => row.id), [entry.id]);
+});
+
+test('trash-lifecycle: a failed forced Trash Refresh retains the existing recovery list and pending snapshot', async () => {
+  for (const mode of ['network', 'parse']) {
+    const app = await loadApp();
+    const cached = {
+      id: 'trash_refresh_cached_' + mode,
+      data: {
+        originalTable: 'singles', originalId: 's_refresh_cached_' + mode,
+        item: { id: 's_refresh_cached_' + mode, name: 'Recoverable cached row' },
+        deletedAt: '2026-09-11T14:00:24.000Z',
+      },
+      _serverVersion: 1,
+      _updatedAt: '2026-09-11T14:00:24.000Z',
+    };
+    app.ctx.DB.trash = [cached];
+    app.ctx._syncPullLoaded = true;
+    app.ctx._queuePendingTrash(cached);
+    const beforePending = app.localStorage.getItem('_kjrPendingTrashWrites');
+    app.fetchMock.route('/sync/v2/pull', mode === 'network'
+      ? () => { throw new TypeError('offline'); }
+      : () => ({
+        ok: true, status: 200,
+        json: async () => { throw new SyntaxError('invalid JSON'); },
+        text: async () => 'invalid JSON',
+        headers: { get: () => null },
+      }));
+
+    assert.strictEqual(await app.ctx.fetchTrash({ force: true }), null, mode + ' failure is surfaced');
+    assert.deepStrictEqual(plain(app.ctx.DB.trash), [cached], mode + ' failure keeps the cached recovery row');
+    assert.strictEqual(app.localStorage.getItem('_kjrPendingTrashWrites'), beforePending,
+      mode + ' failure keeps the durable pending snapshot');
+  }
+});
+
+test('trash-lifecycle: purgeExpiredTrash keeps entries with an unknown timestamp', async () => {
+  const { ctx, grab } = await loadApp({
+    location: LOCALHOST_LOCATION,
+    localStorage: {
+      _kjrLocalTrash: JSON.stringify([
+        { id: 'trash_unknown_date', data: { originalTable: 'singles', originalId: 'unknown_date', item: {}, deletedAt: 'not-a-timestamp' }, updated_at: 'not-a-timestamp' },
+      ]),
+    },
+  });
+  await ctx.purgeExpiredTrash();
+  assert.strictEqual(grab('DB').DB.trash.length, 1, 'an unknown age never triggers permanent deletion');
+});
+
 test('trash-lifecycle: restoreFromTrash - the row returns to its original table and the trash entry is cleared', async () => {
   const { ctx, grab } = await loadApp({
     location: LOCALHOST_LOCATION,

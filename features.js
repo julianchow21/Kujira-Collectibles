@@ -35,7 +35,6 @@
         }
       }
     });
-    if (document.documentElement.classList.contains('auth-gated')) pill.setAttribute('inert', '');
     document.body.appendChild(pill);
     return pill;
   }

@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.50',
+    release: 'kujira-collectibles@3.51',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.50">
+<link rel="stylesheet" href="styles.css?v=3.51">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.50 (11 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.51 (11 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -984,7 +984,7 @@
         <option value="sales">Sales</option>
         <option value="savedChart">Saved Charts</option>
       </select>
-      <button class="btn btn-sm" onclick="renderTrash()" title="Refresh trash list">⟳ Refresh</button>
+      <button class="btn btn-sm" onclick="renderTrash(true)" title="Refresh trash list from cloud">⟳ Refresh</button>
       <button class="btn btn-sm" style="color:var(--red)" onclick="emptyTrash()">Empty Trash</button>
     </div>
   </div>
@@ -1736,7 +1736,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.50"></script>
-<script src="features.js?v=3.50"></script>
+<script src="app.js?v=3.51"></script>
+<script src="features.js?v=3.51"></script>
 </body>
 </html>

@@ -16,7 +16,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Kujira">
-<script>/* Cosmetic pre-paint theme read: if localStorage is blocked or unreadable here, the page just paints in the default (dark) theme instead of light. */try{if(localStorage.getItem('pokeinv_theme')==='light')document.documentElement.classList.add('light')}catch(e){}document.documentElement.classList.add('auth-gated');(function(){try{var h=location.hash.slice(1);if(/(?:^|&)(?:access_token|error|error_description)=/.test(h)){sessionStorage.setItem('_kjrAuthCallback',h);history.replaceState(null,'',location.pathname+location.search)}}catch(e){history.replaceState(null,'',location.pathname+location.search)}})()</script>
+<script>/* Cosmetic pre-paint theme read: if localStorage is blocked or unreadable here, the page just paints in the default (dark) theme instead of light. */try{if(localStorage.getItem('pokeinv_theme')==='light')document.documentElement.classList.add('light')}catch(e){}document.documentElement.classList.add('auth-gated');(function(){var clean=function(){try{history.replaceState(null,'',location.pathname)}catch(e){}};try{var h=location.hash.slice(1),q=location.search.slice(1),pattern=/(?:^|&)(?:access_token|error|error_description|refresh_token|type|code)=/,hasH=pattern.test(h),hasQ=pattern.test(q);if(hasH||hasQ){try{sessionStorage.setItem('_kjrAuthCallback',hasH&&hasQ?h+'&'+q:(hasH?h:q))}catch(e){}clean()}}catch(e){clean()}})()</script>
 <!-- ═══════════════════════════════════════════════════════════
      SENTRY - JS error monitoring (DSN configured, active on prod).
      Bump the release below alongside the version badge so Sentry
@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.48',
+    release: 'kujira-collectibles@3.49',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.48">
+<link rel="stylesheet" href="styles.css?v=3.49">
 </head>
 <body>
 
@@ -87,21 +87,66 @@
       <div class="hig-spinner" aria-hidden="true"></div>
       <h2 id="kjr-auth-loading-title" tabindex="-1" data-auth-focus>Checking your session…</h2>
     </div>
-    <form id="kjr-auth-form" class="kjr-auth-state" data-auth-state="empty" aria-labelledby="kjr-auth-form-title" hidden onsubmit="kjrRequestMagicLink(event)">
+    <form id="kjr-auth-form" class="kjr-auth-state" data-auth-state="empty" aria-labelledby="kjr-auth-form-title" hidden onsubmit="kjrSignIn(event)">
       <h2 id="kjr-auth-form-title">Sign in</h2>
       <p>Sign in with the owner email to open your collection.</p>
       <label class="lbl" for="kjr-auth-email">Email address</label>
-      <input class="fi" id="kjr-auth-email" name="email" type="email" autocomplete="email" inputmode="email" data-auth-focus required>
-      <button class="btn btn-primary" id="kjr-auth-submit" type="submit">Email me a sign-in link</button>
+      <input class="fi" id="kjr-auth-email" name="email" type="email" autocomplete="username" inputmode="email" data-auth-focus required>
+      <label class="lbl" for="kjr-auth-password">Password</label>
+      <input class="fi" id="kjr-auth-password" name="password" type="password" autocomplete="current-password" required>
+      <button class="btn btn-primary" id="kjr-auth-submit" type="submit">Sign in</button>
+      <button class="btn" id="kjr-auth-recover-action" type="button" onclick="kjrShowPasswordRecovery()">Set or reset password</button>
     </form>
     <div id="kjr-auth-sent" class="kjr-auth-state" data-auth-state="sent" role="status" aria-labelledby="kjr-auth-sent-title" hidden>
       <h2 id="kjr-auth-sent-title" tabindex="-1" data-auth-focus>Check your email</h2>
-      <p>The sign-in link opens this app and expires shortly.</p>
+      <p>The sign-in link may open in a browser. Finish there, then return to this app and sign in with your password.</p>
       <button class="btn" type="button" onclick="kjrShowAuthForm()">Use another email</button>
+    </div>
+    <form id="kjr-auth-recover-form" class="kjr-auth-state" data-auth-state="recover" aria-labelledby="kjr-auth-recover-title" hidden onsubmit="kjrRequestPasswordReset(event)">
+      <h2 id="kjr-auth-recover-title">Set or reset password</h2>
+      <p>Enter the owner email. If the account exists, we will send a password link.</p>
+      <label class="lbl" for="kjr-auth-recover-email">Email address</label>
+      <input class="fi" id="kjr-auth-recover-email" name="recover-email" type="email" autocomplete="email" inputmode="email" data-auth-focus required>
+      <button class="btn btn-primary" id="kjr-auth-recover-submit" type="submit">Email me a password link</button>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Back to sign in</button>
+    </form>
+    <div id="kjr-auth-recover-sent" class="kjr-auth-state" data-auth-state="recover-sent" role="status" aria-labelledby="kjr-auth-recover-sent-title" hidden>
+      <h2 id="kjr-auth-recover-sent-title" tabindex="-1" data-auth-focus>Check your email</h2>
+      <p>If the account exists, the link may open in a browser. Set your password there, then return to this app and sign in with it.</p>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Back to sign in</button>
+    </div>
+    <div id="kjr-auth-recover-error" class="kjr-auth-state" data-auth-state="recover-error" role="alert" aria-labelledby="kjr-auth-recover-error-title" hidden>
+      <h2 id="kjr-auth-recover-error-title" tabindex="-1" data-auth-focus>Could not send email</h2>
+      <p id="kjr-auth-recover-error-copy">The password email could not be sent. Check your connection and try again.</p>
+      <button class="btn btn-primary" type="button" onclick="kjrShowPasswordRecovery()">Try again</button>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Back to sign in</button>
+    </div>
+    <form id="kjr-auth-recovery-form" class="kjr-auth-state" data-auth-state="recovery" aria-labelledby="kjr-auth-recovery-title" hidden onsubmit="kjrSubmitNewPassword(event)">
+      <h2 id="kjr-auth-recovery-title">Choose a new password</h2>
+      <p>Your password link is ready. Set a new password to open the collection.</p>
+      <label class="lbl" for="kjr-auth-new-password">New password</label>
+      <input class="fi" id="kjr-auth-new-password" name="new-password" type="password" autocomplete="new-password" minlength="6" data-auth-focus required>
+      <label class="lbl" for="kjr-auth-confirm-password">Confirm new password</label>
+      <input class="fi" id="kjr-auth-confirm-password" name="confirm-password" type="password" autocomplete="new-password" minlength="6" required>
+      <button class="btn btn-primary" id="kjr-auth-recovery-submit" type="submit">Set password</button>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Cancel</button>
+    </form>
+    <div id="kjr-auth-recovery-expired" class="kjr-auth-state" data-auth-state="recovery-expired" role="alert" aria-labelledby="kjr-auth-recovery-expired-title" hidden>
+      <h2 id="kjr-auth-recovery-expired-title" tabindex="-1" data-auth-focus>Password link expired</h2>
+      <p>Your collection stayed hidden. Request a new password link, then sign in with your new password.</p>
+      <button class="btn btn-primary" type="button" onclick="kjrShowPasswordRecovery()">Request a new link</button>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Back to sign in</button>
+    </div>
+    <div id="kjr-auth-recovery-error" class="kjr-auth-state" data-auth-state="recovery-error" role="alert" aria-labelledby="kjr-auth-recovery-error-title" hidden>
+      <h2 id="kjr-auth-recovery-error-title" tabindex="-1" data-auth-focus>Could not continue</h2>
+      <p id="kjr-auth-recovery-error-copy">The password could not be updated. Check your connection and try again.</p>
+      <button class="btn btn-primary" type="button" onclick="kjrRetryRecovery()">Try again</button>
+      <button class="btn" type="button" onclick="kjrShowPasswordRecovery()">Request a new link</button>
+      <button class="btn" type="button" onclick="kjrCancelAuthFlow(event)">Back to sign in</button>
     </div>
     <div id="kjr-auth-expired" class="kjr-auth-state" data-auth-state="expired" role="alert" aria-labelledby="kjr-auth-expired-title" hidden>
       <h2 id="kjr-auth-expired-title" tabindex="-1" data-auth-focus>Session expired</h2>
-      <p>Your collection stayed hidden. Request a new sign-in link to continue.</p>
+      <p>Your collection stayed hidden. Sign in again with your email and password.</p>
       <button class="btn btn-primary" type="button" onclick="kjrShowAuthForm()">Sign in again</button>
     </div>
     <div id="kjr-auth-error" class="kjr-auth-state" data-auth-state="error" role="alert" aria-labelledby="kjr-auth-error-title" hidden>
@@ -129,7 +174,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.48 (5 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.49 (10 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -989,10 +1034,10 @@
     <div id="cmd-sell-panel" style="display:none">
       <div class="cmd-input-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input class="cmd-input" id="cmd-sell-search" role="combobox" aria-label="Search inventory" aria-autocomplete="list" aria-controls="cmd-sell-preview" aria-expanded="false" placeholder="Search inventory to add to this sale..." oninput="cmdSellSearch()" onkeydown="cmdSellKey(event)" autocomplete="off">
+        <input class="cmd-input" id="cmd-sell-search" type="search" aria-label="Search inventory" aria-autocomplete="list" aria-controls="cmd-sell-preview" placeholder="Search inventory to add to this sale..." oninput="cmdSellSearch()" onkeydown="cmdSellKey(event)" autocomplete="off">
       </div>
       <div id="cmd-sell-results-label" class="cmd-section-label">Available Inventory</div>
-      <div class="cmd-preview" id="cmd-sell-preview" role="listbox" aria-labelledby="cmd-sell-results-label"></div>
+      <div class="cmd-preview" id="cmd-sell-preview" role="list" aria-labelledby="cmd-sell-results-label"></div>
       <div id="cmd-sell-status" class="cmd-empty" role="status">Type to search your inventory...</div>
       <div id="cmd-sell-form" style="display:none">
         <div class="sell-form">
@@ -1691,7 +1736,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.48"></script>
-<script src="features.js?v=3.48"></script>
+<script src="app.js?v=3.49"></script>
+<script src="features.js?v=3.49"></script>
 </body>
 </html>

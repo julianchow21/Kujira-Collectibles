@@ -152,8 +152,9 @@ const USE_WORKER_DB    = true; // flipped 03/07/2026 - proxy verified by curl (2
 const SB_DIRECT_URL    = 'https://eywncywatxtlqtrvxjsi.supabase.co';
 const SB_WORKER_ORIGIN = 'https://kujira-prices.julianchow21.workers.dev';
 const SB_DB_PROXY_BASE = SB_WORKER_ORIGIN + '/db';
-// Anon key - only sent on the legacy (USE_WORKER_DB=false) path. Remove it once
-// the Worker path is verified and RLS denies anon (it will then be dead weight).
+// Public anon key, sent to Supabase Auth and to the legacy database path when
+// enabled. It is not a service-role credential and is safe to expose in this
+// browser client under Supabase's normal Auth/RLS controls.
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5d25jeXdhdHh0bHF0cnZ4anNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjE0NjEsImV4cCI6MjA5Mzk5NzQ2MX0.3fB6T38Ra22nFu7tNaWoYVgi0JtGxw9_fVwM1rQMYLc';
 const SB_URL = USE_WORKER_DB ? SB_DB_PROXY_BASE : SB_DIRECT_URL;
 const SYNC_PROTOCOL = 2;
@@ -167,11 +168,18 @@ const SB_HDR = { 'Content-Type': 'application/json' };
 let _kjrAuthSession = null;
 let _kjrRefreshPromise = null;
 let _kjrAuthCallbackFailed = false;
+let _kjrAuthCallbackType = null;
+let _kjrAuthCallbackConsumed = null;
+let _kjrRecoverySession = null;
 let _kjrAuthGeneration = 0;
+let _kjrAuthRequestId = 0;
+let _kjrAuthBusy = false;
+let _kjrOwnerAppStarted = false;
 
 function _kjrSessionShape(value) {
   if (!value || typeof value !== 'object') return null;
-  if (typeof value.access_token !== 'string' || typeof value.refresh_token !== 'string') return null;
+  if (typeof value.access_token !== 'string' || !value.access_token ||
+      typeof value.refresh_token !== 'string' || !value.refresh_token) return null;
   const expiresAt = Number(value.expires_at);
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
   const clean = { access_token: value.access_token, refresh_token: value.refresh_token, expires_at: expiresAt };
@@ -222,14 +230,24 @@ function _kjrWriteOwnerVerified(session, generation) {
   } catch (_) { return false; }
 }
 
-function _kjrClearSession(clearOwnerVerified) {
-  _kjrAuthGeneration += 1;
+function _kjrDropNormalSession(clearOwnerVerified) {
   _kjrAuthSession = null;
   delete SB_HDR.Authorization;
   try { localStorage.removeItem(KJR_AUTH_KEY); } catch (_) {}
   if (clearOwnerVerified) {
     try { localStorage.removeItem(KJR_OWNER_VERIFIED_KEY); } catch (_) {}
   }
+}
+
+function _kjrClearSession(clearOwnerVerified) {
+  _kjrAuthGeneration += 1;
+  _kjrAuthRequestId += 1;
+  _kjrAuthBusy = false;
+  _kjrRecoverySession = null;
+  _kjrAuthCallbackType = null;
+  _kjrDropNormalSession(clearOwnerVerified);
+  _kjrClearPasswordInputs();
+  _kjrSetAuthPending(false);
 }
 
 function _kjrSetAuthGate(active) {
@@ -266,13 +284,63 @@ function _kjrAuthHeaders(token) {
   return { 'Content-Type': 'application/json', apikey: SB_KEY, Authorization: 'Bearer ' + token };
 }
 
+function _kjrClearPasswordInputs() {
+  ['kjr-auth-password', 'kjr-auth-new-password', 'kjr-auth-confirm-password']
+    .forEach(id => {
+      const field = document.getElementById(id);
+      if (field && 'value' in field) field.value = '';
+    });
+}
+
+function _kjrSetAuthPending(active, formId, buttonId) {
+  const formIds = formId ? [formId] : ['kjr-auth-form', 'kjr-auth-recover-form', 'kjr-auth-recovery-form'];
+  formIds.forEach(id => {
+    const form = document.getElementById(id);
+    if (form && typeof form.setAttribute === 'function') form.setAttribute('aria-busy', active ? 'true' : 'false');
+  });
+  const buttonIds = ['kjr-auth-submit', 'kjr-auth-magic', 'kjr-auth-recover-submit', 'kjr-auth-recovery-submit'];
+  buttonIds.forEach(id => {
+    const button = document.getElementById(id);
+    if (button && 'disabled' in button) button.disabled = !!active;
+  });
+  const gate = document.getElementById('kjr-auth-gate');
+  if (gate && typeof gate.setAttribute === 'function') gate.setAttribute('aria-busy', active ? 'true' : 'false');
+}
+
+function _kjrBeginAuthRequest(formId, buttonId) {
+  if (_kjrAuthBusy) return null;
+  _kjrAuthBusy = true;
+  const token = { generation: _kjrAuthGeneration, requestId: ++_kjrAuthRequestId, formId, buttonId };
+  _kjrSetAuthPending(true, formId, buttonId);
+  return token;
+}
+
+function _kjrAuthRequestCurrent(token) {
+  return !!token && token.generation === _kjrAuthGeneration && token.requestId === _kjrAuthRequestId;
+}
+
+function _kjrFinishAuthRequest(token) {
+  if (!_kjrAuthRequestCurrent(token)) return;
+  _kjrAuthBusy = false;
+  _kjrSetAuthPending(false, token.formId, token.buttonId);
+}
+
+function _kjrAdoptSessionInMemory(value, generation) {
+  if (Number.isSafeInteger(generation) && generation !== _kjrAuthGeneration) return null;
+  const clean = _kjrSessionShape(value);
+  if (!clean) return null;
+  _kjrAuthSession = clean;
+  SB_HDR.Authorization = 'Bearer ' + clean.access_token;
+  return clean;
+}
+
 function _kjrShowAuthState(id, message) {
   const gate = document.getElementById('kjr-auth-gate');
   if (!gate) return;
   _kjrSetAuthGate(true);
   gate.setAttribute('aria-busy', id === 'kjr-auth-loading' ? 'true' : 'false');
   gate.querySelectorAll('.kjr-auth-state').forEach(el => { el.hidden = el.id !== id; });
-  const copy = document.getElementById('kjr-auth-error-copy');
+  const copy = document.getElementById(id + '-copy') || document.getElementById('kjr-auth-error-copy');
   if (copy && message) copy.textContent = message;
   setTimeout(() => {
     const state = document.getElementById(id);
@@ -282,6 +350,13 @@ function _kjrShowAuthState(id, message) {
 }
 
 function kjrShowAuthForm() {
+  if (_kjrAuthBusy || _kjrRecoverySession || _kjrAuthCallbackType === 'recovery') {
+    _kjrClearSession(true);
+    _kjrHideOwnerData();
+  }
+  _kjrRecoverySession = null;
+  _kjrAuthCallbackType = null;
+  _kjrClearPasswordInputs();
   _kjrShowAuthState('kjr-auth-form');
 }
 
@@ -289,8 +364,8 @@ async function kjrRequestMagicLink(event) {
   if (event) event.preventDefault();
   const email = String((document.getElementById('kjr-auth-email') || {}).value || '').trim();
   if (!email) return;
-  const button = document.getElementById('kjr-auth-submit');
-  if (button) button.disabled = true;
+  const token = _kjrBeginAuthRequest('kjr-auth-form', 'kjr-auth-magic');
+  if (!token) return;
   try {
     const r = await fetch(SB_DIRECT_URL + '/auth/v1/otp?redirect_to=' + encodeURIComponent(KJR_AUTH_REDIRECT), {
       method: 'POST',
@@ -298,35 +373,100 @@ async function kjrRequestMagicLink(event) {
       body: JSON.stringify({ email, create_user: false }),
       signal: AbortSignal.timeout(15000)
     });
+    if (!_kjrAuthRequestCurrent(token)) return;
     if (!r.ok) throw new Error('request_failed');
+    _kjrClearPasswordInputs();
     _kjrShowAuthState('kjr-auth-sent');
   } catch (_) {
+    if (!_kjrAuthRequestCurrent(token)) return;
+    _kjrClearPasswordInputs();
     _kjrShowAuthState('kjr-auth-error', 'The sign-in email could not be sent. Check your connection and try again.');
   } finally {
-    if (button) button.disabled = false;
+    _kjrFinishAuthRequest(token);
+  }
+}
+
+function kjrShowPasswordRecovery() {
+  if (_kjrAuthBusy || _kjrRecoverySession || _kjrAuthCallbackType === 'recovery') {
+    _kjrClearSession(true);
+    _kjrHideOwnerData();
+  }
+  _kjrRecoverySession = null;
+  _kjrAuthCallbackType = null;
+  _kjrClearPasswordInputs();
+  const email = String((document.getElementById('kjr-auth-email') || {}).value || '').trim();
+  const recoveryEmail = document.getElementById('kjr-auth-recover-email');
+  if (recoveryEmail && !recoveryEmail.value) recoveryEmail.value = email;
+  _kjrShowAuthState('kjr-auth-recover-form');
+}
+
+async function kjrRequestPasswordReset(event) {
+  if (event) event.preventDefault();
+  const email = String((document.getElementById('kjr-auth-recover-email') || {}).value || '').trim();
+  if (!email) return;
+  const token = _kjrBeginAuthRequest('kjr-auth-recover-form', 'kjr-auth-recover-submit');
+  if (!token) return;
+  try {
+    const r = await fetch(SB_DIRECT_URL + '/auth/v1/recover?redirect_to=' + encodeURIComponent(KJR_AUTH_REDIRECT), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SB_KEY },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!_kjrAuthRequestCurrent(token)) return;
+    if (!r.ok) throw new Error('request_failed');
+    _kjrShowAuthState('kjr-auth-recover-sent');
+  } catch (_) {
+    if (!_kjrAuthRequestCurrent(token)) return;
+    _kjrShowAuthState('kjr-auth-recover-error', 'The password email could not be sent. Check your connection and try again.');
+  } finally {
+    _kjrFinishAuthRequest(token);
   }
 }
 
 function _kjrSessionFromCallback() {
   _kjrAuthCallbackFailed = false;
+  _kjrAuthCallbackType = null;
   let raw = '';
   try {
     raw = sessionStorage.getItem(KJR_AUTH_CALLBACK_KEY) || '';
     sessionStorage.removeItem(KJR_AUTH_CALLBACK_KEY);
   } catch (_) {}
   if (!raw) return null;
+  if (raw === _kjrAuthCallbackConsumed) return null;
+  // Mark before parsing so a storage-remove failure cannot replay the same
+  // bearer in this page. A fresh browser page still relies on the normal
+  // sessionStorage removal, which is the platform's one-time callback store.
+  _kjrAuthCallbackConsumed = raw;
   const p = new URLSearchParams(raw);
-  if (p.get('error') || p.get('error_description') || p.get('type') !== 'magiclink') {
+  const type = p.get('type');
+  _kjrAuthCallbackType = type;
+  if (p.get('error') || p.get('error_description') || !['magiclink', 'recovery'].includes(type)) {
     _kjrAuthCallbackFailed = true;
     return null;
   }
+  const expiresAtValue = Number(p.get('expires_at'));
   const expiresIn = Number(p.get('expires_in'));
-  return _kjrSessionShape({
+  let expiresAt = Number.isFinite(expiresAtValue) && expiresAtValue > 0 ? expiresAtValue : 0;
+  if (!expiresAt && Number.isFinite(expiresIn) && expiresIn > 0) {
+    expiresAt = Math.floor(Date.now() / 1000) + expiresIn;
+  } else if (!expiresAt && type === 'magiclink' && !p.has('expires_at') && !p.has('expires_in')) {
+    // Preserve the legacy callback contract for outstanding magic links that
+    // predate explicit expiry fields. Recovery links must always carry an
+    // explicit positive expiry or expires_in value.
+    expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  }
+  const session = _kjrSessionShape({
     access_token: p.get('access_token'),
     refresh_token: p.get('refresh_token'),
-    expires_at: Number(p.get('expires_at')) || Math.floor(Date.now() / 1000) + (Number.isFinite(expiresIn) ? expiresIn : 3600),
+    expires_at: expiresAt,
     session_id: _newMutationId()
   });
+  if (!session) {
+    _kjrAuthCallbackFailed = true;
+    return null;
+  }
+  return session;
 }
 
 async function _kjrRefreshSessionOnce(session) {
@@ -375,12 +515,72 @@ async function _kjrValidateSession(session) {
   });
   if (r.ok) {
     const body = await r.json().catch(() => null);
-    if (body && typeof body === 'object' && typeof body.id === 'string' && body.id) return body.id;
+    const userId = body && typeof body === 'object' && typeof body.id === 'string' ? body.id.trim() : '';
+    if (userId) return userId;
     throw new Error('invalid_auth_response');
   }
   if (r.status === 401) throw new Error('owner_session_expired');
   if (r.status === 403) throw new Error('owner_forbidden');
   throw new Error('auth_unavailable');
+}
+
+// The recovery form must prove the exact Worker owner before it can change a
+// password. This GET is deliberately limited to zero rows, so it authorises
+// the bearer through the existing Worker owner boundary without loading the
+// collection into the client or changing any local sync state.
+async function _kjrValidateWorkerOwner(session, generation) {
+  const expectedGeneration = Number.isSafeInteger(generation) ? generation : _kjrAuthGeneration;
+  if (!session || expectedGeneration !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+  const r = await fetch(SB_DB_PROXY_BASE + '/rest/v1/singles?select=id&limit=0', {
+    method: 'GET',
+    headers: _kjrAuthHeaders(session.access_token),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (expectedGeneration !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+  if (r.status === 401) throw new Error('owner_session_expired');
+  if (r.status === 403) throw new Error('owner_forbidden');
+  if (!r.ok) throw new Error('auth_unavailable');
+  return true;
+}
+
+async function _kjrCompleteOwnerSession(initialSession, generation, allowOffline) {
+  const expectedGeneration = Number.isSafeInteger(generation) ? generation : _kjrAuthGeneration;
+  let session = _kjrSessionShape(initialSession);
+  if (!session || expectedGeneration !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+  if (!session.session_id) session.session_id = _newMutationId();
+  if (session.expires_at <= Math.floor(Date.now() / 1000) + 60) {
+    session = await _kjrRefreshSession(session, expectedGeneration);
+    if (!session) throw new Error('owner_session_expired');
+  }
+  if (expectedGeneration !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+  let userId;
+  try {
+    userId = await _kjrValidateSession(session);
+  } catch (error) {
+    const offlineReopen = !!allowOffline && !initialSession._kjrFromCallback &&
+      error.message === 'auth_unavailable' && typeof navigator !== 'undefined' &&
+      navigator.onLine === false && _kjrOwnerVerifiedFor(session);
+    if (!offlineReopen) throw error;
+    if (!_kjrAdoptSessionInMemory(session, expectedGeneration) || !_kjrSaveSession(session, expectedGeneration)) {
+      throw new Error('storage');
+    }
+    _kjrSetAuthGate(false);
+    _kjrScheduleRefresh(expectedGeneration, session.session_id);
+    return session;
+  }
+  session.user_id = userId;
+  if (expectedGeneration !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+  if (!_kjrAdoptSessionInMemory(session, expectedGeneration)) throw new Error('owner_session_changed');
+  await _pullSyncState();
+  if (expectedGeneration !== _kjrAuthGeneration || !_kjrAuthSession ||
+      _kjrAuthSession.session_id !== session.session_id) throw new Error('owner_session_changed');
+  if (!_kjrSaveSession(session, expectedGeneration)) throw new Error('storage');
+  if (!_kjrWriteOwnerVerified(session, expectedGeneration)) throw new Error('storage');
+  _kjrRecoverySession = null;
+  _kjrAuthCallbackType = null;
+  _kjrSetAuthGate(false);
+  _kjrScheduleRefresh(expectedGeneration, session.session_id);
+  return session;
 }
 
 function _kjrScheduleRefresh(generation, sessionId) {
@@ -408,44 +608,182 @@ async function kjrAuthBoot() {
   _kjrShowAuthState('kjr-auth-loading');
   const callbackSession = _kjrSessionFromCallback();
   if (_kjrAuthCallbackFailed) {
-    _kjrShowAuthState('kjr-auth-expired');
+    if (_kjrAuthCallbackType === 'recovery') _kjrDropNormalSession(true);
+    _kjrShowAuthState(_kjrAuthCallbackType === 'recovery' ? 'kjr-auth-recovery-expired' : 'kjr-auth-expired');
     return false;
   }
   let session = callbackSession || _kjrReadSession();
   if (!session) { kjrShowAuthForm(); return false; }
   if (!session.session_id) session.session_id = _newMutationId();
-  try {
-    if (session.expires_at <= Math.floor(Date.now() / 1000) + 60) session = await _kjrRefreshSession(session, generation);
-    if (!session || generation !== _kjrAuthGeneration) throw new Error('expired');
-    let userId = null;
-    try {
-      userId = await _kjrValidateSession(session);
-    } catch (error) {
-      const offlineReopen = !callbackSession && error.message === 'auth_unavailable' &&
-        typeof navigator !== 'undefined' && navigator.onLine === false && _kjrOwnerVerifiedFor(session);
-      if (!offlineReopen) throw error;
-      if (!_kjrSaveSession(session, generation)) throw new Error('storage');
-      _kjrSetAuthGate(false);
-      _kjrScheduleRefresh(generation, session.session_id);
-      return true;
+  if (_kjrAuthCallbackType === 'recovery') {
+    if (session.expires_at <= Math.floor(Date.now() / 1000)) {
+      _kjrDropNormalSession(true);
+      _kjrShowAuthState('kjr-auth-recovery-expired');
+      return false;
     }
-    session.user_id = userId;
-    if (!_kjrSaveSession(session, generation)) throw new Error('storage');
-    await _pullSyncState();
-    if (generation !== _kjrAuthGeneration) throw new Error('expired');
-    if (!_kjrWriteOwnerVerified(session, generation)) throw new Error('storage');
-    _kjrSetAuthGate(false);
-    _kjrScheduleRefresh(generation, session.session_id);
+    try {
+      const userId = await _kjrValidateSession(session);
+      if (generation !== _kjrAuthGeneration) throw new Error('owner_session_changed');
+      session.user_id = userId;
+      // Recovery remains an in-memory, pre-password state. Remove any prior
+      // normal session and owner marker so a reload cannot bypass the form.
+      _kjrDropNormalSession(true);
+      _kjrRecoverySession = session;
+      _kjrShowAuthState('kjr-auth-recovery-form');
+      return false;
+    } catch (error) {
+      if (generation !== _kjrAuthGeneration) return false;
+      _kjrDropNormalSession(true);
+      if (error && error.message === 'auth_unavailable') {
+        // Keep a valid but temporarily unverifiable recovery token only in
+        // memory. The retry action can re-enter the password form later, and
+        // a reload still falls back to signed-out because nothing is stored.
+        _kjrRecoverySession = session;
+        _kjrShowAuthState('kjr-auth-recovery-error', 'The password link could not be verified. Check your connection and try again.');
+      } else {
+        _kjrRecoverySession = null;
+        _kjrShowAuthState('kjr-auth-recovery-expired');
+      }
+      return false;
+    }
+  }
+  session._kjrFromCallback = !!callbackSession;
+  try {
+    await _kjrCompleteOwnerSession(session, generation, !callbackSession);
     return true;
   } catch (error) {
-    const forbidden = error && error.message === 'owner_forbidden';
-    if (generation === _kjrAuthGeneration) _kjrClearSession(forbidden);
+    if (generation !== _kjrAuthGeneration) return false;
+    if (generation === _kjrAuthGeneration) _kjrClearSession(true);
     if (error && error.message === 'auth_unavailable') {
       _kjrShowAuthState('kjr-auth-error', 'Your sign-in link could not be verified. Check your connection and try again.');
     } else {
       _kjrShowAuthState('kjr-auth-expired');
     }
     return false;
+  }
+}
+
+async function kjrSignIn(event) {
+  if (event) event.preventDefault();
+  const email = String((document.getElementById('kjr-auth-email') || {}).value || '').trim();
+  const password = String((document.getElementById('kjr-auth-password') || {}).value || '');
+  if (!email || !password) return;
+  const token = _kjrBeginAuthRequest('kjr-auth-form', 'kjr-auth-submit');
+  if (!token) return;
+  try {
+    const r = await fetch(SB_DIRECT_URL + '/auth/v1/token?grant_type=password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SB_KEY },
+      body: JSON.stringify({ email, password }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const body = await r.json().catch(() => null);
+    if (!_kjrAuthRequestCurrent(token)) return;
+    if (!r.ok || !body || typeof body !== 'object') throw new Error(r.status === 400 ? 'invalid_credentials' : 'signin_failed');
+    const expiresIn = Number(body.expires_in);
+    const responseUserId = body.user && typeof body.user.id === 'string' ? body.user.id.trim() : '';
+    if (typeof body.access_token !== 'string' || !body.access_token ||
+        typeof body.refresh_token !== 'string' || !body.refresh_token ||
+        !Number.isFinite(expiresIn) || expiresIn <= 0 || !responseUserId) {
+      throw new Error('signin_failed');
+    }
+    const session = _kjrSessionShape({
+      access_token: body.access_token,
+      refresh_token: body.refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+      session_id: _newMutationId(),
+      user_id: responseUserId
+    });
+    if (!session) throw new Error('signin_failed');
+    await _kjrCompleteOwnerSession(session, token.generation, false);
+    if (!_kjrAuthRequestCurrent(token)) return;
+    kjrStartOwnerApp();
+  } catch (error) {
+    if (!_kjrAuthRequestCurrent(token)) return;
+    _kjrClearSession(true);
+    if (error && error.message === 'owner_forbidden') {
+      _kjrShowAuthState('kjr-auth-error', 'This account is not authorised to open this collection.');
+    } else if (error && error.message === 'auth_unavailable') {
+      _kjrShowAuthState('kjr-auth-error', 'We could not sign you in. Check your connection and try again.');
+    } else {
+      _kjrShowAuthState('kjr-auth-error', 'We could not sign you in. Check your email and password and try again.');
+    }
+  } finally {
+    if (_kjrAuthRequestCurrent(token)) _kjrClearPasswordInputs();
+    _kjrFinishAuthRequest(token);
+  }
+}
+
+function kjrCancelAuthFlow(event) {
+  if (event) event.preventDefault();
+  _kjrClearSession(true);
+  _kjrHideOwnerData();
+  kjrShowAuthForm();
+}
+
+function kjrRetryRecovery() {
+  if (!_kjrRecoverySession) {
+    kjrShowPasswordRecovery();
+    return;
+  }
+  _kjrClearPasswordInputs();
+  _kjrShowAuthState('kjr-auth-recovery-form');
+}
+
+async function kjrSubmitNewPassword(event) {
+  if (event) event.preventDefault();
+  const passwordField = document.getElementById('kjr-auth-new-password');
+  const confirmField = document.getElementById('kjr-auth-confirm-password');
+  const password = String((passwordField || {}).value || '');
+  const confirmation = String((confirmField || {}).value || '');
+  if (!_kjrRecoverySession) {
+    _kjrShowAuthState('kjr-auth-recovery-expired');
+    _kjrClearPasswordInputs();
+    return;
+  }
+  if (password.length < 6 || password !== confirmation) {
+    _kjrShowAuthState('kjr-auth-recovery-error', password !== confirmation
+      ? 'The passwords do not match.'
+      : 'Use at least 6 characters for your new password.');
+    _kjrClearPasswordInputs();
+    return;
+  }
+  const token = _kjrBeginAuthRequest('kjr-auth-recovery-form', 'kjr-auth-recovery-submit');
+  if (!token) return;
+  const recovery = _kjrSessionShape(_kjrRecoverySession);
+  try {
+    if (!recovery || recovery.expires_at <= Math.floor(Date.now() / 1000)) throw new Error('recovery_expired');
+    await _kjrValidateWorkerOwner(recovery, token.generation);
+    if (!_kjrAuthRequestCurrent(token)) return;
+    const r = await fetch(SB_DIRECT_URL + '/auth/v1/user', {
+      method: 'PUT',
+      headers: _kjrAuthHeaders(recovery.access_token),
+      body: JSON.stringify({ password }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error(r.status === 401 ? 'recovery_expired' : 'password_update_failed');
+    if (!_kjrAuthRequestCurrent(token)) return;
+    await _kjrCompleteOwnerSession(recovery, token.generation, false);
+    if (!_kjrAuthRequestCurrent(token)) return;
+    kjrStartOwnerApp();
+  } catch (error) {
+    if (!_kjrAuthRequestCurrent(token)) return;
+    if (error && (error.message === 'recovery_expired' || error.message === 'owner_session_expired')) {
+      _kjrClearSession(true);
+      _kjrShowAuthState('kjr-auth-recovery-expired');
+    } else if (error && error.message === 'owner_forbidden') {
+      _kjrClearSession(true);
+      _kjrShowAuthState('kjr-auth-error', 'This account is not authorised to open this collection.');
+    } else {
+      // Keep the still-valid recovery token in memory so a transient network
+      // failure can be retried without requesting another email. It never
+      // reaches localStorage or the normal owner marker.
+      _kjrDropNormalSession(true);
+      _kjrShowAuthState('kjr-auth-recovery-error', 'The password could not be updated. Check your connection and try again.');
+    }
+  } finally {
+    if (_kjrAuthRequestCurrent(token)) _kjrClearPasswordInputs();
+    _kjrFinishAuthRequest(token);
   }
 }
 
@@ -620,18 +958,144 @@ function _upsertOperation(table, item) {
 function _validSyncResult(result) {
   return result && typeof result === 'object' && ['upsert', 'delete', 'restore'].includes(result.type) &&
     [...SYNCED_TABLES, 'trash', 'versions'].includes(result.table) && typeof result.id === 'string' &&
-    Number.isSafeInteger(result.row_version) && result.row_version >= 1;
+    result.id.length > 0 && result.id.length <= 256 &&
+    Number.isSafeInteger(result.row_version) && result.row_version >= 1 &&
+    (result.updated_at === undefined || typeof result.updated_at === 'string') &&
+    (result.deleted_at === undefined || typeof result.deleted_at === 'string');
 }
 
 function _validConflict(conflict) {
-  return conflict && typeof conflict === 'object' && [...SYNCED_TABLES, 'trash', 'versions'].includes(conflict.table) &&
-    typeof conflict.id === 'string' &&
-    (conflict.current === null || (typeof conflict.current === 'object' &&
-      conflict.current.id === conflict.id && conflict.current.data && typeof conflict.current.data === 'object' &&
-      !Array.isArray(conflict.current.data) && Number.isSafeInteger(conflict.current.row_version) && conflict.current.row_version >= 1)) &&
-    (conflict.tombstone === null || (typeof conflict.tombstone === 'object' &&
-      conflict.tombstone.table === conflict.table && conflict.tombstone.id === conflict.id &&
-      Number.isSafeInteger(conflict.tombstone.row_version) && conflict.tombstone.row_version >= 1));
+  if (!conflict || typeof conflict !== 'object' || Array.isArray(conflict) ||
+      ![...SYNCED_TABLES, 'trash', 'versions'].includes(conflict.table) ||
+      typeof conflict.id !== 'string' || !conflict.id || conflict.id.length > 256 ||
+      !Object.prototype.hasOwnProperty.call(conflict, 'current') ||
+      !Object.prototype.hasOwnProperty.call(conflict, 'tombstone')) return false;
+  const current = conflict.current;
+  const tombstone = conflict.tombstone;
+  const validCurrent = current === null || (current && typeof current === 'object' && !Array.isArray(current) &&
+    current.id === conflict.id && current.data && typeof current.data === 'object' && !Array.isArray(current.data) &&
+    Number.isSafeInteger(current.row_version) && current.row_version >= 1 &&
+    (current.updated_at === undefined || typeof current.updated_at === 'string'));
+  const validTombstone = tombstone === null || (tombstone && typeof tombstone === 'object' && !Array.isArray(tombstone) &&
+    tombstone.table === conflict.table && tombstone.id === conflict.id &&
+    Number.isSafeInteger(tombstone.row_version) && tombstone.row_version >= 1 &&
+    (tombstone.deleted_at === undefined || typeof tombstone.deleted_at === 'string'));
+  // The server can expose one current state for a row, never a live row and a
+  // tombstone at the same time. Both null values are a valid authoritative
+  // absence for an id that has already been removed from every source table.
+  return !!validCurrent && !!validTombstone && !(current && tombstone);
+}
+
+function _syncOperationResultKey(type, table, id) {
+  return String(type) + '/' + String(table) + '/' + String(id);
+}
+
+function _validSyncOperation(operation) {
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation) ||
+      !['upsert', 'delete', 'restore'].includes(operation.type) ||
+      ![...SYNCED_TABLES, 'trash', 'versions'].includes(operation.table) ||
+      typeof operation.id !== 'string' || !operation.id || operation.id.length > 256 ||
+      !Number.isSafeInteger(operation.expected_version) || operation.expected_version < 0) return false;
+  const allowedTable = operation.type === 'upsert'
+    ? SYNCED_TABLES.includes(operation.table) || operation.table === 'versions'
+    : operation.type === 'delete'
+      ? SYNCED_TABLES.includes(operation.table) || operation.table === 'versions' || operation.table === 'trash'
+      : SYNCED_TABLES.includes(operation.table);
+  if (!allowedTable) return false;
+  // Every SQL delete targets an existing positive-revision row. Version zero
+  // is reserved for creates and restore's separate tombstone CAS field.
+  if (operation.type === 'delete' && operation.expected_version < 1) return false;
+  if (operation.type === 'delete' && SYNCED_TABLES.includes(operation.table)) {
+    const trash = operation.trash;
+    const trashData = trash && trash.data;
+    if (!trash || typeof trash !== 'object' || Array.isArray(trash) ||
+        typeof trash.id !== 'string' || !trash.id || trash.id.length > 256 ||
+        !trashData || typeof trashData !== 'object' || Array.isArray(trashData) ||
+        typeof trashData.originalId !== 'string' || trashData.originalId !== operation.id ||
+        !trashData.item || typeof trashData.item !== 'object' || Array.isArray(trashData.item) ||
+        trashData.item.id !== operation.id) return false;
+  }
+  if (operation.type === 'upsert' || operation.type === 'restore') {
+    if (!operation.data || typeof operation.data !== 'object' || Array.isArray(operation.data)) return false;
+  }
+  if (operation.type === 'restore' &&
+      (operation.expected_version !== 0 || !Number.isSafeInteger(operation.tombstone_version) ||
+       operation.tombstone_version < 1 || typeof operation.trash_id !== 'string' ||
+       !operation.trash_id || operation.trash_id.length > 256)) return false;
+  return true;
+}
+
+function _expectedSyncResults(operations) {
+  if (!Array.isArray(operations) || !operations.length) return null;
+  const expected = new Map();
+  const targets = new Set();
+  for (const operation of operations) {
+    if (!_validSyncOperation(operation)) return null;
+    const target = operation.table + '/' + operation.id;
+    if (targets.has(target)) return null;
+    targets.add(target);
+    const primaryKey = _syncOperationResultKey(operation.type, operation.table, operation.id);
+    if (expected.has(primaryKey)) return null;
+    expected.set(primaryKey, { operation, companion: false });
+    // A source delete atomically writes its recovery snapshot to Trash. The
+    // companion result has no predictable version because the same Trash id
+    // may already exist, but its identity and type are still mandatory.
+    if (operation.type === 'delete' && SYNCED_TABLES.includes(operation.table) &&
+        operation.trash && typeof operation.trash === 'object' &&
+      typeof operation.trash.id === 'string' && operation.trash.id) {
+      const companionKey = _syncOperationResultKey('upsert', 'trash', operation.trash.id);
+      const companionTarget = 'trash/' + operation.trash.id;
+      if (targets.has(companionTarget)) return null;
+      targets.add(companionTarget);
+      if (expected.has(companionKey)) return null;
+      expected.set(companionKey, { operation, companion: true });
+    }
+  }
+  return expected;
+}
+
+function _validSyncResultSet(operations, results) {
+  const expected = _expectedSyncResults(operations);
+  if (!expected || !Array.isArray(results)) return false;
+  if (results.length !== expected.size) return false;
+  const seen = new Set();
+  for (const result of results) {
+    if (!_validSyncResult(result)) return false;
+    const key = _syncOperationResultKey(result.type, result.table, result.id);
+    if (seen.has(key) || !expected.has(key)) return false;
+    const contract = expected.get(key);
+    if (!_validateMutationAcknowledgement(contract.operation, result, contract.companion)) return false;
+    seen.add(key);
+  }
+  return seen.size === expected.size;
+}
+
+function _validSyncConflictSet(operations, conflicts) {
+  const expected = _expectedSyncResults(operations);
+  if (!expected || !Array.isArray(conflicts) || !conflicts.length) return false;
+  const allowed = new Set();
+  for (const entry of expected.values()) {
+    allowed.add(entry.operation.table + '/' + entry.operation.id);
+  }
+  const seen = new Set();
+  for (const conflict of conflicts) {
+    if (!_validConflict(conflict)) return false;
+    const key = conflict.table + '/' + conflict.id;
+    if (!allowed.has(key) || seen.has(key)) return false;
+    seen.add(key);
+  }
+  return seen.size > 0;
+}
+
+function _validateMutationAcknowledgement(operation, result, companion) {
+  if (!_validSyncResult(result) || !operation) return false;
+  if (companion) return result.type === 'upsert' && result.table === 'trash';
+  if (result.type !== operation.type || result.table !== operation.table || result.id !== operation.id) return false;
+  const expectedVersion = operation.type === 'restore'
+    ? operation.tombstone_version
+    : operation.expected_version;
+  return Number.isSafeInteger(expectedVersion) && expectedVersion >= 0 &&
+    result.row_version === expectedVersion + 1;
 }
 
 async function _syncMutate(operations, mutationId) {
@@ -652,11 +1116,11 @@ async function _syncMutate(operations, mutationId) {
     throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
   }
   if (!body || typeof body !== 'object') throw new Error('invalid_sync_response');
-  if (body.ok === false && body.code === 'version_conflict' && Array.isArray(body.conflicts) && body.conflicts.every(_validConflict)) {
+  if (body.ok === false && body.code === 'version_conflict' && _validSyncConflictSet(operations, body.conflicts)) {
     return { ok: false, code: 'version_conflict', mutation_id: payload.mutation_id, conflicts: body.conflicts };
   }
   if (!r.ok || body.ok !== true || body.mutation_id !== payload.mutation_id ||
-      !Array.isArray(body.results) || !body.results.every(_validSyncResult)) {
+      !_validSyncResultSet(operations, body.results)) {
     throw new Error('sync_request_failed');
   }
   return { ok: true, mutation_id: body.mutation_id, results: body.results };
@@ -695,6 +1159,16 @@ const CONFIRMED_DEL_KEY = '_kjrConfirmedCloudDeletes';
 const DELETE_STATE_V2_KEY = '_kjrDeleteStateV2';
 const DELETE_STATE_SCHEMA = 2;
 const _deleteStateWarnings = new Set();
+// Once an authoritative delete-state write fails, freeze outbound cloud
+// writes until a later verified write succeeds. In-memory rows and recovery
+// snapshots remain available for retry, rather than being treated as safe to
+// discard because localStorage happened to be unavailable for one operation.
+let _deleteRecoveryStorageBlocked = false;
+// The server tombstone cache is part of the same delete/restore recovery
+// boundary. A failed cache write must pause cloud writes until a later
+// verified cache write succeeds, while keeping the in-memory state available
+// for a retry in this tab.
+let _tombstoneRecoveryStorageBlocked = false;
 
 function _queueDeleteStateOp(task) {
   // Web Locks serialise the shared delete-state blobs across same-browser
@@ -771,6 +1245,14 @@ function _readDeleteState() {
 }
 
 function _deleteStateAllowsCloudWrites() {
+  if (_deleteRecoveryStorageBlocked || _tombstoneRecoveryStorageBlocked) {
+    warnOnce(
+      'delete-state-cloud-writes-paused-storage',
+      'Cloud sync is paused because delete recovery state could not be saved safely.'
+    );
+    try { setSyncStatus('error', 'Cloud sync paused, delete recovery state could not be saved safely'); } catch(_) {}
+    return false;
+  }
   const current = _readDeleteState();
   if (current.valid) return true;
   warnOnce(
@@ -802,9 +1284,11 @@ function _commitDeleteStateV2(state, mirrorLegacy) {
     if (localStorage.getItem(DELETE_STATE_V2_KEY) !== raw) throw new Error('delete-state v2 write did not verify');
   } catch(e) {
     console.warn('[delete-state] authoritative v2 write failed:', e);
+    _deleteRecoveryStorageBlocked = true;
     warnOnce('delete-state-v2-write-failed', 'The change was stopped because delete recovery state could not be saved safely.');
     return null;
   }
+  _deleteRecoveryStorageBlocked = false;
   if (mirrorLegacy !== false) _mirrorDeleteStateBestEffort(record);
   return record;
 }
@@ -965,7 +1449,20 @@ function _deleteBlocksRow(table, row) {
   const current = _readDeleteState();
   if (!current.valid) return false;
   if (current.state.pending.some(item => item && item.table === table && item.id === row.id)) return true;
+  const authoritativeKey = _authoritativeRowKey(table, row.id);
+  const authoritativeLiveRow = _syncPullLoaded && _authoritativeServerRows.get(authoritativeKey);
+  const authoritativeTombstone = _syncPullLoaded && _serverTombstones.some(item =>
+    item.table === table && item.id === row.id);
   const marker = current.state.confirmed.find(item => item && item.table === table && item.id === row.id);
+  // A successful authenticated pull is stronger than a legacy marker. A live
+  // source row with no same-revision tombstone proves that another device has
+  // restored or recreated this id, even when the row has no local token.
+  if (authoritativeLiveRow && !authoritativeTombstone && !marker) return false;
+  if (authoritativeLiveRow && !authoritativeTombstone && marker) {
+    const floor = _deleteMarkerRevisionFloor(marker);
+    if (floor !== null && Number.isSafeInteger(authoritativeLiveRow._serverVersion) &&
+        authoritativeLiveRow._serverVersion > floor) return false;
+  }
   if (!marker) return false;
   const markerRestoreToken = marker.restoreToken || '';
   const currentRestoreToken = _rowRestoreToken(row);
@@ -989,12 +1486,14 @@ function _withoutPendingDeletes(table, rows) {
   return rows.filter(row => !tombstoned.has(row.id) && !_deleteBlocksRow(table, row));
 }
 
-function _confirmDeleteLocally(table, id, ts, restoreToken) {
+function _confirmDeleteLocally(table, id, ts, restoreToken, rowVersion) {
   try {
     const current = _readDeleteState();
     if (!current.valid) return false;
     const remaining = current.state.confirmed.filter(item => !(item && item.table === table && item.id === id));
-    remaining.push({ table, id, ts: ts || Date.now(), restoreToken: restoreToken || '', state: 'deleted' });
+    const marker = { table, id, ts: ts || Date.now(), restoreToken: restoreToken || '', state: 'deleted' };
+    if (Number.isSafeInteger(rowVersion) && rowVersion >= 1) marker.row_version = rowVersion;
+    remaining.push(marker);
     // Tombstone first. Even if cache cleanup below fails, every current-code
     // tab will hide this id and refuse to dispatch its stale batch snapshot.
     if (!_commitDeleteStateV2({ pending: current.state.pending, confirmed: remaining })) return false;
@@ -1021,7 +1520,7 @@ function _pendingDeleteStillQueued(item) {
     (candidate.ts || 0) === (item.ts || 0));
 }
 
-function _settleAlreadyTombstonedDelete(table, id, restoreToken) {
+function _settleAlreadyTombstonedDelete(table, id, restoreToken, rowVersion) {
   const current = _readDeleteState();
   if (!current.valid) return false;
   const matching = current.state.pending.filter(item => item && item.table === table && item.id === id);
@@ -1029,13 +1528,15 @@ function _settleAlreadyTombstonedDelete(table, id, restoreToken) {
   const latest = matching.reduce((winner, item) => (item.ts || 0) > (winner.ts || 0) ? item : winner);
   const pending = current.state.pending.filter(item => !(item && item.table === table && item.id === id));
   const confirmed = current.state.confirmed.filter(item => !(item && item.table === table && item.id === id));
-  confirmed.push({
+  const marker = {
     table,
     id,
     ts: latest.ts || Date.now(),
     restoreToken: restoreToken || latest.restoreToken || '',
     state: 'deleted',
-  });
+  };
+  if (Number.isSafeInteger(rowVersion) && rowVersion >= 1) marker.row_version = rowVersion;
+  confirmed.push(marker);
   const key = _dbKey(table);
   const beforeRows = DB && Array.isArray(DB[key]) ? DB[key].slice() : null;
   let cacheBefore = null;
@@ -1308,9 +1809,14 @@ function _pendingTrashForSource(table, id) {
 function _removePendingTrashEntry(id) {
   try {
     const remaining = _readPendingTrashEntries().filter(entry => entry && entry.id !== id);
-    localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(remaining));
+    const raw = JSON.stringify(remaining);
+    localStorage.setItem(PENDING_TRASH_KEY, raw);
+    if (localStorage.getItem(PENDING_TRASH_KEY) !== raw) throw new Error('pending_trash_remove_not_confirmed');
     return true;
-  } catch (_) { return false; }
+  } catch (_) {
+    warnOnce('pending-trash-remove-failed', 'A Trash recovery copy could not be cleared safely. It remains available for retry.');
+    return false;
+  }
 }
 
 async function flushPendingTrash() {
@@ -1338,7 +1844,7 @@ async function sbDelete(table, id, restoreToken) {
     const dirtyTokens = localRow ? _snapshotDirtyTokens(key, id, JSON.stringify(localRow)) : new Set();
     let settled = false;
     try {
-      settled = await _queueDeleteStateOp(() => _settleAlreadyTombstonedDelete(table, id, restoreToken));
+      settled = await _queueDeleteStateOp(() => _settleAlreadyTombstonedDelete(table, id, restoreToken, knownTombstone.row_version));
     } catch(e) {
       setSyncStatus('error', e.message || 'Delete queue lock failed');
       return false;
@@ -1381,16 +1887,14 @@ async function sbDelete(table, id, restoreToken) {
         const resolution = conflict && _resolveSyncConflict(conflict, operation);
         if (!resolution || !resolution.ok) return false;
         _discardDirtyForDelete(_dbKey(table), id, new Set([...dirtyTokens, ...resolution.tokens]));
-        _removePendingTrashEntry(trashEntry.id);
+        if (!resolution.preserveTrash) _removePendingTrashEntry(trashEntry.id);
       } else {
-        if (!_confirmDeleteLocally(table, id, queued.ts, queued.restoreToken)) return false;
+        const deleteResult = outcome.results.find(result => result.type === 'delete' && result.table === table && result.id === id);
+        if (!deleteResult || !_confirmDeleteLocally(table, id, queued.ts, queued.restoreToken, deleteResult.row_version)) return false;
         _discardDirtyForDelete(_dbKey(table), id, dirtyTokens);
-        const deleteResult = outcome.results.find(result => result.table === table && result.id === id);
-        if (deleteResult) {
-          _serverTombstones = _serverTombstones.filter(item => !(item.table === table && item.id === id));
-          _serverTombstones.push({ table, id, row_version: deleteResult.row_version, deleted_at: deleteResult.deleted_at || '' });
-          try { localStorage.setItem(SERVER_TOMBSTONES_KEY, JSON.stringify(_serverTombstones)); } catch (_) {}
-        }
+        _serverTombstones = _serverTombstones.filter(item => !(item.table === table && item.id === id));
+        _serverTombstones.push({ table, id, row_version: deleteResult.row_version, deleted_at: deleteResult.deleted_at || '' });
+        if (!_persistServerTombstones(_serverTombstones)) return false;
         const trashResult = outcome.results.find(result => result.table === 'trash' && result.id === trashEntry.id);
         const savedTrash = { id: trashEntry.id, data: JSON.parse(JSON.stringify(trashEntry.data)),
           _serverVersion: trashResult ? trashResult.row_version : 1,
@@ -1442,12 +1946,29 @@ const SERVER_TOMBSTONES_KEY = '_kjrServerTombstonesV1';
 let _syncPullPromise = null;
 let _syncPullLoaded = false;
 let _serverTombstones = [];
+// Authenticated pulls provide the only cross-device evidence that a live row
+// has superseded an old local delete marker. The map is deliberately separate
+// from DB, which may still contain dirty or optimistic bytes.
+let _authoritativeServerRows = new Map();
+
+function _stripPulledInternalFields(value) {
+  // Match the Worker SQL clean_data contract, which removes reserved fields
+  // at the row's top level only. Nested objects are user data and may validly
+  // contain keys beginning with an underscore.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key.startsWith('_')) continue;
+    out[key] = nested;
+  }
+  return out;
+}
 
 function _normalisePulledRow(row, table) {
   if (!row || typeof row !== 'object' || typeof row.id !== 'string' ||
       !row.data || typeof row.data !== 'object' || Array.isArray(row.data) ||
       !Number.isSafeInteger(row.row_version) || row.row_version < 1) return null;
-  const data = JSON.parse(JSON.stringify(row.data));
+  const data = _stripPulledInternalFields(JSON.parse(JSON.stringify(row.data)));
   return table === 'trash'
     ? { id: row.id, data, _serverVersion: row.row_version, _updatedAt: row.updated_at || '' }
     : { ...data, id: row.id, _serverVersion: row.row_version, _updatedAt: row.updated_at || '' };
@@ -1466,12 +1987,105 @@ function _readCachedServerTombstones() {
   } catch (_) { return []; }
 }
 
-async function _pullSyncState() {
-  if (_syncPullPromise) return _syncPullPromise;
-  _syncPullPromise = (async () => {
+function _persistServerTombstones(rows) {
+  const next = Array.isArray(rows) ? rows : [];
+  try {
+    const raw = JSON.stringify(next);
+    localStorage.setItem(SERVER_TOMBSTONES_KEY, raw);
+    if (localStorage.getItem(SERVER_TOMBSTONES_KEY) !== raw) throw new Error('tombstone_cache_write_not_confirmed');
+    _tombstoneRecoveryStorageBlocked = false;
+    return true;
+  } catch (e) {
+    _tombstoneRecoveryStorageBlocked = true;
+    console.warn('[sync] server tombstone cache write failed:', e);
+    setSyncStatus('error', 'Server deletion recovery could not be saved safely');
+    return false;
+  }
+}
+
+function _authoritativeRowKey(table, id) { return String(table) + '/' + String(id); }
+
+function _deleteMarkerRevisionFloor(marker) {
+  if (marker && Number.isSafeInteger(marker.row_version) && marker.row_version >= 1) return marker.row_version;
+  // Legacy markers predate the revision field. A cached tombstone from the
+  // same source id can supply a safe floor, but an unversioned marker alone is
+  // never enough to trust a live row returned by a raced pull.
+  const cached = marker && _serverTombstones.find(item => item.table === marker.table && item.id === marker.id);
+  return cached && Number.isSafeInteger(cached.row_version) && cached.row_version >= 1
+    ? cached.row_version
+    : null;
+}
+
+function _setAuthoritativeServerRows(tables) {
+  const rows = new Map();
+  for (const table of SYNCED_TABLES) {
+    for (const row of (tables && tables[table]) || []) {
+      if (row && typeof row.id === 'string') rows.set(_authoritativeRowKey(table, row.id), row);
+    }
+  }
+  _authoritativeServerRows = rows;
+  return rows;
+}
+
+const _legacyDeleteMarkerRevisionWarnings = new Set();
+
+function _reconcileConfirmedDeleteMarkersAfterPull(tombstones, tables) {
+  const current = _readDeleteState();
+  if (!current.valid) return false;
+  const tombstoneKeys = new Set((tombstones || []).map(item => _authoritativeRowKey(item.table, item.id)));
+  const pendingKeys = new Set(current.state.pending
+    .filter(item => item && typeof item.table === 'string' && typeof item.id === 'string')
+    .map(item => _authoritativeRowKey(item.table, item.id)));
+  const liveKeys = _authoritativeServerRows;
+  let changed = false;
+  const confirmed = current.state.confirmed.filter(marker => {
+    if (!marker || typeof marker.table !== 'string' || typeof marker.id !== 'string') return true;
+    const key = _authoritativeRowKey(marker.table, marker.id);
+    // A pending local delete remains authoritative for this device until its
+    // exact request settles, even if a pull races with that request.
+    if (pendingKeys.has(key)) return true;
+    // A live row from the same authenticated snapshot supersedes a legacy
+    // confirmed-delete marker only when that snapshot has no tombstone for the
+    // same source. This is the revision-based migration path for old devices,
+    // and never relies on a cloud _restoreToken.
+    const live = liveKeys.get(key);
+    const floor = _deleteMarkerRevisionFloor(marker);
+    if (live && !tombstoneKeys.has(key) && floor !== null &&
+        Number.isSafeInteger(live._serverVersion) && live._serverVersion > floor) {
+      changed = true;
+      return false;
+    }
+    if (live && !tombstoneKeys.has(key) && floor === null) {
+      // A legacy marker has no safe deletion floor. Keep it and ask for a
+      // later authoritative delete/restore revision rather than risking a
+      // stale pull re-showing the deleted item.
+      if (!_legacyDeleteMarkerRevisionWarnings.has(key)) {
+        _legacyDeleteMarkerRevisionWarnings.add(key);
+        console.warn('[sync] Legacy delete marker needs an authoritative server revision before it can be cleared safely:', key);
+      }
+      warnOnce(
+        'legacy-delete-marker-revision-required',
+        'A legacy delete marker needs an authoritative server revision before it can be cleared safely.'
+      );
+    }
+    return true;
+  });
+  if (!changed) return true;
+  if (!_commitDeleteStateV2({ pending: current.state.pending, confirmed })) return false;
+  return true;
+}
+
+async function _pullSyncStateAttempt() {
     if (!_kjrAuthSession || !SB_HDR.Authorization) throw new Error('owner_session_required');
     const generation = _kjrAuthGeneration;
     const sessionId = _kjrAuthSession.session_id;
+    const deleteStateBefore = _readDeleteState();
+    const deleteStateRawBefore = deleteStateBefore && deleteStateBefore.raw;
+    const mutationQueueEpochBefore = _mutationQueueEpoch;
+    const trashBefore = JSON.stringify((typeof DB !== 'undefined' && DB && DB.trash) || []);
+    const tombstonesBefore = JSON.stringify(_serverTombstones || []);
+    const pendingTrashBefore = localStorage.getItem(PENDING_TRASH_KEY);
+    const tombstoneStorageBefore = localStorage.getItem(SERVER_TOMBSTONES_KEY);
     const r = await fetch(SYNC_PULL_URL, {
       method: 'POST', headers: { ...SB_HDR }, body: JSON.stringify({ client_protocol: SYNC_PROTOCOL }),
       signal: AbortSignal.timeout(20000)
@@ -1497,6 +2111,28 @@ async function _pullSyncState() {
     }
     const pulledTombstones = body.tombstones.map(_normaliseTombstone).filter(Boolean);
     if (pulledTombstones.length !== body.tombstones.length) throw new Error('invalid_sync_response');
+    const liveKeys = new Set();
+    for (const table of SYNCED_TABLES) {
+      for (const row of tables[table]) liveKeys.add(_authoritativeRowKey(table, row.id));
+    }
+    if (pulledTombstones.some(item => liveKeys.has(_authoritativeRowKey(item.table, item.id)))) {
+      throw new Error('invalid_sync_response');
+    }
+    // Pulls are snapshots, not transactions. If this request overlapped a
+    // local delete/restore or its durable recovery write, discard the stale
+    // response before touching Trash, tombstones, markers, or authoritative
+    // rows. The caller retries once against a fresh snapshot.
+    const deleteStateAfter = _readDeleteState();
+    const deleteStateRawAfter = deleteStateAfter && deleteStateAfter.raw;
+    if (deleteStateRawAfter !== deleteStateRawBefore ||
+        mutationQueueEpochBefore !== _mutationQueueEpoch ||
+        JSON.stringify((typeof DB !== 'undefined' && DB && DB.trash) || []) !== trashBefore ||
+        JSON.stringify(_serverTombstones || []) !== tombstonesBefore ||
+        localStorage.getItem(PENDING_TRASH_KEY) !== pendingTrashBefore ||
+        localStorage.getItem(SERVER_TOMBSTONES_KEY) !== tombstoneStorageBefore) {
+      throw new Error('sync_pull_stale');
+    }
+    _setAuthoritativeServerRows(tables);
     // A queued restore is valid only while its exact server Trash snapshot
     // remains present. When the source snapshot has been permanently deleted,
     // an exact tombstone proves the restore can never be recovered. Cancel
@@ -1507,6 +2143,9 @@ async function _pullSyncState() {
     // successful pull can prove that exact row is still deleted on the
     // server. Cached tombstones are deliberately insufficient evidence.
     _clearProvenOrphanDirtyMarkersAfterPull(pulledTombstones, tables);
+    if (!_reconcileConfirmedDeleteMarkersAfterPull(pulledTombstones, tables)) {
+      throw new Error('delete_state_unavailable');
+    }
     _cancelIrrecoverableRestoreGroups(pulledTombstones, tables.trash);
     // A queued restore is already a durable CAS attempt against one exact
     // tombstone version. Keep that row visible while it waits for the server,
@@ -1515,11 +2154,30 @@ async function _pullSyncState() {
     const tombstones = _suppressPendingRestoreTombstones(pulledTombstones, tables.trash);
     _serverTombstones = tombstones;
     _syncPullLoaded = true;
-    try { localStorage.setItem(SERVER_TOMBSTONES_KEY, JSON.stringify(tombstones)); } catch (_) {}
+    _persistServerTombstones(tombstones);
     return { tables, tombstones };
+}
+
+async function _pullSyncState() {
+  if (_syncPullPromise) return _syncPullPromise;
+  _syncPullPromise = (async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await _pullSyncStateAttempt();
+      } catch (error) {
+        if (error && error.message === 'sync_pull_stale' && attempt === 0) continue;
+        throw error;
+      }
+    }
+    throw new Error('sync_pull_stale');
   })();
   try { return await _syncPullPromise; }
-  catch (error) { _syncPullPromise = null; throw error; }
+  catch (error) {
+    _syncPullPromise = null;
+    _syncPullLoaded = false;
+    _authoritativeServerRows = new Map();
+    throw error;
+  }
 }
 
 async function sbFetchAll(table) {
@@ -2434,11 +3092,30 @@ function _mutationDataEqual(left, right) {
   return leftKeys.every(key => _mutationDataEqual(left[key], right[key]));
 }
 
+function _validRestoreSnapshot(snapshot, operation) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) ||
+      !operation || operation.type !== 'restore' || snapshot.id !== operation.trash_id ||
+      !snapshot.data || typeof snapshot.data !== 'object' || Array.isArray(snapshot.data) ||
+      _tblName(snapshot.data.originalTable) !== operation.table ||
+      snapshot.data.originalId !== operation.id || !snapshot.data.item ||
+      typeof snapshot.data.item !== 'object' || Array.isArray(snapshot.data.item) ||
+      snapshot.data.item.id !== operation.id ||
+      !_mutationDataEqual(_stripInternalData(snapshot.data.item), operation.data)) return false;
+  return Object.keys(snapshot).every(key => ['id', 'data', 'updated_at', '_serverVersion', '_updatedAt'].includes(key));
+}
+
 function _mutationReplayPlan(group) {
   if (!group || !MUTATION_UUID_RE.test(group.mutation_id) || !Number.isSafeInteger(group.created_at) || group.created_at < 0 ||
-      Object.keys(group).some(key => !['mutation_id', 'created_at', 'operations', 'before_states'].includes(key)) ||
+      Object.keys(group).some(key => !['mutation_id', 'created_at', 'operations', 'before_states', 'restore_snapshots'].includes(key)) ||
       !Array.isArray(group.operations) || !group.operations.length ||
-      !Array.isArray(group.before_states) || group.before_states.length !== group.operations.length) return null;
+      !Array.isArray(group.before_states) || group.before_states.length !== group.operations.length ||
+      (Object.prototype.hasOwnProperty.call(group, 'restore_snapshots') && !Array.isArray(group.restore_snapshots))) return null;
+  const restoreSnapshots = Array.isArray(group.restore_snapshots) ? group.restore_snapshots : [];
+  const restoreSnapshotIds = new Set();
+  for (const snapshot of restoreSnapshots) {
+    if (!snapshot || typeof snapshot.id !== 'string' || restoreSnapshotIds.has(snapshot.id)) return null;
+    restoreSnapshotIds.add(snapshot.id);
+  }
   const seen = new Set();
   const plan = [];
   for (let index = 0; index < group.operations.length; index++) {
@@ -2472,12 +3149,17 @@ function _mutationReplayPlan(group) {
     }
     const key = _dbKey(op.table);
     if (!Array.isArray(DB[key])) return null;
-    plan.push({ op, before, key });
+    const trashSnapshot = op.type === 'restore'
+      ? restoreSnapshots.find(snapshot => snapshot.id === op.trash_id) || null
+      : null;
+    if (trashSnapshot && !_validRestoreSnapshot(trashSnapshot, op)) return null;
+    plan.push({ op, before, key, trashSnapshot });
   }
+  if (restoreSnapshots.some(snapshot => !plan.some(entry => entry.op.type === 'restore' && entry.op.trash_id === snapshot.id))) return null;
   return plan;
 }
 
-function _queueMutationGroup(operations) {
+function _queueMutationGroup(operations, options) {
   let cloned;
   try { cloned = JSON.parse(JSON.stringify(operations)); }
   catch (_) { return null; }
@@ -2491,6 +3173,18 @@ function _queueMutationGroup(operations) {
       : { table: op.table, id: op.id, present: false };
   });
   const group = { mutation_id: _newMutationId(), created_at: Date.now(), operations: cloned, before_states: beforeStates };
+  const requestedSnapshots = options && Array.isArray(options.restoreSnapshots) ? options.restoreSnapshots : [];
+  const snapshots = [];
+  for (const op of cloned) {
+    if (!op || op.type !== 'restore') continue;
+    let snapshot = requestedSnapshots.find(candidate => candidate && candidate.id === op.trash_id);
+    if (!snapshot) {
+      const localRows = (Array.isArray(DB.trash) ? DB.trash : []).concat(_readPendingTrashEntries());
+      snapshot = localRows.find(candidate => candidate && candidate.id === op.trash_id);
+    }
+    if (snapshot) snapshots.push(JSON.parse(JSON.stringify(snapshot)));
+  }
+  if (snapshots.length) group.restore_snapshots = snapshots;
   if (!_mutationReplayPlan(group)) return null;
   const storageKey = PENDING_MUTATION_GROUP_KEY_PREFIX + group.mutation_id;
   const raw = JSON.stringify(group);
@@ -2753,11 +3447,17 @@ function _replayPendingMutationGroupsLocally() {
       console.warn('[sync] Pending mutation recovery guard is invalid; leaving the group queued');
       continue;
     }
-    for (const { op, before, key } of plan) {
+    for (const { op, before, key, trashSnapshot } of plan) {
       if (op.type === 'restore') {
         // Run before the byte-equality fast path. The optimistic restore is
         // normally already present in the whole-DB cache on a fresh tab.
         _serverTombstones = _serverTombstones.filter(tombstone => !_restoreMatchesTombstone(op, tombstone));
+        // Keep the exact source snapshot available while the CAS restore is
+        // pending. It is local recovery data, never part of the cloud payload.
+        if (trashSnapshot && !DB.trash.some(entry => entry && entry.id === trashSnapshot.id)) {
+          DB.trash.push(JSON.parse(JSON.stringify(trashSnapshot)));
+        }
+        if (trashSnapshot) _queuePendingTrash(trashSnapshot);
       }
       const next = { ...JSON.parse(JSON.stringify(op.data)), id: op.id, _serverVersion: op.expected_version || 0 };
       const index = DB[key].findIndex(row => row.id === op.id);
@@ -2769,7 +3469,6 @@ function _replayPendingMutationGroupsLocally() {
         if (index >= 0) DB[key][index] = next;
         else DB[key].push(next);
         markDirty(key, op.id, next);
-        if (op.type === 'restore') DB.trash = DB.trash.filter(entry => entry.id !== op.trash_id);
       } else {
         // The queued transaction still needs its original bytes sent first, but
         // a later local edit owns the current row. Keep it and make its retry
@@ -2834,11 +3533,26 @@ async function _flushMutationGroups() {
       continue;
     }
     let outcome;
-    try { outcome = await _syncMutate(group.operations, group.mutation_id); }
+    try {
+      outcome = await _syncMutate(group.operations, group.mutation_id);
+    }
     catch (_) { return false; }
     const cleared = {};
     let handled = true;
     if (outcome.ok) {
+      const dbBefore = new Map();
+      const dirtyBefore = new Map();
+      const revisionsBefore = new Map();
+      for (const entry of plan) {
+        if (!dbBefore.has(entry.key)) dbBefore.set(entry.key, JSON.parse(JSON.stringify(DB[entry.key])));
+        if (!dirtyBefore.has(entry.key)) dirtyBefore.set(entry.key, new Set(_dirty[entry.key]));
+        if (!revisionsBefore.has(entry.key)) revisionsBefore.set(entry.key, new Map(_dirtyRevisions[entry.key]));
+      }
+      const trashBefore = JSON.parse(JSON.stringify(DB.trash || []));
+      const tombstonesBefore = JSON.parse(JSON.stringify(_serverTombstones || []));
+      const inventoryStorageBefore = localStorage.getItem(STORAGE_KEY);
+      const pendingTrashStorageBefore = localStorage.getItem(PENDING_TRASH_KEY);
+      let pendingTrashCleared = true;
       const results = new Map(outcome.results.map(result => [result.table + '/' + result.id, result]));
       for (const op of group.operations) {
         if (!SYNCED_TABLES.includes(op.table)) continue;
@@ -2851,14 +3565,29 @@ async function _flushMutationGroups() {
         if (op.type === 'restore') {
           DB.trash = DB.trash.filter(entry => entry.id !== op.trash_id);
           _serverTombstones = _serverTombstones.filter(item => !(item.table === op.table && item.id === op.id));
+          if (!_removePendingTrashEntry(op.trash_id)) pendingTrashCleared = false;
         }
       }
-      if (!_persistInventoryCacheDirect('Mutation result could not be saved')) handled = false;
+      if (!_persistInventoryCacheDirect('Mutation result could not be saved') ||
+          (group.operations.some(op => op.type === 'restore') && !_persistServerTombstones(_serverTombstones)) ||
+          !pendingTrashCleared) handled = false;
+      if (!handled) {
+        for (const [key, rows] of dbBefore) DB[key] = rows;
+        for (const [key, dirty] of dirtyBefore) _dirty[key] = new Set(dirty);
+        for (const [key, revisions] of revisionsBefore) _dirtyRevisions[key] = new Map(revisions);
+        DB.trash = trashBefore;
+        _serverTombstones = tombstonesBefore;
+        _restoreStorageValues(new Map([
+          [STORAGE_KEY, inventoryStorageBefore],
+          [PENDING_TRASH_KEY, pendingTrashStorageBefore],
+        ]));
+      }
     } else {
       const conflictKeys = new Set(outcome.conflicts.map(item => item.table + '/' + item.id));
       for (const conflict of outcome.conflicts) {
-        const op = group.operations.find(item => item.table === conflict.table && item.id === conflict.id);
-        const resolution = op && _resolveSyncConflict(conflict, op);
+        const planEntry = plan.find(entry => entry.op.table === conflict.table && entry.op.id === conflict.id);
+        const op = planEntry && planEntry.op;
+        const resolution = op && _resolveSyncConflict(conflict, op, planEntry);
         if (!resolution || !resolution.ok) { handled = false; continue; }
         if (!cleared[resolution.key]) cleared[resolution.key] = new Map();
         cleared[resolution.key].set(op.id, resolution.tokens);
@@ -2980,22 +3709,65 @@ function _serverRowFromConflict(current, table) {
       !current.data || typeof current.data !== 'object' || Array.isArray(current.data) ||
       !Number.isSafeInteger(current.row_version)) return null;
   if (table === 'trash') {
-    return { id: current.id, data: JSON.parse(JSON.stringify(current.data)),
+    return { id: current.id, data: _stripPulledInternalFields(JSON.parse(JSON.stringify(current.data))),
       _serverVersion: current.row_version, _updatedAt: current.updated_at || '' };
   }
-  return { ...JSON.parse(JSON.stringify(current.data)), id: current.id,
+  return { ..._stripPulledInternalFields(JSON.parse(JSON.stringify(current.data))), id: current.id,
     _serverVersion: current.row_version, _updatedAt: current.updated_at || '' };
 }
 
-function _resolveSyncConflict(conflict, operation) {
-  if (!_validConflict(conflict) || !operation) return { ok: false };
+function _conflictRecoverySnapshot(conflict, operation, recovery) {
+  let candidate = recovery && recovery.trashSnapshot
+    ? recovery.trashSnapshot
+    : (operation && operation.trash && typeof operation.trash === 'object'
+      ? { id: operation.trash.id, data: operation.trash.data }
+      : null);
+  // Older queued restore groups did not persist a copy beside the mutation.
+  // Recover one if this tab still has the exact Trash entry, so a conflict can
+  // never turn an already optimistic restore into an unrecoverable delete.
+  if (!candidate && operation && typeof operation.trash_id === 'string') {
+    const localCopies = (Array.isArray(DB.trash) ? DB.trash : []).concat(_readPendingTrashEntries());
+    candidate = localCopies.find(entry => entry && entry.id === operation.trash_id) || null;
+  }
+  if (candidate && _validRestoreSnapshot({ ...candidate }, {
+      type: 'restore', table: _tblName(candidate.data && candidate.data.originalTable),
+      id: candidate.data && candidate.data.originalId,
+      trash_id: candidate.id,
+      data: _stripInternalData(candidate.data && candidate.data.item), expected_version: 0,
+      tombstone_version: 1 })) {
+    return JSON.parse(JSON.stringify(candidate));
+  }
+  if (candidate && typeof candidate.id === 'string' && candidate.data && typeof candidate.data === 'object') {
+    return JSON.parse(JSON.stringify(candidate));
+  }
+  return null;
+}
+
+function _persistConflictRecoveryTrash(snapshot) {
+  if (!snapshot || typeof snapshot.id !== 'string' || !snapshot.id ||
+      !snapshot.data || typeof snapshot.data !== 'object' || Array.isArray(snapshot.data) ||
+      !snapshot.data.item || typeof snapshot.data.item !== 'object' || Array.isArray(snapshot.data.item) ||
+      typeof snapshot.data.originalId !== 'string') return false;
+  const existingPending = _readPendingTrashEntries().find(entry => entry && entry.id === snapshot.id);
+  if (existingPending && JSON.stringify(existingPending) !== JSON.stringify(snapshot)) return false;
+  if (!_queuePendingTrash(snapshot)) return false;
+  const saved = _readPendingTrashEntries().find(entry => entry && entry.id === snapshot.id);
+  return !!saved && JSON.stringify(saved) === JSON.stringify(snapshot);
+}
+
+function _resolveSyncConflict(conflict, operation, recovery) {
+  if (!_validConflict(conflict) || !operation ||
+      conflict.table !== operation.table || conflict.id !== operation.id) return { ok: false };
   const key = _dbKey(conflict.table);
   if (!Array.isArray(DB[key])) return { ok: false };
   const index = DB[key].findIndex(row => row.id === conflict.id);
   const latestRow = index >= 0 ? DB[key][index] : null;
   const latest = latestRow
     ? { id: operation.id, ..._stripInternalData(latestRow) }
-    : (operation.data ? { id: operation.id, ...operation.data } : operation);
+    : (operation.data ? { id: operation.id, ...operation.data } :
+      (operation.trash && operation.trash.data && operation.trash.data.item
+        ? { id: operation.id, ..._stripInternalData(operation.trash.data.item) }
+        : operation));
   const attempted = JSON.stringify(latest);
   const label = latest.name || latest.product || operation.id;
   const tokens = latestRow ? _snapshotDirtyTokens(key, operation.id, JSON.stringify(latestRow)) : new Set();
@@ -3005,6 +3777,34 @@ function _resolveSyncConflict(conflict, operation) {
     return { ok: false };
   }
   const before = DB[key].slice();
+  const beforeTrash = JSON.parse(JSON.stringify(DB.trash || []));
+  const beforeTombstones = JSON.parse(JSON.stringify(_serverTombstones || []));
+  const beforeInventoryStorage = localStorage.getItem(STORAGE_KEY);
+  const beforePendingTrashStorage = localStorage.getItem(PENDING_TRASH_KEY);
+  const beforeTombstoneStorage = localStorage.getItem(SERVER_TOMBSTONES_KEY);
+  const recoverySnapshot = (operation.type === 'restore' || conflict.tombstone || !conflict.current)
+    ? _conflictRecoverySnapshot(conflict, operation, recovery)
+    : null;
+  if ((operation.type === 'restore' || conflict.tombstone || !conflict.current) &&
+      recoverySnapshot && !_persistConflictRecoveryTrash(recoverySnapshot)) {
+    setSyncStatus('error', 'Conflict recovery Trash copy could not be saved');
+    return { ok: false };
+  }
+  const nextTombstones = conflict.tombstone && SYNCED_TABLES.includes(conflict.table)
+    ? [..._serverTombstones.filter(item => !(item.table === conflict.table && item.id === conflict.id)), {
+      table: conflict.tombstone.table,
+      id: conflict.tombstone.id,
+      row_version: conflict.tombstone.row_version,
+      deleted_at: conflict.tombstone.deleted_at || '',
+    }]
+    : _serverTombstones.slice();
+  if (conflict.tombstone && SYNCED_TABLES.includes(conflict.table) && !_persistServerTombstones(nextTombstones)) {
+    _restoreStorageValues(new Map([
+      [PENDING_TRASH_KEY, beforePendingTrashStorage],
+      [SERVER_TOMBSTONES_KEY, beforeTombstoneStorage],
+    ]));
+    return { ok: false };
+  }
   const current = _serverRowFromConflict(conflict.current, conflict.table);
   if (current) {
     if (index >= 0) DB[key][index] = current;
@@ -3014,11 +3814,26 @@ function _resolveSyncConflict(conflict, operation) {
   }
   if (conflict.table !== 'trash' && !_persistInventoryCacheDirect('Conflict recovery could not be saved')) {
     DB[key] = before;
+    DB.trash = beforeTrash;
+    _serverTombstones = beforeTombstones;
+    _restoreStorageValues(new Map([
+      [STORAGE_KEY, beforeInventoryStorage],
+      [PENDING_TRASH_KEY, beforePendingTrashStorage],
+      [SERVER_TOMBSTONES_KEY, beforeTombstoneStorage],
+    ]));
     return { ok: false };
+  }
+  _serverTombstones = nextTombstones;
+  if (conflict.tombstone && SYNCED_TABLES.includes(conflict.table)) {
+    // A tombstone conflict is an authoritative delete. Keep the local Trash
+    // copy visible while the user decides whether to retry a later restore.
+    if (recoverySnapshot && !DB.trash.some(entry => entry && entry.id === recoverySnapshot.id)) {
+      DB.trash.push(recoverySnapshot);
+    }
   }
   if (typeof toastError === 'function') toastError('Sync conflict on "' + label + '": the server copy was restored. Your latest local change is in Changelog.');
   _kjrRerenderTable(key);
-  return { ok: true, key, tokens };
+  return { ok: true, key, tokens, preserveTrash: !!recoverySnapshot };
 }
 
 function _applySyncConflict(conflict, operation) {
@@ -4808,7 +5623,6 @@ function closeCmdBar() {
   kjrModalCtrl.close(document.getElementById('cmd-overlay'));
   document.getElementById('cmd-add-input').value = '';
   document.getElementById('cmd-sell-search').value = '';
-  document.getElementById('cmd-sell-search').setAttribute('aria-expanded', 'false');
   document.getElementById('cmd-sell-search').removeAttribute('aria-activedescendant');
   document.getElementById('cmd-add-preview').innerHTML = '';
   document.getElementById('cmd-sell-preview').innerHTML = '';
@@ -4958,7 +5772,7 @@ function cmdSellSearch() {
   const input = document.getElementById('cmd-sell-search');
   const raw = input.value.toLowerCase().trim();
   const el = document.getElementById('cmd-sell-preview');
-  if (!raw) { _cmdSellShowStatus(cmdSellCart.length ? '' : 'Type to search your inventory...'); cmdSellResults = []; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); return; }
+  if (!raw) { _cmdSellShowStatus(cmdSellCart.length ? '' : 'Type to search your inventory...'); cmdSellResults = []; input.removeAttribute('aria-activedescendant'); return; }
   const tokens = raw.split(/\s+/).filter(Boolean);
 
   // Build a single haystack string per row that includes every field a
@@ -5016,21 +5830,17 @@ function cmdSellSearch() {
 
   if (cmdSellResults.length === 0) {
     _cmdSellShowStatus('No available inventory matches "' + raw + '"');
-    input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
     return;
   }
 
   cmdSellResultIdx = 0;
-  input.setAttribute('aria-expanded', 'true');
   renderCmdSellResults();
 }
 
 function renderCmdSellResults() {
   const el = document.getElementById('cmd-sell-preview');
-  const input = document.getElementById('cmd-sell-search');
   _cmdSellShowResults();
-  if (input) input.setAttribute('aria-activedescendant', 'cmd-sell-option-' + cmdSellResultIdx);
   el.innerHTML = cmdSellResults.map((i, idx) => {
       const isSlab   = i._table === 'slabs';
       const isSealed = ['etbs','boosterBoxes','boosterPacks'].includes(i._table);
@@ -5055,19 +5865,21 @@ function renderCmdSellResults() {
           : cmdSellCart.find(l => l._table === 'singles' && l.groupKey === cmdSingleGroupKey(i));
       const inCart = line ? '<span class="cmd-result-incart">✓ ' + line.qty + ' in sale</span>' : '';
       const icon = isSlab ? '🏆' : isSealed ? '📦' : '🃏';
-      return '<div id="cmd-sell-option-' + idx + '" role="option" tabindex="-1" aria-selected="' + (idx === cmdSellResultIdx ? 'true' : 'false') + '" class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onmousedown="event.preventDefault()" onclick="cmdSellAddToCart(' + idx + ')">' +
-        '<div class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</div>' +
-        '<div class="cmd-result-main">' +
-          '<div class="cmd-result-name">' + esc(i.product || i.name || '-') + '</div>' +
-          '<div class="cmd-result-meta">' + esc(meta) + '</div>' +
-        '</div>' + inCart + badge +
+      return '<div role="listitem">' +
+        '<button type="button" id="cmd-sell-option-' + idx + '" class="cmd-result' + (idx === cmdSellResultIdx ? ' selected' : '') + '" onmousedown="event.preventDefault()" onclick="cmdSellAddToCart(' + idx + ')">' +
+          '<span class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</span>' +
+          '<span class="cmd-result-main">' +
+            '<span class="cmd-result-name">' + esc(i.product || i.name || '-') + '</span>' +
+            '<span class="cmd-result-meta">' + esc(meta) + '</span>' +
+          '</span>' + inCart + badge +
+        '</button>' +
       '</div>';
     }).join('');
 }
 
 function cmdSellKey(e) {
-  if (e.key === 'ArrowDown') { e.preventDefault(); cmdSellResultIdx = Math.min(cmdSellResultIdx + 1, cmdSellResults.length - 1); renderCmdSellResults(); }
-  if (e.key === 'ArrowUp')   { e.preventDefault(); cmdSellResultIdx = Math.max(cmdSellResultIdx - 1, 0); renderCmdSellResults(); }
+  if (e.key === 'ArrowDown' && cmdSellResults.length > 0) { e.preventDefault(); cmdSellResultIdx = Math.min(cmdSellResultIdx + 1, cmdSellResults.length - 1); renderCmdSellResults(); }
+  if (e.key === 'ArrowUp' && cmdSellResults.length > 0)   { e.preventDefault(); cmdSellResultIdx = Math.max(cmdSellResultIdx - 1, 0); renderCmdSellResults(); }
   if (e.key === 'Enter' && cmdSellResults.length > 0) { e.preventDefault(); cmdSellAddToCart(cmdSellResultIdx); }
 }
 
@@ -5190,7 +6002,6 @@ function cmdSellAddToCart(idx) {
   // Keep the search box ready for the next item.
   const search = document.getElementById('cmd-sell-search');
   search.value = '';
-  search.setAttribute('aria-expanded', 'false');
   search.removeAttribute('aria-activedescendant');
   _cmdSellShowStatus('Type to search your inventory...');
   cmdSellResults = [];
@@ -8153,8 +8964,12 @@ async function hardDeleteTrashEntry(trashId) {
       if (conflict) _applySyncConflict(conflict, operation);
       return false;
     }
-    if (!outcome.results.some(result =>
-        result.type === 'delete' && result.table === 'trash' && result.id === trashId)) return false;
+    const result = outcome.results.find(candidate =>
+      candidate.type === 'delete' && candidate.table === 'trash' && candidate.id === trashId);
+    if (!result || !_validateMutationAcknowledgement(operation, result, false)) {
+      setSyncStatus('error', 'Trash acknowledgement was invalid, recovery remains available');
+      return false;
+    }
     DB.trash = DB.trash.filter(entry => entry.id !== trashId);
     return true;
   } catch(_) { console.warn('Hard delete failed'); return false; }
@@ -8178,15 +8993,20 @@ async function restoreFromTrash(trashId) {
       toast('Already restored');
       return;
     }
+    // The CAS restore must carry the exact clean bytes saved in Trash. Keep
+    // those bytes for the server operation, then canonicalise only the local
+    // optimistic row so an older snapshot (for example condition "NM") still
+    // satisfies the server's exact Trash equality check.
+    const restoreData = _stripInternalData(item);
     const restored = JSON.parse(JSON.stringify(item));
     delete restored._serverVersion;
     delete restored._updatedAt;
     if (originalTable === 'singles') restored.condition = canonicalCondition(restored.condition);
     const operation = {
       type: 'restore', table, id: restored.id, expected_version: 0,
-      tombstone_version: tombstone.row_version, data: _stripInternalData(restored), trash_id: trashId
+      tombstone_version: tombstone.row_version, data: restoreData, trash_id: trashId
     };
-    const mutationGroup = _queueMutationGroup([operation]);
+    const mutationGroup = _queueMutationGroup([operation], { restoreSnapshots: [entry] });
     if (!mutationGroup) {
       toastError('Restore stopped because its sync transaction could not be saved safely');
       return;
@@ -8207,8 +9027,9 @@ async function restoreFromTrash(trashId) {
       return;
     }
     DB[originalTable].push(restored);
-    DB.trash = DB.trash.filter(row => row.id !== trashId);
-    _serverTombstones = _serverTombstones.filter(row => !(row.table === table && row.id === restored.id));
+    // Keep the exact Trash snapshot and tombstone locally until the server
+    // acknowledges this CAS restore. A reload can therefore reconstruct the
+    // same operation, and a conflict still has recoverable bytes.
     markDirty(originalTable, restored.id);
     saveData();
     _kjrRerenderTable(originalTable);
@@ -14694,6 +15515,8 @@ buildColMenus();
 // Inventory never hydrates or paints until the owner session has passed the
 // gate. Test harnesses omit the gate element and continue through this path.
 function kjrStartOwnerApp() {
+  if (_kjrOwnerAppStarted) return;
+  _kjrOwnerAppStarted = true;
   kjrCompactVersionCache();
   initDB();
   setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);

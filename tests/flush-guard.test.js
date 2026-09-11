@@ -491,6 +491,7 @@ test('flush-guard: deleting a row clears only this tab dirty token and preserves
   });
   fetchMock.calls.length = 0;
   const source = grab('DB').DB.singles[0];
+  source._serverVersion = 1;
   ctx._queuePendingTrash({ id: 'trash-single-seed-1', data: {
     originalTable: 'singles', originalId: source.id, item: JSON.parse(JSON.stringify(source)),
   } });

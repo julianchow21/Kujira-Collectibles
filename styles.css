@@ -991,12 +991,12 @@ dialog.cmd-overlay::backdrop{background:var(--backdrop)}
 .cmd-kbd{font-size:10px;color:var(--text3);background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 6px;white-space:nowrap;flex-shrink:0}
 .cmd-preview{max-height:340px;overflow-y:auto;overscroll-behavior:contain}
 .cmd-section-label{padding:8px 16px 4px;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}
-.cmd-result{display:flex;align-items:center;gap:10px;padding:10px 16px;cursor:pointer;transition:background 0.1s;font-size:13px;width:100%;border:0;background:none;color:inherit;font:inherit;text-align:left}
+.cmd-result{appearance:none;display:flex;align-items:center;gap:10px;padding:10px 16px;cursor:pointer;transition:background 0.1s;font-size:13px;width:100%;border:0;background:none;color:inherit;font:inherit;text-align:left}
 .cmd-result:hover,.cmd-result.selected{background:var(--bg3)}
 .cmd-result-icon{width:28px;height:28px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
-.cmd-result-main{flex:1;min-width:0}
-.cmd-result-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cmd-result-meta{font-size:11px;color:var(--text3);margin-top:1px}
+.cmd-result-main{display:block;flex:1;min-width:0}
+.cmd-result-name{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmd-result-meta{display:block;font-size:11px;color:var(--text3);margin-top:1px}
 .cmd-result-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;flex-shrink:0}
 .cmd-empty{padding:24px;text-align:center;color:var(--text3);font-size:13px}
 .cmd-hint{padding:8px 16px;font-size:11px;color:var(--text3);border-top:1px solid var(--border);display:flex;gap:8px 16px;flex-wrap:wrap}
@@ -1237,7 +1237,11 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
 .kjr-auth-state .btn{justify-content:center;min-height:42px}
 .kjr-auth-state .hig-spinner{margin:4px auto}
 #kjr-auth-loading{text-align:center}
-#kjr-auth-form .fi{width:100%;min-height:44px}
+#kjr-auth-form .fi,#kjr-auth-recover-form .fi,#kjr-auth-recovery-form .fi{width:100%;min-height:44px}
+#kjr-auth-form .btn,#kjr-auth-recover-form .btn,#kjr-auth-recovery-form .btn{width:100%;justify-content:center}
+#kjr-auth-form .btn:not(.btn-primary),#kjr-auth-recover-form .btn:not(.btn-primary),#kjr-auth-recovery-form .btn:not(.btn-primary){background:transparent}
+#kjr-auth-form .btn:disabled,#kjr-auth-recover-form .btn:disabled,#kjr-auth-recovery-form .btn:disabled{cursor:wait;opacity:.65}
+#kjr-auth-gate :is(button,a,[role="button"],input,select,textarea):focus-visible{outline:3px solid var(--accent);outline-offset:3px;box-shadow:none}
 #kjr-update-pill{cursor:default}
 #kjr-update-pill-action{min-height:34px}
 :where(button,a,[role="button"],input,select,textarea):focus-visible{outline:2px solid var(--accent);outline-offset:2px}

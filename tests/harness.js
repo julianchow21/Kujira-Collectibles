@@ -139,7 +139,8 @@ function makeStubElement(tagHint, opts) {
   return el;
 }
 
-function createDocument() {
+function createDocument(opts) {
+  opts = opts || {};
   const byId = new Map();
   const doc = {
     _byId: byId,
@@ -165,6 +166,34 @@ function createDocument() {
   doc.body = makeStubElement('body'); doc.body.id = 'body';
   doc.head = makeStubElement('head'); doc.head.id = 'head';
   doc.documentElement = makeStubElement('html'); doc.documentElement.id = 'html';
+  if (opts.authGate) {
+    const register = (el, id) => {
+      el.id = id;
+      byId.set(id, el);
+      return el;
+    };
+    const stateIds = [
+      'kjr-auth-loading', 'kjr-auth-form', 'kjr-auth-sent', 'kjr-auth-error', 'kjr-auth-expired',
+      'kjr-auth-recover-form', 'kjr-auth-recover-sent', 'kjr-auth-recover-error', 'kjr-auth-recovery-form',
+      'kjr-auth-recovery-expired', 'kjr-auth-recovery-error',
+    ];
+    const states = stateIds.map(id => {
+      const state = register(makeStubElement(id.endsWith('form') ? 'form' : 'div'), id);
+      const focus = makeStubElement('input');
+      focus.dataset.authFocus = '1';
+      state.querySelector = selector => selector === '[data-auth-focus]' ? focus : makeStubElement();
+      state.hidden = id !== 'kjr-auth-loading';
+      return state;
+    });
+    const gate = register(makeStubElement('section'), 'kjr-auth-gate');
+    gate.querySelectorAll = selector => selector === '.kjr-auth-state' ? states : [];
+    gate.querySelector = selector => selector === '[data-auth-focus]' ? makeStubElement() : makeStubElement();
+    doc.body.children.push(gate);
+    ['kjr-auth-email', 'kjr-auth-password', 'kjr-auth-submit', 'kjr-auth-magic',
+      'kjr-auth-recover-email', 'kjr-auth-recover-submit', 'kjr-auth-new-password',
+      'kjr-auth-confirm-password', 'kjr-auth-recovery-submit', 'kjr-auth-error-copy',
+      'kjr-auth-recovery-error-copy', 'kjr-auth-recover-error-copy'].forEach(id => register(makeStubElement(id.includes('submit') || id === 'kjr-auth-submit' || id === 'kjr-auth-magic' ? 'button' : 'input'), id));
+  }
   return doc;
 }
 
@@ -328,14 +357,25 @@ function syncRequest(opts) {
 
 function syncSuccessResponse(opts, customise) {
   const request = syncRequest(opts);
-  let results = (request.operations || []).map((op) => ({
-    type: op.type,
-    table: op.table,
-    id: op.id,
-    row_version: Math.max(1, (Number.isSafeInteger(op.expected_version) ? op.expected_version : 0) + 1),
-    updated_at: '2026-09-04T00:00:00.000Z',
-    ...(op.type === 'delete' ? { deleted_at: '2026-09-04T00:00:00.000Z' } : {}),
-  }));
+  let results = (request.operations || []).flatMap((op) => {
+    const expectedVersion = op.type === 'restore'
+      ? op.tombstone_version
+      : op.expected_version;
+    const result = {
+      type: op.type,
+      table: op.table,
+      id: op.id,
+      row_version: Math.max(1, (Number.isSafeInteger(expectedVersion) ? expectedVersion : 0) + 1),
+      updated_at: '2026-09-04T00:00:00.000Z',
+      ...(op.type === 'delete' ? { deleted_at: '2026-09-04T00:00:00.000Z' } : {}),
+    };
+    const companion = op.type === 'delete' && !['trash', 'versions'].includes(op.table) &&
+      op.trash && typeof op.trash === 'object' && typeof op.trash.id === 'string' && op.trash.id
+      ? [{ type: 'upsert', table: 'trash', id: op.trash.id, row_version: 1,
+          updated_at: '2026-09-04T00:00:00.000Z' }]
+      : [];
+    return [result, ...companion];
+  });
   if (typeof customise === 'function') results = customise(results, request) || results;
   return jsonResponse({ ok: true, mutation_id: request.mutation_id, results });
 }
@@ -419,7 +459,8 @@ async function loadApp(opts) {
     }
   }
 
-  const document = createDocument();
+  const document = createDocument({ authGate: !!opts.authGate });
+  const sessionStorage = createLocalStorage();
   const timers = createTimerSystem();
   const fetchMock = createFetchMock();
   if (typeof opts.fetch === 'function') fetchMock.setDefault(opts.fetch);
@@ -441,6 +482,7 @@ async function loadApp(opts) {
   const sandbox = {
     document,
     localStorage,
+    sessionStorage,
     navigator: { onLine: true, clipboard: {}, userAgent: 'test' }, // NO serviceWorker key by design
     location,
     history: { state: null, length: 1, pushState() {}, replaceState() {}, back() {}, forward() {}, go() {} },
@@ -578,6 +620,7 @@ async function loadApp(opts) {
     sandbox,
     document,
     localStorage,
+    sessionStorage,
     fetchMock,
     timers,
     consoleWarnings,

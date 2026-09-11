@@ -97,11 +97,7 @@ test('trash-lifecycle: a successful atomic CAS delete clears the pending Trash s
   const { ctx, fetchMock, localStorage, grab } = await loadApp({ seed: { singles: [row] } });
   fetchMock.calls.length = 0;
   await ctx.sendToTrash('singles', grab('DB').DB.singles[0], 'manual');
-  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts, (results, request) => [
-    ...results,
-    { type: 'upsert', table: 'trash', id: request.operations[0].trash.id,
-      row_version: 1, updated_at: '2026-09-04T00:00:00.000Z' },
-  ]));
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   assert.strictEqual(await ctx.sbDelete('singles', row.id), true);
   assert.deepStrictEqual(JSON.parse(localStorage.getItem('_kjrPendingTrashWrites') || '[]'), []);
   assert.ok(grab('DB').DB.trash.some(entry => entry.data.originalId === row.id));
@@ -192,7 +188,7 @@ test('trash-lifecycle: a queued delete stays hidden from cached and cloud rows w
 });
 
 test('trash-lifecycle: successful retry purges stale cache before its pending marker clears and reload stays deleted', async () => {
-  const doomed = { id: 'doomed_retry_1', name: 'Must Not Return', status: 'Available' };
+  const doomed = { id: 'doomed_retry_1', name: 'Must Not Return', status: 'Available', _serverVersion: 1 };
   let deleteSucceeds = false;
   const response = (status, json, text) => ({
     ok: status >= 200 && status < 300,
@@ -217,6 +213,7 @@ test('trash-lifecycle: successful retry purges stale cache before its pending ma
       if (url.includes('/sync/v2/pull')) {
         const data = { ...doomed };
         delete data.id;
+        delete data._serverVersion;
         return syncPullResponse({ singles: [{ id: doomed.id, data, row_version: 1, updated_at: '2026-08-29T12:00:00.000Z' }] });
       }
       return response(200, { rates: { SGD: 1.3 } });
@@ -698,7 +695,7 @@ test('trash-lifecycle: a cached tombstone cannot settle a pending delete before 
 test('trash-lifecycle: direct delete skips stale confirmation after its exact pending attempt is cancelled', async () => {
   const id = 'direct_cancel_race';
   const restored = { id, name: 'Direct-path restore wins', status: 'Available', _restoreToken: 'restore_direct_new' };
-  const { ctx, fetchMock, localStorage, grab } = await loadApp({ seed: { singles: [{ id, name: 'Delete me', status: 'Available' }] } });
+  const { ctx, fetchMock, localStorage, grab } = await loadApp({ seed: { singles: [{ id, name: 'Delete me', status: 'Available', _serverVersion: 1 }] } });
   fetchMock.calls.length = 0;
   let releaseDelete;
   let announceDelete;
@@ -784,7 +781,7 @@ test('trash-lifecycle: restore acknowledgement rebases onto a later local edit w
   assert.strictEqual(await ctx._flushMutationGroups(), true);
   const rebased = state.singles.find(row => row.id === 'restore_cache_race');
   assert.strictEqual(rebased.name, 'Newer local restore edit');
-  assert.strictEqual(rebased._serverVersion, 1, 'the later edit rebases onto the acknowledged restore version');
+  assert.strictEqual(rebased._serverVersion, 4, 'the later edit rebases onto the acknowledged restore version');
   assert.strictEqual(ctx._dirty.singles.has(rebased.id), true, 'the later edit remains dirty after restore acknowledgement');
   assert.strictEqual(localStorage.getItem('_kjrMutationGroupsV2'), '[]');
 
@@ -792,7 +789,7 @@ test('trash-lifecycle: restore acknowledgement rebases onto a later local edit w
   const ordinaryUpsert = syncOperations(fetchMock).find(op =>
     op.type === 'upsert' && op.table === 'singles' && op.id === 'restore_cache_race');
   assert.ok(ordinaryUpsert);
-  assert.strictEqual(ordinaryUpsert.expected_version, 1);
+  assert.strictEqual(ordinaryUpsert.expected_version, 4);
   assert.strictEqual(ordinaryUpsert.data.name, 'Newer local restore edit');
   const cached = JSON.parse(localStorage.getItem('pokeinventory_v3')).singles.find(row => row.id === 'restore_cache_race');
   assert.strictEqual(cached.name, 'Newer local restore edit');
@@ -1367,7 +1364,7 @@ test('trash-lifecycle: features mixed Replace rolls back reused restore state wh
 
 test('trash-lifecycle: confirmed legacy mirror failure cannot invalidate a committed Replace transaction', async () => {
   const reused = { id: 'mixed_inverse_reused', name: 'Keep inverse reused', status: 'Available', _restoreToken: 'restore_inverse_current' };
-  const oldOnly = { id: 'mixed_inverse_old_only', name: 'Keep inverse old-only', status: 'Available' };
+  const oldOnly = { id: 'mixed_inverse_old_only', name: 'Keep inverse old-only', status: 'Available', _serverVersion: 1 };
   const confirmedRaw = JSON.stringify([{
     table: 'singles', id: reused.id, ts: 123, restoreToken: reused._restoreToken, state: 'restored',
   }]);
@@ -1592,7 +1589,7 @@ test('trash-lifecycle: box-to-pack migration aborts before local move when delet
 });
 
 test('trash-lifecycle: durably queued Trash copy permits delete and reload retries the snapshot', async () => {
-  const row = { id: 'trash_copy_retry', name: 'Retry-safe row', costPrice: 333, status: 'Available' };
+  const row = { id: 'trash_copy_retry', name: 'Retry-safe row', costPrice: 333, status: 'Available', _serverVersion: 1 };
   const first = await loadApp({ seed: { singles: [row] } });
   first.ctx.kjrConfirm = async () => true;
   first.fetchMock.calls.length = 0;

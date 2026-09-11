@@ -47,8 +47,8 @@ test('sync-v2: authenticated mutation sends bearer protocol 2 and expected_versi
     const request = JSON.parse(opts.body);
     return {
       ok: true, status: 200,
-      json: async () => ({ ok: true, mutation_id: request.mutation_id, results: request.operations.map((op, i) => ({
-        type: op.type, table: op.table, id: op.id, row_version: i + 1, updated_at: '2026-09-04T00:00:00Z',
+      json: async () => ({ ok: true, mutation_id: request.mutation_id, results: request.operations.map(op => ({
+        type: op.type, table: op.table, id: op.id, row_version: op.expected_version + 1, updated_at: '2026-09-04T00:00:00Z',
       })) }),
       text: async () => '', headers: { get: () => null },
     };

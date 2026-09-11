@@ -9306,7 +9306,56 @@ async function deleteItem(id, table) {
   await _runPreflightedDeletes(deleteTargets);
 }
 
+// Modal edits are full-row replacements, so capture the row's CAS revision and
+// a data fingerprint at open time. A later local or cross-tab change must stop
+// the save before undo, dirty-state, cache, or changelog side effects run.
+const _modalEditContexts = { singles: null, slabs: null, sales: null };
+
+function _modalEditFingerprint(row) {
+  if (!row || typeof row !== 'object') return '';
+  const data = {};
+  Object.keys(row)
+    .filter(key => key !== '_serverVersion' && key !== '_updatedAt')
+    .sort()
+    .forEach(key => { data[key] = row[key]; });
+  return JSON.stringify(data);
+}
+
+function _captureModalEditContext(table, row) {
+  return {
+    table,
+    id: row.id,
+    expectedVersion: Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0,
+    updatedAt: row._updatedAt || '',
+    fingerprint: _modalEditFingerprint(row),
+  };
+}
+
+function _rejectStaleModalEdit(table, id) {
+  const context = _modalEditContexts[table];
+  const current = (DB[table] || []).find(row => row && row.id === id);
+  if (!current) {
+    toast('This record was deleted elsewhere. Your edits remain in this form. Close it and check Trash.', 6000, true);
+    return true;
+  }
+  if (!context || context.id !== id ||
+      Number.isSafeInteger(current._serverVersion) && current._serverVersion !== context.expectedVersion ||
+      !Number.isSafeInteger(current._serverVersion) && context.expectedVersion !== 0 ||
+      _modalEditFingerprint(current) !== context.fingerprint) {
+    toast('This record changed elsewhere. Your edits remain in this form. Reopen it to load the latest data before saving.', 6000, true);
+    return true;
+  }
+  return false;
+}
+
+function _preserveModalEditStamp(norm, context) {
+  if (!context) return;
+  norm._serverVersion = context.expectedVersion;
+  if (context.updatedAt) norm._updatedAt = context.updatedAt;
+}
+
 function openAddSingle() {
+  _modalEditContexts.singles = null;
   document.getElementById('ms-id').value = '';
   document.getElementById('modal-single-title').textContent = 'Add Single';
   ['ms-name','ms-set','ms-cost','ms-market','ms-list','ms-date','ms-notes','ms-alert','ms-ebay-url','ms-carousell-url','ms-tcgdexid'].forEach(id => document.getElementById(id).value = '');
@@ -9322,6 +9371,7 @@ function openAddSingle() {
 function openEditSingle(id) {
   const item = DB.singles.find(i => i.id === id);
   if (!item) return;
+  _modalEditContexts.singles = _captureModalEditContext('singles', item);
   document.getElementById('ms-id').value = id;
   document.getElementById('modal-single-title').textContent = 'Edit Single';
   document.getElementById('ms-name').value = item.name||'';
@@ -9330,9 +9380,9 @@ function openEditSingle(id) {
   document.getElementById('ms-type').value = item.type||'raw';
   document.getElementById('ms-cond').value = canonicalCondition(item.condition)||'Near Mint';
   document.getElementById('ms-qty').value = item.qty||1;
-  document.getElementById('ms-cost').value = item.costPrice||'';
-  document.getElementById('ms-list').value = item.listPrice||'';
-  document.getElementById('ms-market').value = item.marketPrice||'';
+  document.getElementById('ms-cost').value = item.costPrice ?? '';
+  document.getElementById('ms-list').value = item.listPrice ?? '';
+  document.getElementById('ms-market').value = item.marketPrice ?? '';
   document.getElementById('ms-date').value = toIsoDateStr(item.datePurchased);
   document.getElementById('ms-status').value = item.status||'Available';
   document.getElementById('ms-notes').value = item.notes||'';
@@ -9366,6 +9416,7 @@ async function kjrGuardSave(btn, fn) {
 
 function saveSingle() {
   const id = document.getElementById('ms-id').value;
+  if (id && _rejectStaleModalEdit('singles', id)) return;
   const name = document.getElementById('ms-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
   // Field-level validation (F5) - reject and stop before any write, so a bad
@@ -9421,6 +9472,7 @@ function saveSingle() {
     if (idx >= 0) {
       before = { ...DB.singles[idx] };
       norm.priceHistory = DB.singles[idx].priceHistory||[];
+      _preserveModalEditStamp(norm, _modalEditContexts.singles);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
       // confirm name (it'll re-populate on the next successful fetch), and
@@ -9439,6 +9491,7 @@ function saveSingle() {
   // Audit: full snapshot on add, field-level diff on edit.
   const extra = id ? (_clDiff('singles', before, norm) || 'no field changes') : _clSummary('singles', norm);
   clLog(id ? 'edit' : 'add', 'singles', norm.name, extra);
+  if (id) _modalEditContexts.singles = null;
 }
 
 // =========== SLABS ===========
@@ -9658,6 +9711,7 @@ function renderSlabs() {
 }
 
 function openAddSlab() {
+  _modalEditContexts.slabs = null;
   document.getElementById('msl-id').value = '';
   document.getElementById('modal-slab-title').textContent = 'Add Slab';
   ['msl-name','msl-grade','msl-cert','msl-rank','msl-cost','msl-market','msl-list','msl-date','msl-notes','msl-alert','msl-ebay-url','msl-carousell-url','msl-tcgdexid'].forEach(id => document.getElementById(id).value = '');
@@ -9671,6 +9725,7 @@ function openAddSlab() {
 function openEditSlab(id) {
   const item = DB.slabs.find(i => i.id === id);
   if (!item) return;
+  _modalEditContexts.slabs = _captureModalEditContext('slabs', item);
   document.getElementById('msl-id').value = id;
   document.getElementById('modal-slab-title').textContent = 'Edit Slab';
   document.getElementById('msl-name').value = item.name||'';
@@ -9679,9 +9734,9 @@ function openEditSlab(id) {
   document.getElementById('msl-lang').value = item.language||'EN';
   document.getElementById('msl-cert').value = item.certNo||'';
   document.getElementById('msl-rank').value = item.rank||'';
-  document.getElementById('msl-cost').value = item.costPrice||'';
-  document.getElementById('msl-list').value = item.listPrice||'';
-  document.getElementById('msl-market').value = item.marketPrice||'';
+  document.getElementById('msl-cost').value = item.costPrice ?? '';
+  document.getElementById('msl-list').value = item.listPrice ?? '';
+  document.getElementById('msl-market').value = item.marketPrice ?? '';
   document.getElementById('msl-date').value = toIsoDateStr(item.dateListed);
   document.getElementById('msl-status').value = item.status||'Available';
   document.getElementById('msl-notes').value = item.notes||'';
@@ -9698,6 +9753,7 @@ function openEditSlab(id) {
 
 function saveSlab() {
   const id = document.getElementById('msl-id').value;
+  if (id && _rejectStaleModalEdit('slabs', id)) return;
   const name = document.getElementById('msl-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
   // Field-level validation (F5) - reject and stop before any write. Slabs
@@ -9751,6 +9807,7 @@ function saveSlab() {
     if (idx >= 0) {
       beforeSlab = { ...DB.slabs[idx] };
       norm.priceHistory = DB.slabs[idx].priceHistory||[];
+      _preserveModalEditStamp(norm, _modalEditContexts.slabs);
       // Same confirm-name carry-over rule as saveSingle.
       if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
       DB.slabs[idx] = norm;
@@ -9764,6 +9821,7 @@ function saveSlab() {
   toast(id ? 'Updated!' : 'Added!');
   const extraSlab = id ? (_clDiff('slabs', beforeSlab, norm) || 'no field changes') : _clSummary('slabs', norm);
   clLog(id ? 'edit' : 'add', 'slabs', norm.name, extraSlab);
+  if (id) _modalEditContexts.slabs = null;
 }
 
 // ── TAG 10 rank helper ──────────────────────────────────────────────
@@ -9991,6 +10049,7 @@ function renderSales() {
 }
 
 function openAddSale() {
+  _modalEditContexts.sales = null;
   document.getElementById('msa-id').value = '';
   ['msa-date','msa-product','msa-buyer','msa-cost','msa-total','msa-ship','msa-fees','msa-profit','msa-margin'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('msa-channel').value = 'Carousell';
@@ -10005,17 +10064,18 @@ function openAddSale() {
 function openEditSale(id) {
   const item = DB.sales.find(s => s.id === id);
   if (!item) return;
+  _modalEditContexts.sales = _captureModalEditContext('sales', item);
   document.getElementById('msa-id').value = item.id;
   document.getElementById('msa-date').value = item.dateSold || '';
   document.getElementById('msa-product').value = item.product || '';
   document.getElementById('msa-buyer').value = item.buyer || '';
-  document.getElementById('msa-cost').value = item.costPrice || '';
-  document.getElementById('msa-total').value = item.totalCollected || '';
-  document.getElementById('msa-ship').value = item.shippingCost || '';
-  document.getElementById('msa-fees').value = item.fees || '';
+  document.getElementById('msa-cost').value = item.costPrice ?? '';
+  document.getElementById('msa-total').value = item.totalCollected ?? '';
+  document.getElementById('msa-ship').value = item.shippingCost ?? '';
+  document.getElementById('msa-fees').value = item.fees ?? '';
   document.getElementById('msa-channel').value = item.channel || 'Carousell';
-  document.getElementById('msa-profit').value = item.profit || '';
-  document.getElementById('msa-margin').value = item.margin || '';
+  document.getElementById('msa-profit').value = item.profit ?? '';
+  document.getElementById('msa-margin').value = item.margin ?? '';
   msaOnProductChange(item.itemCosts || []);
   calcSaleProfit();
   document.getElementById('msa-modal-title').textContent = 'Edit Sale';
@@ -10092,6 +10152,8 @@ function calcSaleProfit() {
 }
 
 function saveSale() {
+  const id = document.getElementById('msa-id').value;
+  if (id && _rejectStaleModalEdit('sales', id)) return;
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
   const money = [
@@ -10107,7 +10169,6 @@ function saveSale() {
   const profit  = total - cost - ship - fees;
   const margin  = total > 0 ? ((profit/total)*100).toFixed(0) + '%' : '-';
   const dateSold = formatDateInput(document.getElementById('msa-date').value);
-  const id = document.getElementById('msa-id').value;
   const itemCosts = msaReadItemCosts();
   const prevForLink = id ? DB.sales.find(s => s.id === id) : null;
   // Preserve dateAcquired/daysHeld from original sale on edit; try to backfill
@@ -10145,6 +10206,7 @@ function saveSale() {
   if (id) {
     const prev = DB.sales.find(s => s.id === id);
     if (prev) beforeSale = { ...prev };
+    _preserveModalEditStamp(norm, _modalEditContexts.sales);
     DB.sales = DB.sales.map(s => s.id === id ? norm : s);
   }
   else { DB.sales.unshift(norm); if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('sales', norm.id); }
@@ -10153,6 +10215,7 @@ function saveSale() {
   toast(id ? 'Updated!' : 'Sale recorded!');
   const extraSale = id ? (_clDiff('sales', beforeSale, norm) || 'no field changes') : _clSummary('sales', norm);
   clLog(id ? 'edit' : 'sell', 'sales', product, extraSale);
+  if (id) _modalEditContexts.sales = null;
 }
 
 // =========== DASHBOARD ===========

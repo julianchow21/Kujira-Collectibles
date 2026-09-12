@@ -55,6 +55,9 @@ async function queueRestore(id, tombstoneVersion) {
   app.ctx.DB.trash = [{ ...entry, _serverVersion: 2 }];
   app.ctx._serverTombstones = [tombstone];
   app.ctx._syncPullLoaded = true;
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry)],
+  }, [tombstone]));
   await app.ctx.restoreFromTrash(entry.id);
   return { app, entry, tombstone };
 }
@@ -66,6 +69,178 @@ function queuedGroup(localStorage) {
 function tombstoneFor(id, rowVersion) {
   return { table: 'singles', id, row_version: rowVersion, deleted_at: '2026-09-10T00:00:00.000Z' };
 }
+
+function serverTrashRow(entry, rowVersion = entry._serverVersion || 2) {
+  return {
+    id: entry.id,
+    data: entry.data,
+    row_version: rowVersion,
+    updated_at: entry.updated_at || (entry.data && entry.data.deletedAt) || '2026-09-10T00:00:00.000Z',
+  };
+}
+
+test('restore-safety: direct restore refreshes the current server Trash row before queueing', async () => {
+  const id = 'restore-fresh-server-row';
+  const staleEntry = restoreEntry(id, 'Stale cached bytes');
+  const freshEntry = restoreEntry(id, 'Current server bytes');
+  const currentTombstone = tombstoneFor(id, 6);
+  const app = await loadApp();
+  app.ctx.DB.trash = [{ ...staleEntry, _serverVersion: 2 }];
+  app.ctx._serverTombstones = [tombstoneFor(id, 5)];
+  app.ctx._syncPullLoaded = true;
+  app.fetchMock.calls.length = 0;
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(freshEntry, 7)],
+  }, [currentTombstone]));
+
+  await app.ctx.restoreFromTrash(staleEntry.id);
+
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/pull')).length, 1,
+    'restore obtains a fresh authenticated Trash snapshot');
+  assert.strictEqual(app.ctx.DB.singles.find(row => row.id === id).name, 'Current server bytes',
+    'restore uses the current server snapshot rather than the stale display row');
+  assert.strictEqual(queuedGroup(app.localStorage).length, 1);
+  assert.strictEqual(queuedGroup(app.localStorage)[0].operations[0].data.name, 'Current server bytes');
+  assert.strictEqual(app.ctx.DB.trash.find(row => row.id === freshEntry.id)._serverVersion, 7);
+});
+
+test('restore-safety: a stale pending snapshot for the same source cannot outrank the current server Trash row', async () => {
+  const id = 'restore-source-identity-wins';
+  const staleEntry = restoreEntry(id, 'Stale pending bytes');
+  staleEntry.id = 'trash-stale-source-copy';
+  const currentEntry = restoreEntry(id, 'Current server bytes');
+  currentEntry.id = 'trash-current-source-copy';
+  const tombstone = tombstoneFor(id, 6);
+  const app = await loadApp();
+  app.ctx.DB.trash = [staleEntry];
+  assert.strictEqual(app.ctx._queuePendingTrash(staleEntry), true);
+  app.ctx._serverTombstones = [tombstone];
+  app.ctx._syncPullLoaded = true;
+  const errors = [];
+  app.ctx.toastError = message => errors.push(message);
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(currentEntry, 7)],
+  }, [tombstone]));
+
+  await app.ctx.restoreFromTrash(staleEntry.id);
+
+  assert.match(errors.at(-1) || '', /Trash entry not found/);
+  assert.strictEqual(app.ctx.DB.singles.some(row => row.id === id), false,
+    'the stale pending bytes never reach the source table');
+  assert.strictEqual(queuedGroup(app.localStorage).length, 0);
+  assert.ok(JSON.parse(app.localStorage.getItem(PENDING_TRASH_KEY)).some(row => row.id === staleEntry.id),
+    'the stale pending copy remains recoverable for reconciliation');
+});
+
+test('restore-safety: malformed or mismatched Trash entries fail before restore state changes', async (t) => {
+  const base = restoreEntry('restore-malformed-entry', 'Protected snapshot');
+  const cases = [
+    ['malformed data', { ...base, data: null }, /Could not reach Trash|malformed/],
+    ['unknown table', { ...base, data: { ...base.data, originalTable: 'not-a-collectibles-table' } }, /unknown table/],
+    ['missing item', { ...base, data: { ...base.data, item: null } }, /recoverable item data/],
+    ['identity mismatch', { ...base, data: { ...base.data, originalId: 'different-source-id' } }, /does not match its item/],
+  ];
+  for (const [name, entry, expectedError] of cases) {
+    await t.test(name, async () => {
+      const app = await loadApp();
+      app.ctx.DB.trash = [{ ...entry, _serverVersion: 2 }];
+      app.ctx._serverTombstones = [tombstoneFor(base.data.originalId, 4)];
+      app.ctx._syncPullLoaded = true;
+      app.fetchMock.calls.length = 0;
+      app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+        trash: [serverTrashRow(entry, 3)],
+      }, [tombstoneFor(base.data.originalId, 4)]));
+      const beforeSingles = JSON.stringify(app.ctx.DB.singles);
+      const beforeDirty = JSON.stringify(plain(app.grab('_dirty')._dirty));
+      const beforeUndo = app.grab('undoStack').undoStack.length;
+      const beforeGroups = app.localStorage.getItem(MUTATION_GROUPS_KEY);
+      const beforePending = app.localStorage.getItem(PENDING_TRASH_KEY);
+      const errors = [];
+      app.ctx.toastError = message => errors.push(message);
+
+      await app.ctx.restoreFromTrash(entry.id);
+
+      assert.match(errors.at(-1) || '', expectedError);
+      assert.strictEqual(JSON.stringify(app.ctx.DB.singles), beforeSingles,
+        'the source table is untouched');
+      assert.strictEqual(JSON.stringify(plain(app.grab('_dirty')._dirty)), beforeDirty,
+        'no dirty obligation is created');
+      assert.strictEqual(app.grab('undoStack').undoStack.length, beforeUndo,
+        'the undo stack is untouched');
+      assert.strictEqual(app.localStorage.getItem(MUTATION_GROUPS_KEY), beforeGroups,
+        'no mutation group is queued');
+      assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/mutate')).length, 0,
+        'no cloud mutation is attempted');
+      assert.ok(app.ctx.DB.trash.some(row => row && row.id === entry.id) ||
+        app.localStorage.getItem(PENDING_TRASH_KEY) === beforePending,
+      'the recovery copy is not discarded');
+    });
+  }
+});
+
+test('restore-safety: direct restore fails closed when the fresh Trash pull is unavailable', async () => {
+  const entry = restoreEntry('restore-pull-unavailable', 'Cached recovery copy');
+  const app = await loadApp();
+  app.ctx.DB.trash = [{ ...entry, _serverVersion: 2 }];
+  app.ctx._serverTombstones = [tombstoneFor(entry.data.originalId, 4)];
+  app.ctx._syncPullLoaded = true;
+  const beforeSingles = JSON.stringify(app.ctx.DB.singles);
+  const beforeTrash = JSON.stringify(app.ctx.DB.trash);
+  const beforePending = app.localStorage.getItem(PENDING_TRASH_KEY);
+  const errors = [];
+  app.ctx.toastError = message => errors.push(message);
+  app.fetchMock.reject('/sync/v2/pull', new TypeError('offline'));
+
+  await app.ctx.restoreFromTrash(entry.id);
+
+  assert.match(errors.at(-1) || '', /Could not reach Trash/);
+  assert.strictEqual(JSON.stringify(app.ctx.DB.singles), beforeSingles);
+  assert.strictEqual(JSON.stringify(app.ctx.DB.trash), beforeTrash);
+  assert.strictEqual(app.localStorage.getItem(PENDING_TRASH_KEY), beforePending);
+  assert.strictEqual(app.localStorage.getItem(MUTATION_GROUPS_KEY), null);
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/mutate')).length, 0);
+});
+
+test('restore-safety: a cached Trash row removed by the current server cannot be resurrected', async () => {
+  const entry = restoreEntry('restore-purged-server-row', 'Stale cached row');
+  const app = await loadApp();
+  app.ctx.DB.trash = [{ ...entry, _serverVersion: 2 }];
+  app.ctx._serverTombstones = [tombstoneFor(entry.data.originalId, 4)];
+  app.ctx._syncPullLoaded = true;
+  const errors = [];
+  app.ctx.toastError = message => errors.push(message);
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({ trash: [] }, []));
+
+  await app.ctx.restoreFromTrash(entry.id);
+
+  assert.match(errors.at(-1) || '', /Trash entry not found/);
+  assert.strictEqual(app.ctx.DB.singles.some(row => row.id === entry.data.originalId), false);
+  assert.strictEqual(app.localStorage.getItem(MUTATION_GROUPS_KEY), null);
+  assert.strictEqual(app.fetchMock.calls.filter(call => call.url.includes('/sync/v2/mutate')).length, 0);
+});
+
+test('restore-safety: a durable pending Trash copy survives a fresh pull that proves its server purge', async () => {
+  const entry = restoreEntry('restore-pending-trash', 'Pending recovery copy');
+  const tombstone = tombstoneFor(entry.data.originalId, 4);
+  const app = await loadApp();
+  app.ctx.DB.trash = [];
+  assert.strictEqual(app.ctx._queuePendingTrash(entry), true);
+  app.ctx._serverTombstones = [tombstone];
+  app.ctx._syncPullLoaded = true;
+  const errors = [];
+  app.ctx.toastError = message => errors.push(message);
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({ trash: [] }, [tombstone]));
+
+  await app.ctx.restoreFromTrash(entry.id);
+
+  assert.match(errors.at(-1) || '', /Trash entry not found/);
+  assert.strictEqual(app.ctx.DB.singles.some(row => row.id === entry.data.originalId), false,
+    'a pending copy is not resurrected after the server proves its Trash row is gone');
+  assert.strictEqual(queuedGroup(app.localStorage).length, 0,
+    'purged Trash does not create a restore mutation');
+  assert.ok(JSON.parse(app.localStorage.getItem(PENDING_TRASH_KEY)).some(row => row.id === entry.id),
+    'the pending recovery copy remains until the restore is acknowledged');
+});
 
 test('restore-safety: an old confirmed-delete device accepts a higher server revision and keeps lower stale rows hidden', async () => {
   const id = 'cross-device-no-token';
@@ -262,6 +437,9 @@ test('restore-safety: production restore sends exact legacy Trash bytes, then re
     upsertRequest = request;
     return syncSuccessResponse(opts);
   });
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 2)],
+  }, [tombstone]));
 
   await app.ctx.restoreFromTrash(entry.id);
   const queued = queuedGroup(app.localStorage);
@@ -314,6 +492,9 @@ test('restore-safety: a newer tombstone conflict preserves latest attempted byte
   assert.strictEqual(app.ctx._serverTombstones.find(row => row.id === entry.data.originalId).row_version, 5);
   assert.match(app.localStorage.getItem('pokeinv_changelog') || '', /attempted local change preserved here/);
 
+  app.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 2)],
+  }, [tombstoneFor(entry.data.originalId, 5)]));
   await app.ctx.restoreFromTrash(entry.id);
   assert.strictEqual(queuedGroup(app.localStorage).length, 1);
   assert.strictEqual(queuedGroup(app.localStorage)[0].operations[0].tombstone_version, 5,

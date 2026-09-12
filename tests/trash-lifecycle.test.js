@@ -35,6 +35,15 @@ function getDeleteStateV2(localStorage) {
   return JSON.parse(localStorage.getItem('_kjrDeleteStateV2'));
 }
 
+function serverTrashRow(entry, rowVersion = entry._serverVersion || 2) {
+  return {
+    id: entry.id,
+    data: entry.data,
+    row_version: rowVersion,
+    updated_at: entry.updated_at || (entry.data && entry.data.deletedAt) || '2026-09-10T00:00:00.000Z',
+  };
+}
+
 async function queuedRestoreFixture(id, tombstoneVersion) {
   const deletedAt = '2026-09-04T00:00:00.000Z';
   const tombstone = { table: 'singles', id, row_version: tombstoneVersion, deleted_at: deletedAt };
@@ -51,6 +60,9 @@ async function queuedRestoreFixture(id, tombstoneVersion) {
   first.grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
   first.ctx._serverTombstones = [tombstone];
   first.ctx._syncPullLoaded = true;
+  first.fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry)],
+  }, [tombstone]));
   await first.ctx.restoreFromTrash(entry.id);
   const storage = copyStorage(first.localStorage);
   storage._kjrServerTombstonesV1 = JSON.stringify([tombstone]);
@@ -468,6 +480,34 @@ test('trash-lifecycle: restoreFromTrash - the row returns to its original table 
   assert.strictEqual(DB.trash.length, 0, 'the trash entry is gone after a successful restore');
 });
 
+test('trash-lifecycle: localhost restore clears a duplicate durable pending Trash copy', async () => {
+  const entry = {
+    id: 'trash_local_pending_restore',
+    data: {
+      originalTable: 'singles', originalId: 'local_pending_restore',
+      item: { id: 'local_pending_restore', name: 'Pending local recovery', status: 'Available' },
+      deletedAt: new Date().toISOString(),
+    },
+    updated_at: new Date().toISOString(),
+  };
+  const { ctx, grab, localStorage } = await loadApp({
+    location: LOCALHOST_LOCATION,
+    seed: { singles: [] },
+    localStorage: { _kjrLocalTrash: JSON.stringify([entry]) },
+  });
+  assert.strictEqual(ctx._queuePendingTrash(entry), true);
+
+  await ctx.restoreFromTrash(entry.id);
+
+  const { DB } = grab('DB');
+  assert.ok(DB.singles.some(row => row.id === entry.data.originalId), 'the item is restored locally');
+  assert.strictEqual(DB.trash.length, 0, 'the local Trash row is removed');
+  assert.deepStrictEqual(JSON.parse(localStorage.getItem('_kjrLocalTrash')), [],
+    'the local Trash store is empty');
+  assert.deepStrictEqual(JSON.parse(localStorage.getItem('_kjrPendingTrashWrites')), [],
+    'the duplicate pending Trash copy is consumed');
+});
+
 test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore', async () => {
   const entry = {
     id: 'trash_restore_1',
@@ -487,6 +527,9 @@ test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore'
   grab('DB').DB.trash = [{ ...entry, _serverVersion: 3 }];
   ctx._serverTombstones = [{ table: 'singles', id: 'restore_1', row_version: 4, deleted_at: entry.data.deletedAt }];
   ctx._syncPullLoaded = true;
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 3)],
+  }, [{ table: 'singles', id: 'restore_1', row_version: 4, deleted_at: entry.data.deletedAt }]));
 
   const messages = [];
   ctx.toast = message => messages.push(message);
@@ -772,7 +815,8 @@ test('trash-lifecycle: restore queued immediately after an already-tombstoned de
   const { ctx, fetchMock, localStorage, grab } = await loadApp();
   grab('DB').DB.singles = grab('DB').DB.singles.filter(row => row.id !== id);
   grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
-  ctx._serverTombstones = [{ table: 'singles', id, row_version: 3, deleted_at: entry.data.deletedAt }];
+  const tombstone = { table: 'singles', id, row_version: 3, deleted_at: entry.data.deletedAt };
+  ctx._serverTombstones = [tombstone];
   ctx._syncPullLoaded = true;
   const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
   cache.singles = cache.singles.filter(row => row.id !== id);
@@ -788,6 +832,9 @@ test('trash-lifecycle: restore queued immediately after an already-tombstoned de
     'the obsolete delete retry is settled before restore begins');
   assert.strictEqual(grab('DB').DB.singles.some(row => row.id === id), false);
 
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 2)],
+  }, [tombstone]));
   await ctx.restoreFromTrash(entry.id);
   assert.strictEqual(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2')).length, 1,
     'the inverse transaction is durable immediately after local settlement');
@@ -888,6 +935,9 @@ test('trash-lifecycle: restore aborts before DB or cloud writes when the server 
   grab('DB').DB.trash = [{ ...entry, _serverVersion: 2 }];
   ctx._serverTombstones = [];
   ctx._syncPullLoaded = true;
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 2)],
+  }, []));
 
   await ctx.restoreFromTrash(entry.id);
   assert.strictEqual(grab('DB').DB.singles.some(row => row.id === 'restore_fail_closed'), false);
@@ -912,6 +962,9 @@ test('trash-lifecycle: restore acknowledgement rebases onto a later local edit w
   state.trash = [{ ...entry, _serverVersion: 2 }];
   ctx._serverTombstones = [{ table: 'singles', id: 'restore_cache_race', row_version: 3, deleted_at: entry.data.deletedAt }];
   ctx._syncPullLoaded = true;
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    trash: [serverTrashRow(entry, 2)],
+  }, [{ table: 'singles', id: 'restore_cache_race', row_version: 3, deleted_at: entry.data.deletedAt }]));
   await ctx.restoreFromTrash(entry.id);
   let calls = 0;
   fetchMock.route('/sync/v2/mutate', (url, opts) => {

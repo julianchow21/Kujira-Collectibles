@@ -3663,12 +3663,18 @@ async function _flushMutationGroups() {
   return true;
 }
 
-function saveData() {
+function saveData(options) {
   // 1. Write to localStorage immediately - this is the source of truth
-  const payload = JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases });
+  const cachePayload = options && options.cachePayload;
+  const payload = JSON.stringify(cachePayload || {
+    singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases
+  });
+  let saved = false;
   try {
     localStorage.setItem(STORAGE_KEY, payload);
     bumpLocalVersion();
+    saved = true;
   } catch(e) {
     // Quota hit. The version snapshots (full-DB backups) are by far the
     // heaviest thing in localStorage and are NOT critical - they're mirrored
@@ -3678,6 +3684,7 @@ function saveData() {
       _evictVersionBlobsFromLS();
       localStorage.setItem(STORAGE_KEY, payload);
       bumpLocalVersion();
+      saved = true;
       console.info('[storage] reclaimed space from version snapshots - inventory saved');
     } catch(e2) {
       console.warn('localStorage still full after eviction:', e2);
@@ -3690,6 +3697,7 @@ function saveData() {
   // 2. Debounce cloud write by 1s
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(_flushDirtyToSupabase, 1000);
+  return saved;
 }
 
 // Timestamp-only persistence must never write the whole in-memory DB after an
@@ -8973,25 +8981,75 @@ async function fetchTrash(options) {
     // Cloud reads fail outright on localhost by design (no network path to
     // the DB proxy) - serve the local-only trash store instead, newest first,
     // same shape sbFetchPaged would return.
-    return [...DB.trash].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    return _mergeRecoverableTrashEntries(DB.trash);
   }
   try {
     if (force) await _pullSyncState({ force: true });
     else if (!_syncPullLoaded) await _pullSyncState();
-    return [...DB.trash].sort((a, b) => new Date(b._updatedAt || b.updated_at || 0) - new Date(a._updatedAt || a.updated_at || 0));
+    return _mergeRecoverableTrashEntries(DB.trash);
   } catch(e) {
     console.warn('Fetch trash failed:', e);
     return null; // signals a failed fetch, distinct from a genuinely empty trash
   }
 }
 
+// The server snapshot is authoritative, but a delete whose CAS transaction is
+// still waiting for the network has only its durable local Trash copy. Keep
+// that recovery promise visible without allowing a stale display row to win
+// over a current server row with the same Trash id.
+function _trashSourceKey(entry) {
+  const data = entry && entry.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data) ||
+      typeof data.originalTable !== 'string' || typeof data.originalId !== 'string' || !data.originalId) return null;
+  const table = _tblName(data.originalTable);
+  return SYNCED_TABLES.includes(table) ? table + '/' + data.originalId : null;
+}
+
+function _mergeRecoverableTrashEntries(serverEntries) {
+  const byId = new Map();
+  const serverRows = Array.isArray(serverEntries) ? serverEntries : [];
+  const serverSources = new Set(serverRows.map(_trashSourceKey).filter(Boolean));
+  const tombstoneSources = new Set((_serverTombstones || []).map(row =>
+    row && SYNCED_TABLES.includes(row.table) && typeof row.id === 'string' ? row.table + '/' + row.id : null
+  ).filter(Boolean));
+  const add = entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        typeof entry.id !== 'string' || !entry.id) return;
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  };
+  serverRows.forEach(add);
+  _readPendingTrashEntries().forEach(entry => {
+    const source = _trashSourceKey(entry);
+    // A current server Trash row for the same source supersedes an older
+    // locally queued snapshot, even when a previous delete used another
+    // Trash id. This prevents stale bytes from becoming a second restore
+    // candidate after a fresh pull.
+    if (source && serverSources.has(source)) return;
+    // A CAS delete creates the tombstone and Trash row together. Once a fresh
+    // pull proves the tombstone remains but its Trash source is gone, an old
+    // pending snapshot must not resurrect a permanently purged entry.
+    if (!isLocalhostPreview() && source && tombstoneSources.has(source) && !serverSources.has(source)) return;
+    add(entry);
+  });
+  return [...byId.values()].sort((a, b) =>
+    new Date(b._updatedAt || b.updated_at || 0) - new Date(a._updatedAt || a.updated_at || 0));
+}
+
 async function hardDeleteTrashEntry(trashId) {
   if (isLocalhostPreview()) {
-    // Never write to prod from a local preview - remove the local-only entry.
+    // Never write to prod from a local preview - remove the local-only entry
+    // and any durable pending copy of the same snapshot. The two keys are
+    // updated in order, with the recovery copy retained if either write fails.
     const before = DB.trash.slice();
+    const hadPending = _readPendingTrashEntries().some(entry => entry && entry.id === trashId);
     DB.trash = DB.trash.filter(e => e.id !== trashId);
-    if (_saveLocalTrash()) return true;
+    if (!_saveLocalTrash()) {
+      DB.trash = before;
+      return false;
+    }
+    if (!hadPending || _removePendingTrashEntry(trashId)) return true;
     DB.trash = before;
+    _saveLocalTrash();
     return false;
   }
   try {
@@ -9016,11 +9074,43 @@ async function hardDeleteTrashEntry(trashId) {
   } catch(_) { console.warn('Hard delete failed'); return false; }
 }
 
+function _restoreEntryValidationError(trashId, entry) {
+  if (typeof trashId !== 'string' || !trashId || trashId.length > 256 ||
+      !entry || typeof entry !== 'object' || Array.isArray(entry) || entry.id !== trashId) {
+    return 'Restore stopped because the Trash identity is invalid. Refresh and try again.';
+  }
+  const data = entry.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return 'Restore stopped because this Trash entry is malformed. Refresh and try again.';
+  }
+  const originalTable = data.originalTable;
+  const item = data.item;
+  if (typeof originalTable !== 'string' || !originalTable) {
+    return 'Restore stopped because this Trash entry has no valid table. Refresh and try again.';
+  }
+  const isSavedChart = originalTable === 'savedChart';
+  const isInventoryTable = Object.prototype.hasOwnProperty.call(DB, originalTable) &&
+    SYNCED_TABLES.includes(_tblName(originalTable));
+  if (!isSavedChart && !isInventoryTable) {
+    return 'Restore stopped because this Trash entry refers to an unknown table. Refresh and try again.';
+  }
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return 'Restore stopped because this Trash entry has no recoverable item data. Refresh and try again.';
+  }
+  if (typeof data.originalId !== 'string' || !data.originalId || data.originalId.length > 256 ||
+      typeof item.id !== 'string' || !item.id || item.id.length > 256 || item.id !== data.originalId) {
+    return 'Restore stopped because this Trash entry does not match its item. Refresh and try again.';
+  }
+  return null;
+}
+
 async function restoreFromTrash(trashId) {
-  const entries = await fetchTrash();
+  const entries = await fetchTrash({ force: true });
   if (entries === null) { toastError('Could not reach Trash - check your connection and retry'); return; }
   const entry   = entries.find(e => e.id === trashId);
   if (!entry) { toastError('Trash entry not found'); return; }
+  const validationError = _restoreEntryValidationError(trashId, entry);
+  if (validationError) { toastError(validationError); return; }
   const { originalTable, item } = entry.data;
   if (!isLocalhostPreview() && originalTable !== 'savedChart') {
     if (!DB[originalTable]) { toastError('Unknown inventory table'); return; }
@@ -9354,6 +9444,191 @@ async function deleteItem(id, table) {
 // a data fingerprint at open time. A later local or cross-tab change must stop
 // the save before undo, dirty-state, cache, or changelog side effects run.
 const _modalEditContexts = { singles: null, slabs: null, sales: null };
+const _MODAL_CACHE_KEYS = ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases'];
+
+function _readModalCache() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const cache = JSON.parse(raw);
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return null;
+    for (const key of _MODAL_CACHE_KEYS) if (!Array.isArray(cache[key])) return null;
+    return cache;
+  } catch (_) { return null; }
+}
+
+function _cloneModalCache(cache) {
+  try {
+    const snapshot = {};
+    for (const key of _MODAL_CACHE_KEYS) snapshot[key] = JSON.parse(JSON.stringify(cache[key]));
+    return snapshot;
+  } catch (_) { return null; }
+}
+
+function _modalRowsEqual(left, right) {
+  if (left == null || right == null) return left == null && right == null;
+  return _modalEditFingerprint(left) === _modalEditFingerprint(right);
+}
+
+function _mergeModalRows(baseRows, currentRows, latestRows) {
+  const baseById = new Map((baseRows || []).filter(row => row && typeof row.id === 'string').map(row => [row.id, row]));
+  const currentById = new Map((currentRows || []).filter(row => row && typeof row.id === 'string').map(row => [row.id, row]));
+  const latestById = new Map((latestRows || []).filter(row => row && typeof row.id === 'string').map(row => [row.id, row]));
+  const ids = [];
+  for (const rows of [latestRows, currentRows, baseRows]) {
+    for (const row of rows || []) {
+      if (row && typeof row.id === 'string' && !ids.includes(row.id)) ids.push(row.id);
+    }
+  }
+  const merged = [];
+  for (const id of ids) {
+    const base = baseById.get(id) || null;
+    const current = currentById.get(id) || null;
+    const latest = latestById.get(id) || null;
+    if (_modalRowsEqual(current, base)) { if (latest) merged.push(latest); continue; }
+    if (_modalRowsEqual(latest, base)) { if (current) merged.push(current); continue; }
+    if (_modalRowsEqual(current, latest)) { if (current) merged.push(current); continue; }
+    // Both tabs changed the same unrelated row. Do not choose one while the
+    // cache still stores the other, or this modal save would silently drop it.
+    return null;
+  }
+  return merged;
+}
+
+function _modalCacheSnapshot() {
+  const cache = _readModalCache();
+  return cache ? _cloneModalCache(cache) : null;
+}
+
+function _modalCachePayload(context, table, id, replacement) {
+  if (!context || !context.cacheSnapshot) return null;
+  const latest = _readModalCache();
+  if (!latest) return null;
+  const key = _dbKey(table);
+  const latestRow = latest[key].find(row => row && row.id === id) || null;
+  if (!latestRow || !_modalEditRowMatchesContext(latestRow, context, id)) return null;
+  const current = {};
+  for (const cacheKey of _MODAL_CACHE_KEYS) {
+    current[cacheKey] = Array.isArray(DB[cacheKey]) ? DB[cacheKey].slice() : [];
+  }
+  let replaced = false;
+  current[key] = current[key].map(row => {
+    if (row && row.id === id) { replaced = true; return replacement; }
+    return row;
+  });
+  if (!replaced) current[key].push(replacement);
+  const merged = {};
+  for (const cacheKey of _MODAL_CACHE_KEYS) {
+    const rows = _mergeModalRows(context.cacheSnapshot[cacheKey], current[cacheKey], latest[cacheKey]);
+    if (!rows) return null;
+    merged[cacheKey] = rows;
+  }
+  return merged;
+}
+
+function _applyModalCachePayload(cache) {
+  if (!cache) return;
+  for (const key of _MODAL_CACHE_KEYS) {
+    if (Array.isArray(cache[key])) DB[key] = cache[key].map(row => JSON.parse(JSON.stringify(row)));
+  }
+}
+
+function _cloneModalRows(rows) {
+  return JSON.parse(JSON.stringify(Array.isArray(rows) ? rows : []));
+}
+
+function _captureModalSaveState() {
+  try {
+    const db = {};
+    const dirty = {};
+    const revisions = {};
+    const dirtyMarkerRaws = new Map();
+    for (const key of (_listDirtyV2MarkerKeys() || [])) dirtyMarkerRaws.set(key, localStorage.getItem(key));
+    for (const key of _MODAL_CACHE_KEYS) {
+      db[key] = _cloneModalRows(DB[key]);
+      dirty[key] = new Set(_dirty[key] || []);
+      revisions[key] = new Map(_dirtyRevisions[key] || []);
+    }
+    return {
+      db,
+      dirty,
+      revisions,
+      markerTokens: new Set(_readDirtyV2Markers().map(marker => marker.token)),
+      dirtyRaw: localStorage.getItem(DIRTY_LS_KEY),
+      dirtyMarkerRaws,
+      syntheticTokens: new Set(_syntheticDirtyRevisionTokens),
+      undo: undoStack.slice(),
+      redo: redoStack.slice(),
+      storageRaw: localStorage.getItem(STORAGE_KEY),
+      version: localStorage.getItem(LS_VERSION_KEY),
+      versionTime: localStorage.getItem(LS_VERSION_KEY + '_time'),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function _restoreModalSaveState(state, cachePayload) {
+  if (!state) return;
+  for (const key of _MODAL_CACHE_KEYS) {
+    DB[key] = _cloneModalRows(state.db[key]);
+    if (_dirty[key]) {
+      _dirty[key].clear();
+      for (const id of state.dirty[key] || []) _dirty[key].add(id);
+    }
+    if (_dirtyRevisions[key]) {
+      _dirtyRevisions[key].clear();
+      for (const [id, token] of state.revisions[key] || []) _dirtyRevisions[key].set(id, token);
+    }
+  }
+  _syntheticDirtyRevisionTokens.clear();
+  for (const token of state.syntheticTokens || []) _syntheticDirtyRevisionTokens.add(token);
+  undoStack.length = 0;
+  state.undo.forEach(snapshot => undoStack.push(snapshot));
+  redoStack.length = 0;
+  state.redo.forEach(snapshot => redoStack.push(snapshot));
+
+  // markDirty() may have created a fresh marker before saveData() reported a
+  // quota failure. Remove only this tab's markers that did not exist before
+  // the attempted save, then restore the legacy mirror only when no foreign
+  // marker changed during the failed commit.
+  try {
+    const beforeMarkers = state.dirtyMarkerRaws || new Map();
+    let foreignMarkerChanged = false;
+    for (const key of (_listDirtyV2MarkerKeys() || [])) {
+      const raw = localStorage.getItem(key);
+      if (!beforeMarkers.has(key)) {
+        const token = key.slice(DIRTY_V2_PREFIX.length);
+        if (token.startsWith(_dirtyTabId + ':')) localStorage.removeItem(key);
+        else foreignMarkerChanged = true;
+      } else if (raw !== beforeMarkers.get(key)) {
+        foreignMarkerChanged = true;
+      }
+    }
+    if (!foreignMarkerChanged) {
+      if (state.dirtyRaw === null) localStorage.removeItem(DIRTY_LS_KEY);
+      else localStorage.setItem(DIRTY_LS_KEY, state.dirtyRaw);
+    } else {
+      _persistDirty();
+    }
+  } catch (_) {}
+
+  // A failed localStorage write should leave the previous inventory bytes in
+  // place when the attempted payload is the value currently visible. Avoid
+  // clobbering a concurrent writer that did not participate in this modal
+  // critical section.
+  try {
+    const attempted = JSON.stringify(cachePayload);
+    if (localStorage.getItem(STORAGE_KEY) === attempted) {
+      if (state.storageRaw === null) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, state.storageRaw);
+      if (state.version === null) localStorage.removeItem(LS_VERSION_KEY);
+      else localStorage.setItem(LS_VERSION_KEY, state.version);
+      if (state.versionTime === null) localStorage.removeItem(LS_VERSION_KEY + '_time');
+      else localStorage.setItem(LS_VERSION_KEY + '_time', state.versionTime);
+    }
+  } catch (_) {}
+}
 
 function _modalEditFingerprint(row) {
   if (!row || typeof row !== 'object') return '';
@@ -9372,7 +9647,29 @@ function _captureModalEditContext(table, row) {
     expectedVersion: Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0,
     updatedAt: row._updatedAt || '',
     fingerprint: _modalEditFingerprint(row),
+    cacheSnapshot: _modalCacheSnapshot(),
   };
+}
+
+function _modalEditRowMatchesContext(row, context, id) {
+  return !!row && !!context && context.id === id &&
+    (Number.isSafeInteger(row._serverVersion) ? row._serverVersion === context.expectedVersion : context.expectedVersion === 0) &&
+    _modalEditFingerprint(row) === context.fingerprint;
+}
+
+function _refreshModalRowFromCache(table, id, row) {
+  const key = _dbKey(table);
+  if (!Array.isArray(DB[key])) return;
+  if (!row) DB[key] = DB[key].filter(candidate => candidate && candidate.id !== id);
+  else {
+    const replacement = JSON.parse(JSON.stringify(row));
+    const index = DB[key].findIndex(candidate => candidate && candidate.id === id);
+    if (index >= 0) DB[key][index] = replacement;
+    else DB[key].push(replacement);
+  }
+  if (table === 'singles' && typeof renderSingles === 'function') renderSingles();
+  if (table === 'slabs' && typeof renderSlabs === 'function') renderSlabs();
+  if (table === 'sales' && typeof renderSales === 'function') renderSales();
 }
 
 function _rejectStaleModalEdit(table, id) {
@@ -9382,10 +9679,24 @@ function _rejectStaleModalEdit(table, id) {
     toast('This record was deleted elsewhere. Your edits remain in this form. Close it and check Trash.', 6000, true);
     return true;
   }
-  if (!context || context.id !== id ||
-      Number.isSafeInteger(current._serverVersion) && current._serverVersion !== context.expectedVersion ||
-      !Number.isSafeInteger(current._serverVersion) && context.expectedVersion !== 0 ||
-      _modalEditFingerprint(current) !== context.fingerprint) {
+  const latest = _readModalCache();
+  if (!latest || !context || !context.cacheSnapshot) {
+    toast('This record could not be verified from the latest local copy. Your edits remain in this form. Try again after storage is available.', 6000, true);
+    return true;
+  }
+  const key = _dbKey(table);
+  const latestRow = latest[key].find(row => row && row.id === id) || null;
+  if (!latestRow) {
+    _refreshModalRowFromCache(table, id, null);
+    toast('This record was deleted elsewhere. Your edits remain in this form. Close it and check Trash.', 6000, true);
+    return true;
+  }
+  if (!_modalEditRowMatchesContext(latestRow, context, id)) {
+    _refreshModalRowFromCache(table, id, latestRow);
+    toast('This record changed elsewhere. Your edits remain in this form. Reopen it to load the latest data before saving.', 6000, true);
+    return true;
+  }
+  if (!_modalEditRowMatchesContext(current, context, id)) {
     toast('This record changed elsewhere. Your edits remain in this form. Reopen it to load the latest data before saving.', 6000, true);
     return true;
   }
@@ -9458,8 +9769,23 @@ async function kjrGuardSave(btn, fn) {
   }
 }
 
+function _runModalEditSave(table, id, task) {
+  if (!id) return task();
+  const run = () => _queueCloudRowOp(table, [id], task);
+  if (typeof navigator === 'undefined' || !navigator.locks || typeof navigator.locks.request !== 'function') return run();
+  // Full-row modal saves share one localStorage blob. The row lock still
+  // orders the matching cloud operation, while this wider lock makes the
+  // fresh-read, three-way merge and synchronous cache write one critical
+  // section for different rows in separate tabs.
+  return navigator.locks.request('kjr-inventory-cache', { mode: 'exclusive' }, run);
+}
+
 function saveSingle() {
   const id = document.getElementById('ms-id').value;
+  return _runModalEditSave('singles', id, () => _saveSingleNow(id));
+}
+
+function _saveSingleNow(id) {
   if (id && _rejectStaleModalEdit('singles', id)) return;
   const name = document.getElementById('ms-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
@@ -9483,7 +9809,6 @@ function saveSingle() {
     }
     _validated[c.field] = r.value;
   }
-  snapshotForUndo();
   // Coerce numeric fields on save so downstream reducers never have to guess.
   // Empty strings stay empty so the UI can show '-' rather than '0'.
   const _cost   = document.getElementById('ms-cost').value;
@@ -9511,11 +9836,12 @@ function saveSingle() {
   // format (dates → "D MMM YYYY", numbers → number, language UPPER, etc.).
   const norm = normalizeRecord('singles', item);
   let before = null;
+  let editIndex = -1;
   if (id) {
-    const idx = DB.singles.findIndex(i => i.id === id);
-    if (idx >= 0) {
-      before = { ...DB.singles[idx] };
-      norm.priceHistory = DB.singles[idx].priceHistory||[];
+    editIndex = DB.singles.findIndex(i => i.id === id);
+    if (editIndex >= 0) {
+      before = { ...DB.singles[editIndex] };
+      norm.priceHistory = DB.singles[editIndex].priceHistory||[];
       _preserveModalEditStamp(norm, _modalEditContexts.singles);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
@@ -9523,9 +9849,37 @@ function saveSingle() {
       // clearing the field back to blank drops it too so a future auto-
       // resolve isn't shown against a stale label.
       if (norm.tcgdexId && norm.tcgdexId === before.tcgdexId) norm._tcgdexResolvedName = before._tcgdexResolvedName;
-      DB.singles[idx] = norm;
     }
+    const modalCachePayload = _modalCachePayload(_modalEditContexts.singles, 'singles', id, norm);
+    if (!modalCachePayload) {
+      if (!_rejectStaleModalEdit('singles', id)) {
+        toast('This record could not be saved because another local edit needs review. Your edits remain in this form. Reopen it after the other tab finishes.', 6000, true);
+      }
+      return;
+    }
+    const modalSaveState = _captureModalSaveState();
+    if (!modalSaveState) {
+      toast('This record could not be saved safely. Your edits remain in this form. Try again.', 6000, true);
+      return;
+    }
+    snapshotForUndo();
+    if (editIndex >= 0) DB.singles[editIndex] = norm;
+    _applyModalCachePayload(modalCachePayload);
+    markDirty('singles', norm.id);
+    if (!saveData({ cachePayload: modalCachePayload })) {
+      _restoreModalSaveState(modalSaveState, modalCachePayload);
+      toast('This edit could not be saved locally. Your edits remain in this form. Free storage and try again.', 6000, true);
+      return;
+    }
+    closeModal('modal-single', true); renderSingles(); // force: already saved
+    toast('Updated!');
+    // Audit: full snapshot on add, field-level diff on edit.
+    const extra = _clDiff('singles', before, norm) || 'no field changes';
+    clLog('edit', 'singles', norm.name, extra);
+    _modalEditContexts.singles = null;
+    return;
   } else {
+    snapshotForUndo();
     DB.singles.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', norm.id);
   }
@@ -9533,9 +9887,8 @@ function saveSingle() {
   saveData(); closeModal('modal-single', true); renderSingles(); // force: already saved
   toast(id ? 'Updated!' : 'Added!');
   // Audit: full snapshot on add, field-level diff on edit.
-  const extra = id ? (_clDiff('singles', before, norm) || 'no field changes') : _clSummary('singles', norm);
+  const extra = _clSummary('singles', norm);
   clLog(id ? 'edit' : 'add', 'singles', norm.name, extra);
-  if (id) _modalEditContexts.singles = null;
 }
 
 // =========== SLABS ===========
@@ -9797,6 +10150,10 @@ function openEditSlab(id) {
 
 function saveSlab() {
   const id = document.getElementById('msl-id').value;
+  return _runModalEditSave('slabs', id, () => _saveSlabNow(id));
+}
+
+function _saveSlabNow(id) {
   if (id && _rejectStaleModalEdit('slabs', id)) return;
   const name = document.getElementById('msl-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
@@ -9820,7 +10177,6 @@ function saveSlab() {
     }
     _validated[c.field] = r.value;
   }
-  snapshotForUndo();
   // Coerce numeric fields on save (see saveSingle comment).
   const _slCost   = document.getElementById('msl-cost').value;
   const _slMarket = document.getElementById('msl-market').value;
@@ -9846,17 +10202,45 @@ function saveSlab() {
   };
   const norm = normalizeRecord('slabs', item);
   let beforeSlab = null;
+  let editIndex = -1;
   if (id) {
-    const idx = DB.slabs.findIndex(i => i.id === id);
-    if (idx >= 0) {
-      beforeSlab = { ...DB.slabs[idx] };
-      norm.priceHistory = DB.slabs[idx].priceHistory||[];
+    editIndex = DB.slabs.findIndex(i => i.id === id);
+    if (editIndex >= 0) {
+      beforeSlab = { ...DB.slabs[editIndex] };
+      norm.priceHistory = DB.slabs[editIndex].priceHistory||[];
       _preserveModalEditStamp(norm, _modalEditContexts.slabs);
       // Same confirm-name carry-over rule as saveSingle.
       if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
-      DB.slabs[idx] = norm;
     }
+    const modalCachePayload = _modalCachePayload(_modalEditContexts.slabs, 'slabs', id, norm);
+    if (!modalCachePayload) {
+      if (!_rejectStaleModalEdit('slabs', id)) {
+        toast('This record could not be saved because another local edit needs review. Your edits remain in this form. Reopen it after the other tab finishes.', 6000, true);
+      }
+      return;
+    }
+    const modalSaveState = _captureModalSaveState();
+    if (!modalSaveState) {
+      toast('This record could not be saved safely. Your edits remain in this form. Try again.', 6000, true);
+      return;
+    }
+    snapshotForUndo();
+    if (editIndex >= 0) DB.slabs[editIndex] = norm;
+    _applyModalCachePayload(modalCachePayload);
+    markDirty('slabs', norm.id);
+    if (!saveData({ cachePayload: modalCachePayload })) {
+      _restoreModalSaveState(modalSaveState, modalCachePayload);
+      toast('This edit could not be saved locally. Your edits remain in this form. Free storage and try again.', 6000, true);
+      return;
+    }
+    closeModal('modal-slab', true); renderSlabs(); // force: already saved
+    toast('Updated!');
+    const extraSlab = _clDiff('slabs', beforeSlab, norm) || 'no field changes';
+    clLog('edit', 'slabs', norm.name, extraSlab);
+    _modalEditContexts.slabs = null;
+    return;
   } else {
+    snapshotForUndo();
     DB.slabs.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', norm.id);
   }
@@ -10197,6 +10581,10 @@ function calcSaleProfit() {
 
 function saveSale() {
   const id = document.getElementById('msa-id').value;
+  return _runModalEditSave('sales', id, () => _saveSaleNow(id));
+}
+
+function _saveSaleNow(id) {
   if (id && _rejectStaleModalEdit('sales', id)) return;
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
@@ -10230,7 +10618,6 @@ function saveSale() {
     return;
   }
   if (dateAcquired) daysHeld = _kjrDaysHeld(dateAcquired, dateSold);
-  snapshotForUndo();
   const item = {
     id: id || genId('sale'),
     dateSold,
@@ -10247,13 +10634,45 @@ function saveSale() {
   };
   const norm = normalizeRecord('sales', item);
   let beforeSale = null;
+  let editIndex = -1;
   if (id) {
-    const prev = DB.sales.find(s => s.id === id);
-    if (prev) beforeSale = { ...prev };
-    _preserveModalEditStamp(norm, _modalEditContexts.sales);
-    DB.sales = DB.sales.map(s => s.id === id ? norm : s);
+    editIndex = DB.sales.findIndex(s => s.id === id);
+    if (editIndex >= 0) {
+      beforeSale = { ...DB.sales[editIndex] };
+      _preserveModalEditStamp(norm, _modalEditContexts.sales);
+    }
+    const modalCachePayload = _modalCachePayload(_modalEditContexts.sales, 'sales', id, norm);
+    if (!modalCachePayload) {
+      if (!_rejectStaleModalEdit('sales', id)) {
+        toast('This record could not be saved because another local edit needs review. Your edits remain in this form. Reopen it after the other tab finishes.', 6000, true);
+      }
+      return;
+    }
+    const modalSaveState = _captureModalSaveState();
+    if (!modalSaveState) {
+      toast('This record could not be saved safely. Your edits remain in this form. Try again.', 6000, true);
+      return;
+    }
+    snapshotForUndo();
+    if (editIndex >= 0) DB.sales[editIndex] = norm;
+    _applyModalCachePayload(modalCachePayload);
+    markDirty('sales', norm.id);
+    if (!saveData({ cachePayload: modalCachePayload })) {
+      _restoreModalSaveState(modalSaveState, modalCachePayload);
+      toast('This edit could not be saved locally. Your edits remain in this form. Free storage and try again.', 6000, true);
+      return;
+    }
+    closeModal('modal-sale', true); renderSales(); // force: already saved
+    toast('Updated!');
+    const extraSale = _clDiff('sales', beforeSale, norm) || 'no field changes';
+    clLog('edit', 'sales', product, extraSale);
+    _modalEditContexts.sales = null;
+    return;
+  } else {
+    snapshotForUndo();
+    DB.sales.unshift(norm);
+    if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('sales', norm.id);
   }
-  else { DB.sales.unshift(norm); if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('sales', norm.id); }
   markDirty('sales', norm.id);
   saveData(); closeModal('modal-sale', true); renderSales(); // force: already saved
   toast(id ? 'Updated!' : 'Sale recorded!');
@@ -10463,8 +10882,14 @@ function computeDashboardStats() {
     : (allTimeProfit / Math.max(1, allTimeRevenue - allTimeProfit)) * 100;
 
   // ── Counts ──
-  const singlesAvail = DB.singles.filter(i => (i.status||'Available') === 'Available').length;
-  const singlesSold  = DB.singles.filter(i => (i.status||'Available') === 'Sold').length;
+  // Singles can represent more than one physical card per row. Keep the
+  // dashboard's unit labels aligned with its cost and market calculations,
+  // while slabs remain one unit per row.
+  const singlesUnits = row => Math.max(1, parseInt(row.qty) || 1);
+  const singlesAvail = DB.singles.filter(i => (i.status||'Available') === 'Available')
+    .reduce((sum, row) => sum + singlesUnits(row), 0);
+  const singlesSold  = DB.singles.filter(i => (i.status||'Available') === 'Sold')
+    .reduce((sum, row) => sum + singlesUnits(row), 0);
   const slabsAvail   = DB.slabs.filter(i => (i.status||'Available') === 'Available').length;
   const slabsSold    = DB.slabs.filter(i => (i.status||'Available') === 'Sold').length;
   const totalItems   = singlesAvail + slabsAvail;

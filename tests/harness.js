@@ -445,7 +445,7 @@ function plain(x) {
 async function loadApp(opts) {
   opts = opts || {};
 
-  const localStorage = createLocalStorage();
+  const localStorage = opts.storage || createLocalStorage();
 
   // Seed localStorage BEFORE eval (app.js hydrates DB synchronously from this
   // during its own top-level initDB() call, before the first await).
@@ -483,7 +483,10 @@ async function loadApp(opts) {
     document,
     localStorage,
     sessionStorage,
-    navigator: { onLine: true, clipboard: {}, userAgent: 'test' }, // NO serviceWorker key by design
+    navigator: {
+      onLine: true, clipboard: {}, userAgent: 'test',
+      ...(opts.locks ? { locks: opts.locks } : {}),
+    }, // NO serviceWorker key by design
     location,
     history: { state: null, length: 1, pushState() {}, replaceState() {}, back() {}, forward() {}, go() {} },
     matchMedia: (q) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }),
@@ -632,6 +635,6 @@ async function loadApp(opts) {
 }
 
 module.exports = {
-  loadApp, makeSeed, createFetchMock, ROOT, isDate, plain,
+  loadApp, makeSeed, createFetchMock, createLocalStorage, ROOT, isDate, plain,
   jsonResponse, syncRequest, syncSuccessResponse, syncPullResponse, syncCalls, syncOperations,
 };

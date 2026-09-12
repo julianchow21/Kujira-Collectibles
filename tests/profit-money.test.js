@@ -152,8 +152,26 @@ test('profit-money: computeDashboardStats - hand-computed cost/market sums again
   assert.strictEqual(stats.mktEtb, 60);
   assert.strictEqual(stats.allTimeRevenue, 300);
   assert.strictEqual(stats.allTimeProfit, 100);
-  assert.strictEqual(stats.singlesAvail, 2);
+  assert.strictEqual(stats.singlesAvail, 3, 'available Singles count physical units, including qty 2');
   assert.strictEqual(stats.singlesSold, 1);
+});
+
+test('profit-money: computeDashboardStats counts available Singles units and excludes sold quantity', async () => {
+  const { ctx } = await loadApp({
+    seed: {
+      singles: [
+        { id: 'units-a', status: 'Available', qty: 2, costPrice: 10 },
+        { id: 'units-b', status: 'Available', qty: 1, costPrice: 20 },
+        { id: 'units-sold', status: 'Sold', qty: 9, costPrice: 30 },
+      ],
+      slabs: [{ id: 'unit-slab', status: 'Available', costPrice: 40 }],
+    },
+  });
+
+  const stats = plain(ctx.computeDashboardStats());
+  assert.strictEqual(stats.singlesAvail, 3, 'qty 2 + qty 1 = 3 available units');
+  assert.strictEqual(stats.singlesSold, 9, 'sold units remain separately counted');
+  assert.strictEqual(stats.totalItems, 4, 'total available units include one available slab');
 });
 
 test('profit-money: computeDashboardStats - an empty DB never produces NaN in any numeric stat', async () => {

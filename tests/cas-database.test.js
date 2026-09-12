@@ -1,11 +1,24 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 const IMAGE = 'postgres:17-alpine';
 const RUN_DOCKER = process.env.KJ_CAS_RUN_DOCKER === '1';
-const DOCKER_SKIP = RUN_DOCKER ? false : 'set KJ_CAS_RUN_DOCKER=1 to run the disposable PostgreSQL gate';
+const RUN_NATIVE = process.env.KJ_CAS_RUN_NATIVE === '1';
+const NATIVE_PG_BIN = process.env.KJ_CAS_PG_BIN || '';
+const NATIVE_MAX_KIB = 200 * 1024;
+const NATIVE_MIN_FREE_KIB = 1024 * 1024;
+const CAS_SKIP = RUN_DOCKER
+  ? false
+  : (RUN_NATIVE ? false : 'set KJ_CAS_RUN_DOCKER=1 or KJ_CAS_RUN_NATIVE=1 to run the disposable PostgreSQL gate');
+
+if (RUN_DOCKER && RUN_NATIVE) {
+  throw new Error('KJ_CAS_RUN_DOCKER=1 and KJ_CAS_RUN_NATIVE=1 are mutually exclusive');
+}
+
 const TABLES = [
   'singles',
   'slabs',
@@ -22,7 +35,90 @@ function safeSqlLiteral(value) {
   return "'" + String(value).replaceAll("'", "''") + "'";
 }
 
+function isNativeContainer(container) {
+  return typeof container === 'object' && container !== null && container.kind === 'native';
+}
+
+function nativeTool(name) {
+  return path.join(NATIVE_PG_BIN, name);
+}
+
+function nativeChildEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('PG')) delete env[key];
+  }
+  env.PATH = NATIVE_PG_BIN + path.delimiter + (process.env.PATH || '');
+  env.PGPASSFILE = '/dev/null';
+  return env;
+}
+
+function pgCtlQuote(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+function nativePostgresOptions(container) {
+  return [
+    '-k ' + pgCtlQuote(container.socketDir),
+    "-c listen_addresses=''",
+    '-c unix_socket_permissions=0700',
+    "-c unix_socket_group=''"
+  ].join(' ');
+}
+
+function measureNativeResources(container) {
+  if (!isNativeContainer(container) || !fs.existsSync(container.dataDir)) return;
+
+  const usage = spawnSync('du', ['-sk', container.dataDir], {
+    encoding: 'utf8'
+  });
+  if (usage.status !== 0) {
+    throw new Error('du failed for native PostgreSQL cluster: ' + usage.stderr + usage.stdout);
+  }
+  const usageKiB = Number(usage.stdout.trim().split(/\s+/)[0]);
+  if (!Number.isFinite(usageKiB)) {
+    throw new Error('du returned no native PostgreSQL cluster size');
+  }
+
+  const free = spawnSync('df', ['-k', container.dataDir], {
+    encoding: 'utf8'
+  });
+  if (free.status !== 0) {
+    throw new Error('df failed for native PostgreSQL cluster: ' + free.stderr + free.stdout);
+  }
+  const freeFields = free.stdout.trim().split(/\r?\n/).at(-1).trim().split(/\s+/);
+  const freeKiB = Number(freeFields[3]);
+  if (!Number.isFinite(freeKiB)) {
+    throw new Error('df returned no available native PostgreSQL cluster space');
+  }
+
+  container.peakKiB = Math.max(container.peakKiB, usageKiB);
+  container.minFreeKiB = Math.min(container.minFreeKiB, freeKiB);
+  if (container.peakKiB > NATIVE_MAX_KIB) {
+    throw new Error(
+      'native PostgreSQL cluster exceeded 200 MiB: ' + container.peakKiB + ' KiB'
+    );
+  }
+  if (container.minFreeKiB < NATIVE_MIN_FREE_KIB) {
+    throw new Error(
+      'native PostgreSQL filesystem has less than 1 GiB free: '
+        + container.minFreeKiB + ' KiB'
+    );
+  }
+}
+
 function psqlArgs(container) {
+  if (isNativeContainer(container)) {
+    return [
+      '-X',
+      '-v', 'ON_ERROR_STOP=1',
+      '-h', container.socketDir,
+      '-U', 'postgres',
+      '-d', 'postgres',
+      '-w',
+      '-At', '-q'
+    ];
+  }
   return [
     'exec', '-i', container, 'psql', '-X',
     '-v', 'ON_ERROR_STOP=1',
@@ -34,10 +130,17 @@ function psqlArgs(container) {
 
 function runPsql(container, sql, role = 'postgres') {
   const roleSql = role === 'postgres' ? '' : 'set role ' + role + ';\n';
-  return spawnSync('docker', psqlArgs(container), {
-    input: roleSql + sql,
-    encoding: 'utf8'
-  });
+  const result = spawnSync(
+    isNativeContainer(container) ? nativeTool('psql') : 'docker',
+    psqlArgs(container),
+    {
+      input: roleSql + sql,
+      encoding: 'utf8',
+      ...(isNativeContainer(container) ? { env: nativeChildEnv() } : {})
+    }
+  );
+  measureNativeResources(container);
+  return result;
 }
 
 function query(container, sql, role = 'postgres') {
@@ -63,15 +166,27 @@ function expectSqlFailure(container, sql, role, label) {
 function runPsqlAsync(container, sql, role = 'postgres') {
   const roleSql = role === 'postgres' ? '' : 'set role ' + role + ';\n';
   return new Promise((resolve, reject) => {
-    const child = spawn('docker', psqlArgs(container), {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const child = spawn(
+      isNativeContainer(container) ? nativeTool('psql') : 'docker',
+      psqlArgs(container),
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...(isNativeContainer(container) ? { env: nativeChildEnv() } : {})
+      }
+    );
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.on('error', reject);
-    child.on('close', code => resolve({ status: code, stdout, stderr }));
+    child.on('close', code => {
+      try {
+        measureNativeResources(container);
+        resolve({ status: code, stdout, stderr });
+      } catch (error) {
+        reject(error);
+      }
+    });
     child.stdin.end(roleSql + sql);
   });
 }
@@ -202,6 +317,180 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function assertNativeTools() {
+  if (!path.isAbsolute(NATIVE_PG_BIN)) {
+    throw new Error('KJ_CAS_PG_BIN must be an absolute PostgreSQL 18.6 bin directory');
+  }
+  for (const tool of ['initdb', 'pg_ctl', 'pg_isready', 'psql', 'postgres']) {
+    const toolPath = nativeTool(tool);
+    if (!fs.existsSync(toolPath)) {
+      throw new Error('missing native PostgreSQL tool: ' + toolPath);
+    }
+  }
+}
+
+function isOwnedNativePath(value, prefix) {
+  const absolute = path.resolve(value);
+  return path.dirname(absolute) === path.resolve(os.tmpdir())
+    && path.basename(absolute).startsWith(prefix);
+}
+
+function createNativeContainer() {
+  assertNativeTools();
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kjr-cas-native-'));
+  let socketDir;
+  try {
+    socketDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kjr-cas-socket-'));
+    fs.chmodSync(dataDir, 0o700);
+    fs.chmodSync(socketDir, 0o700);
+    if (Buffer.byteLength(socketDir) > 80) {
+      throw new Error('native PostgreSQL socket directory path is too long: ' + socketDir);
+    }
+  } catch (error) {
+    if (isOwnedNativePath(dataDir, 'kjr-cas-native-')) {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+    if (socketDir && isOwnedNativePath(socketDir, 'kjr-cas-socket-')) {
+      fs.rmSync(socketDir, { recursive: true, force: true });
+    }
+    throw error;
+  }
+  return {
+    kind: 'native',
+    dataDir,
+    socketDir,
+    logFile: path.join(dataDir, 'postgres.log'),
+    started: false,
+    peakKiB: 0,
+    minFreeKiB: Number.POSITIVE_INFINITY
+  };
+}
+
+function runNativeCommand(tool, args) {
+  return spawnSync(nativeTool(tool), args, {
+    encoding: 'utf8',
+    env: nativeChildEnv()
+  });
+}
+
+async function waitForNativeReady(container, phase) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const ready = runNativeCommand('pg_isready', [
+      '-h', container.socketDir,
+      '-U', 'postgres',
+      '-d', 'postgres'
+    ]);
+    if (ready.status === 0) {
+      const smoke = runNativeCommand('psql', [
+        '-X',
+        '-h', container.socketDir,
+        '-U', 'postgres',
+        '-d', 'postgres',
+        '-w',
+        '-c', 'select 1;'
+      ]);
+      if (smoke.status === 0) {
+        measureNativeResources(container);
+        return;
+      }
+    }
+    await wait(250);
+  }
+  throw new Error('native PostgreSQL did not become ready ' + phase);
+}
+
+async function startNative(container) {
+  measureNativeResources(container);
+  const init = runNativeCommand('initdb', [
+    '-D', container.dataDir,
+    '-U', 'postgres',
+    '--no-locale',
+    '--encoding', 'UTF8',
+    '--auth-local=trust',
+    '--auth-host=reject',
+    '--set', 'shared_memory_type=mmap',
+    '--set', 'dynamic_shared_memory_type=mmap',
+    '--no-instructions'
+  ]);
+  if (init.status !== 0) {
+    throw new Error('native initdb failed: ' + init.stderr + init.stdout);
+  }
+  measureNativeResources(container);
+
+  const result = runNativeCommand('pg_ctl', [
+    'start',
+    '-D', container.dataDir,
+    '-l', container.logFile,
+    '-o', nativePostgresOptions(container),
+    '-w',
+    '-t', '30'
+  ]);
+  if (result.status !== 0) {
+    throw new Error('native pg_ctl start failed: ' + result.stderr + result.stdout);
+  }
+  container.started = true;
+  await waitForNativeReady(container, 'at start');
+}
+
+async function restartNative(container) {
+  const result = runNativeCommand('pg_ctl', [
+    'restart',
+    '-D', container.dataDir,
+    '-l', container.logFile,
+    '-m', 'fast',
+    '-o', nativePostgresOptions(container),
+    '-w',
+    '-t', '30'
+  ]);
+  if (result.status !== 0) {
+    throw new Error('native pg_ctl restart failed: ' + result.stderr + result.stdout);
+  }
+  container.started = true;
+  await waitForNativeReady(container, 'after restart');
+}
+
+function nativeStatus(container) {
+  const result = runNativeCommand('pg_ctl', ['status', '-D', container.dataDir]);
+  if (result.status === 0) return 'running';
+  if (result.status === 3) return 'stopped';
+  throw new Error(
+    'native pg_ctl status was indeterminate: ' + result.stderr + result.stdout
+  );
+}
+
+function stopNative(container) {
+  const status = nativeStatus(container);
+  if (!container.started && status === 'stopped') return;
+  if (status !== 'running') {
+    throw new Error('native PostgreSQL status was not running before stop: ' + status);
+  }
+  const result = runNativeCommand('pg_ctl', [
+    'stop',
+    '-D', container.dataDir,
+    '-m', 'fast',
+    '-w',
+    '-t', '30'
+  ]);
+  if (result.status !== 0) {
+    throw new Error('native pg_ctl stop failed: ' + result.stderr + result.stdout);
+  }
+  container.started = false;
+}
+
+function cleanupNative(container) {
+  if (nativeStatus(container) !== 'stopped') {
+    throw new Error('refusing to delete a native PostgreSQL cluster without confirmed stop');
+  }
+  if (!isOwnedNativePath(container.dataDir, 'kjr-cas-native-')) {
+    throw new Error('refusing to delete an unowned native PostgreSQL data path');
+  }
+  if (!isOwnedNativePath(container.socketDir, 'kjr-cas-socket-')) {
+    throw new Error('refusing to delete an unowned native PostgreSQL socket path');
+  }
+  fs.rmSync(container.dataDir, { recursive: true, force: true });
+  fs.rmSync(container.socketDir, { recursive: true, force: true });
+}
+
 async function startContainer(container) {
   const supervisor = [
     'set -eu',
@@ -210,6 +499,10 @@ async function startContainer(container) {
     "if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then su postgres -s /bin/sh -c 'initdb -D /var/lib/postgresql/data -A trust --no-locale'; fi",
     "while :; do su postgres -s /bin/sh -c 'postgres -D /var/lib/postgresql/data -k /var/run/postgresql' & server_pid=$!; wait $server_pid; sleep 0.1; done"
   ].join('; ');
+  if (isNativeContainer(container)) {
+    await startNative(container);
+    return;
+  }
   const result = spawnSync('docker', [
     'run', '--pull=never', '--detach', '--rm',
     '--name', container,
@@ -241,6 +534,10 @@ async function startContainer(container) {
 }
 
 async function restartContainer(container) {
+  if (isNativeContainer(container)) {
+    await restartNative(container);
+    return;
+  }
   // Restart the PostgreSQL process inside the running tmpfs container. Docker
   // restarting the container would clear its tmpfs and test a new database.
   const result = spawnSync('docker', [
@@ -267,6 +564,51 @@ async function restartContainer(container) {
 }
 
 function stopContainer(container) {
+  if (isNativeContainer(container)) {
+    let error = null;
+    let status = 'unknown';
+    try {
+      status = nativeStatus(container);
+      if (status === 'running') stopNative(container);
+    } catch (stopError) {
+      error = stopError;
+    }
+
+    try {
+      status = nativeStatus(container);
+    } catch (statusError) {
+      error ||= statusError;
+      status = 'unknown';
+    }
+    if (status === 'stopped') {
+      container.started = false;
+      try {
+        measureNativeResources(container);
+      } catch (measureError) {
+        error ||= measureError;
+      }
+      try {
+        cleanupNative(container);
+        process.stderr.write(
+          'native CAS resource receipt: '
+            + 'peak_cluster_kib=' + String(container.peakKiB) + ' '
+            + 'min_free_kib=' + String(container.minFreeKiB) + ' '
+            + 'stop=confirmed cleanup=complete\n'
+        );
+      } catch (cleanupError) {
+        error ||= cleanupError;
+      }
+    } else if (!error) {
+      error = new Error(
+        'native PostgreSQL stop was not confirmed, status: ' + status
+      );
+    }
+    if (status === 'unknown' && !error) {
+      error = new Error('native PostgreSQL remained running after stop');
+    }
+    if (error) throw error;
+    return;
+  }
   spawnSync('docker', ['rm', '--force', container], { encoding: 'utf8' });
 }
 
@@ -292,11 +634,17 @@ function assertCode(result, code) {
   assert.equal(result.code, code);
 }
 
-test('protocol-2 CAS migration and lifecycle gates execute in disposable PostgreSQL', {
-  skip: DOCKER_SKIP
-}, async () => {
+test(
+  'protocol-2 CAS migration and lifecycle gates execute in disposable '
+    + (RUN_NATIVE ? 'native PostgreSQL' : 'Docker PostgreSQL'),
+  {
+    skip: CAS_SKIP
+  },
+  async () => {
   const suffix = String(process.pid) + '-' + String(Date.now());
-  const container = 'kjr-cas-' + suffix;
+  const container = RUN_NATIVE
+    ? createNativeContainer()
+    : 'kjr-cas-' + suffix;
   const migration = fs.readFileSync(
     new URL('../Server/CAS.sql', import.meta.url),
     'utf8'

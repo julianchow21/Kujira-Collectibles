@@ -53,6 +53,34 @@ const EMPTY_SEED = {
   boosterPacks: [], ebayPurchases: [],
 };
 
+const PREVIEW_TRASH_ITEM = previewSingle('preview-trash-card', 'Trash Preview Card', 1, 14);
+const PREVIEW_TRASH_VALID = [{
+  id: 'preview-trash-valid',
+  data: {
+    originalTable: 'singles', originalId: PREVIEW_TRASH_ITEM.id,
+    item: PREVIEW_TRASH_ITEM, reason: 'preview', deletedAt: '2026-09-12T00:00:00.000Z',
+  },
+  updated_at: '2026-09-12T00:00:00.000Z',
+}];
+const PREVIEW_TRASH_MALFORMED = [{
+  id: 'preview-trash-malformed',
+  data: {
+    originalTable: 'singles', originalId: 'preview-trash-declared-id',
+    item: previewSingle('preview-trash-item-id', 'Malformed Trash Preview Card', 1, 15),
+    reason: 'preview-malformed', deletedAt: '2026-09-12T00:00:00.000Z',
+  },
+  updated_at: '2026-09-12T00:00:00.000Z',
+}];
+const PREVIEW_TRASH_PENDING = [{
+  id: 'preview-trash-pending',
+  data: {
+    originalTable: 'singles', originalId: 'preview-trash-pending-card',
+    item: previewSingle('preview-trash-pending-card', 'Pending Trash Preview Card', 1, 16),
+    reason: 'preview-pending', deletedAt: '2026-09-12T00:00:00.000Z',
+  },
+  updated_at: '2026-09-12T00:00:00.000Z',
+}];
+
 // JSON is generated from fixed fixture data above, but escape the one HTML
 // significant character anyway so the bootstrap can never close its script.
 function jsonForScript(value) {
@@ -63,6 +91,9 @@ const PREVIEW_TOOLS = `
 <aside id="kjr-preview-tools" aria-label="Local preview controls" style="position:fixed;right:10px;bottom:10px;z-index:10000;display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-width:calc(100vw - 20px);padding:7px 9px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg2);box-shadow:0 4px 20px rgba(0,0,0,.25);font:11px/1.3 system-ui,sans-serif">
   <strong style="color:var(--accent);white-space:nowrap">LOCAL PREVIEW</strong>
   <button id="kjr-preview-open-sale" type="button" onclick="openCmdBar('sell')">Open Quick Sale</button>
+  <button id="kjr-preview-trash-valid" type="button" onclick="window.__kjrPreviewSeedTrash('valid')">Seed valid Trash</button>
+  <button id="kjr-preview-trash-malformed" type="button" onclick="window.__kjrPreviewSeedTrash('malformed')">Seed malformed Trash</button>
+  <button id="kjr-preview-trash-pending" type="button" onclick="window.__kjrPreviewSeedTrash('pending')">Seed pending Trash</button>
   <button id="kjr-preview-reset" type="button" onclick="window.__kjrPreviewReset('seed')">Reset sample</button>
   <button id="kjr-preview-empty" type="button" onclick="window.__kjrPreviewReset('empty')">Empty inventory</button>
 </aside>`;
@@ -71,8 +102,13 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-preview-bootstrap">
 (function () {
   'use strict';
   var STORAGE_KEY = ${JSON.stringify(STORAGE_KEY)};
+  var LOCAL_TRASH_KEY = '_kjrLocalTrash';
+  var PENDING_TRASH_KEY = '_kjrPendingTrashWrites';
   var PREVIEW_SEED = ${jsonForScript(PREVIEW_SEED)};
   var EMPTY_SEED = ${jsonForScript(EMPTY_SEED)};
+  var PREVIEW_TRASH_VALID = ${jsonForScript(PREVIEW_TRASH_VALID)};
+  var PREVIEW_TRASH_MALFORMED = ${jsonForScript(PREVIEW_TRASH_MALFORMED)};
+  var PREVIEW_TRASH_PENDING = ${jsonForScript(PREVIEW_TRASH_PENDING)};
   var clone = function (value) { return JSON.parse(JSON.stringify(value)); };
   var write = function (value) { localStorage.setItem(STORAGE_KEY, JSON.stringify(clone(value))); };
 
@@ -94,6 +130,17 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-preview-bootstrap">
   window.Sentry = undefined;
   document.documentElement.classList.remove('auth-gated');
   if (!localStorage.getItem(STORAGE_KEY)) write(PREVIEW_SEED);
+
+  window.__kjrPreviewSeedTrash = function (mode) {
+    localStorage.clear();
+    write(PREVIEW_SEED);
+    localStorage.removeItem(LOCAL_TRASH_KEY);
+    localStorage.removeItem(PENDING_TRASH_KEY);
+    if (mode === 'malformed') localStorage.setItem(LOCAL_TRASH_KEY, JSON.stringify(clone(PREVIEW_TRASH_MALFORMED)));
+    else if (mode === 'pending') localStorage.setItem(PENDING_TRASH_KEY, JSON.stringify(clone(PREVIEW_TRASH_PENDING)));
+    else localStorage.setItem(LOCAL_TRASH_KEY, JSON.stringify(clone(PREVIEW_TRASH_VALID)));
+    location.reload();
+  };
 
   window.__kjrPreviewReset = function (mode) {
     localStorage.clear();
@@ -228,5 +275,6 @@ if (require.main === module) {
 
 module.exports = {
   HOST, PORT, ROOT, STATIC_FILES, PREVIEW_SEED, EMPTY_SEED,
+  PREVIEW_TRASH_VALID, PREVIEW_TRASH_MALFORMED, PREVIEW_TRASH_PENDING,
   buildPreviewIndex, createPreviewServer, handleRequest,
 };

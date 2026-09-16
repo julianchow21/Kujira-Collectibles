@@ -119,17 +119,21 @@ html.light .logo-name span:first-child{background:linear-gradient(135deg,#0F6E56
 /* Mark the dropdown trigger itself "active" when its menu owns the current page */
 .nav-dd.contains-active>.nav-dd-trigger{background:var(--bg3);color:var(--text)}
 .topbar-actions{display:flex;align-items:center;gap:6px;margin-left:12px;flex-shrink:0}
-/* Sync indicator: a pill that adapts to whatever colour setSyncStatus() sets
-   via el.style.color (grey/green/red per state), using currentColor so no
-   per-state classes are needed. Hidden entirely when empty (idle / after the
-   3s auto-clear on success) so no empty pill shell lingers. */
+/* Sync indicator: a compact, keyboard-accessible button. The same currentColor
+   treatment serves the idle, pending, saving and error states, while the
+   diagnostics modal supplies the detail behind the pill. */
 /* flex-shrink:0 + max-width live here (not inline) so the mobile override
    at max-width:768px below can actually win - an inline style attribute
    otherwise always beats an external stylesheet rule, which is what let the
    pill get squeezed to ~52px ("⚠ S…") on 375px before this fix (Finding 3). */
 #sync-indicator{flex-shrink:0;max-width:220px}
-#sync-indicator:not(:empty){padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb, currentColor 35%, transparent);background:color-mix(in srgb, currentColor 12%, transparent);font-weight:500;transition:color 0.3s,background 0.3s,border-color 0.3s}
-#sync-indicator:empty{display:none}
+#sync-indicator{appearance:none;-webkit-appearance:none;padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb, currentColor 35%, transparent);background:color-mix(in srgb, currentColor 12%, transparent);color:var(--text3);font-size:11px;font-weight:500;font-family:inherit;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:color 0.3s,background 0.3s,border-color 0.3s}
+#sync-indicator:hover{background:color-mix(in srgb, currentColor 18%, transparent)}
+#sync-indicator[data-state="error"]{color:var(--red)}
+#sync-indicator[data-state="pending"]{color:var(--amber)}
+#sync-indicator[data-state="saving"]{color:var(--text3)}
+#sync-indicator[data-state="ok"]{color:var(--green)}
+#sync-indicator[hidden]{display:none}
 .icon-btn{width:32px;height:32px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text2);transition:all 0.15s;flex-shrink:0}
 .icon-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--border2)}
 .icon-btn svg{width:15px;height:15px}
@@ -255,6 +259,32 @@ dialog.overlay::backdrop{background:var(--backdrop);transition:background 0.22s 
 .modal-head h3{font-size:15px;font-weight:600}
 .modal-body{padding:20px}
 .modal-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+.sync-diagnostics-modal{max-width:var(--modal-sm);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+.sync-diagnostics-modal .modal-head{flex-shrink:0}
+.sync-diagnostics-modal .modal-body{overflow-y:auto;overscroll-behavior:contain;min-height:0}
+.sync-diagnostics-foot{align-items:center;flex-wrap:wrap;flex-shrink:0}
+.sync-diagnostics-status{font-size:11px;color:var(--text3);margin-right:auto;min-width:0}
+.sync-diagnostics-loading{font-size:13px;color:var(--text3);text-align:center;padding:20px 0}
+.sync-diag-problem{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;background:var(--red-soft);border:1px solid color-mix(in srgb,var(--red) 38%,transparent);border-radius:var(--radius);margin-bottom:14px}
+.sync-diag-problem[data-tone="pending"]{background:var(--amber-soft);border-color:color-mix(in srgb,var(--amber) 38%,transparent)}
+.sync-diag-problem[data-tone="ok"]{background:var(--green-soft);border-color:color-mix(in srgb,var(--green) 38%,transparent)}
+.sync-diag-problem-icon{font-size:14px;line-height:1.35;flex-shrink:0}
+.sync-diag-problem-copy{min-width:0;font-size:12px;line-height:1.5;color:var(--text2)}
+.sync-diag-problem-copy strong{display:block;color:var(--text);font-size:13px;margin-bottom:2px}
+.sync-diag-section{margin-top:14px}
+.sync-diag-section:first-child{margin-top:0}
+.sync-diag-label{font-size:10px;color:var(--text3);font-weight:600;letter-spacing:.55px;text-transform:uppercase;margin-bottom:7px}
+.sync-diag-list{display:flex;flex-direction:column;gap:6px}
+.sync-diag-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;line-height:1.45}
+.sync-diag-row-label{color:var(--text2);flex:0 0 auto;min-width:7.5em;white-space:nowrap}
+.sync-diag-row-value{color:var(--text);font-variant-numeric:tabular-nums;text-align:right;white-space:normal;overflow-wrap:anywhere;min-width:0;flex:1 1 56%}
+.sync-diag-muted{font-size:12px;color:var(--text3);line-height:1.5}
+.sync-diag-tech{margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3);font-size:12px}
+.sync-diag-tech summary{cursor:pointer;padding:9px 10px;color:var(--text2);font-weight:500;list-style-position:inside}
+.sync-diag-tech summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:var(--radius)}
+.sync-diag-tech-body{padding:0 10px 10px;display:flex;flex-direction:column;gap:5px;color:var(--text3);line-height:1.45;overflow-wrap:anywhere}
+.sync-diag-tech-item{display:flex;gap:8px;align-items:flex-start}
+.sync-diag-tech-item strong{font-weight:500;color:var(--text2);flex:0 0 76px}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
 .form-group{display:flex;flex-direction:column;gap:5px}
 .form-group.full{grid-column:1/-1}
@@ -486,9 +516,8 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
   /* Sync pill text is short at mobile widths ("Syncing...", "Synced",
      "⚠ Sync error" - see setSyncStatus), so protect it with flex-shrink:0 and
      a fitting max-width instead of letting it get squeezed toward 0 by its
-     siblings (was rendering "⚠ S…" at 52px before this fix). It still
-     collapses to width 0 when empty (#sync-indicator:empty rule), so this
-     does not reserve dead space during the idle state. */
+     siblings (was rendering "⚠ S…" at 52px before this fix). It stays hidden
+     while idle, so it does not reserve dead space before sync has a status. */
   #sync-indicator{flex-shrink:0;min-width:0;max-width:130px}
   /* padding trimmed from 18px to 12px each side (was 64px wide total incl.
      the 20px icon) - the icon-only button doesn't need that much horizontal
@@ -1241,10 +1270,12 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
 #kjr-auth-form .btn,#kjr-auth-recover-form .btn,#kjr-auth-recovery-form .btn{width:100%;justify-content:center}
 #kjr-auth-form .btn:not(.btn-primary),#kjr-auth-recover-form .btn:not(.btn-primary),#kjr-auth-recovery-form .btn:not(.btn-primary){background:transparent}
 #kjr-auth-form .btn:disabled,#kjr-auth-recover-form .btn:disabled,#kjr-auth-recovery-form .btn:disabled{cursor:wait;opacity:.65}
-#kjr-auth-gate :is(button,a,[role="button"],input,select,textarea):focus-visible{outline:3px solid var(--accent);outline-offset:3px;box-shadow:none}
+#kjr-auth-gate :is(button,a,[role="button"]):focus-visible{outline:3px solid var(--accent);outline-offset:3px;box-shadow:none}
+#kjr-auth-gate :is(input,select,textarea):focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 #kjr-update-pill{cursor:default}
 #kjr-update-pill-action{min-height:34px}
 :where(button,a,[role="button"],input,select,textarea):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+:is(input,select,textarea):focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 .cmd-result[role="option"]:focus-visible,.sentry-issue:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
 #cmd-sell-preview[hidden],#cmd-sell-results-label[hidden],#cmd-sell-status[hidden],#lst-search-status[hidden]{display:none!important}
 .link-button,.eb-declared-button{appearance:none;border:0;background:none;font:inherit;padding:2px;cursor:pointer}

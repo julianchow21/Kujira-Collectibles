@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.54',
+    release: 'kujira-collectibles@3.55',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.54">
+<link rel="stylesheet" href="styles.css?v=3.55">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.54 (12 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.55 (16 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -240,13 +240,12 @@
     </div>
   </nav>
   <div class="topbar-actions">
-    <!-- Lives here, not next to the logo/nav, ON PURPOSE: this text toggles
-         between "" / "Syncing..." / "Synced" / "Sync failed", and topbar-actions
-         is a flex-shrink:0 cluster docked at the far right by nav's flex:1. So
-         its width changing never moves nav's left-aligned tabs (it used to sit
-         between the logo and <nav>, and collapsing to '' after 3s shifted the
-         entire tab row left by the text's width). Do not move it back. -->
-    <span id="sync-indicator" style="font-size:11px;transition:color 0.3s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+    <!-- Lives here, not next to the logo/nav, ON PURPOSE: this button toggles
+         between hidden, "Syncing…", "Synced", "Sync pending" and "Sync error", and topbar-actions
+         is a flex-shrink:0 cluster docked at the far right by nav's flex:1. Its
+         width changing never moves nav's left-aligned tabs. Keep it in this
+         cluster so the status button stays beside the other topbar actions. -->
+    <button id="sync-indicator" type="button" onclick="openSyncDiagnostics()" aria-live="polite" aria-label="Cloud sync status" aria-haspopup="dialog" aria-controls="sync-diagnostics-overlay" aria-expanded="false" hidden></button>
     <button class="btn btn-primary btn-sm" onclick="openCmdBar()" title="Quick add / log sale (⌘K)" style="gap:6px;padding:6px 12px">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:13px;height:13px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Quick Entry <span style="font-size:10px;opacity:0.7;font-weight:400">⌘K</span>
@@ -1012,6 +1011,24 @@
   </div>
 </dialog>
 
+<!-- CLOUD SYNC DIAGNOSTICS MODAL -->
+<dialog class="overlay" id="sync-diagnostics-overlay" aria-labelledby="sync-diagnostics-title">
+  <div class="modal sync-diagnostics-modal">
+    <div class="modal-head">
+      <h3 id="sync-diagnostics-title">Cloud sync</h3>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="closeSyncDiagnostics()" aria-label="Close cloud sync diagnostics">✕</button>
+    </div>
+    <div class="modal-body" id="sync-diagnostics-body" aria-live="polite">
+      <div class="sync-diagnostics-loading">Loading sync details…</div>
+    </div>
+    <div class="modal-foot sync-diagnostics-foot">
+      <span id="sync-diagnostics-status" class="sync-diagnostics-status" role="status"></span>
+      <button class="btn btn-primary" id="sync-diagnostics-retry" type="button" onclick="retrySyncDiagnostics()">Retry sync</button>
+      <button class="btn" type="button" onclick="closeSyncDiagnostics()">Close</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- COMMAND BAR -->
 <dialog class="cmd-overlay" id="cmd-overlay">
   <div class="cmd-box" id="cmd-box">
@@ -1736,7 +1753,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.54"></script>
-<script src="features.js?v=3.54"></script>
+<script src="app.js?v=3.55"></script>
+<script src="features.js?v=3.55"></script>
 </body>
 </html>

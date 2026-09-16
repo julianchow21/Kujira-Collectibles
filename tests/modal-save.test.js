@@ -80,10 +80,11 @@ test('modal saves preserve server CAS revisions and explicit zero money values',
     'a valid modal CAS update must not produce a conflict toast');
 });
 
-function storageSnapshot(localStorage) {
+function storageSnapshot(localStorage, excludedKeys = new Set()) {
   const entries = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
+    if (excludedKeys.has(key)) continue;
     entries.push([key, localStorage.getItem(key)]);
   }
   entries.sort((left, right) => String(left[0]).localeCompare(String(right[0])));
@@ -383,7 +384,8 @@ test('modal save keeps the draft and rolls back local state when the cache canno
 
   ctx.openEditSingle(id);
   document.getElementById('ms-notes').value = 'draft retained after quota failure';
-  const storageBefore = storageSnapshot(localStorage);
+  const diagnosticsKey = '_kjrSyncDiagnosticsV1';
+  const storageBefore = storageSnapshot(localStorage, new Set([diagnosticsKey]));
   const dirtyBefore = dirtySnapshot(grab('_dirty')._dirty.singles);
   const undoBefore = grab('undoStack').undoStack.length;
   const originalSetItem = localStorage.setItem;
@@ -397,7 +399,9 @@ test('modal save keeps the draft and rolls back local state when the cache canno
   const current = grab('DB').DB.singles.find(candidate => candidate.id === id);
   assert.strictEqual(current.notes, 'before', 'the failed save rolls the row back');
   assert.strictEqual(document.getElementById('ms-notes').value, 'draft retained after quota failure', 'the draft remains editable');
-  assert.strictEqual(storageSnapshot(localStorage), storageBefore, 'failed persistence leaves the prior cache and markers intact');
+  assert.strictEqual(storageSnapshot(localStorage, new Set([diagnosticsKey])), storageBefore, 'failed persistence leaves the prior cache and markers intact');
+  const diagnostics = JSON.parse(localStorage.getItem(diagnosticsKey));
+  assert.equal(diagnostics.failures.local.code, 'local_storage_error', 'the storage failure remains available to Sync diagnostics');
   assert.strictEqual(dirtySnapshot(grab('_dirty')._dirty.singles), dirtyBefore, 'failed persistence does not leave a dirty row');
   assert.strictEqual(grab('undoStack').undoStack.length, undoBefore, 'failed persistence does not leave an undo snapshot');
   assert.strictEqual(toasts.some(message => /^Updated!$/.test(message)), false, 'failed persistence does not report success');

@@ -5,12 +5,12 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { ROOT } = require('./harness.js');
 
-test('sw-update: v3.54 badge, asset URLs and cache v57 are pinned', () => {
+test('sw-update: v3.55 badge, asset URLs and cache v58 are pinned', () => {
   const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /id="app-ver"[^>]*>v3\.54 \(12 Sep\)</);
-  for (const asset of ['styles.css', 'app.js', 'features.js']) assert.ok(html.includes(asset + '?v=3.54'));
-  assert.match(sw, /const CACHE = 'kujira-v57'/);
+  assert.match(html, /id="app-ver"[^>]*>v3\.55 \(16 Sep\)</);
+  for (const asset of ['styles.css', 'app.js', 'features.js']) assert.ok(html.includes(asset + '?v=3.55'));
+  assert.match(sw, /const CACHE = 'kujira-v58'/);
 });
 
 test('sw-update: waiting update action is a keyboard-native button which posts SKIP_WAITING', () => {

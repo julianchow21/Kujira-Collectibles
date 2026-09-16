@@ -543,7 +543,7 @@ test('restore-safety: conflict validation rejects empty, unrelated, and contradi
       type: 'restore', table: 'singles', id: 'absence-target', expected_version: 0,
       tombstone_version: 2, data: { name: 'attempted' }, trash_id: 'trash-absence-target',
     };
-    await assert.rejects(() => app.ctx._syncMutate([operation], app.ctx._newMutationId()), /sync_request_failed/, name);
+    await assert.rejects(() => app.ctx._syncMutate([operation], app.ctx._newMutationId()), /invalid_sync_response/, name);
   }
 
   const accepted = await loadApp();

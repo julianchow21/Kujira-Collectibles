@@ -895,24 +895,713 @@ function _queueCloudRowOp(table, ids, task) {
 }
 
 
-// ── Sync status indicator ─────────────────────────────────────
-let _syncStatus = 'idle';
-function setSyncStatus(s, msg) {
-  _syncStatus = s;
+// ── Sync status indicator and diagnostics ─────────────────────
+// The pill is deliberately only a locator. The durable, bounded state below
+// lets the user see which operation failed without exposing row bytes, URLs or
+// credentials, and keeps read and write health independent.
+const SYNC_DIAGNOSTICS_KEY = '_kjrSyncDiagnosticsV1';
+const SYNC_DIAG_TABLES = ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases'];
+const SYNC_DIAG_TABLE_LABELS = {
+  singles: 'Singles', slabs: 'Slabs', sales: 'Sales', etbs: 'ETBs',
+  boosterBoxes: 'Booster boxes', boosterPacks: 'Booster packs', ebayPurchases: 'eBay purchases',
+};
+const SYNC_DIAG_OPERATIONS = ['read', 'write', 'mutation', 'delete', 'trash', 'local'];
+const SYNC_DIAG_OPERATION_LABELS = {
+  read: 'Cloud read', write: 'Cloud write', mutation: 'Queued transaction',
+  delete: 'Delete recovery', trash: 'Trash recovery', local: 'Local storage',
+};
+let _syncDiagStorageAvailable = true;
+let _syncDiagInstallationPersisted = false;
+let _syncDiagRetryInFlight = null;
+
+function _syncDiagNewInstallationRef() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  try {
+    const bytes = new Uint8Array(8);
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
+    else throw new Error('random_unavailable');
+    for (const byte of bytes) out += alphabet[byte % alphabet.length];
+  } catch (_) {
+    for (let i = 0; i < 8; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return 'KJR-' + out;
+}
+
+function _syncDiagSafeText(value, max) {
+  let raw = '';
+  try {
+    if (value && typeof value === 'object' && typeof value.message === 'string') raw = value.message;
+    else raw = String(value == null ? '' : value);
+  } catch (_) { raw = ''; }
+  let text = raw
+    .replace(/https?:\/\/[^\s<>"']+/gi, '[URL redacted]')
+    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, (_, scheme) => scheme + ' [redacted]')
+    .replace(/(["']?\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|authorization|password|secret|jwt|token)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,\s;]+)/gi, '$1[redacted]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email redacted]')
+    .replace(/\b(?:eyJ[A-Za-z0-9_-]{10,}|[A-Za-z0-9_-]{40,})\b/g, '[value redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) text = 'Unknown sync failure';
+  return text.slice(0, Number.isSafeInteger(max) ? max : 220);
+}
+
+function _syncDiagCode(value) {
+  const raw = _syncDiagSafeText(value, 220).toLowerCase();
+  const statusMatch = raw.match(/\bhttp\s+([45]\d{2})\b/);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'server_error';
+    if (status >= 400) return 'sync_request_failed';
+  }
+  const known = [
+    'owner_session_required', 'owner_session_changed', 'owner_forbidden', 'owner_session_expired',
+    'invalid_sync_response', 'sync_request_failed', 'version_conflict', 'mutation_queue_changed',
+    'delete_state_unavailable', 'network_error', 'rate_limited', 'server_error', 'local_storage_error', 'preview_disabled', 'sync_failure',
+  ];
+  const found = known.find(code => raw.includes(code));
+  if (found) return found;
+  if (/offline|network|fetch|connection/.test(raw)) return 'network_error';
+  if (/storage|cache|marker|local/.test(raw)) return 'local_storage_error';
+  if (/conflict/.test(raw)) return 'version_conflict';
+  return 'sync_failure';
+}
+
+function _syncDiagResponseFailure(status, body) {
+  const allowlisted = new Set([
+    'owner_session_required', 'owner_session_changed', 'owner_forbidden', 'owner_session_expired',
+    'invalid_sync_response', 'sync_request_failed', 'version_conflict', 'mutation_queue_changed',
+    'delete_state_unavailable', 'rate_limited', 'server_error'
+  ]);
+  const code = body && typeof body.code === 'string' && allowlisted.has(body.code) ? body.code : '';
+  const suffix = code ? ' ' + code : '';
+  if (status === 429) return 'rate_limited (HTTP 429)' + suffix;
+  if (Number.isFinite(status) && status >= 500) return 'server_error (HTTP ' + status + ')' + suffix;
+  if (Number.isFinite(status) && status >= 400) return 'sync_request_failed (HTTP ' + status + ')' + suffix;
+  return 'invalid_sync_response';
+}
+
+function _syncDiagInferOperation(operation, detail) {
+  if (SYNC_DIAG_OPERATIONS.includes(operation)) return operation;
+  const text = _syncDiagSafeText(detail, 240).toLowerCase();
+  if (/pending sync transaction|mutation|transaction|queued transaction/.test(text)) return 'mutation';
+  if (/delete|trash|restore|recovery/.test(text)) return 'delete';
+  if (/local storage|local cache|storage|marker/.test(text)) return 'local';
+  if (/cloud unreachable|cloud read|pull|read|fetch|load.*cloud|response/.test(text)) return 'read';
+  return 'write';
+}
+
+function _syncDiagBlankState() {
+  return { schema: 1, installationRef: _syncDiagNewInstallationRef(), successes: { read: null, write: null }, failures: {} };
+}
+
+function _syncDiagLoad() {
+  const base = _syncDiagBlankState();
+  try {
+    const raw = localStorage.getItem(SYNC_DIAGNOSTICS_KEY);
+    if (raw === null) return base;
+    const saved = JSON.parse(raw);
+    if (!saved || saved.schema !== 1 || typeof saved.installationRef !== 'string' ||
+        !/^KJR-[A-Z2-9]{8}$/.test(saved.installationRef)) return base;
+    base.installationRef = saved.installationRef;
+    _syncDiagInstallationPersisted = true;
+    for (const operation of ['read', 'write']) {
+      const timestamp = saved.successes && saved.successes[operation];
+      if (Number.isFinite(timestamp) && timestamp > 0) base.successes[operation] = timestamp;
+    }
+    for (const operation of SYNC_DIAG_OPERATIONS) {
+      const failure = saved.failures && saved.failures[operation];
+      if (!failure || typeof failure !== 'object') continue;
+      base.failures[operation] = {
+        at: Number.isFinite(failure.at) && failure.at > 0 ? failure.at : null,
+        code: _syncDiagCode(failure.code || failure.detail),
+        detail: _syncDiagSafeText(failure.detail || failure.code, 220),
+      };
+    }
+  } catch (_) {
+    _syncDiagStorageAvailable = false;
+  }
+  return base;
+}
+
+let _syncDiagnostics = _syncDiagLoad();
+
+function _syncDiagPersist() {
+  try {
+    const raw = JSON.stringify(_syncDiagnostics);
+    localStorage.setItem(SYNC_DIAGNOSTICS_KEY, raw);
+    if (localStorage.getItem(SYNC_DIAGNOSTICS_KEY) !== raw) throw new Error('sync_diagnostics_write_not_confirmed');
+    _syncDiagStorageAvailable = true;
+    _syncDiagInstallationPersisted = true;
+    return true;
+  } catch (_) {
+    _syncDiagStorageAvailable = false;
+    _syncDiagInstallationPersisted = false;
+    return false;
+  }
+}
+
+if (!_syncDiagInstallationPersisted) _syncDiagPersist();
+
+function _syncDiagRecordSuccess(operation, options) {
+  if (!SYNC_DIAG_OPERATIONS.includes(operation)) return;
+  if (operation === 'read' || operation === 'write') _syncDiagnostics.successes[operation] = Date.now();
+  if (!options || options.clearFailure !== false) delete _syncDiagnostics.failures[operation];
+  _syncDiagPersist();
+  _syncDiagRenderIndicator();
+}
+
+// Clearing a retained write receipt is deliberately separate from recording a
+// successful upload. A manual retry may prove that the old failure no longer
+// has queued work, while no new write happened in that retry, so it must not
+// manufacture a fresh cloud-write timestamp.
+function _syncDiagClearFailure(operation) {
+  if (!SYNC_DIAG_OPERATIONS.includes(operation) || !_syncDiagnostics.failures[operation]) return;
+  delete _syncDiagnostics.failures[operation];
+  _syncDiagPersist();
+  _syncDiagRenderIndicator();
+}
+
+function _syncDiagRecordFailure(operation, detail) {
+  const key = _syncDiagInferOperation(operation, detail);
+  _syncDiagnostics.failures[key] = {
+    at: Date.now(), code: _syncDiagCode(detail), detail: _syncDiagSafeText(detail, 220),
+  };
+  _syncDiagPersist();
+  _syncDiagRenderIndicator();
+}
+
+function _syncDiagReadStorage(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? { ok: true, present: false, value: null } : { ok: true, present: true, value: JSON.parse(raw) };
+  } catch (_) { return { ok: false, value: null }; }
+}
+
+// Dirty markers are recovery records, not a general-purpose JSON envelope.
+// Keep the diagnostic and orphan-cleanup validators on the same allowlist so
+// an unfamiliar field can never be mistaken for a harmless snapshotless row.
+const _SYNC_DIAG_DIRTY_MARKER_KEYS = new Set([
+  'table', 'id', 'token', 'owner', 'createdAt', 'sequence', 'rowJson', 'supersedes',
+]);
+const _SYNC_DIAG_SNAPSHOTLESS_MARKER_KEYS = new Set([
+  'table', 'id', 'token', 'owner', 'createdAt', 'sequence',
+]);
+
+function _syncDiagValidDirtyMarkerShape(marker, storageKey, snapshotless, allowInternalKey) {
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return false;
+  const allowed = snapshotless ? _SYNC_DIAG_SNAPSHOTLESS_MARKER_KEYS : _SYNC_DIAG_DIRTY_MARKER_KEYS;
+  const keys = Object.keys(marker).filter(key => !(allowInternalKey && key === 'key'));
+  if (keys.some(key => !allowed.has(key))) return false;
+  const prefix = 'pokeinv_dirty_v2:';
+  if (typeof storageKey !== 'string' || !storageKey.startsWith(prefix) ||
+      marker.token !== storageKey.slice(prefix.length)) return false;
+  if (!SYNC_DIAG_TABLES.includes(marker.table) || typeof marker.id !== 'string' || !marker.id ||
+      typeof marker.token !== 'string' || !marker.token) return false;
+  if (Object.prototype.hasOwnProperty.call(marker, 'owner') &&
+      (typeof marker.owner !== 'string' || !marker.owner)) return false;
+  if (Object.prototype.hasOwnProperty.call(marker, 'createdAt') &&
+      (!Number.isSafeInteger(marker.createdAt) || marker.createdAt < 1)) return false;
+  if (Object.prototype.hasOwnProperty.call(marker, 'sequence') &&
+      (!Number.isSafeInteger(marker.sequence) || marker.sequence < 0)) return false;
+  if (Object.prototype.hasOwnProperty.call(marker, 'rowJson') &&
+      (snapshotless || typeof marker.rowJson !== 'string')) return false;
+  if (Object.prototype.hasOwnProperty.call(marker, 'supersedes') &&
+      (snapshotless || !Array.isArray(marker.supersedes) ||
+       marker.supersedes.some(token => typeof token !== 'string' || !token))) return false;
+  return true;
+}
+
+function _syncDiagReadDirtyMarker(storageKey, snapshotless) {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (typeof raw !== 'string') return null;
+    const marker = JSON.parse(raw);
+    return _syncDiagValidDirtyMarkerShape(marker, storageKey, snapshotless, false) ? marker : null;
+  } catch (_) { return null; }
+}
+
+function _syncDiagInitialDirtyRecoveryRiskFromStorage() {
+  // A parseable null has no recoverable queue and may be cleared once the
+  // current storage validates. Any unreadable or ambiguous bytes retain the
+  // warning until reload, because later absence is not proof of safe loss.
+  try {
+    const legacyRaw = localStorage.getItem('pokeinv_dirty_v1');
+    if (legacyRaw !== null) {
+      let legacy;
+      try { legacy = JSON.parse(legacyRaw); } catch (_) { return true; }
+      if (legacy !== null) {
+        if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return true;
+        for (const table of SYNC_DIAG_TABLES) {
+          const ids = legacy[table];
+          if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id))) return true;
+        }
+        const revisions = legacy._revisions;
+        if (revisions !== undefined) {
+          if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) return true;
+          for (const table of SYNC_DIAG_TABLES) {
+            const byId = revisions[table];
+            if (byId === undefined) continue;
+            if (!byId || typeof byId !== 'object' || Array.isArray(byId)) return true;
+            for (const tokens of Object.values(byId)) {
+              if (!Array.isArray(tokens) || tokens.some(token => typeof token !== 'string' || !token)) return true;
+            }
+          }
+        }
+      }
+    }
+    if (typeof localStorage.length !== 'number' || typeof localStorage.key !== 'function') return true;
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (typeof key !== 'string' || !key.startsWith('pokeinv_dirty_v2:')) continue;
+      const raw = localStorage.getItem(key);
+      if (raw === null) return true;
+      let marker;
+      try { marker = JSON.parse(raw); } catch (_) { return true; }
+      if (!_syncDiagValidDirtyMarkerShape(marker, key, false, false)) return true;
+    }
+    return false;
+  } catch (_) { return true; }
+}
+
+function _syncDiagInspectDirtyStorage() {
+  const issues = [];
+  const legacy = _syncDiagReadStorage('pokeinv_dirty_v1');
+  if (!legacy.ok || (legacy.present && (!legacy.value || typeof legacy.value !== 'object' || Array.isArray(legacy.value)))) {
+    issues.push('unsynced changes');
+  } else if (legacy.present) {
+    const value = legacy.value;
+    for (const table of ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases']) {
+      if (value[table] !== undefined && (!Array.isArray(value[table]) || value[table].some(id => typeof id !== 'string' || !id))) {
+        issues.push('unsynced changes');
+      }
+    }
+    if (value._revisions !== undefined) {
+      const revisions = value._revisions;
+      if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) {
+        issues.push('unsynced changes');
+      } else {
+        for (const table of SYNC_DIAG_TABLES) {
+          const byId = revisions[table];
+          if (byId === undefined) continue;
+          if (!byId || typeof byId !== 'object' || Array.isArray(byId)) {
+            issues.push('unsynced changes');
+            continue;
+          }
+          for (const tokens of Object.values(byId)) {
+            if (!Array.isArray(tokens) || tokens.some(token => typeof token !== 'string' || !token)) {
+              issues.push('unsynced changes');
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  try {
+    if (typeof localStorage.length !== 'number' || typeof localStorage.key !== 'function') throw new Error('storage_unavailable');
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (typeof key !== 'string' || !key.startsWith('pokeinv_dirty_v2:')) continue;
+      const raw = localStorage.getItem(key);
+      let marker;
+      try { marker = raw === null ? null : JSON.parse(raw); } catch (_) { marker = null; }
+      if (!_syncDiagValidDirtyMarkerShape(marker, key, false, false)) {
+        issues.push('sync markers');
+      }
+    }
+  } catch (_) { issues.push('sync markers'); }
+  return [...new Set(issues)];
+}
+
+const _syncDiagInitialDirtyRecoveryRisk = _syncDiagInitialDirtyRecoveryRiskFromStorage();
+
+function _syncDiagPendingSnapshot() {
+  const byTable = {};
+  for (const key of SYNC_DIAG_TABLES) byTable[key] = { dirty: 0, delete: 0, trash: 0, mutation: 0 };
+  const unknown = [
+    ...(_syncDiagInitialDirtyRecoveryRisk ? ['unsynced changes'] : []),
+    ..._syncDiagInspectDirtyStorage(),
+  ];
+  const add = (kind, table) => {
+    const key = SYNC_DIAG_TABLES.includes(table) ? table :
+      ({ booster_boxes: 'boosterBoxes', booster_packs: 'boosterPacks', ebay_purchases: 'ebayPurchases' }[table] || 'other');
+    if (!byTable[key]) byTable[key] = { dirty: 0, delete: 0, trash: 0, mutation: 0 };
+    byTable[key][kind] += 1;
+  };
+  const dirty = (typeof _dirty === 'object' && _dirty) ? _dirty : null;
+  for (const key of SYNC_DIAG_TABLES) {
+    if (!dirty || !(dirty[key] instanceof Set)) unknown.push('unsynced changes');
+    else byTable[key].dirty = dirty[key].size;
+  }
+
+  const deleteV2 = _syncDiagReadStorage('_kjrDeleteStateV2');
+  let pendingDelete = null;
+  if (!deleteV2.ok) unknown.push('delete recovery queue');
+  else if (deleteV2.present) {
+    if (!deleteV2.value || deleteV2.value.schema !== 2 || !Array.isArray(deleteV2.value.pending) || !Array.isArray(deleteV2.value.confirmed)) {
+      unknown.push('delete recovery queue');
+    } else pendingDelete = deleteV2.value.pending;
+  } else {
+    const legacy = _syncDiagReadStorage('_kjrPendingCloudDeletes');
+    if (!legacy.ok || (legacy.present && !Array.isArray(legacy.value))) unknown.push('delete recovery queue');
+    else pendingDelete = legacy.value || [];
+  }
+  for (const item of pendingDelete || []) {
+    if (!item || typeof item.table !== 'string' || typeof item.id !== 'string' || !item.id) unknown.push('delete recovery queue');
+    else add('delete', item.table);
+  }
+
+  const pendingTrash = _syncDiagReadStorage('_kjrPendingTrashWrites');
+  if (!pendingTrash.ok || (pendingTrash.present && !Array.isArray(pendingTrash.value))) unknown.push('Trash recovery queue');
+  for (const entry of (Array.isArray(pendingTrash.value) ? pendingTrash.value : [])) {
+    const table = entry && entry.data && typeof entry.data.originalTable === 'string' ? entry.data.originalTable : null;
+    if (!entry || typeof entry.id !== 'string' || !table) unknown.push('Trash recovery queue');
+    else add('trash', table);
+  }
+
+  let mutationKeys = [];
+  try {
+    if (typeof localStorage.length !== 'number' || typeof localStorage.key !== 'function') throw new Error('storage_unavailable');
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (typeof key === 'string' && key.startsWith('_kjrMutationGroupV2:')) mutationKeys.push(key);
+    }
+  } catch (_) { unknown.push('queued transactions'); }
+  for (const key of mutationKeys) {
+    const raw = _syncDiagReadStorage(key);
+    const group = raw.ok ? raw.value : null;
+    if (!raw.ok || !group || !Array.isArray(group.operations)) { unknown.push('queued transactions'); continue; }
+    for (const operation of group.operations) {
+      if (!operation || typeof operation.table !== 'string' || typeof operation.id !== 'string' || !operation.id) unknown.push('queued transactions');
+      else add('mutation', operation.table);
+    }
+  }
+  const totals = { dirty: 0, delete: 0, trash: 0, mutation: 0 };
+  for (const value of Object.values(byTable)) for (const kind of Object.keys(totals)) totals[kind] += Number(value[kind]) || 0;
+  return { byTable, totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0), unknown: [...new Set(unknown)] };
+}
+
+function _syncDiagMergePulledState(pulled) {
+  if (!pulled || !pulled.tables || typeof DB === 'undefined' || !DB) return false;
+  try {
+    DB.singles = mergeTable(pulled.tables.singles || [], DB.singles || [], _dirty.singles, 'singles');
+    DB.slabs = mergeTable(pulled.tables.slabs || [], DB.slabs || [], _dirty.slabs, 'slabs');
+    DB.sales = mergeTable(pulled.tables.sales || [], DB.sales || [], _dirty.sales, 'sales');
+    DB.etbs = mergeTable(pulled.tables.etbs || [], DB.etbs || [], _dirty.etbs, 'etbs');
+    DB.boosterBoxes = mergeTable(pulled.tables.booster_boxes || [], DB.boosterBoxes || [], _dirty.boosterBoxes, 'boosterBoxes');
+    DB.boosterPacks = mergeTable(pulled.tables.booster_packs || [], DB.boosterPacks || [], _dirty.boosterPacks, 'boosterPacks');
+    DB.ebayPurchases = mergeTable(pulled.tables.ebay_purchases || [], DB.ebayPurchases || [], _dirty.ebayPurchases, 'ebayPurchases');
+    DB.trash = _mergeRecoverableTrashEntries(pulled.tables.trash || []);
+    if (!_persistInventoryCacheDirect('Cloud refresh could not be saved locally')) return false;
+    if (typeof renderDashboard === 'function') renderDashboard();
+    if (typeof renderSingles === 'function') renderSingles();
+    if (typeof renderSlabs === 'function') renderSlabs();
+    if (typeof renderSales === 'function') renderSales();
+    if (typeof renderEtbs === 'function') renderEtbs();
+    if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
+    if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
+    if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
+    return true;
+  } catch (error) {
+    _syncDiagRecordFailure('local', error && error.message ? error.message : 'Cloud refresh could not be applied locally');
+    return false;
+  }
+}
+
+function _syncDiagHasFailure() { return Object.keys(_syncDiagnostics.failures || {}).length > 0; }
+
+function _syncDiagIndicatorState(requested) {
+  if (requested === 'saving') return 'saving';
+  if (_syncDiagHasFailure()) return 'error';
+  const pending = _syncDiagPendingSnapshot();
+  if (pending.unknown.length || pending.total > 0) return 'pending';
+  if (requested === 'ok' || _syncDiagnostics.successes.read || _syncDiagnostics.successes.write) return 'ok';
+  return 'idle';
+}
+
+function _syncDiagStatusCopy(state) {
+  return ({ saving: 'Syncing…', ok: 'Synced', pending: 'Sync pending', error: 'Sync error', idle: '' })[state] || '';
+}
+
+function _syncDiagRenderIndicator() {
   const el = document.getElementById('sync-indicator');
   if (!el) return;
-  // title always carries the FULL message so a tap-and-hold (mobile) or hover
-  // (desktop) reveals it even when the visible text is short/truncated - see
-  // the narrow-width CSS below for why the visible copy differs at mobile.
-  if (s === 'saving') { el.textContent = '⟳ Syncing...'; el.title = 'Syncing...'; el.style.color = 'var(--text3)'; }
-  else if (s === 'ok') {
-    el.textContent = '✓ Synced'; el.title = 'Synced'; el.style.color = 'var(--green)';
-    setTimeout(() => { if (_syncStatus === 'ok') { el.textContent = ''; el.title = ''; } }, 3000);
+  const state = _syncDiagIndicatorState(_syncStatus);
+  el.dataset.state = state;
+  el.textContent = ({ saving: '⟳ Syncing…', ok: '✓ Synced', pending: '⚠ Sync pending', error: '⚠ Sync error', idle: '' })[state] || '';
+  el.title = state === 'error' ? 'Open cloud sync diagnostics' : state === 'pending' ? 'Pending work needs attention' : state === 'ok' ? 'Open cloud sync diagnostics' : 'Cloud sync status';
+  el.setAttribute('aria-label', state === 'idle' ? 'Cloud sync status' : _syncDiagStatusCopy(state) + ', open diagnostics');
+  el.hidden = state === 'idle';
+}
+
+function _syncDiagSetSettledStatus() {
+  const pending = _syncDiagPendingSnapshot();
+  _syncStatus = _syncDiagHasFailure() ? 'error' :
+    (pending.unknown.length || pending.total > 0 ? 'pending' : 'idle');
+  _syncDiagRenderIndicator();
+}
+
+let _syncStatus = 'idle';
+function setSyncStatus(s, msg, operation, diagnosticDetail) {
+  _syncStatus = s;
+  if (s === 'error') {
+    const detail = diagnosticDetail || msg || 'Unknown sync failure';
+    _syncDiagRecordFailure(operation, detail);
+    console.error('Sync error:', _syncDiagSafeText(detail, 220));
   }
-  else if (s === 'error') {
-    el.textContent = '⚠ Sync error'; el.title = 'Sync failed - check connection';
-    el.style.color = 'var(--red)'; if (msg) console.error('Sync error:', msg);
+  _syncDiagRenderIndicator();
+}
+
+function _syncDiagFormatTime(value, unknown) {
+  if (unknown) return 'Time unavailable';
+  if (!Number.isFinite(value) || value <= 0) return 'Not yet confirmed';
+  try {
+    return new Date(value).toLocaleString('en-SG', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Singapore'
+    });
+  } catch (_) { return 'Time unavailable'; }
+}
+
+function _syncDiagEscape(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+
+// Trash snapshots are committed atomically with their matching delete. The
+// compatibility flush hook is intentionally a no-op, so a Trash-only queue
+// cannot be repaired by this panel's normal retry. Keep the button disabled
+// until another operation gives retry a useful, safe job to perform.
+function _syncDiagOnlyUnretryableTrash(pending) {
+  if (!pending || pending.unknown.length || pending.totals.trash <= 0) return false;
+  if (pending.totals.dirty > 0 || pending.totals.delete > 0 || pending.totals.mutation > 0) return false;
+  const failures = _syncDiagnostics.failures || {};
+  return !failures.read && !failures.mutation && !failures.delete && !failures.local;
+}
+
+function _syncDiagProblem(pending) {
+  const failures = _syncDiagnostics.failures || {};
+  for (const operation of ['local', 'read', 'mutation', 'delete', 'trash', 'write']) {
+    const failure = failures[operation];
+    if (!failure) continue;
+    const copy = {
+      owner_session_required: {
+        reason: 'You are not signed in or this sign-in is no longer available.',
+        remedy: 'Sign in again, then retry.'
+      },
+      owner_session_changed: {
+        reason: 'Your sign-in changed while this request was running.',
+        remedy: 'Keep one signed-in tab open, then retry.'
+      },
+      owner_session_expired: {
+        reason: 'Your sign-in expired before cloud sync finished.',
+        remedy: 'Sign in again, then retry.'
+      },
+      owner_forbidden: {
+        reason: 'The cloud refused this sign-in.',
+        remedy: 'Sign in again, then retry.'
+      },
+      version_conflict: {
+        reason: 'The cloud copy changed before this browser could save its queued change.',
+        remedy: 'Review the Changelog entry, then retry the remaining work.'
+      },
+      rate_limited: {
+        reason: 'The cloud is temporarily busy with too many requests.',
+        remedy: 'Wait a moment, then retry.'
+      },
+      server_error: {
+        reason: 'The cloud could not complete this request.',
+        remedy: 'Wait a moment, check the connection, then retry.'
+      },
+      mutation_queue_changed: {
+        reason: 'A queued transaction changed while sync was running.',
+        remedy: 'Keep this browser open and retry. The transaction stays queued.'
+      },
+      delete_state_unavailable: {
+        reason: 'Delete recovery state could not be read or saved safely.',
+        remedy: 'Keep browser data, free storage if needed, then retry.'
+      },
+      local_storage_error: {
+        reason: 'Browser storage could not save the latest local state.',
+        remedy: 'Free browser storage, avoid closing this tab, then retry.'
+      },
+      network_error: {
+        reason: 'The cloud could not be reached.',
+        remedy: 'Check the connection, then retry.'
+      },
+      invalid_sync_response: {
+        reason: 'The cloud returned a response the app could not validate.',
+        remedy: 'Check the connection, then retry. If it repeats, keep this reference for support.'
+      },
+      sync_request_failed: {
+        reason: 'The cloud did not confirm this request.',
+        remedy: 'Check the connection, then retry. Pending work remains here.'
+      },
+      sync_failure: {
+        reason: 'Cloud sync did not complete this operation.',
+        remedy: operation === 'local'
+          ? 'Keep this tab open, free browser storage if needed, then retry.'
+          : 'Check the connection, then retry. Pending work remains here.'
+      },
+      preview_disabled: {
+        reason: 'This local preview does not connect to cloud data.',
+        remedy: 'Use the signed-in hosted app to test cloud sync.'
+      },
+    }[failure.code] || null;
+    const fallback = {
+      local: { reason: 'Browser storage needs attention.', remedy: 'Keep this tab open, free browser storage, then retry.' },
+      read: { reason: 'The latest cloud data could not be checked.', remedy: 'Check the connection and sign in again if needed, then retry.' },
+      mutation: { reason: 'A queued transaction could not be completed.', remedy: 'Keep this browser open and retry. The transaction stays queued.' },
+      delete: { reason: 'A delete could not be confirmed safely.', remedy: 'Keep this browser open and retry. Delete recovery stays queued.' },
+      trash: { reason: 'A Trash recovery copy could not be confirmed.', remedy: 'Recovery snapshot needs review. Automatic retry cannot resolve it. Keep browser data and avoid closing this tab.' },
+      write: { reason: 'A cloud save could not be confirmed.', remedy: 'Keep this tab open, check the connection, then retry.' },
+    }[operation];
+    const selected = copy || fallback;
+    return {
+      tone: 'error', icon: '⚠', title: SYNC_DIAG_OPERATION_LABELS[operation] + ' needs attention',
+      reason: selected.reason, remedy: selected.remedy,
+      retryDisabled: operation === 'trash' && _syncDiagOnlyUnretryableTrash(pending),
+    };
   }
+  if (pending.unknown.length) return { tone: 'error', icon: '⚠', title: 'Sync status is incomplete', reason: 'Some local recovery state could not be read safely.', remedy: 'Avoid clearing browser data, free storage, then retry.' };
+  if (_syncDiagOnlyUnretryableTrash(pending)) return {
+    tone: 'error', icon: '⚠', title: 'Recovery snapshot needs review',
+    reason: 'A Trash recovery copy is still queued.',
+    remedy: 'Automatic retry cannot resolve it. Keep browser data and avoid closing this tab.',
+    retryDisabled: true,
+  };
+  if (pending.total > 0) return { tone: 'pending', icon: '⚠', title: 'Work is waiting to sync', reason: 'This browser has ' + pending.total + ' queued operation' + (pending.total === 1 ? '' : 's') + '. Recovery steps can refer to the same item.', remedy: 'Keep the app open and retry when you are signed in and connected.' };
+  if (_syncStatus === 'saving') return { tone: 'pending', icon: '⟳', title: 'Sync is in progress', reason: 'The app is checking or sending changes.', remedy: 'Keep this panel open while the request finishes.' };
+  if (!_syncDiagnostics.successes.read && !_syncDiagnostics.successes.write) return { tone: 'pending', icon: '○', title: 'Cloud sync is not confirmed', reason: 'This browser has no confirmed cloud read or write yet.', remedy: 'Sign in and retry when the connection is available.' };
+  return { tone: 'ok', icon: '✓', title: 'No current sync problem', reason: 'The latest confirmed cloud activity is clear.', remedy: 'You can close this panel.' };
+}
+
+function _syncDiagRenderBody() {
+  const body = document.getElementById('sync-diagnostics-body');
+  if (!body) return;
+  const pending = _syncDiagPendingSnapshot();
+  const problem = _syncDiagProblem(pending);
+  const pendingRows = Object.entries(pending.byTable)
+    .filter(([, counts]) => Object.values(counts).some(value => value > 0))
+    .sort(([left], [right]) => String(SYNC_DIAG_TABLE_LABELS[left] || left).localeCompare(String(SYNC_DIAG_TABLE_LABELS[right] || right)))
+    .map(([table, counts]) => {
+      const parts = [];
+      if (counts.dirty) parts.push(counts.dirty + ' change' + (counts.dirty === 1 ? '' : 's'));
+      if (counts.delete) parts.push(counts.delete + ' delete retr' + (counts.delete === 1 ? 'y' : 'ies'));
+      if (counts.trash) parts.push(counts.trash + ' Trash recover' + (counts.trash === 1 ? 'y' : 'ies'));
+      if (counts.mutation) parts.push(counts.mutation + ' transaction step' + (counts.mutation === 1 ? '' : 's'));
+      return '<div class="sync-diag-row"><span class="sync-diag-row-label">' + _syncDiagEscape(SYNC_DIAG_TABLE_LABELS[table] || table) + '</span><span class="sync-diag-row-value">' + _syncDiagEscape(parts.join(', ')) + '</span></div>';
+    }).join('');
+  const unknownRows = pending.unknown.length
+    ? '<div class="sync-diag-row"><span class="sync-diag-row-label">Some queue state</span><span class="sync-diag-row-value">Could not read</span></div>' : '';
+  const failures = Object.entries(_syncDiagnostics.failures || {}).filter(([, value]) => value);
+  const technical = failures.length
+    ? '<details class="sync-diag-tech"><summary>Technical details</summary><div class="sync-diag-tech-body">' + failures.map(([operation, failure]) =>
+      '<div class="sync-diag-tech-item"><strong>' + _syncDiagEscape(SYNC_DIAG_OPERATION_LABELS[operation] || operation) + '</strong><span>' + _syncDiagEscape(failure.code) + ' · ' + _syncDiagEscape(failure.detail) + ' · ' + _syncDiagEscape(_syncDiagFormatTime(failure.at, failure.at === null)) + '</span></div>'
+    ).join('') + '</div></details>' : '';
+  const statusNotice = !_syncDiagStorageAvailable || !_syncDiagInstallationPersisted
+    ? '<p class="sync-diag-muted">Browser storage could not verify the local reference, so it applies to this tab only.</p>' : '';
+  body.innerHTML =
+    '<div class="sync-diag-problem" data-tone="' + _syncDiagEscape(problem.tone) + '"><span class="sync-diag-problem-icon" aria-hidden="true">' + _syncDiagEscape(problem.icon) + '</span><div class="sync-diag-problem-copy"><strong>' + _syncDiagEscape(problem.title) + '</strong><span>' + _syncDiagEscape(problem.reason) + '</span><br><span>' + _syncDiagEscape(problem.remedy) + '</span></div></div>' +
+    '<div class="sync-diag-section"><div class="sync-diag-label">Pending work here</div><div class="sync-diag-list">' + (pendingRows || '<div class="sync-diag-muted">No queued changes or recovery actions.</div>') + unknownRows + '</div></div>' +
+    '<div class="sync-diag-section"><div class="sync-diag-label">Last confirmed activity</div><div class="sync-diag-list"><div class="sync-diag-row"><span class="sync-diag-row-label">Last checked cloud</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagFormatTime(_syncDiagnostics.successes.read)) + '</span></div><div class="sync-diag-row"><span class="sync-diag-row-label">Last saved to cloud</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagFormatTime(_syncDiagnostics.successes.write)) + '</span></div></div></div>' +
+    '<div class="sync-diag-section"><div class="sync-diag-label">This copy</div><div class="sync-diag-row"><span class="sync-diag-row-label">Local reference</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagnostics.installationRef) + '</span></div><p class="sync-diag-muted">Browsers and Dock apps with separate storage have different references. Check each copy for unsent changes. This reference is never sent to the cloud.</p>' + statusNotice + '</div>' + technical;
+  const status = document.getElementById('sync-diagnostics-status');
+  if (status) status.textContent = problem.title;
+  const retry = document.getElementById('sync-diagnostics-retry');
+  if (retry) retry.disabled = !!_syncDiagRetryInFlight || !!problem.retryDisabled;
+}
+
+function openSyncDiagnostics() {
+  const dlg = document.getElementById('sync-diagnostics-overlay');
+  if (!dlg) return;
+  _syncDiagRenderBody();
+  const indicator = document.getElementById('sync-indicator');
+  if (indicator) indicator.setAttribute('aria-expanded', 'true');
+  if (dlg.open) return;
+  if (typeof kjrModalCtrl !== 'undefined' && kjrModalCtrl.open) {
+    kjrModalCtrl.open(dlg, { trigger: document.activeElement, onClose: () => {
+      if (indicator) indicator.setAttribute('aria-expanded', 'false');
+    } });
+  } else if (typeof dlg.showModal === 'function') dlg.showModal();
+}
+
+function closeSyncDiagnostics() {
+  const dlg = document.getElementById('sync-diagnostics-overlay');
+  if (!dlg) return;
+  if (typeof kjrModalCtrl !== 'undefined' && kjrModalCtrl.close) {
+    Promise.resolve(kjrModalCtrl.close(dlg)).catch(() => {});
+  } else if (dlg.open && typeof dlg.close === 'function') dlg.close();
+  const indicator = document.getElementById('sync-indicator');
+  if (indicator) indicator.setAttribute('aria-expanded', 'false');
+}
+
+async function retrySyncDiagnostics() {
+  if (_syncDiagRetryInFlight) return _syncDiagRetryInFlight;
+  _syncDiagRetryInFlight = (async () => {
+    if (isLocalhostPreview()) {
+      setSyncStatus('error', 'This local preview never contacts the cloud', 'read', 'preview_disabled');
+      _syncDiagRenderBody();
+      return;
+    }
+    if (!_kjrAuthSession || !SB_HDR.Authorization) {
+      setSyncStatus('error', 'Sign in before retrying cloud sync', 'read', 'owner_session_required');
+      _syncDiagRenderBody();
+      return;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setSyncStatus('error', 'The browser is offline. Changes remain queued here.', 'read');
+      _syncDiagRenderBody();
+      return;
+    }
+    const beforeRetry = _syncDiagPendingSnapshot();
+    if (beforeRetry.unknown.length) {
+      setSyncStatus('error', 'Sync recovery state needs repair', 'local');
+      _syncDiagRenderBody();
+      return;
+    }
+    if (_syncDiagOnlyUnretryableTrash(beforeRetry)) {
+      _syncDiagRenderBody();
+      return;
+    }
+    const writeFailureBefore = _syncDiagnostics.failures.write || null;
+    setSyncStatus('saving');
+    let pullReturned = false;
+    let pullMerged = false;
+    try {
+      const pulled = await _pullSyncState({ force: true });
+      pullReturned = true;
+      pullMerged = _syncDiagMergePulledState(pulled);
+    } catch (error) { _syncDiagRecordFailure('read', error); }
+    // A validated pull must also be applied to the visible DB before writes
+    // continue. If that local merge fails, leave queued writes untouched so a
+    // storage problem cannot send stale in-memory bytes as a repair attempt.
+    if (!pullReturned || pullMerged) {
+      try { await _flushDirtyToSupabase(); }
+      catch (error) { _syncDiagRecordFailure('write', error); }
+    } else {
+      _syncDiagRecordFailure('local', 'Cloud refresh could not be applied locally');
+    }
+    const beforeDeletes = _syncDiagPendingSnapshot().totals.delete;
+    try { await flushPendingDeletes(); }
+    catch (error) { _syncDiagRecordFailure('delete', error); }
+    const afterDeletes = _syncDiagPendingSnapshot().totals.delete;
+    if (beforeDeletes > 0 && afterDeletes === 0) _syncDiagRecordSuccess('delete');
+    const pendingAfterRetry = _syncDiagPendingSnapshot();
+    const writeFailureAfter = _syncDiagnostics.failures.write || null;
+    const nonWriteFailures = Object.keys(_syncDiagnostics.failures || {}).filter(operation => operation !== 'write');
+    if (pullReturned && pullMerged && writeFailureBefore && writeFailureAfter === writeFailureBefore &&
+        pendingAfterRetry.unknown.length === 0 && pendingAfterRetry.total === 0 && nonWriteFailures.length === 0) {
+      _syncDiagClearFailure('write');
+    }
+    _syncDiagSetSettledStatus();
+    _syncDiagRenderBody();
+  })().finally(() => {
+    _syncDiagRetryInFlight = null;
+    _syncDiagRenderBody();
+  });
+  return _syncDiagRetryInFlight;
 }
 
 // ── Import progress bar ───────────────────────────────────────
@@ -1100,30 +1789,40 @@ function _validateMutationAcknowledgement(operation, result, companion) {
 
 async function _syncMutate(operations, mutationId) {
   if (isLocalhostPreview()) return { ok: true, skipped: true, mutation_id: mutationId, results: [] };
-  if (!_kjrAuthSession || !SB_HDR.Authorization) throw new Error('owner_session_required');
-  const generation = _kjrAuthGeneration;
-  const sessionId = _kjrAuthSession.session_id;
-  const payload = { client_protocol: SYNC_PROTOCOL, mutation_id: mutationId || _newMutationId(), operations };
-  const r = await fetch(SYNC_MUTATE_URL, {
-    method: 'POST', headers: { ...SB_HDR }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20000)
-  });
-  if (generation !== _kjrAuthGeneration || !_kjrAuthSession || _kjrAuthSession.session_id !== sessionId) {
-    throw new Error('owner_session_changed');
+  try {
+    if (!_kjrAuthSession || !SB_HDR.Authorization) throw new Error('owner_session_required');
+    const generation = _kjrAuthGeneration;
+    const sessionId = _kjrAuthSession.session_id;
+    const payload = { client_protocol: SYNC_PROTOCOL, mutation_id: mutationId || _newMutationId(), operations };
+    const r = await fetch(SYNC_MUTATE_URL, {
+      method: 'POST', headers: { ...SB_HDR }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20000)
+    });
+    if (generation !== _kjrAuthGeneration || !_kjrAuthSession || _kjrAuthSession.session_id !== sessionId) {
+      throw new Error('owner_session_changed');
+    }
+    const body = await r.json().catch(() => null);
+    if (r.status === 401 || r.status === 403) {
+      _kjrExpireOwnerSession(r.status === 403);
+      throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
+    }
+    if (!body || typeof body !== 'object') throw new Error('invalid_sync_response');
+    if (body.ok === false && body.code === 'version_conflict' && _validSyncConflictSet(operations, body.conflicts)) {
+      _syncDiagRecordFailure('write', 'version_conflict');
+      return { ok: false, code: 'version_conflict', mutation_id: payload.mutation_id, conflicts: body.conflicts };
+    }
+    if (!r.ok || body.ok !== true || body.mutation_id !== payload.mutation_id ||
+        !_validSyncResultSet(operations, body.results)) {
+      throw new Error(_syncDiagResponseFailure(r.status, body));
+    }
+    // An acknowledgement proves this write, but an older failed row or
+    // queued operation may still be outstanding. The flush that drains that
+    // matching work clears the retained failure.
+    _syncDiagRecordSuccess('write', { clearFailure: false });
+    return { ok: true, mutation_id: body.mutation_id, results: body.results };
+  } catch (error) {
+    _syncDiagRecordFailure('write', error);
+    throw error;
   }
-  const body = await r.json().catch(() => null);
-  if (r.status === 401 || r.status === 403) {
-    _kjrExpireOwnerSession(r.status === 403);
-    throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
-  }
-  if (!body || typeof body !== 'object') throw new Error('invalid_sync_response');
-  if (body.ok === false && body.code === 'version_conflict' && _validSyncConflictSet(operations, body.conflicts)) {
-    return { ok: false, code: 'version_conflict', mutation_id: payload.mutation_id, conflicts: body.conflicts };
-  }
-  if (!r.ok || body.ok !== true || body.mutation_id !== payload.mutation_id ||
-      !_validSyncResultSet(operations, body.results)) {
-    throw new Error('sync_request_failed');
-  }
-  return { ok: true, mutation_id: body.mutation_id, results: body.results };
 }
 
 async function sbBatchUpsert(table, items, mutationQueueEpoch) {
@@ -1148,7 +1847,7 @@ async function sbUpsert(table, id, data) {
       if (!_deleteStateAllowsCloudWrites()) throw new Error('Cloud writes paused because delete recovery state needs repair');
       return _syncMutate([_upsertOperation(table, snapshot)], _newMutationId());
     });
-  } catch(e) { setSyncStatus('error', e.message); throw e; }
+  } catch(e) { setSyncStatus('error', e.message, 'write'); throw e; }
 }
 
 // Persistent retry queue for cloud deletes that failed (network down,
@@ -1185,7 +1884,7 @@ function _warnDeleteStateOnce(key, message, error) {
     console.warn('[delete-state] ' + message + ':', error);
   }
   warnOnce('delete-state-' + key, message + '. Inventory remains visible, but delete retries need attention.');
-  try { setSyncStatus('error', message); } catch(_) {}
+  try { setSyncStatus('error', message, 'delete'); } catch(_) {}
 }
 
 function _validDeleteStateRecord(record) {
@@ -1250,7 +1949,7 @@ function _deleteStateAllowsCloudWrites() {
       'delete-state-cloud-writes-paused-storage',
       'Cloud sync is paused because delete recovery state could not be saved safely.'
     );
-    try { setSyncStatus('error', 'Cloud sync paused, delete recovery state could not be saved safely'); } catch(_) {}
+    try { setSyncStatus('error', 'Cloud sync paused, delete recovery state could not be saved safely', 'delete'); } catch(_) {}
     return false;
   }
   const current = _readDeleteState();
@@ -1259,7 +1958,7 @@ function _deleteStateAllowsCloudWrites() {
     'delete-state-cloud-writes-paused',
     'Cloud sync is paused because delete recovery state needs repair. Local edits remain queued.'
   );
-  try { setSyncStatus('error', 'Cloud sync paused, delete recovery state needs repair'); } catch(_) {}
+  try { setSyncStatus('error', 'Cloud sync paused, delete recovery state needs repair', 'delete'); } catch(_) {}
   return false;
 }
 
@@ -1563,7 +2262,7 @@ function _settleAlreadyTombstonedDelete(table, id, restoreToken, rowVersion) {
       if (localStorage.getItem(STORAGE_KEY) !== cacheBefore) throw new Error('cache_rollback_not_confirmed');
     } catch(e) {
       console.error('[sync] already-tombstoned delete cache rollback failed:', e);
-      setSyncStatus('error', 'Delete recovery state needs repair');
+      setSyncStatus('error', 'Delete recovery state needs repair', 'delete');
     }
     if (beforeRows) DB[key] = beforeRows;
     return false;
@@ -1742,7 +2441,7 @@ async function _prepareReplacementSafety(nextState, deleteTargets) {
       } catch (error) {
         if (!restorePreviousBytes()) {
           console.error('[replace] pending recovery state rollback failed:', error);
-          setSyncStatus('error', 'Replace recovery state needs repair');
+          setSyncStatus('error', 'Replace recovery state needs repair', 'delete');
         }
         throw error;
       }
@@ -1762,8 +2461,15 @@ async function flushPendingDeletes() {
   if (!initial.valid || !initial.state.pending.length) return;
   for (const item of initial.state.pending) {
     if (!_pendingDeleteStillQueued(item)) continue;
-    await sbDelete(item.table, item.id, item.restoreToken);
+    const settled = await sbDelete(item.table, item.id, item.restoreToken);
+    // sbDelete records its specific failure, including a safe HTTP class or
+    // queue error. Keep that detail instead of replacing it with a generic
+    // retry message. A fallback is useful only when the call returned false
+    // without recording an operation failure of its own.
+    if (!settled && !_syncDiagnostics.failures.delete) _syncDiagRecordFailure('delete', 'Delete retry remains queued');
   }
+  const latest = _readDeleteState();
+  if (latest.valid && latest.state.pending.length === 0) _syncDiagRecordSuccess('delete');
 }
 
 // Persistent retry queue for TRASH writes that failed (offline, 5xx).
@@ -1846,32 +2552,38 @@ async function sbDelete(table, id, restoreToken) {
     try {
       settled = await _queueDeleteStateOp(() => _settleAlreadyTombstonedDelete(table, id, restoreToken, knownTombstone.row_version));
     } catch(e) {
-      setSyncStatus('error', e.message || 'Delete queue lock failed');
+      setSyncStatus('error', e.message || 'Delete queue lock failed', 'delete');
       return false;
     }
     if (!settled) {
-      setSyncStatus('error', 'Delete recovery state needs repair');
+      setSyncStatus('error', 'Delete recovery state needs repair', 'delete');
       return false;
     }
     _discardDirtyForDelete(key, id, dirtyTokens);
+    const pendingAfterDelete = _syncDiagPendingSnapshot();
+    _syncDiagRecordSuccess('delete', {
+      clearFailure: pendingAfterDelete.unknown.length === 0 && pendingAfterDelete.totals.delete === 0,
+    });
     return true;
   }
   const trashEntry = _pendingTrashForSource(table, id);
   if (!trashEntry || !trashEntry.data || !trashEntry.data.item) {
-    setSyncStatus('error', 'Delete has no recoverable Trash snapshot');
+    setSyncStatus('error', 'Delete has no recoverable Trash snapshot', 'delete');
     return false;
   }
   const sourceSnapshot = trashEntry.data.item;
   const expectedVersion = Number.isSafeInteger(sourceSnapshot._serverVersion) ? sourceSnapshot._serverVersion : 0;
   const dirtyTokens = _snapshotDirtyTokens(_dbKey(table), id, JSON.stringify(sourceSnapshot));
+  const hadPendingTrash = _readPendingTrashEntries().some(entry => entry && entry.id === trashEntry.id);
+  let trashRecoveryRemoved = false;
   let queued;
   try { queued = await _queueDeleteStateOp(() => _queuePendingDelete(table, id, restoreToken)); }
   catch(e) {
-    setSyncStatus('error', e.message || 'Delete queue lock failed');
+    setSyncStatus('error', e.message || 'Delete queue lock failed', 'delete');
     return false;
   }
   if (!queued) {
-    setSyncStatus('error', 'Delete could not be queued safely');
+    setSyncStatus('error', 'Delete could not be queued safely', 'delete');
     return false;
   }
   const operation = {
@@ -1901,7 +2613,7 @@ async function sbDelete(table, id, restoreToken) {
           _updatedAt: trashResult ? (trashResult.updated_at || '') : '' };
         DB.trash = DB.trash.filter(entry => entry.id !== trashEntry.id);
         DB.trash.push(savedTrash);
-        _removePendingTrashEntry(trashEntry.id);
+        if (hadPendingTrash) trashRecoveryRemoved = _removePendingTrashEntry(trashEntry.id);
       }
       const current = _readDeleteState();
       if (!current.valid) return false;
@@ -1911,9 +2623,20 @@ async function sbDelete(table, id, restoreToken) {
     });
     if (completed === 'cancelled') return true;
     if (!completed) throw new Error('confirmed delete could not be saved locally');
+    if (outcome.ok) {
+      const pendingAfterDelete = _syncDiagPendingSnapshot();
+      _syncDiagRecordSuccess('delete', {
+        clearFailure: pendingAfterDelete.unknown.length === 0 && pendingAfterDelete.totals.delete === 0,
+      });
+      if (trashRecoveryRemoved) {
+        _syncDiagRecordSuccess('trash', {
+          clearFailure: pendingAfterDelete.unknown.length === 0 && pendingAfterDelete.totals.trash === 0,
+        });
+      }
+    }
     return outcome.ok;
   } catch(e) {
-    setSyncStatus('error', 'Delete will retry');
+    setSyncStatus('error', 'Delete will retry', 'delete', e);
     // The durable marker was written before the attempt and remains queued.
     return false;
   }
@@ -1999,7 +2722,7 @@ function _persistServerTombstones(rows) {
   } catch (e) {
     _tombstoneRecoveryStorageBlocked = true;
     console.warn('[sync] server tombstone cache write failed:', e);
-    setSyncStatus('error', 'Server deletion recovery could not be saved safely');
+    setSyncStatus('error', 'Server deletion recovery could not be saved safely', 'delete');
     return false;
   }
 }
@@ -2084,6 +2807,8 @@ async function _pullSyncStateAttempt() {
     const deleteStateRawBefore = deleteStateBefore && deleteStateBefore.raw;
     const mutationQueueEpochBefore = _mutationQueueEpoch;
     const trashBefore = JSON.stringify((typeof DB !== 'undefined' && DB && DB.trash) || []);
+    let prePullTrash = null;
+    try { prePullTrash = JSON.parse(trashBefore); } catch (_) {}
     const tombstonesBefore = JSON.stringify(_serverTombstones || []);
     const pendingTrashBefore = localStorage.getItem(PENDING_TRASH_KEY);
     const tombstoneStorageBefore = localStorage.getItem(SERVER_TOMBSTONES_KEY);
@@ -2099,7 +2824,8 @@ async function _pullSyncStateAttempt() {
       _kjrExpireOwnerSession(r.status === 403);
       throw new Error(r.status === 403 ? 'owner_forbidden' : 'owner_session_expired');
     }
-    if (!r.ok || !body || body.ok !== true || body.client_protocol !== SYNC_PROTOCOL ||
+    if (!r.ok) throw new Error(_syncDiagResponseFailure(r.status, body));
+    if (!body || body.ok !== true || body.client_protocol !== SYNC_PROTOCOL ||
         !body.tables || typeof body.tables !== 'object' || !Array.isArray(body.tombstones)) {
       throw new Error('invalid_sync_response');
     }
@@ -2143,7 +2869,7 @@ async function _pullSyncStateAttempt() {
     // and recovery transaction were both gone. Only this authenticated,
     // successful pull can prove that exact row is still deleted on the
     // server. Cached tombstones are deliberately insufficient evidence.
-    _clearProvenOrphanDirtyMarkersAfterPull(pulledTombstones, tables);
+    _clearProvenOrphanDirtyMarkersAfterPull(pulledTombstones, tables, prePullTrash);
     if (!_reconcileConfirmedDeleteMarkersAfterPull(pulledTombstones, tables)) {
       throw new Error('delete_state_unavailable');
     }
@@ -2155,6 +2881,7 @@ async function _pullSyncStateAttempt() {
     const tombstones = _suppressPendingRestoreTombstones(pulledTombstones, tables.trash);
     _serverTombstones = tombstones;
     _syncPullLoaded = true;
+    _syncDiagRecordSuccess('read');
     _persistServerTombstones(tombstones);
     return { tables, tombstones };
 }
@@ -2212,6 +2939,7 @@ async function _pullSyncState(options) {
   })();
   try { return await _syncPullPromise; }
   catch (error) {
+    _syncDiagRecordFailure('read', error);
     _syncPullPromise = null;
     _syncPullLoaded = false;
     _authoritativeServerRows = new Map();
@@ -3412,7 +4140,7 @@ function _restoreCancelledRestoreCleanup(cleanup) {
   for (const [key, dirty] of cleanup.dirtyBefore) _dirty[key] = new Set(dirty);
   for (const [key, revisions] of cleanup.revisionsBefore) _dirtyRevisions[key] = new Map(revisions);
   const restored = _restoreStorageValues(cleanup.storage);
-  if (!restored) setSyncStatus('error', 'Abandoned restore recovery needs repair');
+  if (!restored) setSyncStatus('error', 'Abandoned restore recovery needs repair', 'mutation');
   return restored;
 }
 
@@ -3441,12 +4169,12 @@ function _cancelIrrecoverableRestoreGroups(tombstones, trashRows) {
     const cleanup = _prepareCancelledRestoreCleanup(group, plan);
     if (!cleanup || !_applyCancelledRestoreCleanup(cleanup)) {
       if (cleanup) _restoreCancelledRestoreCleanup(cleanup);
-      setSyncStatus('error', 'Abandoned restore recovery needs repair');
+      setSyncStatus('error', 'Abandoned restore recovery needs repair', 'mutation');
       continue;
     }
     if (!_removeMutationGroup(group.mutation_id)) {
       _restoreCancelledRestoreCleanup(cleanup);
-      setSyncStatus('error', 'Abandoned restore queue needs repair');
+      setSyncStatus('error', 'Abandoned restore queue needs repair', 'mutation');
       continue;
     }
     cancelled++;
@@ -3477,7 +4205,7 @@ function _replayPendingMutationGroupsLocally() {
   const groups = _readMutationGroups();
   if (!groups) {
     console.warn('[sync] Pending mutation recovery state is unavailable');
-    setSyncStatus('error', 'Pending sync transaction needs repair');
+    setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
     return 0;
   }
   for (const group of groups) {
@@ -3553,20 +4281,20 @@ async function _flushMutationGroups() {
   const groups = _readMutationGroups();
   if (!groups) {
     console.warn('[sync] Pending mutation queue is unavailable; no data was sent');
-    setSyncStatus('error', 'Pending sync transaction needs repair');
+    setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
     return false;
   }
   for (const group of groups) {
     const plan = _mutationReplayPlan(group);
     if (!plan) {
       console.warn('[sync] Pending mutation is invalid; no data was sent and the transaction remains queued');
-      setSyncStatus('error', 'Pending sync transaction needs repair');
+      setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
       return false;
     }
     if (_restoreGroupIsIrrecoverable(plan, _serverTombstones, DB.trash)) {
       _cancelIrrecoverableRestoreGroups(_serverTombstones, DB.trash);
       if (_readMutationGroups()?.some(candidate => candidate.mutation_id === group.mutation_id)) {
-        setSyncStatus('error', 'Abandoned restore recovery needs repair');
+        setSyncStatus('error', 'Abandoned restore recovery needs repair', 'mutation');
         return false;
       }
       continue;
@@ -3575,7 +4303,11 @@ async function _flushMutationGroups() {
     try {
       outcome = await _syncMutate(group.operations, group.mutation_id);
     }
-    catch (_) { return false; }
+    catch (error) {
+      _syncDiagRecordFailure('mutation', error);
+      return false;
+    }
+    if (!outcome.ok) _syncDiagRecordFailure('mutation', outcome.code || 'sync_failure');
     const cleared = {};
     let handled = true;
     if (outcome.ok) {
@@ -3653,13 +4385,22 @@ async function _flushMutationGroups() {
       }
       if (!_persistInventoryCacheDirect('Conflict rollback could not be saved')) handled = false;
     }
-    if (!handled) return false;
+    if (!handled) {
+      _syncDiagRecordFailure('mutation', 'Pending sync transaction needs repair');
+      return false;
+    }
     _persistDirty(cleared);
-    if (!_removeMutationGroup(group.mutation_id)) return false;
+    if (!_removeMutationGroup(group.mutation_id)) {
+      _syncDiagRecordFailure('mutation', 'Pending sync transaction needs repair');
+      return false;
+    }
+    _syncDiagRecordSuccess('mutation', { clearFailure: false });
     if (outcome.ok && group.operations.some(op => op.type === 'restore') && typeof toast === 'function') {
       toast('Restore synced');
     }
   }
+  const remainingGroups = _readMutationGroups();
+  if (Array.isArray(remainingGroups) && remainingGroups.length === 0) _syncDiagRecordSuccess('mutation');
   return true;
 }
 
@@ -3693,6 +4434,8 @@ function saveData(options) {
       if (typeof toast === 'function') toast('⚠ Local storage full - data will only be saved to cloud. Avoid refreshing until the sync indicator turns green.', 6000, true);
     }
   }
+  if (saved) _syncDiagRecordSuccess('local');
+  else _syncDiagRecordFailure('local', 'Local storage could not save the latest changes');
 
   // 2. Debounce cloud write by 1s
   clearTimeout(_saveTimer);
@@ -3820,7 +4563,7 @@ function _resolveSyncConflict(conflict, operation, recovery) {
   const tokens = latestRow ? _snapshotDirtyTokens(key, operation.id, JSON.stringify(latestRow)) : new Set();
   if (typeof clLog !== 'function' || clLog('conflict', key, label,
       'server copy kept, attempted local change preserved here using the latest local bytes: ' + attempted) !== true) {
-    setSyncStatus('error', 'Conflict copy could not be saved');
+    setSyncStatus('error', 'Conflict copy could not be saved', 'local');
     return { ok: false };
   }
   const before = DB[key].slice();
@@ -3834,7 +4577,7 @@ function _resolveSyncConflict(conflict, operation, recovery) {
     : null;
   if ((operation.type === 'restore' || conflict.tombstone || !conflict.current) &&
       recoverySnapshot && !_persistConflictRecoveryTrash(recoverySnapshot)) {
-    setSyncStatus('error', 'Conflict recovery Trash copy could not be saved');
+    setSyncStatus('error', 'Conflict recovery Trash copy could not be saved', 'trash');
     return { ok: false };
   }
   const nextTombstones = conflict.tombstone && SYNCED_TABLES.includes(conflict.table)
@@ -3902,7 +4645,7 @@ async function _flushDirtyToSupabase() {
   const groupedRows = _pendingMutationRowKeys();
   if (!groupedRows) {
     console.warn('[sync] Pending mutation queue is unavailable; ordinary writes are paused');
-    setSyncStatus('error', 'Pending sync transaction needs repair');
+    setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
     return;
   }
   const mutationQueueEpoch = _mutationQueueEpoch;
@@ -3984,7 +4727,7 @@ async function _flushDirtyToSupabase() {
         break;
       }
       anyError = true;
-      setSyncStatus('error', e.message);
+      setSyncStatus('error', e.message, 'write');
       console.error('Flush failed for ' + tbl + ':', e);
       // Revisions not included in `flushed` remain dirty for the next retry.
     }
@@ -3996,10 +4739,18 @@ async function _flushDirtyToSupabase() {
   if (!stampsSaved) anyError = true;
   if (mutationQueueBlocked) {
     console.warn('[sync] Pending mutation queue changed; ordinary writes are paused');
-    setSyncStatus('error', 'Pending sync transaction needs repair');
+    setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
     return;
   }
-  if (!anyError) setSyncStatus('ok');
+  if (!anyError) {
+    const pendingAfter = _syncDiagPendingSnapshot();
+    if (pendingAfter.totals.dirty === 0 && pendingAfter.totals.mutation === 0) {
+      _syncDiagRecordSuccess('write', { clearFailure: false });
+    }
+    setSyncStatus('ok');
+  } else {
+    _syncDiagSetSettledStatus();
+  }
   // Opportunistic: retry any deletes and trash writes that failed previously.
   // Trash first so the snapshot exists before its source row is deleted.
   flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
@@ -4075,14 +4826,27 @@ async function saveAllToSupabase() {
       }
     }
     // Persist stamped timestamps directly, not via the debounced saveData().
-    _persistServerStamps(stamps, 'saveAllToSupabase');
+    const stampsSaved = _persistServerStamps(stamps, 'saveAllToSupabase');
     hideSyncProgress();
-    setSyncStatus('ok');
-    toast('All data synced to cloud ✓');
+    if (!stampsSaved) {
+      _syncDiagRecordFailure('local', 'Cloud save could not be saved locally');
+      _syncDiagSetSettledStatus();
+      toastError('Cloud accepted the data, but this browser could not confirm its local cache. Keep this tab open and retry.');
+      return;
+    }
+    if (stamps.length > 0) {
+      _syncDiagRecordSuccess('write', { clearFailure: false });
+      setSyncStatus('ok');
+      toast('All data synced to cloud ✓');
+    } else {
+      _syncDiagSetSettledStatus();
+    }
   } catch(e) {
     hideSyncProgress();
-    setSyncStatus('error', e.message);
-    toastError('Cloud sync failed - data saved locally. Try again when online.');
+    setSyncStatus('error', e.message, 'write');
+    toastError(_syncDiagStorageAvailable
+      ? 'Cloud sync failed. Data remains in this browser. Try again when online.'
+      : 'Cloud sync failed. This browser could not confirm local storage. Keep this tab open and retry.');
   }
 }
 
@@ -4423,7 +5187,7 @@ function _applyTombstonesBeforeMerge(tableKey, localRows, dirtySet) {
     const label = row.name || row.product || row.id;
     if (typeof clLog !== 'function' || clLog('conflict', tableKey, label,
         'server deletion kept, unsynced local edit preserved here: ' + localJson) !== true) {
-      setSyncStatus('error', 'Conflict copy could not be saved');
+      setSyncStatus('error', 'Conflict copy could not be saved', 'local');
       continue;
     }
     removable.add(row.id);
@@ -4706,7 +5470,13 @@ async function initDB() {
     }
 
   } catch(e) {
-    setSyncStatus('error', 'Cloud unreachable - showing cached data');
+    // _pullSyncState records the original bounded failure before it rejects.
+    // Keep that operation detail instead of replacing it with a generic
+    // connection message. The visible indicator remains concise while the
+    // diagnostics panel can explain the actual failure class.
+    if (!_syncDiagnostics.failures.read) _syncDiagRecordFailure('read', e);
+    _syncStatus = 'error';
+    _syncDiagRenderIndicator();
     if (!shownLocal) {
       // Truly offline with no cache - show empty, don't load stale SEED
       DB.singles = []; DB.slabs = []; DB.sales = []; DB.etbs = []; DB.boosterBoxes = []; DB.boosterPacks = []; DB.ebayPurchases = [];
@@ -8948,7 +9718,7 @@ async function sendToTrash(table, item, reason) {
     return false;
   }
   if (_queuePendingTrash(trashEntry)) return true;
-  setSyncStatus('error', 'Trash snapshot could not be saved');
+  setSyncStatus('error', 'Trash snapshot could not be saved', 'trash');
   toastError('Delete stopped because no recoverable Trash copy could be saved');
   return false;
 }
@@ -8970,7 +9740,7 @@ async function sendBatchToTrash(table, items, reason) {
     return false;
   }
   if (_queuePendingTrashBatch(rows)) return true;
-  setSyncStatus('error', 'Trash snapshots could not be saved');
+  setSyncStatus('error', 'Trash snapshots could not be saved', 'trash');
   toastError('Bulk delete stopped because no recoverable Trash copies could be saved');
   return false;
 }
@@ -9066,7 +9836,7 @@ async function hardDeleteTrashEntry(trashId) {
     const result = outcome.results.find(candidate =>
       candidate.type === 'delete' && candidate.table === 'trash' && candidate.id === trashId);
     if (!result || !_validateMutationAcknowledgement(operation, result, false)) {
-      setSyncStatus('error', 'Trash acknowledgement was invalid, recovery remains available');
+      setSyncStatus('error', 'Trash acknowledgement was invalid, recovery remains available', 'trash');
       return false;
     }
     DB.trash = DB.trash.filter(entry => entry.id !== trashId);
@@ -9151,7 +9921,7 @@ async function restoreFromTrash(trashId) {
     catch(e) { console.warn('Restore delete-state lock failed:', e); }
     if (!cancelOk) {
       const removed = _removeMutationGroup(mutationGroup.mutation_id);
-      setSyncStatus('error', 'Restore recovery state needs repair');
+      setSyncStatus('error', 'Restore recovery state needs repair', 'mutation');
       toastError(removed
         ? 'Restore stopped because an older delete retry could not be cancelled safely'
         : 'Restore is queued, but its local recovery state needs repair. Refresh and retry.');

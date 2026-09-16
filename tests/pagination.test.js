@@ -52,7 +52,7 @@ test('pagination: failed atomic sync pull rejects instead of returning a partial
   const { ctx, fetchMock, grab } = await loadApp();
   const before = grab('DB').DB.singles.map(row => ({ ...row }));
   fetchMock.route('/sync/v2/pull', () => jsonResponse({ ok: false, code: 'server_error' }, 500));
-  await assert.rejects(() => ctx.sbFetchAll('singles'), /invalid_sync_response/,
+  await assert.rejects(() => ctx.sbFetchAll('singles'), /server_error/,
     'a failed atomic snapshot never exposes partial rows');
   assert.deepStrictEqual(grab('DB').DB.singles.map(row => ({ ...row })), before);
 });

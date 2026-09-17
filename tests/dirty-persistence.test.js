@@ -256,6 +256,344 @@ test('dirty-persistence: snapshotless v2 marker without a cached row stays quara
   assert.deepStrictEqual(repeatedKeys, [markerKey], 'repeated fresh startups retain one quarantined marker');
 });
 
+function dispatchStorageEvent(sandbox, key, oldValue, newValue) {
+  sandbox.dispatchEvent({
+    type: 'storage', key, oldValue, newValue,
+    storageArea: null, url: 'http://127.0.0.1:3800/',
+  });
+}
+
+test('dirty-persistence: a peer acknowledgement clears a stale foreign marker without reload', async () => {
+  const id = 'cross_tab_ack_row';
+  const token = 'peer-tab:acknowledged';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 789 });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true);
+  assert.equal(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), token);
+
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, 'the legacy mirror keeps the obligation until its own acknowledgement arrives');
+
+  const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), false, 'the receiving tab drops only the durably acknowledged foreign row');
+  assert.equal(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.has(id), false);
+  assert.equal(loaded.ctx._syncDiagPendingSnapshot().totals.dirty, 0);
+});
+
+test('dirty-persistence: a newer local token survives a peer marker event', async () => {
+  const id = 'cross_tab_newer_edit';
+  const token = 'peer-tab:older-edit';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const row = { id, name: 'Shared row', status: 'Available', costPrice: 10 };
+  const loaded = await loadApp({
+    seed: { singles: [row] },
+    localStorage: {
+      [markerKey]: JSON.stringify({
+        table: 'singles', id, token, owner: 'peer-tab', createdAt: 790, rowJson: JSON.stringify(row),
+      }),
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  loaded.grab('DB').DB.singles[0].name = 'New local edit';
+  loaded.ctx.markDirty('singles', id);
+  const currentToken = loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id);
+  assert.ok(currentToken.startsWith(loaded.grab('_dirtyTabId')._dirtyTabId + ':'), 'the newer edit owns a current-tab token');
+  assert.ok(loaded.localStorage.getItem('pokeinv_dirty_v2:' + currentToken), 'the newer marker is durable');
+
+  const oldMarker = loaded.localStorage.getItem(markerKey);
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, oldMarker, null);
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, 'a peer event cannot clear the newer local edit');
+  assert.equal(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), currentToken);
+  assert.ok(loaded.localStorage.getItem('pokeinv_dirty_v2:' + currentToken));
+});
+
+test('dirty-persistence: a current-tab token is retained when its durable mirror disappears', async () => {
+  const id = 'cross_tab_current_token';
+  const loaded = await loadApp({ seed: { singles: [{ id, name: 'Current edit', status: 'Available' }] } });
+  loaded.ctx.markDirty('singles', id);
+  const currentToken = loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id);
+  const markerKey = 'pokeinv_dirty_v2:' + currentToken;
+  const markerRaw = loaded.localStorage.getItem(markerKey);
+  assert.ok(currentToken.startsWith(loaded.grab('_dirtyTabId')._dirtyTabId + ':'));
+
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [], _revisions: { singles: {} } }));
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, 'a late event cannot clear a current-tab edit whose storage write failed');
+  assert.equal(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), currentToken);
+});
+
+test('dirty-persistence: corrupt marker storage blocks cross-tab cleanup', async () => {
+  const id = 'cross_tab_corrupt_marker';
+  const token = 'peer-tab:corrupt-target';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 792 });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+  loaded.localStorage.setItem('pokeinv_dirty_v2:unreadable', '{not-json');
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [], _revisions: { singles: {} } }));
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, 'an unreadable marker keeps the in-memory obligation for review');
+});
+
+test('dirty-persistence: parseable malformed marker siblings fail closed during cross-tab acknowledgement', async () => {
+  const variants = [
+    {
+      label: 'unknown field',
+      make: (id, token) => ({ table: 'singles', id, token, owner: 'sibling-tab', createdAt: 793, unexpected: true }),
+    },
+    {
+      label: 'key-token mismatch',
+      make: id => ({ table: 'singles', id, token: 'different-sibling-token', owner: 'sibling-tab', createdAt: 793 }),
+    },
+    {
+      label: 'malformed rowJson',
+      make: (id, token) => ({ table: 'singles', id, token, owner: 'sibling-tab', createdAt: 793, rowJson: '{not-json' }),
+    },
+    {
+      label: 'rowJson identity mismatch',
+      make: (id, token) => ({ table: 'singles', id, token, owner: 'sibling-tab', createdAt: 793, rowJson: JSON.stringify({ id: 'another-row' }) }),
+    },
+  ];
+
+  for (const variant of variants) {
+    const id = 'cross_tab_malformed_sibling_' + variant.label.replace(/[^a-z]+/g, '_');
+    const token = 'peer-tab:ack-target-' + variant.label.replace(/[^a-z]+/g, '-');
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const siblingToken = 'sibling-tab:' + variant.label.replace(/[^a-z]+/g, '-');
+    const siblingKey = 'pokeinv_dirty_v2:' + siblingToken;
+    const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 792 });
+    const siblingRaw = JSON.stringify(variant.make(id + '_unrelated', siblingToken));
+    const loaded = await loadApp({
+      seed: null,
+      localStorage: {
+        [markerKey]: markerRaw,
+        [siblingKey]: siblingRaw,
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      },
+    });
+
+    loaded.localStorage.removeItem(markerKey);
+    dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+    const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+    const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+    loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+    dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+
+    assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true,
+      variant.label + ' sibling keeps the foreign obligation pending');
+    assert.equal(loaded.localStorage.getItem(siblingKey), siblingRaw,
+      variant.label + ' sibling bytes remain available for recovery');
+  }
+});
+
+test('dirty-persistence: a valid unrelated marker sibling still permits normal cross-tab acknowledgement', async () => {
+  const id = 'cross_tab_valid_sibling_target';
+  const token = 'peer-tab:valid-sibling-target';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const siblingId = 'cross_tab_valid_sibling_other';
+  const siblingToken = 'sibling-tab:valid-sibling-other';
+  const siblingKey = 'pokeinv_dirty_v2:' + siblingToken;
+  const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 792 });
+  const siblingRaw = JSON.stringify({
+    table: 'singles', id: siblingId, token: siblingToken, owner: 'sibling-tab', createdAt: 793,
+  });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [markerKey]: markerRaw,
+      [siblingKey]: siblingRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+  loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), false,
+    'a valid unrelated sibling does not block the acknowledged row');
+  assert.equal(loaded.localStorage.getItem(siblingKey), siblingRaw,
+    'the valid sibling remains queued for its own owner');
+});
+
+test('dirty-persistence: pending recovery records block cross-tab dirty cleanup', async () => {
+  const cases = [
+    { id: 'cross_tab_delete_recovery', token: 'peer-tab:delete-recovery' },
+    { id: 'cross_tab_mutation_recovery', token: 'peer-tab:mutation-recovery' },
+    { id: 'cross_tab_trash_recovery', token: 'peer-tab:trash-recovery' },
+  ];
+  const localStorage = {
+    pokeinv_dirty_v1: JSON.stringify({
+      singles: cases.map(item => item.id),
+      _revisions: { singles: Object.fromEntries(cases.map(item => [item.id, [item.token]])) },
+    }),
+  };
+  for (const item of cases) localStorage['pokeinv_dirty_v2:' + item.token] = JSON.stringify({
+    table: 'singles', id: item.id, token: item.token, owner: 'peer-tab', createdAt: 793,
+  });
+  const loaded = await loadApp({ seed: null, localStorage });
+  loaded.localStorage.setItem('_kjrDeleteStateV2', JSON.stringify({
+    schema: 2, revision: 'cross-tab-recovery', pending: [{ table: 'singles', id: cases[0].id, ts: 1 }], confirmed: [],
+  }));
+  loaded.localStorage.setItem('_kjrMutationGroupV2:123e4567-e89b-42d3-a456-426614174001', JSON.stringify({
+    mutation_id: '123e4567-e89b-42d3-a456-426614174001', created_at: 1,
+    operations: [{ type: 'upsert', table: 'singles', id: cases[1].id, expected_version: 0, data: { id: cases[1].id, name: 'Queued' } }],
+    before_states: [{ table: 'singles', id: cases[1].id, present: false }],
+  }));
+  loaded.localStorage.setItem('_kjrPendingTrashWrites', JSON.stringify([{
+    id: 'cross-tab-trash-entry', data: { originalTable: 'singles', originalId: cases[2].id },
+  }]));
+  for (const item of cases) {
+    const key = 'pokeinv_dirty_v2:' + item.token;
+    const oldMarker = loaded.localStorage.getItem(key);
+    loaded.localStorage.removeItem(key);
+    dispatchStorageEvent(loaded.sandbox, key, oldMarker, null);
+  }
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [], _revisions: { singles: {} } }));
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  for (const item of cases) assert.equal(loaded.grab('_dirty')._dirty.singles.has(item.id), true, item.id + ' remains protected by recovery state');
+});
+
+test('dirty-persistence: malformed local Trash blocks cross-tab dirty cleanup', async () => {
+  const id = 'cross_tab_malformed_local_trash';
+  const token = 'peer-tab:malformed-local-trash';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const row = { id, name: 'Foreign pending row', status: 'Available' };
+  const markerRaw = JSON.stringify({
+    table: 'singles', id, token, owner: 'peer-tab', createdAt: 794, rowJson: JSON.stringify(row),
+  });
+  const loaded = await loadApp({
+    seed: { singles: [row], trash: [] },
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  loaded.grab('DB').DB.trash.push({ id: 'malformed-local-trash-entry' });
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+  loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true,
+    'malformed local Trash keeps the foreign obligation pending for review');
+});
+
+test('dirty-persistence: malformed local Trash shapes fail closed, while a valid unrelated recovery copy permits acknowledgement', async () => {
+  const malformed = [
+    { label: 'non-array DB.trash', trash: { bad: true } },
+    { label: 'array entry', trash: [[]] },
+    { label: 'array data', trash: [{ id: 'trash-array-data', data: [] }] },
+    { label: 'empty originalTable', trash: [{ id: 'trash-empty-table', data: { originalTable: '', originalId: 'other' } }] },
+    { label: 'unknown originalTable', trash: [{ id: 'trash-unknown-table', data: { originalTable: 'not_a_synced_table', originalId: 'other' } }] },
+    { label: 'missing entry id', trash: [{ data: { originalTable: 'singles', originalId: 'other' } }] },
+  ];
+  for (const item of malformed) {
+    const id = 'cross_tab_malformed_trash_' + item.label.replace(/[^a-z]+/g, '_');
+    const token = 'peer-tab:malformed-trash-' + item.label.replace(/[^a-z]+/g, '-');
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 794 });
+    const loaded = await loadApp({
+      seed: null,
+      localStorage: {
+        [markerKey]: markerRaw,
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      },
+    });
+    loaded.grab('DB').DB.trash = item.trash;
+    loaded.localStorage.removeItem(markerKey);
+    dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+    const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+    const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+    loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+    dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+    assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true,
+      item.label + ' keeps the foreign obligation pending');
+  }
+
+  const id = 'cross_tab_valid_trash_other_row';
+  const token = 'peer-tab:valid-trash-target';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const markerRaw = JSON.stringify({ table: 'singles', id, token, owner: 'peer-tab', createdAt: 794 });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [markerKey]: markerRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+  loaded.grab('DB').DB.trash = [{
+    id: 'trash-valid-unrelated',
+    data: { originalTable: 'singles', originalId: 'different-row', item: { id: 'different-row' } },
+  }];
+  loaded.localStorage.removeItem(markerKey);
+  dispatchStorageEvent(loaded.sandbox, markerKey, markerRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  const acknowledgedLegacy = JSON.stringify({ singles: [], _revisions: { singles: {} } });
+  loaded.localStorage.setItem('pokeinv_dirty_v1', acknowledgedLegacy);
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, acknowledgedLegacy);
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), false,
+    'a valid unrelated Trash recovery copy does not block normal acknowledgement');
+});
+
+test('dirty-persistence: a newer foreign token prevents an older acknowledgement from clearing the row', async () => {
+  const id = 'cross_tab_newer_foreign_token';
+  const oldToken = 'peer-tab:older-token';
+  const newToken = 'newer-tab:newer-token';
+  const oldKey = 'pokeinv_dirty_v2:' + oldToken;
+  const newKey = 'pokeinv_dirty_v2:' + newToken;
+  const oldRaw = JSON.stringify({ table: 'singles', id, token: oldToken, owner: 'peer-tab', createdAt: 794 });
+  const newRaw = JSON.stringify({ table: 'singles', id, token: newToken, owner: 'newer-tab', createdAt: 795 });
+  const loaded = await loadApp({
+    seed: null,
+    localStorage: {
+      [oldKey]: oldRaw,
+      [newKey]: newRaw,
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [oldToken, newToken] } } }),
+    },
+  });
+  assert.equal(loaded.grab('_dirtyRevisions')._dirtyRevisions.singles.get(id), oldToken);
+  loaded.localStorage.removeItem(oldKey);
+  dispatchStorageEvent(loaded.sandbox, oldKey, oldRaw, null);
+  const oldLegacy = loaded.localStorage.getItem('pokeinv_dirty_v1');
+  loaded.localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [], _revisions: { singles: {} } }));
+  dispatchStorageEvent(loaded.sandbox, 'pokeinv_dirty_v1', oldLegacy, loaded.localStorage.getItem('pokeinv_dirty_v1'));
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, 'the newer durable marker keeps the row pending');
+  assert.equal(loaded.localStorage.getItem(newKey), newRaw);
+});
+
 function orphanMarker(id, token) {
   return { table: 'singles', id, token, owner: 'older-tab', createdAt: 456 };
 }

@@ -3107,13 +3107,38 @@ function _currentPullHasTrashSource(table, id, tables) {
     !Array.isArray(entry.data) && _tblName(entry.data.originalTable) === table && entry.data.originalId === id);
 }
 
-function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tombstones, tables) {
+function _orphanLocalTrashRecoveryBlocked(table, id, prePullTrash) {
+  let pending;
+  try {
+    const raw = localStorage.getItem(PENDING_TRASH_KEY);
+    pending = raw === null ? [] : JSON.parse(raw);
+    if (!Array.isArray(pending)) return true;
+  } catch (_) { return true; }
+
+  let localTrash = prePullTrash;
+  if (localTrash === undefined) {
+    try { localTrash = DB && Array.isArray(DB.trash) ? DB.trash : null; }
+    catch (_) { localTrash = null; }
+  }
+  if (!Array.isArray(localTrash)) return true;
+  for (const entry of pending.concat(localTrash)) {
+    const data = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.data : null;
+    if (!data || typeof data !== 'object' || Array.isArray(data) ||
+        typeof data.originalTable !== 'string' || !data.originalTable ||
+        typeof data.originalId !== 'string' || !data.originalId) return true;
+    if (_tblName(data.originalTable) === table && data.originalId === id) return true;
+  }
+  return false;
+}
+
+function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tombstones, tables, prePullTrash) {
   // A malformed or byte-bearing marker is potential recovery material. This
   // narrow repair applies only to the precise old marker shape with no
   // rowJson property at all.
-  if (!marker || typeof marker.key !== 'string' || typeof marker.table !== 'string' ||
-      typeof marker.id !== 'string' || typeof marker.token !== 'string' ||
-      Object.prototype.hasOwnProperty.call(marker, 'rowJson')) return null;
+  if (!_syncDiagValidDirtyMarkerShape(marker, marker && marker.key, true, true)) return null;
+  const storedMarker = _syncDiagReadDirtyMarker(marker.key, true);
+  if (!storedMarker || storedMarker.table !== marker.table || storedMarker.id !== marker.id ||
+      storedMarker.token !== marker.token) return null;
   if (!Array.isArray(allMarkers) || !Array.isArray(allMarkerKeys) ||
       allMarkerKeys.length !== allMarkers.length || !allMarkerKeys.includes(marker.key)) return null;
 
@@ -3127,15 +3152,33 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
 
   const sameRowMarkers = allMarkers.filter(candidate =>
     candidate.table === marker.table && candidate.id === marker.id);
+  if (sameRowMarkers.some(candidate => {
+    if (!_syncDiagValidDirtyMarkerShape(candidate, candidate && candidate.key, true, true)) return true;
+    const stored = _syncDiagReadDirtyMarker(candidate.key, true);
+    return !stored || stored.table !== candidate.table || stored.id !== candidate.id || stored.token !== candidate.token;
+  })) return null;
   const markerTokens = new Set(sameRowMarkers.map(candidate => candidate.token));
   const snapshotless = sameRowMarkers.length > 0 && sameRowMarkers.every(candidate =>
     !Object.prototype.hasOwnProperty.call(candidate, 'rowJson'));
   const recovery = _orphanDirtyMarkerRecoveryStatus(serverTable, marker.id);
   if (recovery.blocked || !snapshotless) return null;
+  if (_currentPullHasTrashSource(serverTable, marker.id, tables) ||
+      _orphanLocalTrashRecoveryBlocked(serverTable, marker.id, prePullTrash)) return null;
   const cache = _readOrphanDirtyCache(marker);
   if (!cache) return null;
 
-  let deleteStateBefore = null;
+  let deleteStateBefore;
+  try {
+    deleteStateBefore = new Map([
+      [DELETE_STATE_V2_KEY, localStorage.getItem(DELETE_STATE_V2_KEY)],
+      [PENDING_DEL_KEY, localStorage.getItem(PENDING_DEL_KEY)],
+      [CONFIRMED_DEL_KEY, localStorage.getItem(CONFIRMED_DEL_KEY)],
+    ]);
+  } catch (_) { return null; }
+  if (deleteStateBefore.get(DELETE_STATE_V2_KEY) !== recovery.deleteState.raw) return null;
+  if (recovery.deleteState.source === 'legacy' &&
+      (deleteStateBefore.get(PENDING_DEL_KEY) !== recovery.deleteState.pendingRaw ||
+       deleteStateBefore.get(CONFIRMED_DEL_KEY) !== recovery.deleteState.confirmedRaw)) return null;
   let nextDeleteState = null;
   if (recovery.confirmedRestored) {
     // A restored marker normally protects a live restore. It becomes stale
@@ -3143,19 +3186,10 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
     // remains, no local or remote row exists, and its Trash source is gone.
     // Multiple old snapshotless tokens may describe that one failed restore,
     // so settle them together, never one at a time.
-    if (recovery.deleteState.source !== 'v2' || cache.hasRow ||
-        _currentPullHasTrashSource(serverTable, marker.id, tables)) return null;
+    if (recovery.deleteState.source !== 'v2' || cache.hasRow) return null;
     const confirmed = recovery.deleteState.state.confirmed.filter(entry =>
       entry && entry.table === serverTable && entry.id === marker.id);
     if (confirmed.length !== 1 || confirmed[0] !== recovery.confirmedRestored) return null;
-    try {
-      deleteStateBefore = new Map([
-        [DELETE_STATE_V2_KEY, localStorage.getItem(DELETE_STATE_V2_KEY)],
-        [PENDING_DEL_KEY, localStorage.getItem(PENDING_DEL_KEY)],
-        [CONFIRMED_DEL_KEY, localStorage.getItem(CONFIRMED_DEL_KEY)],
-      ]);
-    } catch (_) { return null; }
-    if (deleteStateBefore.get(DELETE_STATE_V2_KEY) !== recovery.deleteState.raw) return null;
     nextDeleteState = {
       pending: recovery.deleteState.state.pending.slice(),
       confirmed: recovery.deleteState.state.confirmed.filter(entry =>
@@ -3176,8 +3210,9 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
       const markerRaw = localStorage.getItem(candidate.key);
       if (typeof markerRaw !== 'string') return null;
       const savedMarker = JSON.parse(markerRaw);
-      if (!savedMarker || savedMarker.table !== candidate.table || savedMarker.id !== candidate.id ||
-          savedMarker.token !== candidate.token || Object.prototype.hasOwnProperty.call(savedMarker, 'rowJson')) return null;
+      if (!_syncDiagValidDirtyMarkerShape(savedMarker, candidate.key, true, false) ||
+          savedMarker.table !== candidate.table || savedMarker.id !== candidate.id ||
+          savedMarker.token !== candidate.token) return null;
       markerRaws.set(candidate.key, markerRaw);
     }
     legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
@@ -3324,13 +3359,13 @@ function _commitProvenOrphanDirtyMarkerCleanup(prepared) {
   }
 }
 
-function _clearProvenOrphanDirtyMarkersAfterPull(tombstones, tables) {
+function _clearProvenOrphanDirtyMarkersAfterPull(tombstones, tables, prePullTrash) {
   const markers = _readDirtyV2Markers();
   const markerKeys = _listDirtyV2MarkerKeys();
   if (!markerKeys || markerKeys.length !== markers.length) return 0;
   let cleared = 0;
   for (const marker of markers) {
-    const prepared = _prepareProvenOrphanDirtyMarker(marker, markers, markerKeys, tombstones, tables);
+    const prepared = _prepareProvenOrphanDirtyMarker(marker, markers, markerKeys, tombstones, tables, prePullTrash);
     if (prepared && _commitProvenOrphanDirtyMarkerCleanup(prepared)) cleared++;
   }
   return cleared;
@@ -5524,6 +5559,157 @@ function _kjrCrossTabToast() {
   }, 400); // debounce a burst of storage events into a single toast
 }
 
+// Read the durable dirty records without manufacturing ownership. This is
+// used only after another tab changes a dirty key. A malformed or unavailable
+// record is proof that reconciliation is unsafe, so the caller must retain
+// every in-memory obligation until the next successful load or pull.
+function _readDurableDirtyReconciliationState() {
+  const markerKeys = _listDirtyV2MarkerKeys();
+  if (!markerKeys) return null;
+  // _readDirtyV2Markers() is intentionally permissive because startup must
+  // keep malformed recovery bytes visible. Cross-tab reconciliation has a
+  // different safety boundary: every key must resolve to the exact, strict
+  // marker stored at that key before an obligation may be dropped.
+  const markers = [];
+  for (const key of markerKeys) {
+    const marker = _syncDiagReadDirtyMarker(key, false);
+    if (!marker || (Object.prototype.hasOwnProperty.call(marker, 'rowJson') &&
+        !_dirtyMarkerHasValidSnapshot(marker))) return null;
+    // The key is an in-memory convenience only. Validate the raw marker
+    // without it, then add it after validation so the allowInternalKey flag
+    // can never hide an unexpected persisted field.
+    markers.push({ ...marker, key });
+  }
+  let legacyRaw = null;
+  let legacy = {};
+  try {
+    legacyRaw = localStorage.getItem(DIRTY_LS_KEY);
+    legacy = legacyRaw === null ? {} : JSON.parse(legacyRaw);
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
+    const revisionsRoot = legacy._revisions;
+    if (revisionsRoot !== undefined && (!revisionsRoot || typeof revisionsRoot !== 'object' || Array.isArray(revisionsRoot))) return null;
+    for (const table of DIRTY_TABLE_KEYS) {
+      if (legacy[table] !== undefined && (!Array.isArray(legacy[table]) || legacy[table].some(id => typeof id !== 'string' || !id))) return null;
+      const revisions = revisionsRoot && revisionsRoot[table];
+      if (revisions !== undefined && (!revisions || typeof revisions !== 'object' || Array.isArray(revisions))) return null;
+      if (revisions) {
+        for (const [id, tokens] of Object.entries(revisions)) {
+          if (!id || !Array.isArray(tokens) || tokens.some(token => typeof token !== 'string' || !token)) return null;
+        }
+      }
+    }
+  } catch (_) { return null; }
+  return { markerKeys, markers, legacy, legacyRaw };
+}
+
+function _dirtyReconciliationKey(table, id) { return table + '\u0000' + id; }
+
+// Recovery state is independent from the dirty mirror. Never drop an
+// in-memory obligation while a queued mutation, delete, or Trash snapshot
+// could still need it. An unreadable queue blocks reconciliation for all rows.
+function _dirtyReconciliationBlockedRows() {
+  const blocked = new Set();
+  const addTrashSource = entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        typeof entry.id !== 'string' || !entry.id || !entry.data ||
+        typeof entry.data !== 'object' || Array.isArray(entry.data)) return false;
+    const originalTable = entry.data.originalTable;
+    const originalId = entry.data.originalId;
+    if (typeof originalTable !== 'string' || !originalTable ||
+        typeof originalId !== 'string' || !originalId) return false;
+    const table = _tblName(originalTable);
+    // Saved charts use the same Trash envelope but have no synced dirty
+    // bucket. It is still a recognised source, so validate and ignore it
+    // here rather than turning a valid local recovery copy into a global block.
+    if (table === 'savedChart') return true;
+    if (!SYNCED_TABLES.includes(table)) return false;
+    blocked.add(_dirtyReconciliationKey(table, originalId));
+    return true;
+  };
+  try {
+    const groups = _readMutationGroups();
+    if (!groups) return null;
+    for (const group of groups) {
+      const plan = _mutationReplayPlan(group);
+      if (!plan) return null;
+      for (const { op } of plan) {
+        if (op && op.table && op.id) blocked.add(_dirtyReconciliationKey(op.table, op.id));
+      }
+    }
+
+    const deleteState = _readDeleteState();
+    if (!deleteState.valid) return null;
+    for (const entry of [...deleteState.state.pending, ...deleteState.state.confirmed]) {
+      if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string' || !entry.id) return null;
+      blocked.add(_dirtyReconciliationKey(_tblName(entry.table), entry.id));
+    }
+
+    const pendingTrashRaw = localStorage.getItem(PENDING_TRASH_KEY);
+    const pendingTrash = pendingTrashRaw === null ? [] : JSON.parse(pendingTrashRaw);
+    if (!Array.isArray(pendingTrash)) return null;
+    if (pendingTrash.some(entry => !addTrashSource(entry))) return null;
+    if (!DB || typeof DB !== 'object' || Array.isArray(DB) || !Array.isArray(DB.trash)) return null;
+    if (DB.trash.some(entry => !addTrashSource(entry))) return null;
+    return blocked;
+  } catch (_) { return null; }
+}
+
+// Reconcile only after a durable storage event. Existing dirty sets are
+// updated row by row. A foreign or synthetic token may be dropped only when
+// the exact current token and its legacy mirror are both absent, and no
+// recovery queue protects that row. Current-tab tokens remain protected even
+// when storage is temporarily unavailable or an event arrives late.
+function _reconcileDirtyStateFromStorage() {
+  const durable = _readDurableDirtyReconciliationState();
+  if (!durable) return { changed: false, safe: false };
+  const fresh = _loadDirtyStateFromLS();
+  const blocked = _dirtyReconciliationBlockedRows();
+  if (!blocked) return { changed: false, safe: false };
+  let changed = false;
+  for (const table of DIRTY_TABLE_KEYS) {
+    for (const id of fresh.dirty[table]) {
+      if (!_dirty[table].has(id)) {
+        _dirty[table].add(id);
+        const revision = fresh.revisions[table].get(id);
+        if (revision) _dirtyRevisions[table].set(id, revision);
+        changed = true;
+      } else if (!_dirtyRevisions[table].has(id)) {
+        const revision = fresh.revisions[table].get(id);
+        if (revision) _dirtyRevisions[table].set(id, revision);
+      }
+    }
+
+    const legacyIds = new Set(Array.isArray(durable.legacy[table]) ? durable.legacy[table] : []);
+    const markerRows = durable.markers.filter(marker => marker.table === table);
+    const markerIds = new Set(markerRows.map(marker => marker.id));
+    const revisions = durable.legacy._revisions && durable.legacy._revisions[table];
+    for (const id of [..._dirty[table]]) {
+      if (legacyIds.has(id) || markerIds.has(id)) continue;
+      const currentToken = _dirtyRevisions[table].get(id);
+      if (!currentToken || (currentToken.startsWith(_dirtyTabId + ':') && !_syntheticDirtyRevisionTokens.has(currentToken))) continue;
+      if (blocked.has(_dirtyReconciliationKey(table, id))) continue;
+      const currentTokens = revisions && Array.isArray(revisions[id]) ? revisions[id] : [];
+      if (currentTokens.includes(currentToken)) continue;
+      // Re-read the whole durable state before dropping a foreign obligation.
+      // Another tab may have replaced the acknowledged token with a newer
+      // token, or changed the legacy mirror, after the first scan.
+      const latest = _readDurableDirtyReconciliationState();
+      if (!latest || latest.legacyRaw !== durable.legacyRaw) continue;
+      if (latest.markers.some(marker => marker.table === table && marker.id === id)) continue;
+      if (localStorage.getItem(_dirtyV2Key(currentToken)) !== null) continue;
+      _dirty[table].delete(id);
+      _dirtyRevisions[table].delete(id);
+      _syntheticDirtyRevisionTokens.delete(currentToken);
+      changed = true;
+    }
+  }
+  if (changed) {
+    try { _syncDiagRenderIndicator(); } catch (_) {}
+    try { _syncDiagRenderBody(); } catch (_) {}
+  }
+  return { changed, safe: true };
+}
+
 // Fires whenever ANOTHER tab/window on the same origin writes localStorage.
 // Without this, tab B's saveData() silently clobbers tab A's in-memory rows
 // and dirty queue on A's next write, permanently losing A's offline edit (B2).
@@ -5533,16 +5719,14 @@ window.addEventListener('storage', (e) => {
       const incoming = JSON.parse(e.newValue);
       const keys = ['singles','slabs','sales','etbs','boosterBoxes','boosterPacks','ebayPurchases'];
       for (const k of keys) mergeIntoMemory(k, _withoutPendingDeletes(_tblName(k), incoming[k]));
-      // Reload our own dirty set too - _persistDirty's read-merge-write means
-      // the stored blob may now include ids the other tab queued.
-      const reloaded = _loadDirtyStateFromLS();
-      for (const k of keys) {
-        if (!_dirty[k]) continue;
-        for (const id of reloaded.dirty[k]) {
-          _dirty[k].add(id);
-          if (!_dirtyRevisions[k].has(id)) _dirtyRevisions[k].set(id, _newDirtyRevision());
-        }
-      }
+      // Reload and reconcile row by row. Durable marker removal can clear a
+      // stale foreign obligation, while a new current-tab token remains safe.
+      _reconcileDirtyStateFromStorage();
+      const name = document.querySelector('.page.active')?.id?.replace('page-', '');
+      if (name && typeof showPage === 'function') showPage(name);
+      _kjrCrossTabToast();
+    } else if (e.key === DIRTY_LS_KEY || (typeof e.key === 'string' && e.key.startsWith(DIRTY_V2_PREFIX))) {
+      _reconcileDirtyStateFromStorage();
       const name = document.querySelector('.page.active')?.id?.replace('page-', '');
       if (name && typeof showPage === 'function') showPage(name);
       _kjrCrossTabToast();
@@ -8187,13 +8371,41 @@ function runHealthCheck(){
       }
     });
   }
+  const snapshotlessMarkers = [];
+  try {
+    for (const marker of _readDirtyV2Markers()) {
+      if (_dirtyMarkerHasValidSnapshot(marker)) continue;
+      snapshotlessMarkers.push({
+        label: '[' + marker.table + '] ' + marker.id + ' · older queued change has no saved row copy',
+        table: marker.table,
+        id: marker.id,
+      });
+    }
+  } catch (_) {}
+  const syncPending = typeof _syncDiagPendingSnapshot === 'function'
+    ? _syncDiagPendingSnapshot()
+    : { totals: { dirty: dirtyTotal, delete: 0, trash: 0, mutation: 0 }, unknown: [] };
+  if (snapshotlessMarkers.length)
+    F('warn', 'Sync', snapshotlessMarkers.length + ' older queued change' + (snapshotlessMarkers.length === 1 ? ' has' : 's have') + ' no saved row snapshot and needs review.',
+      'Keep this browser data, open Sync details, and retry after checking the affected row. Do not clear browser storage.', snapshotlessMarkers);
+  if (syncPending.unknown && syncPending.unknown.length)
+    F('warn', 'Sync', 'Some local sync recovery state could not be read safely and needs review.',
+      'Keep this browser data, open Sync details, and repair the named queue before retrying cloud sync.',
+      syncPending.unknown.map(label => ({ label })));
   if (dirtyTotal > 100)
-    F('warn', 'Sync', dirtyTotal + ' dirty rows pending upload to Supabase - sync may be wedged.',
-      'Check the Network tab for failed POSTs to supabase.co. If offline, no action needed.', dirtyDetails);
-  else if (dirtyTotal === 0)
-    F('info', 'Sync', 'No pending writes - local state matches last successful upload.', '');
-  else
-    F('info', 'Sync', dirtyTotal + ' dirty rows pending upload (normal during active editing).', '', dirtyDetails);
+    F('warn', 'Sync', 'Sync pending: ' + dirtyTotal + ' rows awaiting upload and may be wedged.',
+      'Open Sync details and retry when the connection and owner session are ready.', dirtyDetails);
+  else if (dirtyTotal === 0 && !syncPending.totals.delete && !syncPending.totals.trash && !syncPending.totals.mutation)
+    F('info', 'Sync', 'No queued writes in this browser.', '');
+  else {
+    const queued = [];
+    if (dirtyTotal) queued.push(dirtyTotal + ' row' + (dirtyTotal === 1 ? '' : 's') + ' awaiting upload');
+    if (syncPending.totals.delete) queued.push(syncPending.totals.delete + ' delete recovery ' + (syncPending.totals.delete === 1 ? 'action' : 'actions'));
+    if (syncPending.totals.trash) queued.push(syncPending.totals.trash + ' Trash recovery ' + (syncPending.totals.trash === 1 ? 'action' : 'actions'));
+    if (syncPending.totals.mutation) queued.push(syncPending.totals.mutation + ' queued transaction ' + (syncPending.totals.mutation === 1 ? 'step' : 'steps'));
+    F('warn', 'Sync', 'Sync pending: ' + queued.join(', ') + '.',
+      'Keep the app open and retry when the owner session and connection are ready.', dirtyDetails);
+  }
 
   // 6. Date format consistency
   const badDates = [];
@@ -8323,7 +8535,18 @@ function healthGotoRow(table, id){
   showPage(navTo);
   // Try to highlight the row briefly.
   setTimeout(() => {
-    const row = document.querySelector('tr[data-id="' + id + '"]');
+    // Find by a constant selector, then compare the decoded attribute value.
+    // Row IDs can contain quotes or selector syntax, so never interpolate the
+    // data value into CSS where it could throw or select the wrong row.
+    const rows = typeof document.querySelectorAll === 'function'
+      ? document.querySelectorAll('tr[data-id]') : [];
+    const wantedId = String(id == null ? '' : id);
+    const row = Array.from(rows).find(candidate => {
+      const candidateId = candidate && typeof candidate.getAttribute === 'function'
+        ? candidate.getAttribute('data-id')
+        : candidate && candidate.dataset ? candidate.dataset.id : null;
+      return candidateId === wantedId;
+    });
     if (row) {
       row.scrollIntoView({ behavior: 'smooth', block: 'center' });
       row.style.transition = 'background 0.3s';
@@ -8371,22 +8594,32 @@ async function healthRestoreIgnored(){
 }
 
 function _renderHealthResults(findings){
-  // The user has already accounted for any current warn-level issues (stock
-  // was reconciled before porting), and individual findings can be dismissed
-  // via the per-card Ignore button. Filter both here so the modal only shows
-  // what the user actually needs to act on.
+  // Warnings are actionable until the user explicitly ignores them. Keeping
+  // them in the same result list makes the headline agree with the details.
+  const renderFindings = Array.isArray(findings) ? findings.slice() : [];
+  const syncFailureDetails = [];
+  if (typeof _syncDiagnostics === 'object' && _syncDiagnostics && _syncDiagnostics.failures) {
+    for (const [operation, failure] of Object.entries(_syncDiagnostics.failures)) {
+      if (!failure) continue;
+      const label = (typeof SYNC_DIAG_OPERATION_LABELS === 'object' && SYNC_DIAG_OPERATION_LABELS[operation]) || operation;
+      syncFailureDetails.push({ label: label + ': ' + (failure.code || 'sync attempt failed') + (failure.detail ? ' · ' + failure.detail : '') });
+    }
+  }
+  if (syncFailureDetails.length) renderFindings.push({
+    sev: 'warn', area: 'Sync', message: 'A previous sync attempt needs review.',
+    fix: 'Open Sync details to see the affected operation, then retry when the connection and browser storage are ready.',
+    details: syncFailureDetails,
+  });
   const ignored = _loadHealthIgnores();
-  const visibleFindings = findings.filter(f => f.sev !== 'warn' && !ignored.has(_healthFingerprint(f)));
+  const visibleFindings = renderFindings.filter(f => !ignored.has(_healthFingerprint(f)));
   const fails = visibleFindings.filter(f => f.sev === 'fail');
+  const warns = visibleFindings.filter(f => f.sev === 'warn');
   const infos = visibleFindings.filter(f => f.sev === 'info');
-  // Track hidden counts purely for the footer chip - never rendered as
-  // their own group.
-  const hiddenWarnCount    = findings.filter(f => f.sev === 'warn').length;
-  const hiddenIgnoredCount = findings.filter(f => f.sev !== 'warn' && ignored.has(_healthFingerprint(f))).length;
-  const overall = fails.length > 0 ? 'red' : 'green';
-  const overallText = fails.length > 0 ? 'Issues found - review below.' : 'All checks passed.';
-  const overallIcon = overall === 'green' ? '✓' : '✕';
-  const overallColor = overall === 'green' ? 'var(--green)' : 'var(--red)';
+  const hiddenIgnoredCount = renderFindings.filter(f => ignored.has(_healthFingerprint(f))).length;
+  const overall = fails.length > 0 ? 'red' : warns.length > 0 ? 'amber' : 'green';
+  const overallText = fails.length > 0 ? 'Issues found - review below.' : warns.length > 0 ? 'Warnings to review.' : 'All checks passed.';
+  const overallIcon = overall === 'green' ? '✓' : overall === 'amber' ? '⚠' : '✕';
+  const overallColor = overall === 'green' ? 'var(--green)' : overall === 'amber' ? 'var(--amber)' : 'var(--red)';
 
   // Toggle a finding's details panel open/closed.
   window._toggleHealthDetail = function(idx){
@@ -8396,6 +8629,8 @@ function _renderHealthResults(findings){
     const open = el.style.display !== 'none';
     el.style.display = open ? 'none' : 'block';
     if (caret) caret.textContent = open ? '▸' : '▾';
+    const toggle = document.getElementById('health-toggle-' + idx);
+    if (toggle) toggle.setAttribute('aria-expanded', String(!open));
   };
 
   const renderDetails = (details, idx) => {
@@ -8407,11 +8642,36 @@ function _renderHealthResults(findings){
         const clickable = d.table && d.id;
         return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.4">
           <span style="flex:1;color:var(--text);word-break:break-word">${esc(d.label)}</span>
-          ${clickable ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px" onclick="healthGotoRow('${esc(d.table)}','${esc(d.id)}')">View ↗</button>` : ''}
+          ${clickable ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px" data-health-view="1" data-health-table="${esc(d.table)}" data-health-id="${esc(d.id)}">View ↗</button>` : ''}
         </div>`;
       }).join('')}
       ${details.length > MAX ? `<div style="padding:6px 10px;font-size:11px;color:var(--text3);text-align:center">…and ${details.length - MAX} more</div>` : ''}
     </div>`;
+  };
+
+  // Row identity comes from inventory data and may contain quotes or markup.
+  // Keep it in data attributes, which the HTML parser decodes as literal
+  // values, then route through a real listener instead of compiling it into
+  // inline JavaScript.
+  const bindHealthActions = root => {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    root.querySelectorAll('[data-health-view="1"]').forEach(button => {
+      if (!button || button._kjrHealthViewBound) return;
+      button._kjrHealthViewBound = true;
+      button.addEventListener('click', () => {
+        const table = button.dataset && button.dataset.healthTable;
+        const id = button.dataset && button.dataset.healthId;
+        healthGotoRow(table || '', id || '');
+      });
+    });
+    root.querySelectorAll('[data-health-ignore="1"]').forEach(button => {
+      if (!button || button._kjrHealthIgnoreBound) return;
+      button._kjrHealthIgnoreBound = true;
+      button.addEventListener('click', () => {
+        const fingerprint = button.dataset && button.dataset.healthFingerprint;
+        healthIgnoreFinding(fingerprint || '');
+      });
+    });
   };
 
   let cardIdx = 0;
@@ -8425,7 +8685,7 @@ function _renderHealthResults(findings){
         const isDateFinding = f.area === 'Dates' && f.details && f.details.length > 0;
         // The dateAcquired backfill finding gets its own button.
         const isDateAcqFinding = f.area === 'Sales' && f.message && f.message.includes('dateAcquired');
-        const fp = _healthFingerprint(f).replace(/'/g, '&#39;');
+        const fp = _healthFingerprint(f);
         return `<div style="border:1px solid var(--border);border-left:3px solid ${color};border-radius:6px;padding:8px 10px;margin-bottom:6px;background:var(--bg3)">
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
@@ -8434,10 +8694,10 @@ function _renderHealthResults(findings){
               ${f.fix ? `<div style="font-size:11px;color:var(--text2);margin-top:4px;line-height:1.5"><strong>Fix:</strong> ${esc(f.fix)}</div>` : ''}
             </div>
             <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end">
-              ${hasDetails ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 8px;white-space:nowrap" onclick="_toggleHealthDetail(${idx})">
+              ${hasDetails ? `<button id="health-toggle-${idx}" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 8px;white-space:nowrap" aria-expanded="false" aria-controls="health-detail-${idx}" onclick="_toggleHealthDetail(${idx})">
                 <span id="health-caret-${idx}">▸</span> ${f.details.length} item${f.details.length===1?'':'s'}
               </button>` : ''}
-              <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 8px;color:var(--text3);white-space:nowrap" onclick="healthIgnoreFinding('${fp}')" title="Hide this finding from future runs">✕ Ignore</button>
+              <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 8px;color:var(--text3);white-space:nowrap" data-health-ignore="1" data-health-fingerprint="${esc(fp)}" title="Hide this finding from future runs">✕ Ignore</button>
             </div>
           </div>
           ${isDateFinding ? `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" style="font-size:11px;padding:4px 10px" onclick="healthFixDates()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;vertical-align:-2px;margin-right:3px"><polygon points="13 2 3 14 11 14 10 22 21 10 13 10 13 2"/></svg>Auto-fix all dates</button></div>` : ''}
@@ -8449,17 +8709,15 @@ function _renderHealthResults(findings){
 
   // Footer chip showing what was hidden + link to restore.
   const hiddenChips = [];
-  if (hiddenWarnCount > 0)    hiddenChips.push(hiddenWarnCount + ' warn (always hidden)');
   if (hiddenIgnoredCount > 0) hiddenChips.push(hiddenIgnoredCount + ' ignored');
   const hiddenLine = hiddenChips.length
     ? `<div style="font-size:11px;color:var(--text3);margin-top:8px;padding:6px 10px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;gap:8px">
-        <span>${hiddenChips.join(' · ')} hidden from this view.</span>
+        <span>${hiddenChips.join(' · ')} finding${hiddenIgnoredCount === 1 ? '' : 's'} hidden from this view.</span>
         ${hiddenIgnoredCount > 0 ? '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px" onclick="healthRestoreIgnored()">↺ Restore ignored</button>' : ''}
        </div>`
     : '';
 
-  let html = `<dialog id="health-overlay" class="overlay">
-    <div class="modal" style="max-width:760px;max-height:85vh">
+  const modalHtml = `<div class="modal" style="max-width:760px;max-height:85vh">
       <div class="modal-head">
         <h3 style="display:flex;align-items:center;gap:8px"><span style="color:${overallColor};font-size:18px">${overallIcon}</span> Data Health Check</h3>
         <button class="btn btn-ghost btn-sm" aria-label="Close" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">✕</button>
@@ -8468,17 +8726,18 @@ function _renderHealthResults(findings){
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-radius:8px;background:var(--bg3);border:1px solid var(--border)">
           <div>
             <div style="font-weight:600">${esc(overallText)}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Run at ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${fails.length} fail · ${infos.length} info</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Run at ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${fails.length} fail · ${warns.length} warning${warns.length === 1 ? '' : 's'} · ${infos.length} info</div>
           </div>
           <div style="font-size:11px;color:var(--text3);text-align:right">
             ${(DB.singles||[]).length} singles · ${(DB.slabs||[]).length} slabs · ${(DB.sales||[]).length} sales<br>
             ${(DB.ebayPurchases||[]).length} ebay · ${(DB.etbs||[]).length} etbs · ${(DB.boosterBoxes||[]).length} boxes · ${(DB.boosterPacks||[]).length} packs
           </div>
         </div>
-        ${(fails.length === 0 && infos.length === 0)
+        ${(fails.length === 0 && warns.length === 0 && infos.length === 0)
           ? `<div style="margin-top:16px;padding:16px;border:1px solid var(--green);border-radius:6px;background:var(--green-soft);color:var(--green);font-size:13px">✓ Nothing to act on right now.</div>`
           : ''}
         ${renderGroup(fails, '❌ Fail - fix before trusting totals', 'var(--red)')}
+        ${renderGroup(warns, '⚠ Warning - review before relying on totals', 'var(--amber)')}
         ${renderGroup(infos, 'ℹ Info', 'var(--blue)')}
         ${hiddenLine}
       </div>
@@ -8486,16 +8745,21 @@ function _renderHealthResults(findings){
         <button class="btn" onclick="kjrModalCtrl.close(document.getElementById('health-overlay'), true)">Close</button>
         <button class="btn btn-primary" onclick="runHealthCheck()">⟳ Re-run</button>
       </div>
-    </div>
-  </dialog>`;
-  // Close the previous instance through the controller first (Re-run reinjects
-  // while the old dialog is still open) so the modal stack never holds a
-  // detached node, then swap in the new one and open it properly - dialog +
-  // kjrModalCtrl gives Esc, backdrop click, focus trap and scroll lock.
+    </div>`;
+  const html = `<dialog id="health-overlay" class="overlay">${modalHtml}</dialog>`;
+  // Re-runs and Ignore actions happen while this dialog is open. Update its
+  // contents in place so the controller stack, history entry, focus trap, and
+  // native top-layer identity all survive the action.
   const old = document.getElementById('health-overlay');
-  if (old) { if (old.open && typeof kjrModalCtrl !== 'undefined') kjrModalCtrl.close(old, true); old.remove(); }
+  if (old && old.open) {
+    old.innerHTML = modalHtml;
+    bindHealthActions(old);
+    return;
+  }
+  if (old) old.remove();
   document.body.insertAdjacentHTML('beforeend', html);
   const hEl = document.getElementById('health-overlay');
+  bindHealthActions(hEl);
   hEl.addEventListener('close', () => hEl.remove(), { once: true });
   kjrModalCtrl.open(hEl);
 }
@@ -13229,11 +13493,14 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // FULL original `name` (number + set code included) via _pickBestMatch,
     // so broadening the *search query* never loses precision in the *pick*.
     // Returns { card } | { empty:true } | { transport:'HTTP nnn' }.
-    async function search(query, limit) {
+    async function search(query) {
       // Route through Cloudflare Worker when configured - Worker holds the
       // key server-side and returns CORS headers the browser will accept.
       // Direct calls still 4xx on preflight from any browser origin, so the
-      // proxy is the only working path.
+      // proxy is the only working path. The Worker accepts exactly limit=3,
+      // so keep the contract here rather than letting a caller send an
+      // unsupported limit.
+      const limit = 3;
       const url = PRICE_PROXY_BASE
         ? PRICE_PROXY_BASE + '/ppt/cards?search=' + encodeURIComponent(query) + '&limit=' + limit
         : 'https://www.pokemonpricetracker.com/api/v2/cards?search=' + encodeURIComponent(query) + '&limit=' + limit;
@@ -13251,13 +13518,13 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // already work, e.g. "Eevee 173", where the trailing number is part of
     // PPT's catalogued name.
     const primaryQ = langWord ? (name + ' ' + langWord) : name;
-    let res = await search(primaryQ, 5);
+    let res = await search(primaryQ);
     if (res.transport) return { error: res.transport, _ppt_requests: 0 };
 
     // Fallback - ONLY when the primary returned zero usable results (never on
-    // a transport error, which would hammer a rate-limited key). Broaden to
-    // the base card name with trailing number/set-code tokens stripped, and
-    // widen the limit so the right numbered print is in range.
+    // a transport error, which would hammer a rate-limited key). Search the
+    // base card name with number/set-code tokens stripped, keeping limit=3.
+    // The full original name still drives the precise fuzzy pick.
     // "Gardevoir ex 93" → search "Gardevoir ex"; "Squirtle 1 CLK" → "Squirtle".
     // The number/set-code still drive the pick via _pickBestMatch's number
     // bonus, so the broader search doesn't cost precision. usedFallback is
@@ -13268,7 +13535,7 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
       const base = _baseCardName(name);
       if (base && base.toLowerCase() !== String(name).trim().toLowerCase()) {
         const fbQ = langWord ? (base + ' ' + langWord) : base;
-        const res2 = await search(fbQ, 10);
+        const res2 = await search(fbQ);
         if (res2.transport) return { error: res2.transport, _ppt_requests: reqCount };
         if (res2.card) { res = res2; usedFallback = true; }
       }

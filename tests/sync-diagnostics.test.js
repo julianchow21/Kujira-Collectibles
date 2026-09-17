@@ -36,6 +36,7 @@ function orphanPull(id, overrides) {
     throw new TypeError('offline');
   };
 }
+
 test('sync diagnostics: the indicator is a labelled button and input focus has one soft treatment', () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   assert.match(html, /<button id="sync-indicator"[^>]*aria-haspopup="dialog"[^>]*aria-controls="sync-diagnostics-overlay"[^>]*aria-expanded="false"/);
@@ -108,6 +109,23 @@ test('sync diagnostics: malformed persisted dirty state is surfaced and retry fa
   assert.equal(ctx._syncStatus, 'error');
 });
 
+test('sync diagnostics: a repaired parseable empty state can clear its current warning, while ambiguous startup bytes stay blocked', async () => {
+  const repaired = await loadApp({ localStorage: { pokeinv_dirty_v1: 'null' } });
+  assert.ok(repaired.ctx._syncDiagPendingSnapshot().unknown.includes('unsynced changes'));
+  repaired.localStorage.setItem('pokeinv_dirty_v1', '{}');
+  assert.ok(!repaired.ctx._syncDiagPendingSnapshot().unknown.includes('unsynced changes'));
+  repaired.fetchMock.route('/sync/v2/pull', () => syncPullResponse({}));
+  await repaired.ctx.retrySyncDiagnostics();
+  assert.ok(repaired.fetchMock.calls.some(call => String(call.url).includes('/sync/v2/pull')),
+    'explicit retry proceeds only after current durable state validates');
+
+  const ambiguous = await loadApp({ localStorage: { pokeinv_dirty_v1: '{not-json' } });
+  assert.ok(ambiguous.ctx._syncDiagPendingSnapshot().unknown.includes('unsynced changes'));
+  ambiguous.localStorage.setItem('pokeinv_dirty_v1', '{}');
+  assert.ok(ambiguous.ctx._syncDiagPendingSnapshot().unknown.includes('unsynced changes'),
+    'a startup parse failure remains blocked until reload because its lost bytes are unprovable');
+});
+
 test('sync diagnostics: post-start malformed nested dirty revisions stay unknown while empty token arrays remain valid', async () => {
   const { ctx, localStorage, fetchMock } = await loadApp({
     localStorage: { pokeinv_dirty_v1: { _revisions: { singles: {} } } },
@@ -122,6 +140,65 @@ test('sync diagnostics: post-start malformed nested dirty revisions stay unknown
   await ctx.retrySyncDiagnostics();
   assert.equal(fetchMock.calls.length, 0, 'malformed nested revision state blocks retry before network');
   assert.equal(ctx._syncStatus, 'error');
+});
+
+test('sync diagnostics: orphan cleanup rejects unknown marker fields and key-token mismatches without dropping dirty evidence', async () => {
+  const cases = [
+    { label: 'unknown field', token: 'older-tab:unknown-field', marker: id => snapshotlessMarker(id, 'older-tab:unknown-field', { rowSnapshot: '{recoverable}' }) },
+    { label: 'key-token mismatch', token: 'older-tab:key-mismatch', marker: id => snapshotlessMarker(id, 'different-token') },
+  ];
+  for (const item of cases) {
+    const id = 'orphan_' + item.label.replace(/[^a-z]+/g, '_');
+    const markerKey = 'pokeinv_dirty_v2:' + item.token;
+    const loaded = await loadApp({
+      seed: null,
+      fetch: orphanPull(id),
+      localStorage: {
+        [markerKey]: JSON.stringify(item.marker(id)),
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [item.token] } } }),
+      },
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), item.label + ' marker remains durable');
+    const legacy = JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1'));
+    assert.ok(legacy.singles.includes(id), item.label + ' legacy dirty id remains queued');
+    assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), true, item.label + ' in-memory dirty id remains queued');
+  }
+});
+
+test('sync diagnostics: orphan cleanup retains a marker when pending or pre-pull local Trash still contains its recovery copy', async () => {
+  const cases = [
+    {
+      label: 'pending Trash',
+      localStorage: {
+        _kjrPendingTrashWrites: [{ id: 'trash-pending', data: { originalTable: 'singles', originalId: 'orphan_pending_trash', item: { id: 'orphan_pending_trash' } } }],
+      },
+      seed: null,
+    },
+    {
+      label: 'pre-pull DB Trash',
+      localStorage: {
+        _kjrLocalTrash: [{ id: 'trash-local', data: { originalTable: 'singles', originalId: 'orphan_pre_pull_trash', item: { id: 'orphan_pre_pull_trash' } } }],
+      },
+      seed: null,
+    },
+  ];
+  for (const item of cases) {
+    const id = item.label === 'pending Trash' ? 'orphan_pending_trash' : 'orphan_pre_pull_trash';
+    const token = 'older-tab:' + id;
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const loaded = await loadApp({
+      seed: item.seed,
+      fetch: orphanPull(id),
+      localStorage: {
+        ...item.localStorage,
+        [markerKey]: JSON.stringify(snapshotlessMarker(id, token)),
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      },
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), item.label + ' marker remains durable');
+    assert.ok(JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1')).singles.includes(id),
+      item.label + ' dirty evidence remains queued');
+  }
 });
 
 test('sync diagnostics: a successful write on another row does not erase the retained write failure', async () => {
@@ -236,6 +313,127 @@ test('sync diagnostics: a Trash-only recovery queue explains that normal retry c
   fetchMock.calls.length = 0;
   await ctx.retrySyncDiagnostics();
   assert.equal(fetchMock.calls.length, 0, 'an unretryable Trash-only queue must not trigger a cloud request');
+});
+
+test('health: warnings remain visible and the headline cannot claim all checks passed', async () => {
+  const { ctx, document } = await loadApp();
+  ctx._renderHealthResults([
+    { sev: 'warn', area: 'Sync', message: 'Sync pending: 2 rows awaiting upload.', fix: 'Retry when online.', details: [{ label: '[singles] Pending row', table: 'singles', id: 'pending-1' }] },
+    { sev: 'warn', area: 'Dates', message: '1 row has a non-canonical date format.', fix: 'Review the date.', details: [] },
+    { sev: 'info', area: 'Dashboard', message: 'Expected available cost basis.', fix: '', details: [] },
+  ]);
+  const html = document.body._lastInsertedHTML || '';
+  assert.match(html, /Warnings to review\./);
+  assert.match(html, /Warning - review before relying on totals/);
+  assert.match(html, /Sync pending: 2 rows awaiting upload/);
+  assert.doesNotMatch(html, /All checks passed\./);
+  assert.doesNotMatch(html, /always hidden/);
+  assert.match(html, /aria-expanded="false" aria-controls="health-detail-0"/);
+  assert.doesNotMatch(html, /onclick="healthGotoRow/);
+  assert.doesNotMatch(html, /onclick="healthIgnoreFinding/);
+});
+
+test('health: an open check re-renders in place without replacing the modal', async () => {
+  const { ctx, document } = await loadApp();
+  const overlay = document.getElementById('health-overlay');
+  let showCalls = 0;
+  let closeCalls = 0;
+  const showModal = overlay.showModal;
+  const close = overlay.close;
+  overlay.showModal = function () { showCalls++; return showModal.call(this); };
+  overlay.close = function () { closeCalls++; return close.call(this); };
+
+  ctx._renderHealthResults([
+    { sev: 'warn', area: 'Sync', message: 'First health result', fix: '', details: [] },
+  ]);
+  assert.equal(overlay.open, true);
+  assert.equal(showCalls, 1);
+  assert.equal(closeCalls, 0);
+  const firstHtml = overlay.innerHTML;
+
+  ctx._renderHealthResults([
+    { sev: 'warn', area: 'Sync', message: 'Second health result', fix: '', details: [] },
+  ]);
+  assert.strictEqual(document.getElementById('health-overlay'), overlay);
+  assert.equal(overlay.open, true);
+  assert.equal(showCalls, 1, 'a re-run does not reopen the native dialog');
+  assert.equal(closeCalls, 0, 'a re-run does not close the native dialog');
+  assert.notEqual(overlay.innerHTML, firstHtml);
+  assert.match(overlay.innerHTML, /Second health result/);
+});
+
+test('health: data-derived actions use literal datasets and safe row lookup', async () => {
+  const { ctx, document, timers } = await loadApp();
+  const overlay = document.getElementById('health-overlay');
+  overlay.open = true;
+  const dangerousTable = "singles');window.__healthPwned=1;//";
+  const dangerousId = "row');window.__healthPwned=2;//<script>";
+  const finding = {
+    sev: 'warn', area: "Sync');window.__healthPwned=4;//", message: "Ignore me');window.__healthPwned=3;//", fix: '',
+    details: [
+      { label: 'Supported route', table: 'singles', id: dangerousId },
+      { label: 'Script-like route', table: dangerousTable, id: dangerousId },
+    ],
+  };
+  const viewButtons = [1, 2].map(() => document.createElement('button'));
+  viewButtons[0].dataset.healthTable = 'singles';
+  viewButtons[0].dataset.healthId = dangerousId;
+  viewButtons[1].dataset.healthTable = dangerousTable;
+  viewButtons[1].dataset.healthId = dangerousId;
+  const ignoreButton = document.createElement('button');
+  ignoreButton.dataset.healthFingerprint = ctx._healthFingerprint(finding);
+  overlay.querySelectorAll = selector => {
+    if (selector === '[data-health-view="1"]') return viewButtons;
+    if (selector === '[data-health-ignore="1"]') return [ignoreButton];
+    return [];
+  };
+  const routes = [];
+  const ignored = [];
+  const originalHealthGotoRow = ctx.healthGotoRow;
+  ctx.healthGotoRow = (...args) => routes.push(args);
+  ctx.healthIgnoreFinding = fp => ignored.push(fp);
+
+  ctx._renderHealthResults([finding]);
+  const html = overlay.innerHTML;
+  assert.doesNotMatch(html, /onclick="healthGotoRow/);
+  assert.doesNotMatch(html, /onclick="healthIgnoreFinding/);
+  assert.match(html, /data-health-view="1"/);
+  assert.match(html, /data-health-ignore="1"/);
+  viewButtons[0].dispatchEvent({ type: 'click' });
+  viewButtons[1].dispatchEvent({ type: 'click' });
+  ignoreButton.dispatchEvent({ type: 'click' });
+  assert.deepEqual(routes, [['singles', dangerousId], [dangerousTable, dangerousId]]);
+  assert.deepEqual(ignored, [ctx._healthFingerprint(finding)]);
+
+  const row = document.createElement('tr');
+  row.setAttribute('data-id', dangerousId);
+  const queried = [];
+  document.querySelectorAll = selector => {
+    queried.push(selector);
+    return selector === 'tr[data-id]' ? [row] : [];
+  };
+  ctx.healthGotoRow = originalHealthGotoRow;
+  ctx.showPage = () => {};
+  ctx.healthGotoRow('singles', dangerousId);
+  timers.flush(entry => entry.delay === 200);
+  assert.deepEqual(queried, ['tr[data-id]']);
+  assert.equal(row.style.background, 'var(--accent-soft)');
+});
+
+test('health: unresolved snapshotless markers are a review warning', async () => {
+  const id = 'health_snapshotless_row';
+  const token = 'old-tab:health-review';
+  const { ctx } = await loadApp({
+    seed: null,
+    localStorage: {
+      ['pokeinv_dirty_v2:' + token]: JSON.stringify({ table: 'singles', id, token, owner: 'old-tab', createdAt: 791 }),
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+  ctx.runHealthCheck();
+  const finding = ctx._lastHealthFindings.find(item => item.area === 'Sync' && item.message.includes('no saved row snapshot'));
+  assert.ok(finding, 'the marker is visible in Health for review');
+  assert.equal(finding.sev, 'warn');
 });
 
 test('sync diagnostics: a signed-out retry explains the sign-in guard without contacting the cloud', async () => {

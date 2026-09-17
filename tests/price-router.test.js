@@ -19,6 +19,38 @@ test('price-router: slab descriptor hits the PPT worker URL and never touches TC
   assert.ok(fetchMock.calls.some(c => c.url.includes('/ppt/cards')), 'the PPT worker proxy was actually hit');
 });
 
+test('price-router: PPT primary and fallback searches use the Worker limit=3 contract', async () => {
+  const { ctx, fetchMock } = await loadApp();
+  fetchMock.calls.length = 0;
+  fetchMock.route('/ppt/cards', [
+    { ok: true, json: { data: [] } },
+    { ok: true, json: { data: [] } },
+  ]);
+
+  const result = await ctx.fetchPriceFromPPT('Charizard 4', 'PSA', '10', 'EN');
+  const calls = fetchMock.calls.filter(c => c.url.includes('/ppt/cards'));
+  const urls = calls.map(c => new URL(c.url));
+
+  assert.strictEqual(result.error, 'no match');
+  assert.strictEqual(result._ppt_requests, 2, 'both successful empty responses remain billable attempts');
+  assert.deepStrictEqual(urls.map(u => u.searchParams.get('search')), ['Charizard 4', 'Charizard']);
+  assert.deepStrictEqual(urls.map(u => u.searchParams.get('limit')), ['3', '3'], 'primary and fallback must obey the Worker contract');
+});
+
+test('price-router: PPT HTTP 400 stays non-billable and does not trigger fallback', async () => {
+  const { ctx, fetchMock } = await loadApp();
+  fetchMock.calls.length = 0;
+  fetchMock.route('/ppt/cards', { ok: false, status: 400, text: 'invalid query' });
+
+  const result = await ctx.fetchPriceFromPPT('Charizard 4', 'PSA', '10', 'EN');
+  const calls = fetchMock.calls.filter(c => c.url.includes('/ppt/cards'));
+
+  assert.strictEqual(result.error, 'HTTP 400');
+  assert.strictEqual(result._ppt_requests, 0, 'a rejected request must not spend a credit');
+  assert.strictEqual(calls.length, 1, 'transport failure must not run the fallback search');
+  assert.strictEqual(new URL(calls[0].url).searchParams.get('limit'), '3');
+});
+
 test('price-router: tcgdexOnly:true + TCGdex miss -> clean unpriced result with ZERO PPT calls (the 403-hammering regression)', async () => {
   const { ctx, fetchMock } = await loadApp();
   fetchMock.calls.length = 0;

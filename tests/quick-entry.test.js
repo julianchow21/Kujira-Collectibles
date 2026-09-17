@@ -126,28 +126,28 @@ test('quick-entry: notes stay attached to singles, sealed singles retain metadat
   assert.deepEqual(counts(), beforeInvalid, 'empty input must not create rows');
 });
 
-test('quick-entry: submitted input is consumed before deferred sync', async () => {
+test('quick-entry: submitted input is consumed before the dirty-only sync timer', async () => {
   const { ctx, document } = await loadApp({ location: LOCALHOST_LOCATION });
   const input = document.getElementById('cmd-add-input');
   const initialCount = ctx.DB.singles.length;
-  let release;
   let syncCalls = 0;
   ctx.saveAllToSupabase = () => {
     syncCalls++;
-    return new Promise(resolve => { release = resolve; });
+    return Promise.resolve();
   };
 
   input.value = 'Eevee 173 EN $9';
   const firstSave = ctx.cmdAddKey({ key: 'Enter', preventDefault() {} });
-  assert.equal(syncCalls, 1);
+  assert.equal(syncCalls, 0, 'Quick Entry must not start a full-table upload');
   assert.equal(input.value, '', 'the submitted line is cleared before awaiting sync');
   assert.equal(ctx.DB.singles.length, initialCount + 1);
+  const added = ctx.DB.singles.at(-1);
+  assert.ok(ctx._dirty.singles.has(added.id), 'the new row is left in the dirty queue for the established timer');
 
   await ctx.cmdAddKey({ key: 'Enter', preventDefault() {} });
   assert.equal(ctx.DB.singles.length, initialCount + 1, 'a second Enter cannot duplicate the submitted line');
 
   input.value = 'Pikachu 25 EN $10';
-  release();
   await firstSave;
   assert.equal(input.value, 'Pikachu 25 EN $10', 'a new draft typed while sync is pending is preserved');
 });

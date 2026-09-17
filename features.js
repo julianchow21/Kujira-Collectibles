@@ -238,6 +238,7 @@
     }
 
     const arr = DB[schema.dbKey] = DB[schema.dbKey] || [];
+    newItems.forEach(item => kjrStampCreatedMetadata(item, schema.dbKey));
     if (mode === 'replace') {
       if (arr.length && !await kjrConfirm('Replace all ' + arr.length + ' existing ' + esc(type) + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.', {ok:'Replace', danger:true})) {
         toast('Import cancelled');
@@ -396,25 +397,11 @@ function kjrSort(dbKey, k){
   else if (dbKey === 'boosterPacks') renderBoosterPacks();
   else if (dbKey === 'ebayPurchases') renderEbayPurchases();
 }
-// Default A→Z sort key for the kjr-style tabs.
-const _KJR_DEFAULT_SORT = { etbs: 'product', boosterBoxes: 'product', boosterPacks: 'product', ebayPurchases: '_pipeline' };
 function kjrApplySort(rows, dbKey){
   const s = _kjrSort[dbKey];
-  const key = s.k || _KJR_DEFAULT_SORT[dbKey];
-  if (!key) return rows;
-  // ebayPurchases default: date DESC (newest purchase at top) so pushing a
-  // pipeline status never rearranges rows.
-  if (!s.k && dbKey === 'ebayPurchases') {
-    return [...rows].sort((a, b) => {
-      const ma = dateToMs(a.date), mb = dateToMs(b.date);
-      const aInvalidDate = !Number.isFinite(ma), bInvalidDate = !Number.isFinite(mb);
-      if (aInvalidDate && bInvalidDate) return 0;
-      if (aInvalidDate) return 1; // invalid dates stay last in descending order
-      if (bInvalidDate) return -1;
-      return mb - ma;
-    });
-  }
-  const dir = s.k ? s.dir : 1;
+  if (!s.k) return typeof kjrOrderRows === 'function' ? kjrOrderRows(rows, dbKey) : rows;
+  const key = s.k;
+  const dir = s.dir;
   const DATE_KEYS = new Set(['date','dateListed','datePurchased','dateSold','receivedAt']);
   const NUM_KEYS  = new Set(['costPrice','marketPrice','listPrice','unitPrice','totalPrice',
                              'qty','priceUsd','freightSgd','totalSgd','grade']);
@@ -439,10 +426,6 @@ function kjrApplySort(rows, dbKey){
       if (isNaN(an) && isNaN(bn)) return 0;
       if (isNaN(an)) return 1; if (isNaN(bn)) return -1;
       return (an - bn) * dir;
-    }
-    if (!s.k) {
-      const ad = startsWithDigit(va), bd = startsWithDigit(vb);
-      if (ad !== bd) return ad ? 1 : -1;
     }
     const an = parseFloat(va), bn = parseFloat(vb);
     if (!isNaN(an) && !isNaN(bn) && /^-?\d+(\.\d+)?$/.test(String(va).trim()) && /^-?\d+(\.\d+)?$/.test(String(vb).trim())) {
@@ -621,13 +604,86 @@ function kjrMatchDateFilter(filter, val){
 }
 function _v(id){ const el = document.getElementById(id); return el ? el.value.trim() : ''; }
 
+// Sealed inventory totals have two sources, Unit Price and Quantity. Keep the
+// calculation here so the modal input listeners and the save fallback use the
+// same rules. Empty or malformed sources produce a blank total, while zero is
+// a valid monetary value.
+const _KJR_SEALED_TOTAL_TABLES = new Set(['boosterBoxes', 'boosterPacks']);
+function _kjrSealedNumber(value){
+  if (value == null) return null;
+  let raw = String(value).trim();
+  if (!raw) return null;
+  raw = raw.replace(/,/g, '')
+    .replace(/^(?:SGD|USD|S\$|US\$|\$)/i, '')
+    .replace(/(?:SGD|USD)$/i, '')
+    .trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function kjrCalcSealedTotal(unitPrice, qty){
+  const unit = _kjrSealedNumber(unitPrice);
+  const count = _kjrSealedNumber(qty);
+  if (unit == null || count == null) return '';
+  const product = unit * count;
+  if (!Number.isFinite(product)) return '';
+  return Math.round((product + Number.EPSILON) * 100) / 100;
+}
+function _kjrSealedSourceFingerprint(value){
+  const parsed = _kjrSealedNumber(value);
+  if (parsed != null) return 'number:' + parsed;
+  return value == null || String(value).trim() === '' ? 'blank' : 'invalid:' + String(value).trim();
+}
+function _kjrSealedFieldMap(){
+  const map = {};
+  document.querySelectorAll('#kjr-modal-fields [data-k]').forEach(el => { map[el.dataset.k] = el; });
+  return map;
+}
+function _kjrWireSealedTotal(ctx){
+  if (!_KJR_SEALED_TOTAL_TABLES.has(ctx.dbKey)) return;
+  const fields = _kjrSealedFieldMap();
+  const unitEl = fields.unitPrice, qtyEl = fields.qty, totalEl = fields.totalPrice;
+  if (!unitEl || !qtyEl || !totalEl) return;
+  const state = ctx._sealedTotal = {
+    lastUnit: _kjrSealedSourceFingerprint(ctx.item.unitPrice),
+    lastQty: _kjrSealedSourceFingerprint(ctx.item.qty),
+  };
+  const recalculate = () => {
+    const currentUnit = _kjrSealedSourceFingerprint(unitEl.value);
+    const currentQty = _kjrSealedSourceFingerprint(qtyEl.value);
+    const changed = currentUnit !== state.lastUnit || currentQty !== state.lastQty;
+    if (changed) {
+      state.lastUnit = currentUnit;
+      state.lastQty = currentQty;
+    }
+    // A source edit always wins over a manually entered total. If nothing has
+    // changed, derive only when the total is still blank.
+    if (changed || !String(totalEl.value == null ? '' : totalEl.value).trim()) {
+      const total = kjrCalcSealedTotal(unitEl.value, qtyEl.value);
+      totalEl.value = total === '' ? '' : String(total);
+    }
+  };
+  unitEl.addEventListener('input', recalculate);
+  unitEl.addEventListener('change', recalculate);
+  qtyEl.addEventListener('input', recalculate);
+  qtyEl.addEventListener('change', recalculate);
+  // Existing records with an empty total can show the safe derived value as
+  // soon as their modal opens. A present value is left alone, including a
+  // deliberate discounted total.
+  if (!String(totalEl.value == null ? '' : totalEl.value).trim()) {
+    const total = kjrCalcSealedTotal(unitEl.value, qtyEl.value);
+    if (total !== '') totalEl.value = String(total);
+  }
+}
+
 // ═════════════ Modal CRUD ═════════════
 let _kjrModalCtx = null;
 function kjrOpenModal(ctx){
   _kjrModalCtx = ctx;
   document.getElementById('kjr-modal-title').textContent = (ctx.isNew?'Add ':'Edit ') + ctx.singular;
   document.getElementById('kjr-modal-fields').innerHTML = ctx.fields.map(f => {
-    const v = f.type === 'date' ? toIsoDateStr(ctx.item[f.key] || '') : (ctx.item[f.key] || '');
+    const rawValue = ctx.item[f.key];
+    const v = f.type === 'date' ? toIsoDateStr(rawValue || '') : (rawValue == null ? '' : rawValue);
     if (f.type === 'select') {
       return '<label class="lbl">'+kjrEscape(f.label)+'</label><select class="fi" data-k="'+f.key+'">' +
         f.options.map(o => '<option value="'+kjrEscape(o)+'"'+(o===v?' selected':'')+'>'+kjrEscape(o||'-')+'</option>').join('') +
@@ -639,6 +695,7 @@ function kjrOpenModal(ctx){
     return '<label class="lbl">'+kjrEscape(f.label)+'</label><input class="fi" data-k="'+f.key+'" type="'+(f.type||'text')+'" value="'+kjrEscape(v)+'">';
   }).join('');
   kjrModalCtrl.open(document.getElementById('kjr-modal-back'));
+  _kjrWireSealedTotal(ctx);
 }
 function kjrCloseModal(){ kjrModalCtrl.close(document.getElementById('kjr-modal-back')); _kjrModalCtx = null; }
 function kjrSaveModal(){
@@ -655,12 +712,29 @@ function kjrSaveModal(){
   // Snapshot the row BEFORE we mutate so we can diff against it for the
   // changelog entry. (Was logging an empty extra string before.)
   const beforeKjr = isNew ? null : { ...target };
-  document.querySelectorAll('#kjr-modal-fields [data-k]').forEach(el => { target[el.dataset.k] = el.value.trim(); });
+  const modalFields = _kjrSealedFieldMap();
+  const sealed = _KJR_SEALED_TOTAL_TABLES.has(dbKey);
+  const rawUnitPrice = sealed && modalFields.unitPrice ? modalFields.unitPrice.value : target.unitPrice;
+  const rawQty = sealed && modalFields.qty ? modalFields.qty.value : target.qty;
+  const rawTotalPrice = sealed && modalFields.totalPrice ? modalFields.totalPrice.value : target.totalPrice;
+  const sealedState = sealed && _kjrModalCtx._sealedTotal;
+  const sourceChanged = sealed && !!sealedState && (
+    _kjrSealedSourceFingerprint(rawUnitPrice) !== sealedState.lastUnit ||
+    _kjrSealedSourceFingerprint(rawQty) !== sealedState.lastQty
+  );
+  Object.values(modalFields).forEach(el => { target[el.dataset.k] = el.value.trim(); });
   // Run through the unified normalizer so manual entries match table format
   // (numbers stored as numbers, dates as "D MMM YYYY", grader uppercase…).
   if (typeof normalizeRecord === 'function') {
     const norm = normalizeRecord(dbKey, target);
     Object.assign(target, norm);
+  }
+  // The listeners cover normal browser interaction. This save-time fallback
+  // also handles programmatic edits, test harnesses and browsers that only
+  // dispatch `change`: source edits derive the product, while a blank total
+  // may be filled from valid unchanged sources.
+  if (sealed && (sourceChanged || String(rawTotalPrice == null ? '' : rawTotalPrice).trim() === '')) {
+    target.totalPrice = kjrCalcSealedTotal(rawUnitPrice, rawQty);
   }
   // For eBay rows, also persist the live SGD computation if the user didn't
   // manually override - keeps the table totalSgd in sync with USD×rate+freight.
@@ -678,6 +752,7 @@ function kjrSaveModal(){
     }
   }
   if (isNew) {
+    kjrStampCreatedMetadata(target, dbKey);
     DB[dbKey].push(target);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded(dbKey, target.id);
   }
@@ -814,9 +889,8 @@ function renderEtbs(){
     kjrMatchFilter(cfProd, r.product) && kjrMatchFilter(cfCond, r.condition) && kjrMatchDateFilter(cfDate, r.date) &&
     kjrMatchNumFilter(cfCost, r.totalPrice) && kjrMatchNumFilter(cfMkt, r.marketPrice) && kjrMatchNumFilter(cfList, r.carousellPrice)
   );
-  // Default sort: alphabetical A→Z by product. User-picked column sort
-  // takes over via kjrApplySort which honours the _DEFAULT_SORT key when
-  // _kjrSort.etbs.k is null.
+  // Default sort: newest input first from persisted creation metadata.
+  // User-picked column sort takes over when _kjrSort.etbs.k is set.
   const sortFn = (list) => kjrApplySort(list, 'etbs');
   // Split into active (In Stock) and inactive (Sold / Traded) so we render
   // the same Available-first → collapsed Sold layout as Singles/Slabs.
@@ -1969,12 +2043,11 @@ function _pinRecentlyAdded(table, id){
 function _isRecentlyAdded(table, id){
   return _kjrRecentAdds[table] && _kjrRecentAdds[table].has(id);
 }
-// Helper: reorder a sorted list so recently-added rows float to the top.
+// Creation metadata owns row position across tabs and reloads. Keep this
+// compatibility hook for callers that mark a row as recent, but do not let a
+// tab-local Set reorder rows ahead of a newer row received from another tab.
 function _pinRecentsToTop(items, table){
-  if (!_kjrRecentAdds[table] || _kjrRecentAdds[table].size === 0) return items;
-  const recent = [], rest = [];
-  items.forEach(i => { (_kjrRecentAdds[table].has(i.id) ? recent : rest).push(i); });
-  return [...recent, ...rest];
+  return items;
 }
 
 // ═════════════ eBay completion confirmation modal ═════════════
@@ -2402,6 +2475,7 @@ async function kjrConfirmCompletion(){
       stagedInventory.push({ table: 'boosterPacks', item }); newIds.push({table:'boosterPacks', id:item.id});
     }
   });
+  stagedInventory.forEach(({ table, item }) => kjrStampCreatedMetadata(item, table));
   const nextPurchase = {
     ...JSON.parse(JSON.stringify(p)),
     status: 'Completed',

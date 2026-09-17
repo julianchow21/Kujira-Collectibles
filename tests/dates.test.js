@@ -103,15 +103,15 @@ test('dates: dateToMs - preserves invalid raw text without treating it as a date
   assert.ok(Number.isNaN(msResult));
 });
 
-test('dates: kjrApplySort - eBay default and date directions keep invalid dates last', async () => {
+test('dates: kjrApplySort - eBay default uses creation order, explicit date directions keep invalid dates last', async () => {
   const { ctx } = await loadApp();
   const rows = [
-    { id: 'bad', date: '30 Feb 2025' },
-    { id: 'old', date: '1 Jan 2020' },
-    { id: 'new', date: '1 Jan 2026' },
+    { id: 'bad', date: '30 Feb 2025', createdAt: 100 },
+    { id: 'old', date: '1 Jan 2020', createdAt: 200 },
+    { id: 'new', date: '1 Jan 2026', createdAt: 300 },
   ];
   const defaultSort = plain(ctx.kjrApplySort(rows, 'ebayPurchases')).map(row => row.id);
-  assert.deepStrictEqual(defaultSort, ['new', 'old', 'bad'], 'default eBay date sort is newest first with invalid dates last');
+  assert.deepStrictEqual(defaultSort, ['new', 'old', 'bad'], 'default eBay order is newest creation first');
 
   ctx._kjrSort.ebayPurchases.k = 'date';
   ctx._kjrSort.ebayPurchases.dir = 1;

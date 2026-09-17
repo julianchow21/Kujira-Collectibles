@@ -91,15 +91,22 @@ test('sorting: slabs "grade" column uses the RESOLVED canonical grade (_resolveG
   assert.deepStrictEqual(asc, ['sl2', 'sl3', 'sl1'], 'resolved grades 5, 9, 10 in ascending order - sl1\'s "PSA 10" packed grade is NOT treated as missing');
 });
 
-test('sorting: default sort (no column picked) - singles/slabs default to most-recent-first by their default date column', async () => {
+test('sorting: default sort (no column picked) - singles use persisted creation metadata, not business dates', async () => {
   const { ctx } = await loadApp();
   ctx.sortState.singles.col = null; // never clicked a header
   const items = [
-    { id: 1, name: 'Older', datePurchased: '1 Jan 2020' },
-    { id: 2, name: 'Newer', datePurchased: '1 Jan 2025' },
+    { id: 1, name: 'Older', datePurchased: '1 Jan 2025', createdAt: 200 },
+    { id: 2, name: 'Newer', datePurchased: '1 Jan 2030', createdAt: 100 },
   ];
   const result = plain(ctx.sortItems(items, 'singles')).map((i) => i.id);
-  assert.deepStrictEqual(result, [2, 1], 'most-recently-added first by default, descending on datePurchased');
+  assert.deepStrictEqual(result, [1, 2], 'newest persisted creation timestamp wins even when its purchase date is older');
+
+  const legacy = [
+    { id: 3, name: 'Legacy older date', datePurchased: '1 Jan 2020' },
+    { id: 4, name: 'Legacy newer date', datePurchased: '1 Jan 2025' },
+  ];
+  assert.deepStrictEqual(plain(ctx.sortItems(legacy, 'singles')).map((i) => i.id), [3, 4],
+    'legacy rows with no safe history keep their stable stored order');
 });
 
 test('effectiveMarketInfo: real market price, cost-basis fallback (flagged as estimate), and the zero case', async () => {

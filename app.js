@@ -844,6 +844,58 @@ function genId(prefix) {
   return prefix + '_' + Date.now().toString(36) + '_' + _kjrFallbackIdCounter.toString(36) + '_' + entropy;
 }
 
+// Persisted creation metadata is the preferred, authoritative source used by
+// the default table order. Business dates describe the transaction, and
+// last-updated stamps describe later edits, so neither can answer which input
+// was added last.
+// Keep a process-local sequence as a deterministic tie-breaker when several
+// true additions share one millisecond. Missing metadata on historical rows
+// stays missing until the conservative changelog fallback is evaluated at
+// render time.
+const _KJR_CREATION_TABLES = new Set([
+  'singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases'
+]);
+let _kjrCreatedAtSequence = 0;
+
+function _kjrValidCreatedAt(value) {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
+}
+
+function _kjrValidCreatedAtSequence(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+}
+
+function _kjrObserveCreationSequence() {
+  if (typeof DB === 'undefined' || !DB) return;
+  _KJR_CREATION_TABLES.forEach(table => {
+    (Array.isArray(DB[table]) ? DB[table] : []).forEach(row => {
+      if (_kjrValidCreatedAtSequence(row && row.createdAtSeq)) {
+        _kjrCreatedAtSequence = Math.max(_kjrCreatedAtSequence, row.createdAtSeq);
+      }
+    });
+  });
+}
+
+function kjrPreserveCreatedMetadata(target, source) {
+  if (!target || !source) return target;
+  if (_kjrValidCreatedAt(source.createdAt) && !_kjrValidCreatedAt(target.createdAt)) {
+    target.createdAt = source.createdAt;
+  }
+  if (_kjrValidCreatedAtSequence(source.createdAtSeq) && !_kjrValidCreatedAtSequence(target.createdAtSeq)) {
+    target.createdAtSeq = source.createdAtSeq;
+  }
+  return target;
+}
+
+function kjrStampCreatedMetadata(row, table) {
+  if (!row || !_KJR_CREATION_TABLES.has(table)) return row;
+  _kjrObserveCreationSequence();
+  if (!_kjrValidCreatedAt(row.createdAt)) row.createdAt = Date.now();
+  if (!_kjrValidCreatedAtSequence(row.createdAtSeq)) row.createdAtSeq = ++_kjrCreatedAtSequence;
+  else _kjrCreatedAtSequence = Math.max(_kjrCreatedAtSequence, row.createdAtSeq);
+  return row;
+}
+
 function _newMutationId() {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -3650,9 +3702,17 @@ function _persistDirty(flushed) {
     // can interleave a write anywhere in the legacy mirror's read/write cycle
     // without either tab overwriting the other's authoritative marker.
     for (const key of DIRTY_TABLE_KEYS) {
+      const completedForKey = flushed && flushed[key];
       for (const id of _dirty[key]) {
         let token = _dirtyRevisions[key].get(id);
         if (!token) { token = _newDirtyRevision(); _dirtyRevisions[key].set(id, token); }
+        // `_clearDirtyV2Tokens` has already removed acknowledged markers. A
+        // completed row can still be in `_dirty` until the merge below, so do
+        // not re-emit its current token. A newer token or a failed removal
+        // continues through the normal marker write path below.
+        const uploadedTokens = completedForKey && completedForKey.get(id);
+        if (uploadedTokens && uploadedTokens.has(token) &&
+            clearedV2.get(token) !== false) continue;
         const rowJson = _dirtyRowJson(key, id);
         const recoverableForeign = _syntheticDirtyRevisionTokens.has(token) &&
           markersBeforeWrite.some(marker => marker.table === key && marker.id === id &&
@@ -6638,6 +6698,7 @@ function saveSmartAdd() {
         listPrice: p.listPrice, costPrice: p.costPrice, marketPrice: p.marketPrice,
         dateListed: p.dateListed, status: p.status, notes: p.notes, priceHistory: []
       };
+      kjrStampCreatedMetadata(item, 'slabs');
       DB.slabs.push(item);
       markDirty('slabs', item.id);
       if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', item.id);
@@ -6653,6 +6714,7 @@ function saveSmartAdd() {
           listPrice: p.listPrice, costPrice: p.costPrice, marketPrice: p.marketPrice,
           status: p.status, notes: p.notes, priceHistory: []
         });
+        kjrStampCreatedMetadata(item, 'singles');
         DB.singles.push(item);
         markDirty('singles', item.id);
         if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', item.id);
@@ -6788,6 +6850,7 @@ async function cmdAddKey(e) {
     const addedRecords = [];
     const addRecord = (table, item) => {
       DB[table] = DB[table] || [];
+      kjrStampCreatedMetadata(item, table);
       DB[table].push(item);
       markDirty(table, item.id);
       if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded(table, item.id);
@@ -6863,7 +6926,6 @@ async function cmdAddKey(e) {
     document.getElementById('cmd-add-input').value = '';
     document.getElementById('cmd-add-preview').innerHTML = '';
     document.getElementById('cmd-add-input').focus();
-    await saveAllToSupabase();
   }
 }
 
@@ -7371,7 +7433,7 @@ function cmdConfirmSell() {
     grandProfit += profit;
     const daysHeld = _kjrDaysHeld(p.dateAcquired || '', dateSold);
     const saleId = genId('sale');
-    newSales.push({
+    const sale = {
       id: saleId, dateSold, product: p.productName, buyer,
       costPrice: p.cost, totalCollected: p.price, shippingCost: unitShip,
       fees: unitFees, channel,
@@ -7379,7 +7441,9 @@ function cmdConfirmSell() {
       ...(daysHeld !== null ? { daysHeld } : {}),
       profit, margin,
       inventoryId: p.rowId, inventoryTable: p.table
-    });
+    };
+    kjrStampCreatedMetadata(sale, 'sales');
+    newSales.push(sale);
     if (p.table === 'slabs') {
       stageRow('slabs', p.rowId, row => { row.status = 'Sold'; });
     } else if (p.table === 'etbs' || p.table === 'boosterBoxes') {
@@ -8378,6 +8442,7 @@ function confirmQuickSell() {
     inventoryId: id,
     inventoryTable: table
   };
+  kjrStampCreatedMetadata(saleRecord, 'sales');
   const operations = [
     _upsertOperation(_tblName(table), nextItem),
     _upsertOperation('sales', saleRecord)
@@ -8960,10 +9025,141 @@ const _NUM_COLS  = new Set(['costPrice','marketPrice','listPrice','qty','priceAl
                             'totalPrice','unitPrice','priceUsd','freightSgd','totalSgd',
                             'grade']);
 
-// Default sort when the user hasn't picked a column.
-// Singles and Slabs default to most-recently-added first.
-// Sales defaults to most-recently-sold first.
-const _DEFAULT_SORT_COL = { singles: 'datePurchased', slabs: 'dateListed', sales: 'dateSold' };
+// Default order is based on persisted creation metadata. Keep this object for
+// callers that still inspect the old constant, but leave every table without
+// a default column so business dates never masquerade as creation history.
+const _DEFAULT_SORT_COL = {};
+
+function _kjrCreationLabel(table, row) {
+  if (!row) return '';
+  const value = table === 'sales' ? (row.product || row.name || row.id) : (row.name || row.product || row.id);
+  return value == null ? '' : String(value).trim();
+}
+
+function _kjrValidChangelogTime(value) {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value) && value >= 0;
+}
+
+function _kjrQuickEntryIds(extra, rowIds) {
+  const text = String(extra == null ? '' : extra);
+  const match = text.match(/\bids\s*:\s*([^·]+)/i);
+  if (!match) return [];
+  const idsText = match[1].replace(/[)\]}]+\s*$/, '');
+  return idsText.split(/[,\s]+/).map(id => id.trim()).filter(id => rowIds.has(id));
+}
+
+// Build the history lookup once for a table render. Quick Entry records can
+// identify several physical rows in their `ids:` suffix. Older records with
+// no explicit id only qualify when their current label is unique and exactly
+// one matching add event remains in the local changelog.
+function _kjrBuildCreationHistory(table, visibleRows, universeRows) {
+  const rows = Array.isArray(universeRows) ? universeRows : (Array.isArray(visibleRows) ? visibleRows : []);
+  const rowIds = new Set((rows || []).map(row => row && row.id != null ? String(row.id) : '').filter(Boolean));
+  const action = table === 'sales' ? 'sell' : 'add';
+  let rawEvents = [];
+  try { rawEvents = typeof clLoad === 'function' ? clLoad() : []; } catch (_) { rawEvents = []; }
+  const events = (Array.isArray(rawEvents) ? rawEvents : []).filter(event =>
+    event && event.table === table && event.action === action
+  );
+  const byId = new Map();
+  const byLabel = new Map();
+  const labelCounts = new Map();
+  rows.forEach(row => {
+    const label = _kjrCreationLabel(table, row);
+    if (label) labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+  });
+  events.forEach((event, eventIndex) => {
+    const stamp = _kjrValidChangelogTime(event.ts)
+      ? { time: event.ts, eventTie: -eventIndex, sourceRank: 2 }
+      : null;
+    if (stamp) {
+      _kjrQuickEntryIds(event.extra, rowIds).forEach(id => {
+        // clLoad returns newest-first, so the first matching event wins.
+        if (!byId.has(id)) byId.set(id, stamp);
+      });
+    }
+    const label = event.detail == null ? '' : String(event.detail).trim();
+    if (!label) return;
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label).push(stamp);
+  });
+  return { byId, byLabel, labelCounts };
+}
+
+function _kjrCreationUniverse(table, visibleRows) {
+  if (typeof DB !== 'undefined' && DB && Array.isArray(DB[table])) return DB[table];
+  return visibleRows;
+}
+
+function _kjrEffectiveCreationOrder(row, table, index, history, universeRows) {
+  if (_kjrValidCreatedAt(row && row.createdAt)) {
+    return {
+      known: true, time: row.createdAt,
+      seq: _kjrValidCreatedAtSequence(row.createdAtSeq) ? row.createdAtSeq : null,
+      sourceRank: 3, eventTie: 0, index
+    };
+  }
+  const id = row && row.id != null ? String(row.id) : '';
+  const explicit = id && history.byId.get(id);
+  if (explicit) return { known: true, ...explicit, seq: null, index };
+
+  const label = _kjrCreationLabel(table, row);
+  const duplicateCount = history.labelCounts ? (history.labelCounts.get(label) || 0) : 0;
+  const labelEvents = label ? history.byLabel.get(label) : null;
+  // An exact current label is useful only when it is unique in the whole
+  // table and one matching add/sell event exists. Never persist this inference.
+  if (label && duplicateCount === 1 && labelEvents && labelEvents.length === 1 && labelEvents[0]) {
+    return { known: true, ...labelEvents[0], sourceRank: 1, seq: null, index };
+  }
+  return { known: false, time: 0, seq: null, sourceRank: 0, eventTie: 0, index };
+}
+
+function _kjrCompareCreationOrder(a, b) {
+  if (a.known !== b.known) return a.known ? -1 : 1;
+  if (!a.known) return a.index - b.index;
+  if (a.time !== b.time) return b.time - a.time;
+  if (a.seq !== null || b.seq !== null) {
+    if (a.seq === null) return 1;
+    if (b.seq === null) return -1;
+    if (a.seq !== b.seq) return b.seq - a.seq;
+  }
+  if (a.sourceRank !== b.sourceRank) return b.sourceRank - a.sourceRank;
+  if (a.eventTie !== b.eventTie) return b.eventTie - a.eventTie;
+  return a.index - b.index;
+}
+
+function kjrOrderRows(rows, table) {
+  const source = Array.isArray(rows) ? rows : [];
+  const universe = _kjrCreationUniverse(table, source);
+  const history = _kjrBuildCreationHistory(table, source, universe);
+  return source.map((row, index) => ({
+    row,
+    order: _kjrEffectiveCreationOrder(row, table, index, history, universe)
+  })).sort((a, b) => _kjrCompareCreationOrder(a.order, b.order)).map(entry => entry.row);
+}
+
+// Listings combine rows from several tables, so build one history index per
+// source table before sorting the combined candidates.
+function kjrOrderListingCandidates(candidates) {
+  const source = Array.isArray(candidates) ? candidates : [];
+  const universes = new Map();
+  source.forEach(candidate => {
+    const table = candidate && candidate.src;
+    if (!table || universes.has(table)) return;
+    universes.set(table, _kjrCreationUniverse(table, source.filter(item => item && item.src === table).map(item => item.data)));
+  });
+  const histories = new Map();
+  universes.forEach((universe, table) => {
+    const visible = source.filter(item => item && item.src === table).map(item => item.data);
+    histories.set(table, _kjrBuildCreationHistory(table, visible, universe));
+  });
+  return source.map((candidate, index) => {
+    const table = candidate && candidate.src;
+    const universe = universes.get(table) || [];
+    const history = histories.get(table) || { byId: new Map(), byLabel: new Map(), labelCounts: new Map() };
+    return { candidate, order: _kjrEffectiveCreationOrder(candidate && candidate.data, table, index, history, universe) };
+  }).sort((a, b) => _kjrCompareCreationOrder(a.order, b.order)).map(entry => entry.candidate);
+}
 
 // Effective market value/estimate flag, shared by the marketPrice cell
 // render, the sort column, the dashboard aggregate and the chart builder so
@@ -8983,11 +9179,9 @@ function effectiveMarket(i) { return effectiveMarketInfo(i).value; }
 
 function sortItems(items, table) {
   const s = sortState[table];
-  const col = s.col || _DEFAULT_SORT_COL[table];
-  if (!col) return items;
-  // Default direction is descending for all date-defaulted tables so the
-  // most recent entries appear at the top without requiring a header click.
-  const dir = s.col ? s.dir : -1;
+  if (!s.col) return kjrOrderRows(items, table);
+  const col = s.col;
+  const dir = s.dir;
   // Numbers/words containing leading digits should land at the BOTTOM when
   // sorting alphabetically (so "Charizard" comes before "100-card lot").
   const startsWithDigit = v => /^[\s$]*-?\d/.test(String(v||''));
@@ -10803,6 +10997,8 @@ function _captureModalEditContext(table, row) {
   return {
     table,
     id: row.id,
+    createdAt: row.createdAt,
+    createdAtSeq: row.createdAtSeq,
     expectedVersion: Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0,
     updatedAt: row._updatedAt || '',
     fingerprint: _modalEditFingerprint(row),
@@ -10864,6 +11060,7 @@ function _rejectStaleModalEdit(table, id) {
 
 function _preserveModalEditStamp(norm, context) {
   if (!context) return;
+  kjrPreserveCreatedMetadata(norm, context);
   norm._serverVersion = context.expectedVersion;
   if (context.updatedAt) norm._updatedAt = context.updatedAt;
 }
@@ -11001,6 +11198,7 @@ function _saveSingleNow(id) {
     if (editIndex >= 0) {
       before = { ...DB.singles[editIndex] };
       norm.priceHistory = DB.singles[editIndex].priceHistory||[];
+      kjrPreserveCreatedMetadata(norm, DB.singles[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.singles);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
@@ -11039,6 +11237,7 @@ function _saveSingleNow(id) {
     return;
   } else {
     snapshotForUndo();
+    kjrStampCreatedMetadata(norm, 'singles');
     DB.singles.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', norm.id);
   }
@@ -11367,6 +11566,7 @@ function _saveSlabNow(id) {
     if (editIndex >= 0) {
       beforeSlab = { ...DB.slabs[editIndex] };
       norm.priceHistory = DB.slabs[editIndex].priceHistory||[];
+      kjrPreserveCreatedMetadata(norm, DB.slabs[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.slabs);
       // Same confirm-name carry-over rule as saveSingle.
       if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
@@ -11400,6 +11600,7 @@ function _saveSlabNow(id) {
     return;
   } else {
     snapshotForUndo();
+    kjrStampCreatedMetadata(norm, 'slabs');
     DB.slabs.push(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', norm.id);
   }
@@ -11798,6 +11999,7 @@ function _saveSaleNow(id) {
     editIndex = DB.sales.findIndex(s => s.id === id);
     if (editIndex >= 0) {
       beforeSale = { ...DB.sales[editIndex] };
+      kjrPreserveCreatedMetadata(norm, DB.sales[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.sales);
     }
     const modalCachePayload = _modalCachePayload(_modalEditContexts.sales, 'sales', id, norm);
@@ -11829,6 +12031,7 @@ function _saveSaleNow(id) {
     return;
   } else {
     snapshotForUndo();
+    kjrStampCreatedMetadata(norm, 'sales');
     DB.sales.unshift(norm);
     if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('sales', norm.id);
   }
@@ -12990,13 +13193,16 @@ function lstSearchItems(q) {
   const haySealed  = i => [i.product, i.notes].filter(Boolean).join(' ').toLowerCase();
   const allMatch   = hay => tokens.every(t => hay.includes(t));
 
-  // Slabs first - usually highest value, same ordering as Quick Entry.
-  _lstHits = [
+  const candidates = [
     ...avail(DB.slabs).filter(i => allMatch(haySlab(i))).map(i => ({ src:'slabs', data:i })),
     ...avail(DB.singles).filter(i => allMatch(haySingle(i))).map(i => ({ src:'singles', data:i })),
     ...(DB.etbs||[]).filter(r=>/in\s*stock/i.test(r.status||'') && allMatch(haySealed(r))).map(i=>({src:'etbs',data:i})),
     ...(DB.boosterBoxes||[]).filter(r=>/unopened/i.test(r.status||'') && allMatch(haySealed(r))).map(i=>({src:'boosterBoxes',data:i})),
-  ].slice(0, 12);
+    ...(DB.boosterPacks||[]).filter(r=>/sealed/i.test(r.status||'') && allMatch(haySealed(r))).map(i=>({src:'boosterPacks',data:i})),
+  ];
+  _lstHits = (typeof kjrOrderListingCandidates === 'function'
+    ? kjrOrderListingCandidates(candidates)
+    : candidates).slice(0, 12);
   _lstHitIdx = 0;
 
   if (!_lstHits.length) { res.innerHTML = ''; res.style.display = 'none'; if (status) { status.textContent = 'No matches'; status.hidden = false; } if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); } return; }
@@ -13019,9 +13225,9 @@ function _renderLstResults() {
       icon  = '🏆';
       badge = graderGradeBadge(i.grader, i.grade, i.notes, i.name);
       meta  = [(i.certNo ? '#' + i.certNo : ''), (i.rank||''), (i.set||'')].filter(Boolean).join(' · ') || 'Graded slab';
-    } else if (src === 'etbs' || src === 'boosterBoxes' || i.type === 'sealed') {
+    } else if (src === 'etbs' || src === 'boosterBoxes' || src === 'boosterPacks' || i.type === 'sealed') {
       icon  = '📦';
-      const label = src === 'etbs' ? 'ETB' : src === 'boosterBoxes' ? 'Box' : 'Sealed';
+      const label = src === 'etbs' ? 'ETB' : src === 'boosterBoxes' ? 'Box' : src === 'boosterPacks' ? 'Pack' : 'Sealed';
       badge = '<span class="badge b-sealed">' + label + '</span>';
       meta  = (i.set||'') || 'Sealed product';
     } else {
@@ -14845,9 +15051,12 @@ function populateListingSelect() {
     ...(DB.etbs||[]).filter(r => /in\s*stock/i.test(r.status||'')).map(i => ({ id: i.id, label: (i.product||'ETB') + ' [ETB]', data: i, src: 'etbs' })),
     ...(DB.boosterBoxes||[]).filter(r => /unopened/i.test(r.status||'')).map(i => ({ id: i.id, label: (i.product||'Booster Box') + ' [Booster Box]', data: i, src: 'boosterBoxes' })),
     ...(DB.boosterPacks||[]).filter(r => /sealed/i.test(r.status||'')).map(i => ({ id: i.id, label: (i.product||'Pack') + ' [Booster Pack]', data: i, src: 'boosterPacks' })),
-  ].sort((a,b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
+  ];
+  const orderedItems = typeof kjrOrderListingCandidates === 'function'
+    ? kjrOrderListingCandidates(allItems)
+    : allItems.sort((a,b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
   sel.innerHTML = '<option value="">- choose an item -</option>' +
-    allItems.map(i => '<option value="' + esc(i.src + ':' + i.id) + '">' + esc(i.label) + '</option>').join('');
+    orderedItems.map(i => '<option value="' + esc(i.src + ':' + i.id) + '">' + esc(i.label) + '</option>').join('');
 }
 
 let listingText = '';
@@ -15492,6 +15701,8 @@ async function importData() {
     // every reader in the app expects the camelCase item.tcgdexId - a silent
     // field-name mismatch that would make a re-imported override vanish.
     { field:'tcgdexId',       match: h => h === 'tcgdexid' },
+    { field:'createdAt',      match: h => h === 'createdat' },
+    { field:'createdAtSeq',   match: h => h === 'createdatseq' },
     { field:'notes',          match: h => h === 'notes' || h === 'note' || h === 'comment' || h === 'remarks' || h === 'copypasteto' || h === 'copypastetocarousell' || h === 'carousell' || h.startsWith('httpsmytaggrading') || h.startsWith('httpsmy') },
     { field:'buyer',          match: h => h === 'buyer' || h === 'customer' },
     { field:'totalCollected', match: h => ['totalcollected','total','revenue','soldprice','totalpricecollected'].some(v => h === v) },
@@ -15550,6 +15761,13 @@ async function importData() {
     const vals = lines[i].split('\t').map(v => v.trim().replace(/^"|"$/g,''));
     const obj = { id: genId(type === 'sales' ? 'sale' : type === 'slabs' ? 'sl' : 's'), priceHistory: [] };
     fields.forEach((f, idx) => { if (f !== '_ignore' && vals[idx] !== undefined && vals[idx] !== '') obj[f] = vals[idx]; });
+    ['createdAt', 'createdAtSeq'].forEach(field => {
+      if (obj[field] == null || obj[field] === '') return;
+      const parsed = Number(obj[field]);
+      if (field === 'createdAt' && _kjrValidCreatedAt(parsed)) obj[field] = parsed;
+      else if (field === 'createdAtSeq' && _kjrValidCreatedAtSequence(parsed)) obj[field] = parsed;
+      else delete obj[field];
+    });
 
     let invalidReason = '';
     const parseMoneyField = (field, label, blankValue, asString, options) => {
@@ -15671,6 +15889,9 @@ async function importData() {
   const _importBtnLabel = _importBtn ? _importBtn.innerHTML : '';
   if (_importBtn) { _importBtn.disabled = true; _importBtn.style.opacity = '0.7'; _importBtn.style.cursor = 'wait'; _importBtn.innerHTML = '<span class="kjr-btn-spinner"></span> Importing…'; }
   try {
+
+  const importTable = type === 'sales' ? 'sales' : type;
+  newItems.forEach(item => kjrStampCreatedMetadata(item, importTable));
 
   if (mode === 'replace') {
     const existingArr = (type === 'sales' ? DB.sales : DB[type]);

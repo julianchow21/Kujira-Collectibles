@@ -6328,6 +6328,23 @@ function openSmartAdd(mode) {
   setTimeout(() => inputEl && inputEl.focus(), 100);
 }
 
+// Shared by Quick Entry and sealed-product target detection. Keep the
+// calendar date local so entries made around midnight in Singapore retain the
+// date the user sees in the app.
+function _quickEntryToday() {
+  const now = new Date();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return now.getDate() + ' ' + months[now.getMonth()] + ' ' + now.getFullYear();
+}
+
+function _quickEntrySealedTable(text) {
+  const value = String(text || '');
+  if (/\betb(?:s)?\b|\belite\s+trainer\s+box(?:es)?\b/i.test(value)) return 'etbs';
+  if (/\bbooster\s+box(?:es)?\b/i.test(value)) return 'boosterBoxes';
+  if (/\b(?:booster\s+pack(?:s)?|booster\s+bundle(?:s)?|sleeved\s+booster(?:s)?|booster\s+sleeve(?:s)?|blister\s+pack(?:s)?)\b/i.test(value)) return 'boosterPacks';
+  return '';
+}
+
 function parseSmartLine(raw) {
   const line = raw.trim();
   if (!line) return null;
@@ -6335,7 +6352,19 @@ function parseSmartLine(raw) {
   let s = line;
   const result = { _raw: line, name: '', type: 'raw', language: 'EN', condition: 'Near Mint',
     qty: 1, listPrice: 0, costPrice: '', marketPrice: '', set: '', notes: '',
-    status: 'Available', grader: '', grade: '', certNo: '', rank: '', dateListed: '' };
+    status: 'Available', grader: '', grade: '', certNo: '', rank: '',
+    dateListed: '', datePurchased: '', date: '', targetTable: 'singles' };
+
+  // Notes are optional and deliberately removed before any classifier runs.
+  // A note mentioning "booster pack" must not turn a card into a sealed
+  // product, and a note containing a cert-like token must not turn it into a
+  // slab. The remainder of the parser can therefore classify the product
+  // text only.
+  const notesM = s.match(/\b(?:note|notes|remark|remarks)\s*[:=]\s*(.+)$/i);
+  if (notesM) {
+    result.notes = notesM[1].trim();
+    s = s.slice(0, notesM.index).trim();
+  }
 
   // ── Detect SLAB ──────────────────────────────────────────────
   // Require grade to be immediately adjacent to the grader (e.g. "PSA 9", "TAG 10")
@@ -6345,6 +6374,7 @@ function parseSmartLine(raw) {
 
   if (slabM) {
     result.type   = 'slab';
+    result.targetTable = 'slabs';
     result.grader = slabM[1].toUpperCase();
     result.grade  = slabM[2];
     s = s.replace(slabM[0], '').trim();
@@ -6361,20 +6391,62 @@ function parseSmartLine(raw) {
       }
     }
   } else {
-    // Grader present but no adjacent grade - still flag as slab, grade unknown
+    // Keep the established bare-grader fallback, except when the same line
+    // clearly names a sealed product such as "TAG Team Booster Box".
     const graderOnlyRx = /\b(TAG|PSA|CGC|ACE|BGS)\b/i;
     const graderOnlyM  = s.match(graderOnlyRx);
-    if (graderOnlyM) {
+    const slabMarkerRx = /\b(?:cert(?:ificate)?|rank|graded?|slab|pristine)\b|(?:^|\s)#?[A-Z]?\d{6,12}(?=\s|$)/i;
+    const sealedProductHint = _quickEntrySealedTable(s);
+    if (graderOnlyM && (!sealedProductHint || slabMarkerRx.test(s.replace(graderOnlyRx, ' ')))) {
       result.type   = 'slab';
+      result.targetTable = 'slabs';
       result.grader = graderOnlyM[1].toUpperCase();
       s = s.replace(graderOnlyRx, '').trim();
     }
   }
 
-  // ── Detect SEALED (singles only) ─────────────────────────────
-  if (result.type !== 'slab' && /\bsealed\b/i.test(s)) {
+  // ── Detect SEALED products and sealed singles ────────────────────────
+  // Product keywords are retained in the name. They identify the inventory
+  // table, so stripping them would turn a useful product name into a vague
+  // card name. The standalone "sealed" marker keeps its legacy behaviour for
+  // sealed singles and is removed from the saved name.
+  const sealedTable = result.type === 'slab' ? '' : _quickEntrySealedTable(s);
+  if (result.type !== 'slab' && sealedTable) {
+    result.type = 'sealed';
+    result.targetTable = sealedTable;
+    s = s.replace(/\bsealed\b/gi, '').trim();
+  } else if (result.type !== 'slab' && /\bsealed\b/i.test(s)) {
     result.type = 'sealed';
     s = s.replace(/\bsealed\b/gi, '').trim();
+  }
+
+  // ── Date ──────────────────────────────────────────────────────────────
+  // Accept the formats used by the existing date inputs and imports. A
+  // marker such as "date 2026-09-17" is preferred, then a bare date token.
+  // Invalid marked dates stop the write rather than becoming part of a name.
+  const datePart = '(?:\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4}|\\d{1,2}\\s+[A-Za-z]{3,9}\\s+\\d{4})';
+  const markedDateRx = new RegExp('\\b(?:date|dated|listed|purchased|acquired)\\s*(?:[:=]\\s*|\\s+)(' + datePart + ')\\b', 'i');
+  const bareDateRx = new RegExp('(?:^|\\s)(' + datePart + ')(?=\\s|$)', 'i');
+  let dateM = s.match(markedDateRx);
+  if (!dateM) dateM = s.match(bareDateRx);
+  if (dateM) {
+    const rawDate = dateM[1];
+    const canonicalDate = typeof toDateMmmYyyy === 'function' ? toDateMmmYyyy(rawDate) : rawDate;
+    const validDate = typeof dateToMs === 'function' && Number.isFinite(dateToMs(canonicalDate));
+    if (!validDate) {
+      result._error = 'Invalid date';
+    } else {
+      result.dateListed = canonicalDate;
+      result.datePurchased = canonicalDate;
+      result.date = canonicalDate;
+    }
+    s = s.replace(dateM[0], ' ').replace(/\s{2,}/g, ' ').trim();
+  }
+  if (!result.dateListed) {
+    const today = _quickEntryToday();
+    result.dateListed = today;
+    result.datePurchased = today;
+    result.date = today;
   }
 
   // ── Cert number - three patterns, tried in order ─────────────
@@ -6470,7 +6542,12 @@ function parseSmartLine(raw) {
 
   // ── Set code  sv3 / s12a / swsh / xy etc ─────────────────────
   const setM = s.match(/\b(sv\d+[a-z]?|s\d+[a-z]?|swsh\d*|xy\d*|sm\d*|bw\d*|dp\d*|promo)\b/i);
-  if (setM) { result.set = setM[1]; s = s.replace(setM[0], '').trim(); }
+  // Keep product identifiers in sealed names. A set code is a useful part of
+  // "SV8 Booster Box", while raw singles retain the historical set field.
+  if (setM) {
+    result.set = setM[1];
+    if (result.targetTable === 'singles') s = s.replace(setM[0], '').trim();
+  }
 
   // ── Clean up leftover punctuation ────────────────────────────
   s = s.replace(/\s{2,}/g, ' ').replace(/^[\s\-–,]+|[\s\-–,]+$/g, '').trim();
@@ -6666,21 +6743,28 @@ function cmdAddPreview() {
     el.innerHTML = '<div class="cmd-empty">Could not parse - try: <em>Charizard ex 223 EN $108 cost $80</em></div>';
     return;
   }
-  const typeLabel = parsed.type === 'slab' ? 'SLAB' : parsed.type === 'sealed' ? 'SEALED' : 'RAW';
-  const typeCls   = parsed.type === 'slab' ? 'b-slab' : parsed.type === 'sealed' ? 'b-sealed' : 'b-raw';
+  const targetTable = parsed.targetTable || (parsed.type === 'slab' ? 'slabs' : 'singles');
+  const targetLabels = { singles:'Singles', slabs:'Slabs', etbs:'ETBs', boosterBoxes:'Booster Boxes', boosterPacks:'Booster Packs' };
+  const typeLabel = targetTable === 'slabs' ? 'SLAB' : targetTable === 'etbs' ? 'ETB' :
+    targetTable === 'boosterBoxes' ? 'BOOSTER BOX' : targetTable === 'boosterPacks' ? 'BOOSTER PACK' :
+    parsed.type === 'sealed' ? 'SEALED' : 'RAW';
+  const typeCls   = targetTable === 'slabs' ? 'b-slab' : parsed.type === 'sealed' ? 'b-sealed' : 'b-raw';
   let meta = [];
-  if (parsed.type === 'slab') {
+  if (targetTable === 'slabs') {
     meta.push(parsed.grader + ' ' + parsed.grade);
+    meta.push(parsed.language);
     if (parsed.certNo) meta.push('#' + parsed.certNo);
     if (parsed.rank) meta.push(parsed.rank);
   } else {
-    meta.push(parsed.language, parsed.condition);
+    meta.push(parsed.language);
+    if (targetTable === 'singles') meta.push(parsed.condition);
     if (parsed.qty > 1) meta.push('Qty ' + parsed.qty);
   }
+  meta.push('Date: ' + parsed.dateListed);
   if (parsed.listPrice) meta.push('S$' + parsed.listPrice);
   if (parsed.costPrice !== '') meta.push('Cost S$' + parsed.costPrice);
   el.innerHTML =
-    '<div class="cmd-section-label">Will be added to ' + (parsed.type === 'slab' ? 'Slabs' : 'Singles') + '</div>' +
+    '<div class="cmd-section-label">Will be added to ' + (targetLabels[targetTable] || 'Singles') + '</div>' +
     '<div class="cmd-result selected">' +
       '<div class="cmd-result-icon" style="background:var(--bg3)">📋</div>' +
       '<div class="cmd-result-main">' +
@@ -6692,7 +6776,7 @@ function cmdAddPreview() {
     '<div class="cmd-hint" style="border-top:none;padding-top:4px"><span style="color:var(--accent)">↵ Enter to save</span></div>';
 }
 
-function cmdAddKey(e) {
+async function cmdAddKey(e) {
   if (e.key === 'Enter') {
     e.preventDefault();
     const val = document.getElementById('cmd-add-input').value.trim();
@@ -6700,45 +6784,86 @@ function cmdAddKey(e) {
     const parsed = parseSmartLine(val);
     if (!parsed || parsed._error) { toast('Could not parse - check format'); return; }
     snapshotForUndo();
-    if (parsed.type === 'slab') {
+    const targetTable = parsed.targetTable || (parsed.type === 'slab' ? 'slabs' : 'singles');
+    const addedRecords = [];
+    const addRecord = (table, item) => {
+      DB[table] = DB[table] || [];
+      DB[table].push(item);
+      markDirty(table, item.id);
+      if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded(table, item.id);
+      addedRecords.push({ table, item });
+    };
+
+    if (targetTable === 'slabs') {
       const newId = genId('sl');
-      const slabItem = { id: newId, name: parsed.name, type: 'slab',
+      const slabItem = normalizeRecord('slabs', { id: newId, name: parsed.name, type: 'slab',
         grader: parsed.grader, grade: parsed.grade, certNo: parsed.certNo, rank: parsed.rank,
+        language: parsed.language,
         listPrice: parsed.listPrice, costPrice: parsed.costPrice, marketPrice: parsed.marketPrice,
-        dateListed: parsed.dateListed, status: 'Available', notes: parsed.notes, priceHistory: [] };
-      DB.slabs.push(slabItem);
-      markDirty('slabs', newId);
-      if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('slabs', newId);
-      saveData(); renderSlabs();
-      clLog('add', 'slabs', parsed.name, _clSummary('slabs', slabItem) + ' · via Quick Entry');
-      toast('Slab added: ' + parsed.name);
+        dateListed: parsed.dateListed, status: 'Available', notes: parsed.notes, priceHistory: [] });
+      addRecord('slabs', slabItem);
+      renderSlabs();
+    } else if (targetTable === 'etbs') {
+      const qty = Math.max(1, parseInt(parsed.qty)||1);
+      for (let q = 0; q < qty; q++) {
+        addRecord('etbs', normalizeRecord('etbs', {
+          id: genId('etb'), product: parsed.name, status: 'In Stock',
+          totalPrice: parsed.costPrice, marketPrice: parsed.marketPrice,
+          condition: 'Mint', language: parsed.language, date: parsed.date, notes: parsed.notes,
+        }));
+      }
+      renderEtbs();
+    } else if (targetTable === 'boosterBoxes' || targetTable === 'boosterPacks') {
+      const qty = Math.max(1, parseInt(parsed.qty)||1);
+      const unitPrice = parsed.costPrice === '' ? '' : parsed.costPrice;
+      const totalPrice = unitPrice === '' ? '' : unitPrice * qty;
+      addRecord(targetTable, normalizeRecord(targetTable, {
+        id: genId(targetTable === 'boosterBoxes' ? 'bb' : 'bp'), product: parsed.name,
+        status: targetTable === 'boosterBoxes' ? 'Unopened Stock' : 'Sealed', qty,
+        unitPrice, totalPrice, marketPrice: parsed.marketPrice, language: parsed.language,
+        date: parsed.date, notes: parsed.notes,
+      }));
+      if (targetTable === 'boosterBoxes') renderBoosterBoxes();
+      else if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
     } else {
       const qty = Math.max(1, parseInt(parsed.qty)||1);
-      const addedIds = [];
       for (let q = 0; q < qty; q++) {
         const newId = genId('s');
         const singleItem = normalizeRecord('singles', { id: newId, name: parsed.name, set: parsed.set, language: parsed.language,
           type: parsed.type === 'sealed' ? 'sealed' : 'raw', condition: parsed.condition, qty: 1,
           listPrice: parsed.listPrice, costPrice: parsed.costPrice, marketPrice: parsed.marketPrice,
-          status: 'Available', notes: parsed.notes, priceHistory: [] });
-        DB.singles.push(singleItem);
-        markDirty('singles', newId);
-        if (typeof _pinRecentlyAdded === 'function') _pinRecentlyAdded('singles', newId);
-        addedIds.push(newId);
+          status: 'Available', notes: parsed.notes, datePurchased: parsed.datePurchased, priceHistory: [] });
+        addRecord('singles', singleItem);
       }
-      // Log against a representative item - qty=N rows share the same
-      // fields, so one summary suffices; we tag the count for traceability.
-      const representativeSingle = DB.singles.find(i => i.id === addedIds[0]);
-      saveData(); renderSingles();
-      clLog('add', 'singles', parsed.name,
-        _clSummary('singles', representativeSingle) +
-        (qty > 1 ? ' · ×' + qty + ' rows (ids: ' + addedIds.slice(0,3).join(', ') + (qty > 3 ? '…' : '') + ')' : '') +
-        ' · via Quick Entry');
-      toast('Single added' + (qty > 1 ? ' ×' + qty + ' rows' : '') + ': ' + parsed.name);
+      renderSingles();
     }
+    // Keep local persistence immediate and consume the submitted line before
+    // the first await. A second Enter must therefore see an empty field, and
+    // a new draft typed while cloud sync is pending must remain untouched.
+    saveData();
+    if (targetTable === 'singles') {
+      const representative = addedRecords[0].item;
+      const qty = addedRecords.length;
+      clLog('add', 'singles', representative.name,
+        _clSummary('singles', representative) +
+        (qty > 1 ? ' · ×' + qty + ' rows (ids: ' + addedRecords.slice(0,3).map(r => r.item.id).join(', ') + (qty > 3 ? '…' : '') + ')' : '') +
+        ' · via Quick Entry');
+    } else {
+      addedRecords.forEach(({ table, item }) => {
+        clLog('add', table, item.product || item.name, _clSummary(table, item) + ' · via Quick Entry');
+      });
+    }
+    const primary = addedRecords[0];
+    const label = primary.table === 'slabs' ? 'Slab' : primary.table === 'etbs' ? 'ETB' :
+      primary.table === 'boosterBoxes' ? 'Booster box' : primary.table === 'boosterPacks' ? 'Booster pack' : 'Single';
+    const count = primary.table === 'boosterBoxes' || primary.table === 'boosterPacks'
+      ? ((primary.item.qty || 1) > 1 ? ' ×' + primary.item.qty : '')
+      : (addedRecords.length > 1 ? ' ×' + addedRecords.length + ' rows' : '');
+    toast(label + ' added' + count + ': ' + (primary.item.product || primary.item.name));
     document.getElementById('cmd-add-input').value = '';
     document.getElementById('cmd-add-preview').innerHTML = '';
     document.getElementById('cmd-add-input').focus();
+    await saveAllToSupabase();
   }
 }
 

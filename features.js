@@ -1123,15 +1123,25 @@ function _kjrDateToIso(val){
 function kjrDetectTargetTable(productStr){
   const s = String(productStr || '').trim();
   if (!s) return '';
-  // Sealed product keywords win over single-card detection. Order matters:
-  // "booster pack" must beat "pack" inside "package", etc.
-  if (/\betb\b|elite\s*trainer\s*box/i.test(s)) return 'etbs';
-  if (/\bbooster\s*box\b/i.test(s))             return 'boosterBoxes';
-  if (/\bbooster\s*pack\b/i.test(s))            return 'boosterPacks';
+
+  // Use the same parser as Quick Entry first. This keeps notes and explicit
+  // slab markers out of the sealed-product classifier, while preserving a
+  // graded slab when its name happens to contain a sealed-product phrase.
   if (typeof parseSmartLine === 'function') {
     const parsed = parseSmartLine(s);
     if (parsed && parsed.type === 'slab') return 'slabs';
+    if (parsed && parsed.targetTable) return parsed.targetTable;
   }
+  // Fallback for any caller that loads this helper before app.js. The product
+  // phrases are intentionally specific so ordinary card names containing
+  // "pack" do not get routed into Booster Packs.
+  if (typeof _quickEntrySealedTable === 'function') {
+    const sealedTable = _quickEntrySealedTable(s);
+    if (sealedTable) return sealedTable;
+  }
+  if (/\betb(?:s)?\b|\belite\s+trainer\s+box(?:es)?\b/i.test(s)) return 'etbs';
+  if (/\bbooster\s+box(?:es)?\b/i.test(s)) return 'boosterBoxes';
+  if (/\b(?:booster\s+pack(?:s)?|booster\s+bundle(?:s)?|sleeved\s+booster(?:s)?|booster\s+sleeve(?:s)?|blister\s+pack(?:s)?)\b/i.test(s)) return 'boosterPacks';
   return 'singles';
 }
 

@@ -9368,7 +9368,7 @@ function showPage(name) {
   if (name === 'boosterBoxes' && typeof renderBoosterBoxes === 'function')  renderBoosterBoxes();
   if (name === 'boosterPacks' && typeof renderBoosterPacks === 'function')  renderBoosterPacks();
   if (name === 'ebay'         && typeof renderEbayPurchases === 'function') renderEbayPurchases();
-  if (name === 'listing') populateListingSelect();
+  if (name === 'listing') { populateListingSelect(); renderListingTracker(); }
   if (name === 'changelog') renderChangelog();
   if (name === 'trash') { renderTrash(); purgeExpiredTrash(); }
   syncMoreActive(name);
@@ -11065,6 +11065,16 @@ function _preserveModalEditStamp(norm, context) {
   if (context.updatedAt) norm._updatedAt = context.updatedAt;
 }
 
+// Singles and slabs are full-row modal replacements. Keep the listing tracker
+// extension byte-for-byte through those older forms, including malformed data
+// that the tracker must hold for an explicit repair. The modal context and
+// fresh cache merge guard reject a concurrent metadata edit before this copy is
+// used, so a notes-only stock edit cannot restore an old listing snapshot.
+function _preserveModalListingMeta(norm, existing) {
+  if (!existing || !Object.prototype.hasOwnProperty.call(existing, 'listingMeta')) return;
+  norm.listingMeta = _kjrListingClone(existing.listingMeta);
+}
+
 function openAddSingle() {
   _modalEditContexts.singles = null;
   document.getElementById('ms-id').value = '';
@@ -11200,6 +11210,7 @@ function _saveSingleNow(id) {
       norm.priceHistory = DB.singles[editIndex].priceHistory||[];
       kjrPreserveCreatedMetadata(norm, DB.singles[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.singles);
+      _preserveModalListingMeta(norm, DB.singles[editIndex]);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
       // confirm name (it'll re-populate on the next successful fetch), and
@@ -11568,6 +11579,7 @@ function _saveSlabNow(id) {
       norm.priceHistory = DB.slabs[editIndex].priceHistory||[];
       kjrPreserveCreatedMetadata(norm, DB.slabs[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.slabs);
+      _preserveModalListingMeta(norm, DB.slabs[editIndex]);
       // Same confirm-name carry-over rule as saveSingle.
       if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
     }
@@ -13094,7 +13106,879 @@ function normaliseToMonthYear(raw) {
   return null;
 }
 
-// =========== LISTING GENERATOR ===========
+// =========== LISTING WORKSPACE ===========
+// Listing metadata stays on the existing Singles/Slabs row. This keeps the
+// physical inventory table authoritative while giving the Carousell workflow
+// a small, versioned text-only record that can travel in a visible handoff.
+const KJR_LISTING_META_SCHEMA = 1;
+const KJR_LISTING_PHOTO_STATUSES = ['unknown','missing','incomplete','ready','needs_review'];
+const KJR_LISTING_URGENCY = ['normal','soon','clearance'];
+const KJR_LISTING_STATUSES = ['unknown','not_listed','draft','listed','reserved','sold','removed'];
+const KJR_LISTING_SOURCE_STATUS = ['','reported','reviewed','verified'];
+let _kjrListingEditorContext = null;
+let _kjrListingSelected = new Set();
+let _kjrListingImportState = null;
+
+function _kjrListingClone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+function _kjrListingString(value, max) {
+  const text = value === null || value === undefined ? '' : String(value).trim();
+  return max && text.length > max ? text.slice(0, max) : text;
+}
+function _kjrListingPositive(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isFinite(n) || n <= 0 || n > 10000000) return null;
+  const rounded = Math.round(n * 100) / 100;
+  return rounded > 0 ? rounded : null;
+}
+function _kjrListingNullablePrice(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return _kjrListingPositive(value);
+}
+function _kjrListingStable(value) {
+  if (Array.isArray(value)) return '[' + value.map(_kjrListingStable).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + _kjrListingStable(value[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+function kjrListingRowFingerprint(row) {
+  return _kjrListingStable({ id: row && row.id ? String(row.id) : '', data: _stripInternalData(row || {}) });
+}
+function _kjrListingDefaultMeta() {
+  return {
+    schemaVersion: KJR_LISTING_META_SCHEMA,
+    photo: { status: 'unknown', folderRef: '', front: '', back: '', extras: [], photoItemId: '' },
+    copyTag: '',
+    draft: { title: '', description: '' },
+    urgency: 'normal',
+    proposedAsk: null,
+    approvedAsk: null,
+    priceEvidence: { ref: '', basis: '', observedAt: '', sourceStatus: '' },
+    holdReason: '',
+    listingStatus: 'unknown',
+    history: []
+  };
+}
+function _kjrListingObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(label + ' must be an object');
+  return value;
+}
+function _kjrListingAllowedKeys(value, allowed, label) {
+  _kjrListingObject(value, label);
+  const unknown = Object.keys(value).filter(k => !allowed.includes(k));
+  if (unknown.length) throw new Error(label + ' has unsupported field: ' + unknown[0]);
+}
+function _kjrListingSafePhotoRef(value, label, required) {
+  if (value !== null && value !== undefined && value !== '' && typeof value !== 'string') throw new Error(label + ' must be text');
+  const text = value === null || value === undefined ? '' : String(value).trim();
+  if (!text) {
+    if (required) throw new Error(label + ' is required');
+    return '';
+  }
+  if (text.length > 240 || /[\\\0]/.test(text) || /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|~|[A-Za-z]:[\\/])/i.test(text)) {
+    throw new Error(label + ' must be a relative photo reference');
+  }
+  let decoded = text;
+  for (let pass = 0; pass < 2; pass++) {
+    try { decoded = decodeURIComponent(decoded); } catch (_) { break; }
+  }
+  if (/[\\\0]/.test(decoded) || /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|~|[A-Za-z]:[\\/])/i.test(decoded) ||
+      /%(?:2e|2f|5c)/i.test(text) || /%25(?:2e|2f|5c)/i.test(text) ||
+      /%(?:2e|2f|5c)/i.test(decoded) || /(?:^|\/)(?:\.{1,2})(?:\/|$)/.test(decoded)) {
+    throw new Error(label + ' cannot contain traversal');
+  }
+  return text;
+}
+function kjrListingIsCarousellUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+      ['carousell.sg','www.carousell.sg'].includes(url.hostname.toLowerCase()) && /^\/p\//.test(url.pathname);
+  } catch (_) { return false; }
+}
+function _kjrListingNormaliseHistoryEntry(entry, imported) {
+  const raw = entry;
+  _kjrListingAllowedKeys(raw, ['url','price','photoRefs','description','observedAt','basis','listingStatus','verification'], 'history entry');
+  const photoRefs = raw.photoRefs || {};
+  _kjrListingAllowedKeys(photoRefs, ['folderRef','front','back','extras'], 'history photoRefs');
+  if (raw.listingStatus !== undefined && !KJR_LISTING_STATUSES.includes(raw.listingStatus)) throw new Error('invalid history listing status');
+  if (raw.verification !== undefined && !KJR_LISTING_SOURCE_STATUS.includes(raw.verification)) throw new Error('invalid history verification');
+  if (photoRefs.extras !== undefined && !Array.isArray(photoRefs.extras)) throw new Error('history extras must be an array');
+  const out = {
+    url: _kjrListingString(raw.url, 500),
+    price: _kjrListingNullablePrice(raw.price),
+    photoRefs: {
+      folderRef: _kjrListingSafePhotoRef(photoRefs.folderRef, 'history folderRef'),
+      front: _kjrListingSafePhotoRef(photoRefs.front, 'history front'),
+      back: _kjrListingSafePhotoRef(photoRefs.back, 'history back'),
+      extras: Array.isArray(photoRefs.extras) ? photoRefs.extras.map((v, i) => _kjrListingSafePhotoRef(v, 'history extra ' + (i + 1), false)) : []
+    },
+    description: _kjrListingString(raw.description, 10000),
+    observedAt: _kjrListingString(raw.observedAt, 80),
+    basis: _kjrListingString(raw.basis, 500),
+    listingStatus: KJR_LISTING_STATUSES.includes(raw.listingStatus) ? raw.listingStatus : 'unknown',
+    verification: imported ? 'reported' : (KJR_LISTING_SOURCE_STATUS.includes(raw.verification) ? raw.verification : 'reported')
+  };
+  if (out.url && !kjrListingIsCarousellUrl(out.url)) throw new Error('history URL must be a Carousell Singapore listing URL');
+  if (raw.price !== null && raw.price !== undefined && raw.price !== '' && out.price === null) throw new Error('history price must be finite and positive');
+  return out;
+}
+function kjrListingNormalise(raw, options) {
+  const imported = !!(options && options.imported);
+  const base = _kjrListingDefaultMeta();
+  if (!raw) return base;
+  const value = _kjrListingClone(raw);
+  const photo = value.photo || {};
+  const draft = value.draft || {};
+  const evidence = value.priceEvidence || {};
+  base.schemaVersion = KJR_LISTING_META_SCHEMA;
+  base.photo = {
+    status: KJR_LISTING_PHOTO_STATUSES.includes(photo.status) ? photo.status : 'unknown',
+    folderRef: _kjrListingSafePhotoRef(photo.folderRef, 'photo folderRef'),
+    front: _kjrListingSafePhotoRef(photo.front, 'photo front'),
+    back: _kjrListingSafePhotoRef(photo.back, 'photo back'),
+    extras: Array.isArray(photo.extras) ? photo.extras.map((v, i) => _kjrListingSafePhotoRef(v, 'photo extra ' + (i + 1), false)) : [],
+    photoItemId: _kjrListingString(photo.photoItemId, 120)
+  };
+  base.copyTag = _kjrListingString(value.copyTag, 120);
+  base.draft = { title: _kjrListingString(draft.title, 500), description: _kjrListingString(draft.description, 10000) };
+  base.urgency = KJR_LISTING_URGENCY.includes(value.urgency) ? value.urgency : 'normal';
+  base.proposedAsk = _kjrListingNullablePrice(value.proposedAsk);
+  base.approvedAsk = _kjrListingNullablePrice(value.approvedAsk);
+  base.priceEvidence = {
+    ref: _kjrListingString(evidence.ref, 500),
+    basis: _kjrListingString(evidence.basis, 500),
+    observedAt: _kjrListingString(evidence.observedAt, 80),
+    sourceStatus: imported ? (evidence.ref || evidence.basis ? 'reported' : '') : (KJR_LISTING_SOURCE_STATUS.includes(evidence.sourceStatus) ? evidence.sourceStatus : '')
+  };
+  base.holdReason = _kjrListingString(value.holdReason, 800);
+  base.listingStatus = KJR_LISTING_STATUSES.includes(value.listingStatus) ? value.listingStatus : 'unknown';
+  const rawHistory = Array.isArray(value.history) ? value.history : (Array.isArray(value.published) ? value.published : []);
+  base.history = rawHistory.map(entry => _kjrListingNormaliseHistoryEntry(entry, imported));
+  if (base.approvedAsk !== null && base.proposedAsk === null) base.proposedAsk = base.approvedAsk;
+  return base;
+}
+function kjrListingValidateMeta(raw, options) {
+  try {
+    if (raw === null || raw === undefined) return { ok: true, value: _kjrListingDefaultMeta(), errors: [] };
+    _kjrListingObject(raw, 'listingMeta');
+    _kjrListingAllowedKeys(raw, ['schemaVersion','photo','copyTag','draft','urgency','proposedAsk','approvedAsk','priceEvidence','holdReason','listingStatus','history','published'], 'listingMeta');
+    if (raw.schemaVersion !== undefined && raw.schemaVersion !== KJR_LISTING_META_SCHEMA) throw new Error('unsupported listingMeta schema');
+    if (raw.photo !== undefined) _kjrListingAllowedKeys(raw.photo, ['status','folderRef','front','back','extras','photoItemId'], 'photo');
+    if (raw.draft !== undefined) _kjrListingAllowedKeys(raw.draft, ['title','description'], 'draft');
+    if (raw.priceEvidence !== undefined) _kjrListingAllowedKeys(raw.priceEvidence, ['ref','basis','observedAt','sourceStatus'], 'priceEvidence');
+    if (raw.history !== undefined && !Array.isArray(raw.history)) throw new Error('history must be an array');
+    if (raw.published !== undefined && !Array.isArray(raw.published)) throw new Error('published must be an array');
+    if (raw.photo && raw.photo.extras !== undefined && !Array.isArray(raw.photo.extras)) throw new Error('photo extras must be an array');
+    if (raw.photo && raw.photo.status !== undefined && !KJR_LISTING_PHOTO_STATUSES.includes(raw.photo.status)) throw new Error('invalid photo status');
+    if (raw.urgency !== undefined && !KJR_LISTING_URGENCY.includes(raw.urgency)) throw new Error('invalid urgency');
+    if (raw.listingStatus !== undefined && !KJR_LISTING_STATUSES.includes(raw.listingStatus)) throw new Error('invalid listing status');
+    if (raw.priceEvidence && raw.priceEvidence.sourceStatus !== undefined && !KJR_LISTING_SOURCE_STATUS.includes(raw.priceEvidence.sourceStatus)) throw new Error('invalid evidence status');
+    if (raw.proposedAsk !== undefined && raw.proposedAsk !== null && raw.proposedAsk !== '' && _kjrListingPositive(raw.proposedAsk) === null) throw new Error('proposed ask must be finite and positive');
+    if (raw.approvedAsk !== undefined && raw.approvedAsk !== null && raw.approvedAsk !== '' && _kjrListingPositive(raw.approvedAsk) === null) throw new Error('approved ask must be finite and positive');
+    return { ok: true, value: kjrListingNormalise(raw, options), errors: [] };
+  } catch (error) {
+    return { ok: false, value: null, errors: [error && error.message ? error.message : 'Invalid listing metadata'] };
+  }
+}
+const KJR_LISTING_META_IMPORT_KEYS = ['schemaVersion','photo','copyTag','draft','urgency','proposedAsk','approvedAsk','priceEvidence','holdReason','listingStatus','history'];
+const KJR_LISTING_PHOTO_IMPORT_KEYS = ['status','folderRef','front','back','extras','photoItemId'];
+const KJR_LISTING_DRAFT_IMPORT_KEYS = ['title','description'];
+const KJR_LISTING_EVIDENCE_IMPORT_KEYS = ['ref','basis','observedAt','sourceStatus'];
+const KJR_LISTING_HISTORY_IMPORT_KEYS = ['url','price','photoRefs','description','observedAt','basis','listingStatus','verification'];
+const KJR_LISTING_HISTORY_PHOTO_IMPORT_KEYS = ['folderRef','front','back','extras'];
+function _kjrListingRequireKeys(value, keys, label) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) throw new Error(label + ' is missing ' + key);
+  }
+}
+function _kjrListingValidateFullImportMeta(raw, label) {
+  const name = label || 'listingMeta';
+  _kjrListingObject(raw, name);
+  _kjrListingAllowedKeys(raw, KJR_LISTING_META_IMPORT_KEYS, name);
+  _kjrListingRequireKeys(raw, KJR_LISTING_META_IMPORT_KEYS, name);
+  _kjrListingAllowedKeys(raw.photo, KJR_LISTING_PHOTO_IMPORT_KEYS, name + '.photo');
+  _kjrListingRequireKeys(raw.photo, KJR_LISTING_PHOTO_IMPORT_KEYS, name + '.photo');
+  _kjrListingAllowedKeys(raw.draft, KJR_LISTING_DRAFT_IMPORT_KEYS, name + '.draft');
+  _kjrListingRequireKeys(raw.draft, KJR_LISTING_DRAFT_IMPORT_KEYS, name + '.draft');
+  _kjrListingAllowedKeys(raw.priceEvidence, KJR_LISTING_EVIDENCE_IMPORT_KEYS, name + '.priceEvidence');
+  _kjrListingRequireKeys(raw.priceEvidence, KJR_LISTING_EVIDENCE_IMPORT_KEYS, name + '.priceEvidence');
+  if (!Array.isArray(raw.history)) throw new Error(name + '.history must be an array');
+  raw.history.forEach((entry, index) => {
+    _kjrListingObject(entry, name + '.history[' + index + ']');
+    _kjrListingAllowedKeys(entry, KJR_LISTING_HISTORY_IMPORT_KEYS, name + '.history[' + index + ']');
+    _kjrListingRequireKeys(entry, KJR_LISTING_HISTORY_IMPORT_KEYS, name + '.history[' + index + ']');
+    _kjrListingAllowedKeys(entry.photoRefs, KJR_LISTING_HISTORY_PHOTO_IMPORT_KEYS, name + '.history[' + index + '].photoRefs');
+    _kjrListingRequireKeys(entry.photoRefs, KJR_LISTING_HISTORY_PHOTO_IMPORT_KEYS, name + '.history[' + index + '].photoRefs');
+  });
+  const checked = kjrListingValidateMeta(raw, { imported: true });
+  if (!checked.ok) throw new Error(checked.errors.join(', '));
+  return checked.value;
+}
+function kjrListingReadiness(row, meta, table) {
+  const value = meta || _kjrListingDefaultMeta();
+  const blockers = [];
+  const qtyRaw = row && row.qty;
+  const qty = table === 'slabs' && (qtyRaw === undefined || qtyRaw === null || qtyRaw === '') ? 1 : Number(qtyRaw);
+  if (!Number.isInteger(qty) || qty < 1) blockers.push('qty unknown or invalid');
+  else if (qty > 1) blockers.push('qty > 1 needs one-copy identity');
+  const inventoryStatus = _kjrListingString(row && row.status, 80);
+  if (!inventoryStatus) blockers.push('inventory status unknown');
+  else if (!/^(available|in stock|in-stock)$/i.test(inventoryStatus)) blockers.push('inventory status ' + inventoryStatus);
+  if (table === 'slabs' ? !_kjrListingString(row && row.certNo, 120) : !_kjrListingString(value.copyTag, 120)) blockers.push(table === 'slabs' ? 'cert required' : 'copy tag required');
+  if (value.photo.status !== 'ready') blockers.push('photos ' + value.photo.status);
+  if (!value.photo.front || !value.photo.back) blockers.push('front and back photos required');
+  if (value.photo.front && value.photo.back && value.photo.front === value.photo.back) blockers.push('front and back must be different');
+  if (value.approvedAsk === null) blockers.push('approved ask required');
+  if (value.holdReason) blockers.push('hold: ' + value.holdReason);
+  if (['reserved','sold','removed'].includes(value.listingStatus)) blockers.push('listing status ' + value.listingStatus);
+  return { ready: blockers.length === 0, blockers };
+}
+function _kjrListingRows() {
+  return ['singles','slabs'].flatMap(table => (DB[table] || []).map(item => ({ table, item })));
+}
+function _kjrListingKey(table, id) { return String(table) + '::' + String(id); }
+function _kjrListingFind(table, id) { return (DB[table] || []).find(row => String(row.id) === String(id)); }
+function _kjrListingMetaState(row) {
+  const hasMeta = !!(row && Object.prototype.hasOwnProperty.call(row, 'listingMeta'));
+  if (!hasMeta || row.listingMeta === undefined) {
+    return { ok: true, missing: true, value: _kjrListingDefaultMeta(), raw: undefined, error: '' };
+  }
+  if (row.listingMeta === null) {
+    return { ok: false, missing: false, value: _kjrListingDefaultMeta(), raw: null, error: 'listingMeta is null' };
+  }
+  const checked = kjrListingValidateMeta(row.listingMeta);
+  return checked.ok
+    ? { ok: true, missing: false, value: checked.value, raw: _kjrListingClone(row.listingMeta), error: '' }
+    : { ok: false, missing: false, value: _kjrListingDefaultMeta(), raw: _kjrListingClone(row.listingMeta), error: checked.errors.join(', ') };
+}
+function _kjrListingEditorContextFor(table, row) {
+  return {
+    table,
+    id: String(row.id),
+    fingerprint: kjrListingRowFingerprint(row),
+    expectedVersion: Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0,
+    cacheSnapshot: _modalCacheSnapshot()
+  };
+}
+function _kjrListingRowMatchesContext(row, context, id) {
+  return !!row && !!context && context.id === String(id) &&
+    (Number.isSafeInteger(row._serverVersion) ? row._serverVersion === context.expectedVersion : context.expectedVersion === 0) &&
+    kjrListingRowFingerprint(row) === context.fingerprint;
+}
+function _kjrListingCachePayload(context, table, id, replacement) {
+  if (!context || !context.cacheSnapshot) return null;
+  const latest = _readModalCache();
+  if (!latest) return null;
+  const key = _dbKey(table);
+  const latestRow = latest[key].find(row => row && String(row.id) === String(id)) || null;
+  if (!latestRow || !_kjrListingRowMatchesContext(latestRow, context, id)) return null;
+  const current = {};
+  for (const cacheKey of _MODAL_CACHE_KEYS) current[cacheKey] = _cloneModalRows(DB[cacheKey]);
+  let replaced = false;
+  current[key] = current[key].map(row => {
+    if (row && String(row.id) === String(id)) { replaced = true; return _kjrListingClone(replacement); }
+    return row;
+  });
+  if (!replaced) current[key].push(_kjrListingClone(replacement));
+  const merged = {};
+  for (const cacheKey of _MODAL_CACHE_KEYS) {
+    const rows = _mergeModalRows(context.cacheSnapshot[cacheKey], current[cacheKey], latest[cacheKey]);
+    if (!rows) return null;
+    merged[cacheKey] = rows;
+  }
+  return merged;
+}
+function _kjrListingMetaFor(row) {
+  return _kjrListingMetaState(row).value;
+}
+function _kjrListingSetValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value === null || value === undefined ? '' : value;
+}
+function lstSyncSuggestedAsk(value, fromTracker) {
+  const target = fromTracker ? document.getElementById('lst-price') : document.getElementById('lst-proposed-ask');
+  if (target && target.value !== String(value === null || value === undefined ? '' : value)) target.value = value === null || value === undefined ? '' : value;
+}
+function _kjrListingCurrentItem() {
+  const value = document.getElementById('lst-item') && document.getElementById('lst-item').value;
+  if (!value) return null;
+  const split = value.indexOf(':');
+  if (split < 1) return null;
+  const table = value.slice(0, split), id = value.slice(split + 1);
+  const item = _kjrListingFind(table, id);
+  return item ? { table, id, item } : null;
+}
+function _kjrListingSetCurrentUrl(item) {
+  const wrap = document.getElementById('lst-current-url-wrap');
+  const link = document.getElementById('lst-current-url');
+  if (!wrap || !link) return;
+  const url = _kjrListingString(item && item.carousellUrl, 500);
+  if (!url) { wrap.style.display = 'none'; link.removeAttribute('href'); link.textContent = ''; return; }
+  wrap.style.display = '';
+  link.textContent = url;
+  if (kjrListingIsCarousellUrl(url)) { link.href = url; link.removeAttribute('aria-disabled'); }
+  else { link.removeAttribute('href'); link.setAttribute('aria-disabled', 'true'); }
+}
+function _kjrListingLoadEditor(table, item) {
+  if (!item) return;
+  const metaState = _kjrListingMetaState(item);
+  const meta = metaState.value;
+  _kjrListingEditorContext = _kjrListingEditorContextFor(table, item);
+  const details = document.getElementById('lst-record-editor');
+  if (details) { details.style.display = ''; details.open = true; }
+  const status = document.getElementById('lst-status');
+  if (status) status.textContent = metaState.ok ? '' : 'Metadata needs repair: ' + metaState.error;
+  const repair = document.getElementById('lst-repair-btn');
+  if (repair) repair.style.display = metaState.ok ? 'none' : '';
+  _kjrListingSetValue('lst-photo-status', meta.photo.status);
+  _kjrListingSetValue('lst-urgency', meta.urgency);
+  _kjrListingSetValue('lst-listing-status', meta.listingStatus);
+  _kjrListingSetValue('lst-copy-tag', meta.copyTag);
+  _kjrListingSetValue('lst-photo-folder', meta.photo.folderRef);
+  _kjrListingSetValue('lst-photo-item', meta.photo.photoItemId);
+  _kjrListingSetValue('lst-photo-front', meta.photo.front);
+  _kjrListingSetValue('lst-photo-back', meta.photo.back);
+  _kjrListingSetValue('lst-photo-extras', meta.photo.extras.join('\n'));
+  _kjrListingSetValue('lst-proposed-ask', meta.proposedAsk === null ? '' : meta.proposedAsk);
+  _kjrListingSetValue('lst-price', meta.proposedAsk === null ? '' : meta.proposedAsk);
+  _kjrListingSetValue('lst-approved-ask', meta.approvedAsk === null ? '' : meta.approvedAsk);
+  _kjrListingSetValue('lst-price-evidence', meta.priceEvidence.ref);
+  _kjrListingSetValue('lst-hold-reason', meta.holdReason);
+  _kjrListingSetValue('lst-current-price', _kjrListingPositive(item.listPrice) === null ? '' : 'S$' + Math.round(Number(item.listPrice)));
+  _kjrListingSetCurrentUrl(item);
+  _kjrListingSetValue('lst-history-url', '');
+  _kjrListingSetValue('lst-history-price', '');
+  _kjrListingSetValue('lst-history-date', '');
+  _kjrListingSetValue('lst-history-basis', '');
+  const historyStatus = document.getElementById('lst-history-status');
+  if (historyStatus) historyStatus.textContent = '';
+}
+function _kjrListingReadForm(existing) {
+  const next = _kjrListingClone(existing || _kjrListingDefaultMeta());
+  const extras = _kjrListingString(document.getElementById('lst-photo-extras')?.value, 1200)
+    .split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  const proposedField = document.getElementById('lst-proposed-ask');
+  const suggestedField = document.getElementById('lst-price');
+  // The tracker field is authoritative when present. Do not fall back with
+  // `||`, because an intentional clear or an invalid non-empty value must reach
+  // the validator instead of silently retaining the previous ask.
+  const proposedRaw = proposedField ? proposedField.value : (suggestedField ? suggestedField.value : '');
+  next.photo = {
+    status: document.getElementById('lst-photo-status')?.value || 'unknown',
+    folderRef: document.getElementById('lst-photo-folder')?.value || '',
+    front: document.getElementById('lst-photo-front')?.value || '',
+    back: document.getElementById('lst-photo-back')?.value || '',
+    extras,
+    photoItemId: document.getElementById('lst-photo-item')?.value || ''
+  };
+  next.copyTag = document.getElementById('lst-copy-tag')?.value || '';
+  next.urgency = document.getElementById('lst-urgency')?.value || 'normal';
+  next.listingStatus = document.getElementById('lst-listing-status')?.value || 'unknown';
+  next.proposedAsk = proposedRaw === '' ? null : proposedRaw;
+  const approvedRaw = document.getElementById('lst-approved-ask')?.value || '';
+  next.approvedAsk = approvedRaw === '' ? null : approvedRaw;
+  next.priceEvidence = {
+    ...(existing && existing.priceEvidence ? existing.priceEvidence : {}),
+    ref: document.getElementById('lst-price-evidence')?.value || '',
+    basis: existing && existing.priceEvidence ? existing.priceEvidence.basis || '' : '',
+    observedAt: existing && existing.priceEvidence ? existing.priceEvidence.observedAt || '' : '',
+    sourceStatus: existing && existing.priceEvidence ? existing.priceEvidence.sourceStatus || '' : ''
+  };
+  next.holdReason = document.getElementById('lst-hold-reason')?.value || '';
+  const titleField = document.getElementById('lst-title-box');
+  const descriptionField = document.getElementById('lst-desc-box');
+  next.draft = {
+    title: titleField ? titleField.value : (existing && existing.draft ? existing.draft.title : ''),
+    description: descriptionField ? descriptionField.value : (existing && existing.draft ? existing.draft.description : '')
+  };
+  return next;
+}
+function _kjrListingEditorStale(table, id) {
+  const ctx = _kjrListingEditorContext;
+  const row = _kjrListingFind(table, id);
+  if (!ctx || ctx.table !== table || ctx.id !== String(id) || !row) return false;
+  const latest = _readModalCache();
+  const key = _dbKey(table);
+  const latestRow = latest && Array.isArray(latest[key]) ? latest[key].find(candidate => candidate && String(candidate.id) === String(id)) : null;
+  if (!latest || !ctx.cacheSnapshot || !latestRow) {
+    toastError('This listing record could not be verified from the latest local copy. Try again after storage is available.');
+    return true;
+  }
+  if (!_kjrListingRowMatchesContext(latestRow, ctx, id) || !_kjrListingRowMatchesContext(row, ctx, id)) {
+    if (latestRow) _refreshModalRowFromCache(table, id, latestRow);
+    toastError('This listing record changed elsewhere. Reload it before saving.');
+    return true;
+  }
+  return false;
+}
+function _kjrListingCommitMeta(table, id, meta, after) {
+  const checked = kjrListingValidateMeta(meta);
+  if (!checked.ok) { toastError(checked.errors.join(', ')); return Promise.resolve(false); }
+  const run = () => {
+    let row = _kjrListingFind(table, id);
+    if (!row) { toastError('Listing item no longer exists'); return false; }
+    if (_kjrListingEditorStale(table, id)) return false;
+    const context = _kjrListingEditorContext && _kjrListingEditorContext.table === table && _kjrListingEditorContext.id === String(id)
+      ? _kjrListingEditorContext
+      : _kjrListingEditorContextFor(table, row);
+    const replacement = _kjrListingClone(row);
+    replacement.listingMeta = checked.value;
+    const cachePayload = _kjrListingCachePayload(context, table, id, replacement);
+    if (!cachePayload) {
+      toastError('This listing record changed elsewhere. Reload it before saving.');
+      return false;
+    }
+    const latestBefore = _readModalCache();
+    if (!latestBefore) {
+      toastError('This listing record could not be verified from the latest local copy. Try again after storage is available.');
+      return false;
+    }
+    _applyModalCachePayload(latestBefore);
+    const modalSaveState = _captureModalSaveState();
+    if (!modalSaveState) { toastError('This listing record could not be saved safely. Try again.'); return false; }
+    snapshotForUndo();
+    _applyModalCachePayload(cachePayload);
+    row = _kjrListingFind(table, id);
+    if (!row) { toastError('Listing item no longer exists'); return false; }
+    markDirty(table, row.id, row);
+    if (!saveData({ cachePayload })) {
+      _restoreModalSaveState(modalSaveState, cachePayload);
+      toastError('This listing record could not be saved locally. Free storage and try again.');
+      return false;
+    }
+    if (_kjrListingEditorContext && _kjrListingEditorContext.table === table && _kjrListingEditorContext.id === String(id)) {
+      _kjrListingEditorContext.fingerprint = kjrListingRowFingerprint(row);
+      _kjrListingEditorContext.expectedVersion = Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0;
+      _kjrListingEditorContext.cacheSnapshot = _cloneModalCache(cachePayload);
+    }
+    if (typeof after === 'function') after(row, checked.value);
+    renderListingTracker();
+    return true;
+  };
+  return _runModalEditSave(table, id, run);
+}
+function lstSaveTrackerRecord() {
+  const selected = _kjrListingCurrentItem();
+  if (!selected) { toastError('Select a single or slab first'); return; }
+  const existingState = _kjrListingMetaState(selected.item);
+  if (!existingState.ok) {
+    const status = document.getElementById('lst-status');
+    if (status) status.textContent = 'Repair invalid listing metadata before saving: ' + existingState.error;
+    return;
+  }
+  const existing = existingState.value;
+  const next = _kjrListingReadForm(existing);
+  const status = document.getElementById('lst-status');
+  const result = _kjrListingCommitMeta(selected.table, selected.id, next, (row, saved) => {
+    _kjrListingSetValue('lst-price', saved.proposedAsk === null ? '' : saved.proposedAsk);
+    _kjrListingSetValue('lst-proposed-ask', saved.proposedAsk === null ? '' : saved.proposedAsk);
+    const readiness = kjrListingReadiness(row, saved, selected.table);
+    if (status) status.textContent = readiness.ready ? 'Saved · ready for review' : 'Saved · hold: ' + readiness.blockers.join(', ');
+  });
+  if (result && typeof result.then === 'function') {
+    result.then(saved => { if (saved === false && status) status.textContent = 'Not saved locally · review the error and try again'; })
+      .catch(error => toastError(error.message || 'Could not save listing record'));
+  } else if (result === false && status) status.textContent = 'Not saved locally · review the error and try again';
+}
+function lstRepairTrackerRecord() {
+  const selected = _kjrListingCurrentItem();
+  const status = document.getElementById('lst-status');
+  if (!selected) { if (status) status.textContent = 'Select a single or slab first'; return; }
+  const state = _kjrListingMetaState(selected.item);
+  if (state.ok) { if (status) status.textContent = 'Listing metadata is already valid'; return; }
+  const next = _kjrListingReadForm(_kjrListingDefaultMeta());
+  const result = _kjrListingCommitMeta(selected.table, selected.id, next, (row, saved) => {
+    if (status) status.textContent = 'Invalid metadata repaired and saved';
+    const repair = document.getElementById('lst-repair-btn');
+    if (repair) repair.style.display = 'none';
+    _kjrListingSetValue('lst-price', saved.proposedAsk === null ? '' : saved.proposedAsk);
+    _kjrListingSetValue('lst-proposed-ask', saved.proposedAsk === null ? '' : saved.proposedAsk);
+  });
+  if (result && typeof result.catch === 'function') result.catch(error => { if (status) status.textContent = error.message || 'Could not repair listing metadata'; });
+}
+function lstRecordHistory() {
+  const selected = _kjrListingCurrentItem();
+  const status = document.getElementById('lst-history-status');
+  if (!selected) { if (status) status.textContent = 'Select an item first'; return; }
+  const url = _kjrListingString(document.getElementById('lst-history-url')?.value, 500);
+  const date = _kjrListingString(document.getElementById('lst-history-date')?.value, 20);
+  const priceRaw = document.getElementById('lst-history-price')?.value || '';
+  const basis = _kjrListingString(document.getElementById('lst-history-basis')?.value, 500);
+  if (url && !kjrListingIsCarousellUrl(url)) { if (status) status.textContent = 'Use an https://www.carousell.sg/p/... URL'; return; }
+  if (priceRaw && _kjrListingPositive(priceRaw) === null) { if (status) status.textContent = 'Observed price must be finite and positive'; return; }
+  if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date + 'T00:00:00Z').getTime()) || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date)) { if (status) status.textContent = 'Use a valid observed date'; return; }
+  if (!url && !basis) { if (status) status.textContent = 'Add a Carousell URL or observation basis'; return; }
+  const existingState = _kjrListingMetaState(selected.item);
+  if (!existingState.ok) { if (status) status.textContent = 'Repair invalid listing metadata before recording history'; return; }
+  const existing = existingState.value;
+  const next = _kjrListingClone(existing);
+  next.history.push({
+    url,
+    price: _kjrListingNullablePrice(priceRaw),
+    photoRefs: { folderRef: next.photo.folderRef, front: next.photo.front, back: next.photo.back, extras: next.photo.extras.slice() },
+    description: document.getElementById('lst-desc-box') ? document.getElementById('lst-desc-box').value : next.draft.description,
+    observedAt: date ? date + 'T00:00:00.000Z' : new Date().toISOString(),
+    basis,
+    listingStatus: next.listingStatus,
+    verification: 'reviewed'
+  });
+  const result = _kjrListingCommitMeta(selected.table, selected.id, next, () => {
+    if (status) status.textContent = 'Snapshot recorded';
+    _kjrListingSetValue('lst-history-url', '');
+    _kjrListingSetValue('lst-history-price', '');
+    _kjrListingSetValue('lst-history-date', '');
+    _kjrListingSetValue('lst-history-basis', '');
+  });
+  if (result && typeof result.catch === 'function') result.catch(error => { if (status) status.textContent = error.message || 'Could not record snapshot'; });
+}
+function _kjrListingDisplayName(item) {
+  return _kjrListingString(item && (item.name || item.product), 300) || '-';
+}
+function _kjrListingInventorySnapshot(table, item) {
+  return {
+    source: table,
+    id: String(item.id),
+    name: _kjrListingDisplayName(item),
+    certNo: _kjrListingString(item.certNo, 120),
+    qty: item.qty === undefined || item.qty === null || item.qty === '' ? null : item.qty,
+    status: _kjrListingString(item.status, 80),
+    listPrice: item.listPrice === undefined ? '' : item.listPrice,
+    marketPrice: item.marketPrice === undefined ? '' : item.marketPrice,
+    carousellUrl: _kjrListingString(item.carousellUrl, 500)
+  };
+}
+function _kjrListingReadFilter(id) { return (document.getElementById(id)?.value || '').trim().toLowerCase(); }
+function renderListingTracker() {
+  const body = document.getElementById('lst-tracker-body');
+  if (!body) return;
+  const source = document.getElementById('lst-tracker-source')?.value || 'all';
+  const photo = document.getElementById('lst-tracker-photo')?.value || 'all';
+  const listingStatus = document.getElementById('lst-tracker-status')?.value || 'all';
+  const query = _kjrListingReadFilter('lst-tracker-search');
+  const all = _kjrListingRows();
+  const filtered = all.filter(({ table, item }) => {
+    if (source !== 'all' && source !== table) return false;
+    const meta = _kjrListingMetaState(item).value;
+    if (photo !== 'all' && meta.photo.status !== photo) return false;
+    if (listingStatus !== 'all' && meta.listingStatus !== listingStatus) return false;
+    if (!query) return true;
+    const hay = [table, item.id, item.name, item.set, item.certNo, meta.copyTag, meta.photo.folderRef, meta.photo.front, meta.photo.back].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(query);
+  });
+  const keys = new Set(all.map(({ table, item }) => _kjrListingKey(table, item.id)));
+  _kjrListingSelected = new Set([..._kjrListingSelected].filter(key => keys.has(key)));
+  window._kjrListingTrackerRows = filtered;
+  const summary = document.getElementById('lst-tracker-summary');
+  if (summary) summary.textContent = filtered.length + ' shown of ' + all.length;
+  const empty = document.getElementById('lst-tracker-empty');
+  if (empty) empty.hidden = !!filtered.length;
+  body.innerHTML = filtered.map(({ table, item }) => {
+    const metaState = _kjrListingMetaState(item);
+    const meta = metaState.value;
+    const ready = kjrListingReadiness(item, meta, table);
+    if (!metaState.ok) {
+      ready.ready = false;
+      ready.blockers.unshift('metadata invalid, repair required: ' + metaState.error);
+    }
+    const key = _kjrListingKey(table, item.id);
+    const selected = _kjrListingSelected.has(key);
+    const refs = [meta.photo.folderRef, meta.photo.front, meta.photo.back].filter(Boolean).join(' · ') || 'No photo references';
+    const identity = table === 'slabs' ? (item.certNo ? 'Cert ' + item.certNo : 'Cert missing') : (meta.copyTag ? 'Copy ' + meta.copyTag : 'Copy tag missing');
+    const status = !metaState.ok ? 'Metadata error' : (meta.listingStatus === 'unknown' ? 'Unknown' : meta.listingStatus.replace(/_/g, ' '));
+    return '<tr>' +
+      '<td><input type="checkbox" class="lst-tracker-select" data-table="' + esc(table) + '" data-id="' + esc(item.id) + '" aria-label="Select ' + esc(_kjrListingDisplayName(item)) + ' for listing handoff"' + (selected ? ' checked' : '') + '></td>' +
+      '<td><div class="kjr-listing-name">' + esc(_kjrListingDisplayName(item)) + '</div><div class="kjr-listing-ref">' + esc(table + ' · ' + item.id) + ' · ' + esc(identity) + '</div></td>' +
+      '<td><span class="kjr-listing-status">' + esc(meta.photo.status) + '</span><div class="kjr-listing-ref">' + esc(refs) + '</div></td>' +
+      '<td><span class="kjr-listing-status">' + esc(status) + '</span></td>' +
+      '<td class="num">' + esc(meta.proposedAsk === null ? '-' : 'S$' + meta.proposedAsk) + '<div class="kjr-listing-ref">' + esc(meta.approvedAsk === null ? 'Approval pending' : 'Approved S$' + meta.approvedAsk) + '</div></td>' +
+      '<td><span class="kjr-listing-status">' + esc(ready.ready ? 'Ready' : 'Hold') + '</span><div class="kjr-listing-ref">' + esc(ready.ready ? 'Approved handoff allowed' : ready.blockers.join(', ')) + '</div></td>' +
+      '<td><button type="button" class="btn btn-sm lst-tracker-edit" data-table="' + esc(table) + '" data-id="' + esc(item.id) + '">Track</button></td>' +
+      '</tr>';
+  }).join('');
+  body.querySelectorAll('.lst-tracker-select').forEach(input => input.addEventListener('change', () => {
+    const key = _kjrListingKey(input.dataset.table, input.dataset.id);
+    if (input.checked) _kjrListingSelected.add(key); else _kjrListingSelected.delete(key);
+    _kjrListingUpdateSelectionLabel();
+  }));
+  body.querySelectorAll('.lst-tracker-edit').forEach(button => button.addEventListener('click', () => openListingFor(button.dataset.table, button.dataset.id)));
+  _kjrListingUpdateSelectionLabel();
+}
+function _kjrListingUpdateSelectionLabel() {
+  const label = document.getElementById('lst-tracker-selection');
+  if (label) label.textContent = _kjrListingSelected.size + ' selected';
+}
+function lstSelectVisible() {
+  (window._kjrListingTrackerRows || []).forEach(({ table, item }) => _kjrListingSelected.add(_kjrListingKey(table, item.id)));
+  renderListingTracker();
+}
+function lstClearSelection() { _kjrListingSelected.clear(); renderListingTracker(); }
+function kjrBuildListingHandoff() {
+  const records = [];
+  for (const { table, item } of _kjrListingRows()) {
+    if (!_kjrListingSelected.has(_kjrListingKey(table, item.id))) continue;
+    const metaState = _kjrListingMetaState(item);
+    if (!metaState.ok) throw new Error('Cannot prepare ' + _kjrListingKey(table, item.id) + ': repair listing metadata first (' + metaState.error + ')');
+    records.push({
+      source: table,
+      id: String(item.id),
+      inventory: _kjrListingInventorySnapshot(table, item),
+      listingMeta: metaState.value,
+      baseline: {
+        rowVersion: Number.isSafeInteger(item._serverVersion) ? item._serverVersion : null,
+        fingerprint: kjrListingRowFingerprint(item)
+      }
+    });
+  }
+  return {
+    format: 'kujira-listing-handoff',
+    version: 1,
+    createdAt: new Date().toISOString(),
+    selectedIds: records.map(record => record.source + ':' + record.id),
+    records
+  };
+}
+function lstExportHandoff() {
+  const output = document.getElementById('lst-handoff-output');
+  if (!output) return;
+  try {
+    output.value = JSON.stringify(kjrBuildListingHandoff(), null, 2);
+  } catch (error) {
+    output.value = '';
+    const status = document.getElementById('lst-handoff-status');
+    if (status) status.textContent = error.message || 'Packet could not be prepared';
+    return;
+  }
+  _kjrListingUpdateSelectionLabel();
+  const status = document.getElementById('lst-handoff-status');
+  if (status) status.textContent = 'Visible packet prepared';
+}
+async function lstCopyHandoff() {
+  const output = document.getElementById('lst-handoff-output');
+  if (!output || !output.value) lstExportHandoff();
+  const value = document.getElementById('lst-handoff-output')?.value || '';
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(value);
+    else { document.getElementById('lst-handoff-output').select(); document.execCommand('copy'); }
+    const status = document.getElementById('lst-handoff-status');
+    if (status) status.textContent = 'Packet copied';
+  } catch (_) { const status = document.getElementById('lst-handoff-status'); if (status) status.textContent = 'Select the visible packet and copy it'; }
+}
+function lstDownloadHandoff() {
+  const output = document.getElementById('lst-handoff-output');
+  if (!output || !output.value) lstExportHandoff();
+  const blob = new Blob([document.getElementById('lst-handoff-output')?.value || ''], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob); link.download = 'kujira-listing-handoff.json'; link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+function _kjrListingImportCurrentMatches(record, row) {
+  const current = _kjrListingInventorySnapshot(record.source, row);
+  const expected = record.inventory || {};
+  const fields = ['source','id','certNo','qty','status','listPrice','marketPrice','carousellUrl'];
+  return fields.every(field => _kjrListingStable(current[field]) === _kjrListingStable(expected[field]));
+}
+function _kjrListingDiffText(value, max) {
+  const text = value === null || value === undefined || value === '' ? '(none)' : String(value);
+  return text.length > (max || 120) ? text.slice(0, (max || 120) - 1) + '…' : text;
+}
+function _kjrListingPhotoSummary(meta) {
+  const photo = meta && meta.photo ? meta.photo : {};
+  return 'status ' + _kjrListingDiffText(photo.status) + ', folder ' + _kjrListingDiffText(photo.folderRef) +
+    ', front ' + _kjrListingDiffText(photo.front) + ', back ' + _kjrListingDiffText(photo.back);
+}
+function _kjrListingHistoryDelta(before, after) {
+  const counts = list => {
+    const map = new Map();
+    (Array.isArray(list) ? list : []).forEach(entry => {
+      const key = _kjrListingStable(entry);
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return map;
+  };
+  const oldCounts = counts(before);
+  const newCounts = counts(after);
+  let added = 0, removed = 0;
+  newCounts.forEach((count, key) => { added += Math.max(0, count - (oldCounts.get(key) || 0)); });
+  oldCounts.forEach((count, key) => { removed += Math.max(0, count - (newCounts.get(key) || 0)); });
+  return { added, removed };
+}
+function _kjrListingMetaDiff(before, after, beforeError) {
+  const lines = [];
+  if (beforeError) lines.push('metadata repair required, stored value was invalid: ' + beforeError);
+  if (_kjrListingStable(before && before.photo) !== _kjrListingStable(after && after.photo)) {
+    lines.push('photos: ' + _kjrListingPhotoSummary(before) + ' -> ' + _kjrListingPhotoSummary(after));
+  }
+  [['copyTag','copy tag'], ['urgency','urgency'], ['proposedAsk','proposed ask'], ['approvedAsk','approved ask'], ['holdReason','hold reason'], ['listingStatus','listing status']].forEach(([key, label]) => {
+    if (_kjrListingStable(before && before[key]) !== _kjrListingStable(after && after[key])) {
+      lines.push(label + ': ' + _kjrListingDiffText(before && before[key]) + ' -> ' + _kjrListingDiffText(after && after[key]));
+    }
+  });
+  if (_kjrListingStable(before && before.draft && before.draft.title) !== _kjrListingStable(after && after.draft && after.draft.title)) {
+    lines.push('draft title changed: ' + _kjrListingDiffText(before && before.draft && before.draft.title) + ' -> ' + _kjrListingDiffText(after && after.draft && after.draft.title));
+  }
+  if (_kjrListingStable(before && before.draft && before.draft.description) !== _kjrListingStable(after && after.draft && after.draft.description)) lines.push('draft description changed');
+  const history = _kjrListingHistoryDelta(before && before.history, after && after.history);
+  if (history.added) lines.push('history entries added: ' + history.added);
+  if (history.removed) lines.push('history entries removed: ' + history.removed);
+  return lines;
+}
+function kjrPreflightListingImport(input) {
+  const report = { ok: false, errors: [], warnings: [], holds: [], changes: [], value: null };
+  let packet;
+  try {
+    if (typeof input === 'string') {
+      if (input.length > 1000000) throw new Error('handoff packet is too large');
+      packet = JSON.parse(input);
+    } else packet = _kjrListingClone(input);
+    _kjrListingObject(packet, 'handoff packet');
+    _kjrListingAllowedKeys(packet, ['format','version','createdAt','selectedIds','records'], 'handoff packet');
+    if (packet.format !== 'kujira-listing-handoff' || packet.version !== 1) throw new Error('unsupported handoff packet');
+    if (!Array.isArray(packet.records) || packet.records.length > 2000) throw new Error('records must be a bounded array');
+    if (packet.selectedIds !== undefined && (!Array.isArray(packet.selectedIds) || new Set(packet.selectedIds).size !== packet.selectedIds.length)) throw new Error('selectedIds must not contain duplicates');
+    const seen = new Set();
+    const changes = [];
+    packet.records.forEach((record, index) => {
+      _kjrListingAllowedKeys(record, ['source','id','inventory','listingMeta','baseline'], 'record ' + (index + 1));
+      if (!['singles','slabs'].includes(record.source) || !record.id) throw new Error('record ' + (index + 1) + ' has an invalid source or id');
+      const key = _kjrListingKey(record.source, record.id);
+      if (seen.has(key)) throw new Error('duplicate record ' + key);
+      seen.add(key);
+      const row = _kjrListingFind(record.source, record.id);
+      if (!row) throw new Error('record ' + key + ' is not in current inventory');
+      _kjrListingObject(record.baseline, 'baseline ' + key);
+      _kjrListingAllowedKeys(record.baseline, ['rowVersion','fingerprint'], 'baseline ' + key);
+      _kjrListingAllowedKeys(record.inventory, ['source','id','name','certNo','qty','status','listPrice','marketPrice','carousellUrl'], 'inventory ' + key);
+      if (!Object.prototype.hasOwnProperty.call(record.baseline, 'rowVersion') || !Object.prototype.hasOwnProperty.call(record.baseline, 'fingerprint')) throw new Error('record ' + key + ' has an incomplete baseline');
+      if (record.baseline.rowVersion !== null && (!Number.isSafeInteger(record.baseline.rowVersion) || record.baseline.rowVersion < 1)) throw new Error('record ' + key + ' has invalid row version');
+      if (typeof record.baseline.fingerprint !== 'string' || !record.baseline.fingerprint) throw new Error('record ' + key + ' has no baseline fingerprint');
+      if (record.baseline.rowVersion !== null) {
+        if (!Number.isSafeInteger(row._serverVersion) || row._serverVersion < 1) throw new Error('record ' + key + ' current row version is unavailable');
+        if (record.baseline.rowVersion !== row._serverVersion) throw new Error('record ' + key + ' is stale, row version changed');
+      }
+      if (record.baseline.fingerprint !== kjrListingRowFingerprint(row)) throw new Error('record ' + key + ' is stale, inventory changed');
+      if (!_kjrListingImportCurrentMatches(record, row)) throw new Error('record ' + key + ' physical inventory snapshot does not match');
+      if (!Object.prototype.hasOwnProperty.call(record, 'listingMeta') || !record.listingMeta || typeof record.listingMeta !== 'object' || Array.isArray(record.listingMeta)) throw new Error('record ' + key + ' requires a complete non-null listingMeta object');
+      const importedMeta = _kjrListingValidateFullImportMeta(record.listingMeta, 'record ' + key + '.listingMeta');
+      const readiness = kjrListingReadiness(row, importedMeta, record.source);
+      if (!readiness.ready) report.holds.push(key + ': ' + readiness.blockers.join(', '));
+      if (['listed','reserved','sold'].includes(importedMeta.listingStatus) && !importedMeta.history.length) report.warnings.push(key + ': status claim is reported without a listing snapshot');
+      const beforeState = _kjrListingMetaState(row);
+      const diff = _kjrListingMetaDiff(beforeState.value, importedMeta, beforeState.ok ? '' : beforeState.error);
+      if (diff.length) changes.push({ record, row, meta: importedMeta, key, before: beforeState.value, beforeError: beforeState.error, diff });
+    });
+    if (Array.isArray(packet.selectedIds)) {
+      const expected = new Set(packet.records.map(record => record.source + ':' + record.id));
+      if (packet.selectedIds.some(id => !expected.has(id))) throw new Error('selectedIds contains an unlisted record');
+    }
+    report.ok = true;
+    report.changes = changes;
+    report.value = packet;
+  } catch (error) {
+    report.errors.push(error && error.message ? error.message : 'Invalid handoff packet');
+  }
+  return report;
+}
+function _kjrListingRenderImportReport(report) {
+  const box = document.getElementById('lst-import-preview');
+  if (!box) return;
+  box.hidden = false;
+  if (!report.ok) {
+    box.innerHTML = '<strong>Import blocked</strong><ul>' + report.errors.map(error => '<li>' + esc(error) + '</li>').join('') + '</ul>';
+    return;
+  }
+  const changes = report.changes.length ? report.changes.map(change => '<li><strong>' + esc(change.key) + '</strong><ul>' +
+    (change.diff || ['validated listing metadata will be updated']).map(line => '<li>' + esc(line) + '</li>').join('') +
+    '</ul></li>') : '<li>No metadata changes</li>';
+  const holds = report.holds.map(hold => '<li>' + esc(hold) + '</li>').join('');
+  const warnings = report.warnings.map(warning => '<li>' + esc(warning) + '</li>').join('');
+  box.innerHTML = '<strong>Review before apply</strong><div>' + report.changes.length + ' change(s)' + (report.holds.length ? ', ' + report.holds.length + ' hold(s)' : '') + '</div><ul>' + changes + '</ul>' + (holds ? '<strong>Holds</strong><ul>' + holds + '</ul>' : '') + (warnings ? '<strong>Warnings</strong><ul>' + warnings + '</ul>' : '');
+}
+function lstPreviewImport() {
+  const input = document.getElementById('lst-handoff-input');
+  const raw = input ? input.value : '';
+  const report = kjrPreflightListingImport(raw);
+  _kjrListingImportState = { raw, report };
+  _kjrListingRenderImportReport(report);
+  const status = document.getElementById('lst-import-status');
+  if (status) status.textContent = report.ok ? 'Preflight complete' : 'Import blocked';
+  return report;
+}
+async function kjrApplyListingImport(raw) {
+  const run = async () => {
+    const base = _modalCacheSnapshot();
+    if (!base) throw new Error('Import could not verify the latest local cache');
+    _applyModalCachePayload(base);
+    const report = kjrPreflightListingImport(raw);
+    if (!report.ok) throw new Error(report.errors.join(', '));
+    if (!report.changes.length) return report;
+    const candidate = {};
+    for (const cacheKey of _MODAL_CACHE_KEYS) candidate[cacheKey] = _cloneModalRows(base[cacheKey]);
+    report.changes.forEach(change => {
+      const key = _dbKey(change.record.source);
+      const row = candidate[key].find(item => item && String(item.id) === String(change.record.id));
+      if (!row) throw new Error('record ' + change.key + ' is no longer in the local cache');
+      row.listingMeta = _kjrListingClone(change.meta);
+    });
+    const latest = _readModalCache();
+    if (!latest) throw new Error('Import could not verify the latest local cache');
+    const merged = {};
+    for (const cacheKey of _MODAL_CACHE_KEYS) {
+      const rows = _mergeModalRows(base[cacheKey], candidate[cacheKey], latest[cacheKey]);
+      if (!rows) throw new Error('Import stopped because inventory changed elsewhere. Preview the packet again.');
+      merged[cacheKey] = rows;
+    }
+    _applyModalCachePayload(latest);
+    const modalSaveState = _captureModalSaveState();
+    if (!modalSaveState) throw new Error('Import could not capture a safe local save state');
+    snapshotForUndo();
+    _applyModalCachePayload(merged);
+    report.changes.forEach(change => {
+      const row = _kjrListingFind(change.record.source, change.record.id);
+      if (row) markDirty(change.record.source, row.id, row);
+    });
+    if (!saveData({ cachePayload: merged })) {
+      _restoreModalSaveState(modalSaveState, merged);
+      renderListingTracker();
+      throw new Error('Import could not be saved locally. Free storage and try again.');
+    }
+    // Keep the established bulk-save contract. Localhost preview returns before
+    // any cloud call, while the live app reports a queued/local result through
+    // the existing sync status when the normal batch flush cannot complete.
+    await saveAllToSupabase();
+    renderListingTracker();
+    return report;
+  };
+  if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+    return navigator.locks.request('kjr-inventory-cache', { mode: 'exclusive' }, run);
+  }
+  return run();
+}
+async function lstApplyImport() {
+  const input = document.getElementById('lst-handoff-input');
+  const raw = input ? input.value : '';
+  const status = document.getElementById('lst-import-status');
+  if (!_kjrListingImportState || _kjrListingImportState.raw !== raw) {
+    if (status) status.textContent = _kjrListingImportState ? 'Packet changed. Preview import again before applying.' : 'Preview import before applying.';
+    return;
+  }
+  const state = _kjrListingImportState;
+  if (!state || !state.report || !state.report.ok) return;
+  try {
+    const report = await kjrApplyListingImport(raw);
+    if (status) status.textContent = report.changes.length ? 'Metadata applied, stock fields untouched' : 'No changes to apply';
+    _kjrListingImportState = { raw, report };
+    _kjrListingRenderImportReport(report);
+  } catch (error) {
+    if (status) status.textContent = error.message || 'Import blocked';
+    const report = kjrPreflightListingImport(raw);
+    _kjrListingImportState = { raw, report };
+    _kjrListingRenderImportReport(report);
+  }
+}
+
 // ── Navigate to Listing tab pre-filled for a specific item ──
 function lstGoBack() {
   const backId = window._listingFromId;
@@ -13143,6 +14027,13 @@ function openListingFor(table, id) {
   // lives in the Title box below - echoing it back into the search field too
   // produced an on-screen duplicate, so we clear the search instead.
   const item = (DB[table] || []).find(i => i.id === id);
+  if (item && sel && !Array.from(sel.options || []).some(opt => opt.value === target)) {
+    const option = document.createElement('option');
+    option.value = target;
+    option.textContent = _listingTitleFor(item, table);
+    sel.appendChild(option);
+  }
+  if (sel) sel.value = target;
   if (item) {
     const plain = (item.name || item.product || '')
       .replace(/\s*[\(\[]\s*sealed\s*[\)\]]/ig, '').replace(/\s{2,}/g, ' ').trim();
@@ -13154,14 +14045,15 @@ function openListingFor(table, id) {
     if (resEl) resEl.style.display = 'none';
     const statusEl = document.getElementById('lst-search-status');
     if (statusEl) statusEl.hidden = true;
+    _kjrListingLoadEditor(table, item);
   }
-  // Pre-fill at 130% of market price (the user-requested markup), with
-  // graceful fallbacks: marketPrice → listPrice → blank.
+  // Keep market and current inventory asks separate. A suggested ask is
+  // loaded from saved listing metadata and never invented from a markup.
   if (item) {
     let market = parseFloat(item.marketPrice);
-    if (isNaN(market) || market <= 0) market = parseFloat(item.listPrice) || 0;
     document.getElementById('lst-market').value = market > 0 ? 'S$' + Math.round(market) : '-';
-    document.getElementById('lst-price').value = market > 0 ? Math.round(market * 1.30) : '';
+    const current = _kjrListingPositive(item.listPrice);
+    document.getElementById('lst-current-price').value = current === null ? '' : 'S$' + Math.round(current);
   }
   // Build the fresh title + description for the newly selected item.
   rebuildListing();
@@ -13236,7 +14128,7 @@ function _renderLstResults() {
       meta  = [(i.language||''), (i.condition||''), (i.set||'')].filter(Boolean).join(' · ') || 'Raw single';
     }
     const name = i.name || i.product || '-';
-    return '<div id="lst-search-option-' + idx + '" role="option" tabindex="-1" aria-selected="' + (idx === _lstHitIdx ? 'true' : 'false') + '" class="cmd-result' + (idx === _lstHitIdx ? ' selected' : '') + '" data-idx="' + idx + '" onmousedown="event.preventDefault()" onclick="lstSelectItem(\'' + kjrEscape(src) + '\',\'' + kjrEscape(i.id) + '\')">' +
+    return '<div id="lst-search-option-' + idx + '" role="option" tabindex="-1" aria-selected="' + (idx === _lstHitIdx ? 'true' : 'false') + '" class="cmd-result lst-search-option' + (idx === _lstHitIdx ? ' selected' : '') + '" data-idx="' + idx + '" data-listing-source="' + kjrEscape(src) + '" data-listing-id="' + kjrEscape(i.id) + '">' +
       '<div class="cmd-result-icon" style="background:var(--bg3)">' + icon + '</div>' +
       '<div class="cmd-result-main">' +
         '<div class="cmd-result-name">' + kjrEscape(name) + '</div>' +
@@ -13244,6 +14136,10 @@ function _renderLstResults() {
       '</div>' + badge +
     '</div>';
   }).join('');
+  res.querySelectorAll('.lst-search-option').forEach(option => {
+    option.addEventListener('mousedown', event => event.preventDefault());
+    option.addEventListener('click', () => lstSelectItem(option.dataset.listingSource, option.dataset.listingId));
+  });
 }
 
 // ↑/↓ to move the highlight, Enter to pick it, Esc to close. Keeps the active
@@ -15130,7 +16026,8 @@ function buildListing(item, src, priceListed, userComments){
 // The "rebuild" button - also runs automatically when the user edits the
 // Price Listed or Comments field. Produces a deterministic listing the
 // user can copy with one click; no AI key needed.
-function rebuildListing(){
+function rebuildListing(options){
+  const forceGenerated = !!(options && options.forceGenerated);
   const val = document.getElementById('lst-item').value;
   const textEl = document.getElementById('lst-text');
   const outputWrap = document.getElementById('lst-output');
@@ -15144,15 +16041,20 @@ function rebuildListing(){
   const [src, id] = val.split(':');
   const item = (DB[src] || []).find(i => i.id === id);
   if (!item) { listingText = ''; return; }
-  const price = kjrNum(document.getElementById('lst-price').value);
-  listingText = buildListing(item, src, price, '');
-  if (textEl) textEl.textContent = listingText;
-  // Populate the editable output fields
-  const lines = listingText.split('\n');
+  const meta = _kjrListingMetaFor(item);
+  const priceInput = document.getElementById('lst-price');
+  const typedPrice = priceInput && priceInput.value !== '' ? _kjrListingPositive(priceInput.value) : null;
+  const price = typedPrice || _kjrListingPositive(meta.proposedAsk) || 0;
+  const generated = buildListing(item, src, price, '');
+  const lines = generated.split('\n');
   const titleIdx = lines.findIndex(l => l.trim() === '=== TITLE ===');
   const descIdx  = lines.findIndex(l => l.trim() === '=== DESCRIPTION ===');
-  const titleText = titleIdx >= 0 ? (lines[titleIdx + 1] || '').trim() : '';
-  const descText  = descIdx  >= 0 ? lines.slice(descIdx + 1).join('\n').trim() : '';
+  const generatedTitle = titleIdx >= 0 ? (lines[titleIdx + 1] || '').trim() : '';
+  const generatedDesc  = descIdx  >= 0 ? lines.slice(descIdx + 1).join('\n').trim() : '';
+  const titleText = !forceGenerated && meta.draft.title ? meta.draft.title : generatedTitle;
+  const descText = !forceGenerated && meta.draft.description ? meta.draft.description : generatedDesc;
+  listingText = ['=== TITLE ===', titleText, '', '=== PRICE ===', price > 0 ? 'S$' + Math.round(price) : '(set a Price Listed)', '', '=== DESCRIPTION ===', descText].join('\n');
+  if (textEl) textEl.textContent = listingText;
   const titleBox = document.getElementById('lst-title-box');
   const descBox  = document.getElementById('lst-desc-box');
   // Show the wrapper first so scrollHeight is measurable for auto-grow.

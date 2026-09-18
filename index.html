@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.58',
+    release: 'kujira-collectibles@3.59',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.58">
+<link rel="stylesheet" href="styles.css?v=3.59">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.58 (17 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.59 (19 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -782,9 +782,9 @@
 <div id="page-listing" class="page">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
     <button id="lst-back-btn" class="btn btn-sm" onclick="lstGoBack()" style="display:none;font-size:11px">← Back</button>
-    <div class="section-title" style="margin-bottom:0">Carousell Listing Generator</div>
+  <div class="section-title" style="margin-bottom:0">Carousell Listing Workspace</div>
   </div>
-  <div class="section-sub">Build a Carousell-ready title + description for any item. Price Listed auto-fills at 130% of market.</div>
+  <div class="section-sub">Prepare one physical copy at a time. Suggested asks need evidence and review, existing inventory prices stay separate.</div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-head"><h3>📝 Generate Listing</h3></div>
@@ -802,16 +802,23 @@
         <!-- Hidden select kept for rebuildListing / enhanceListingWithAI compatibility -->
         <select id="lst-item" style="display:none" onchange="onListingItemChanged()"><option value="">-</option></select>
         <div class="form-group">
-          <label class="lbl">Price Listed (S$)</label>
-          <input type="number" class="fi" id="lst-price" min="0" placeholder="0" step="1">
+          <label class="lbl" for="lst-price">Suggested ask · needs evidence/review (S$)</label>
+          <input type="number" class="fi" id="lst-price" min="0" placeholder="0" step="1" aria-label="Suggested ask requiring evidence and review" oninput="lstSyncSuggestedAsk(this.value)">
         </div>
         <div class="form-group">
-          <label class="lbl">Market Price (auto)</label>
+          <label class="lbl" for="lst-current-price">Current inventory ask (S$)</label>
+          <input type="text" class="fi" id="lst-current-price" readonly placeholder="-" style="background:var(--bg3);color:var(--text2)">
+        </div>
+        <div class="form-group">
+          <label class="lbl" for="lst-market">Market price (auto)</label>
           <input type="text" class="fi" id="lst-market" readonly placeholder="-" style="background:var(--bg3);color:var(--text2)">
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
         <button class="btn" id="lst-ai-btn" onclick="enhanceListingWithAI()" title="Optional: rewrite the description in your AI's voice. Free Gemini key works."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;vertical-align:-3px;margin-right:4px"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18"/></svg>Enhance with AI</button>
+        <button class="btn" id="lst-regenerate-btn" onclick="rebuildListing({forceGenerated:true})">↻ Regenerate draft</button>
+        <button class="btn btn-primary" id="lst-save-btn" onclick="lstSaveTrackerRecord()">Save draft + tracker</button>
+        <button class="btn" id="lst-repair-btn" onclick="lstRepairTrackerRecord()" style="display:none" title="Use the visible form values to replace malformed stored metadata">Repair invalid metadata</button>
         <span id="lst-status" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
       </div>
       <!-- Output - editable + copyable. The fields are what you copy, so you can
@@ -836,6 +843,178 @@
       </div>
       <!-- Hidden full text for copyListing() / enhanceListingWithAI() compatibility -->
       <div id="lst-text" style="display:none"></div>
+
+      <details id="lst-record-editor" class="kjr-listing-editor" style="display:none">
+        <summary>Tracking record</summary>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="form-group">
+            <label class="lbl" for="lst-photo-status">Photo status</label>
+            <select class="fi" id="lst-photo-status">
+              <option value="unknown">Unknown</option>
+              <option value="missing">Missing</option>
+              <option value="incomplete">Incomplete</option>
+              <option value="ready">Ready</option>
+              <option value="needs_review">Needs review</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-urgency">Urgency label</label>
+            <select class="fi" id="lst-urgency">
+              <option value="normal">Normal</option>
+              <option value="soon">Sell soon</option>
+              <option value="clearance">Clearance</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-listing-status">Carousell status</label>
+            <select class="fi" id="lst-listing-status">
+              <option value="unknown">Unknown</option>
+              <option value="not_listed">Not listed</option>
+              <option value="draft">Draft</option>
+              <option value="listed">Listed</option>
+              <option value="reserved">Reserved</option>
+              <option value="sold">Sold</option>
+              <option value="removed">Removed</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-copy-tag">Raw copy tag / copy identity</label>
+            <input class="fi" id="lst-copy-tag" maxlength="120" placeholder="Required for a raw single copy">
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-photo-folder">Photo folder reference</label>
+            <input class="fi" id="lst-photo-folder" maxlength="240" placeholder="Relative folder, e.g. photos v2">
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-photo-item">Photo item ID</label>
+            <input class="fi" id="lst-photo-item" maxlength="120" placeholder="Photo manifest ID">
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-photo-front">Front photo reference</label>
+            <input class="fi" id="lst-photo-front" maxlength="240" placeholder="Relative filename or path">
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-photo-back">Back photo reference</label>
+            <input class="fi" id="lst-photo-back" maxlength="240" placeholder="Relative filename or path">
+          </div>
+          <div class="form-group full">
+            <label class="lbl" for="lst-photo-extras">Extra photo references · one per line</label>
+            <textarea class="fi" id="lst-photo-extras" rows="2" maxlength="1200" placeholder="Optional alternate references"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-proposed-ask">Proposed ask (S$)</label>
+            <input type="number" class="fi" id="lst-proposed-ask" min="0" step="0.01" placeholder="Needs evidence" oninput="lstSyncSuggestedAsk(this.value, true)">
+          </div>
+          <div class="form-group">
+            <label class="lbl" for="lst-approved-ask">Approved ask (S$)</label>
+            <input type="number" class="fi" id="lst-approved-ask" min="0" step="0.01" placeholder="Leave blank until approved">
+          </div>
+          <div class="form-group full">
+            <label class="lbl" for="lst-price-evidence">Price evidence reference</label>
+            <input class="fi" id="lst-price-evidence" maxlength="500" placeholder="PriceCharting / receipt / user instruction reference">
+          </div>
+          <div class="form-group full">
+            <label class="lbl" for="lst-hold-reason">Hold reason</label>
+            <textarea class="fi" id="lst-hold-reason" rows="2" maxlength="800" placeholder="Why this record is not ready"></textarea>
+          </div>
+        </div>
+        <div class="kjr-listing-current-ref" id="lst-current-url-wrap" style="display:none">
+          <span>Existing inventory Carousell URL</span>
+          <a id="lst-current-url" href="#" target="_blank" rel="noopener noreferrer"></a>
+          <small>Existing URL is retained as inventory data. It does not prove a live listing here.</small>
+        </div>
+        <div class="kjr-listing-history-form">
+          <div class="kjr-listing-history-title">Record a listing snapshot or receipt</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="lbl" for="lst-history-url">Carousell URL</label>
+              <input class="fi" id="lst-history-url" maxlength="500" placeholder="https://www.carousell.sg/p/...">
+            </div>
+            <div class="form-group">
+              <label class="lbl" for="lst-history-price">Observed price (S$)</label>
+              <input type="number" class="fi" id="lst-history-price" min="0" step="0.01" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label class="lbl" for="lst-history-date">Observed date</label>
+              <input type="date" class="fi" id="lst-history-date">
+            </div>
+            <div class="form-group full">
+              <label class="lbl" for="lst-history-basis">Observation basis</label>
+              <input class="fi" id="lst-history-basis" maxlength="500" placeholder="What was checked, for example public receipt or owner note">
+            </div>
+          </div>
+          <button class="btn btn-sm" type="button" onclick="lstRecordHistory()">Record snapshot</button>
+          <span id="lst-history-status" class="kjr-listing-inline-status"></span>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="card" id="lst-tracker-card" style="margin-bottom:16px">
+    <div class="card-head">
+      <h3>📋 Listing tracker</h3>
+      <span id="lst-tracker-summary" class="kjr-listing-inline-status"></span>
+    </div>
+    <div class="card-body">
+      <div class="kjr-listing-toolbar">
+        <input class="fi" id="lst-tracker-search" type="search" placeholder="Search name, ID, cert or copy tag" oninput="renderListingTracker()" aria-label="Search listing tracker">
+        <select class="fi" id="lst-tracker-source" onchange="renderListingTracker()" aria-label="Filter listing source">
+          <option value="all">Singles + slabs</option>
+          <option value="singles">Singles</option>
+          <option value="slabs">Slabs</option>
+        </select>
+        <select class="fi" id="lst-tracker-photo" onchange="renderListingTracker()" aria-label="Filter photo status">
+          <option value="all">All photo states</option>
+          <option value="unknown">Photo unknown</option>
+          <option value="missing">Photos missing</option>
+          <option value="incomplete">Photos incomplete</option>
+          <option value="ready">Photos ready</option>
+          <option value="needs_review">Photo review needed</option>
+        </select>
+        <select class="fi" id="lst-tracker-status" onchange="renderListingTracker()" aria-label="Filter listing status">
+          <option value="all">All listing states</option>
+          <option value="unknown">Listing unknown</option>
+          <option value="not_listed">Not listed</option>
+          <option value="draft">Draft</option>
+          <option value="listed">Listed</option>
+          <option value="reserved">Reserved</option>
+          <option value="sold">Sold</option>
+          <option value="removed">Removed</option>
+        </select>
+      </div>
+      <div class="kjr-listing-selection-bar">
+        <span id="lst-tracker-selection">0 selected</span>
+        <div>
+          <button class="btn btn-sm" type="button" onclick="lstSelectVisible()">Select visible</button>
+          <button class="btn btn-sm" type="button" onclick="lstClearSelection()">Clear</button>
+        </div>
+      </div>
+      <div class="tbl-wrap kjr-listing-table-wrap">
+        <table class="kjr-listing-table" aria-label="Listing tracker records">
+          <thead><tr><th>Select</th><th>Physical copy</th><th>Photos</th><th>Listing</th><th>Prices</th><th>Readiness</th><th>Action</th></tr></thead>
+          <tbody id="lst-tracker-body"></tbody>
+        </table>
+      </div>
+      <div id="lst-tracker-empty" class="kjr-listing-empty" hidden>No Singles or Slabs match this view.</div>
+      <div class="kjr-listing-packet card" style="margin-top:16px">
+        <div class="card-head"><h3>Selected handoff packet</h3><span id="lst-handoff-status" class="kjr-listing-inline-status">Listing metadata only, no stock changes</span></div>
+        <div class="card-body">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-primary btn-sm" type="button" onclick="lstExportHandoff()">Prepare selected JSON</button>
+            <button class="btn btn-sm" type="button" onclick="lstCopyHandoff()">Copy JSON</button>
+            <button class="btn btn-sm" type="button" onclick="lstDownloadHandoff()">Download JSON</button>
+          </div>
+          <textarea id="lst-handoff-output" class="fi kjr-listing-packet-output" rows="8" readonly aria-label="Selected listing handoff JSON" placeholder="Select records, then prepare the visible JSON packet"></textarea>
+          <div class="kjr-listing-packet-warning">Normal Singles and Slabs CSV exports exclude tracker metadata. Use this visible packet for listing workflow handoff.</div>
+          <div class="kjr-listing-import-head"><strong>Review pasted packet</strong><span id="lst-import-status" class="kjr-listing-inline-status"></span></div>
+          <textarea id="lst-handoff-input" class="fi kjr-listing-packet-output" rows="8" aria-label="Listing handoff JSON to review" placeholder="Paste a listing handoff JSON packet here"></textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn-sm" type="button" onclick="lstPreviewImport()">Preview import</button>
+            <button class="btn btn-primary btn-sm" type="button" onclick="lstApplyImport()">Apply reviewed metadata</button>
+          </div>
+          <div id="lst-import-preview" class="kjr-listing-import-preview" hidden></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1753,7 +1932,7 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.58"></script>
-<script src="features.js?v=3.58"></script>
+<script src="app.js?v=3.59"></script>
+<script src="features.js?v=3.59"></script>
 </body>
 </html>

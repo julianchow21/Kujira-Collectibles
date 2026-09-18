@@ -80,6 +80,79 @@ test('modal saves preserve server CAS revisions and explicit zero money values',
     'a valid modal CAS update must not produce a conflict toast');
 });
 
+function modalListingPreservationRow(table, id, listingMeta) {
+  if (table === 'slabs') {
+    return {
+      id, name: 'Metadata slab', grader: 'TAG', grade: '10', language: 'EN',
+      certNo: 'SYNTHETIC-CERT', rank: '', type: 'slab', costPrice: 0, marketPrice: '', listPrice: '',
+      dateListed: '1 Sep 2026', status: 'Available', notes: 'before', priceAlert: '',
+      ebayUrl: '', carousellUrl: '', tcgdexId: '', priceHistory: [], listingMeta,
+      _serverVersion: 17, _updatedAt: '2026-09-04T00:00:00.000Z',
+    };
+  }
+  return {
+    id, name: 'Metadata single', set: 'Synthetic Set', language: 'EN', type: 'raw', condition: 'Near Mint',
+    qty: 1, costPrice: 0, marketPrice: '', listPrice: '', datePurchased: '1 Sep 2026', status: 'Available',
+    notes: 'before', priceAlert: '', ebayUrl: '', carousellUrl: '', tcgdexId: '', priceHistory: [], listingMeta,
+    _serverVersion: 16, _updatedAt: '2026-09-04T00:00:00.000Z',
+  };
+}
+
+for (const modalListingCase of [
+  { label: 'single', table: 'singles', id: 'modal-listing-single', open: (ctx, id) => ctx.openEditSingle(id), notes: 'ms-notes' },
+  { label: 'slab', table: 'slabs', id: 'modal-listing-slab', open: (ctx, id) => ctx.openEditSlab(id), notes: 'msl-notes' },
+]) {
+  test(`modal ${modalListingCase.label} notes-only edit preserves listing metadata`, async () => {
+    const malformed = {
+      schemaVersion: 999,
+      photo: { status: 'ready', front: '../held-front.jpg', back: 'back.jpg', extras: ['%252fheld.jpg'] },
+      draft: { title: 'Keep this raw shape', description: 'Do not silently repair this record' },
+      arbitrary: 'held until explicit repair',
+    };
+    const loaded = await loadApp({
+      seed: { [modalListingCase.table]: [modalListingPreservationRow(modalListingCase.table, modalListingCase.id, malformed)] },
+    });
+    const { ctx, document, localStorage, grab } = loaded;
+    modalListingCase.open(ctx, modalListingCase.id);
+    document.getElementById(modalListingCase.notes).value = 'after stock modal edit';
+    await (modalListingCase.table === 'slabs' ? ctx.saveSlab() : ctx.saveSingle());
+
+    const saved = grab('DB').DB[modalListingCase.table].find(row => row.id === modalListingCase.id);
+    assert.equal(JSON.stringify(saved.listingMeta), JSON.stringify(malformed), 'the stock modal keeps malformed metadata for explicit repair');
+    const stored = JSON.parse(localStorage.getItem('pokeinventory_v3'));
+    assert.equal(JSON.stringify(stored[modalListingCase.table].find(row => row.id === modalListingCase.id).listingMeta), JSON.stringify(malformed),
+      'the preserved metadata is present in the serialised cache');
+  });
+
+  test(`modal ${modalListingCase.label} save rejects a concurrent listing metadata edit`, async () => {
+    const originalMeta = { schemaVersion: 1, photo: { status: 'unknown' }, draft: { title: 'Before' } };
+    const changedMeta = { schemaVersion: 1, photo: { status: 'ready', front: 'new-front.jpg', back: 'new-back.jpg' }, draft: { title: 'Listing tab wins' } };
+    const loaded = await loadApp({
+      seed: { [modalListingCase.table]: [modalListingPreservationRow(modalListingCase.table, modalListingCase.id + '-conflict', originalMeta)] },
+    });
+    const { ctx, document, localStorage, fetchMock, grab } = loaded;
+    const conflictId = modalListingCase.id + '-conflict';
+    const toasts = [];
+    ctx.toast = message => toasts.push(String(message));
+    modalListingCase.open(ctx, conflictId);
+    document.getElementById(modalListingCase.notes).value = 'unsaved stock edit';
+
+    const cache = JSON.parse(localStorage.getItem('pokeinventory_v3'));
+    const cacheRow = cache[modalListingCase.table].find(row => row.id === conflictId);
+    cacheRow.listingMeta = changedMeta;
+    localStorage.setItem('pokeinventory_v3', JSON.stringify(cache));
+    fetchMock.calls.length = 0;
+    await (modalListingCase.table === 'slabs' ? ctx.saveSlab() : ctx.saveSingle());
+
+    const current = grab('DB').DB[modalListingCase.table].find(row => row.id === conflictId);
+    assert.equal(JSON.stringify(current.listingMeta), JSON.stringify(changedMeta), 'the newer listing metadata remains authoritative');
+    assert.equal(current.notes, 'before', 'the stale stock modal cannot overwrite the newer row');
+    assert.equal(fetchMock.calls.length, 0, 'a stale stock modal does not dispatch a cloud mutation');
+    assert.equal(document.getElementById(modalListingCase.notes).value, 'unsaved stock edit', 'the stock draft remains open');
+    assert.ok(toasts.some(message => /changed elsewhere/i.test(message)), 'the user sees the existing stale edit message');
+  });
+}
+
 function storageSnapshot(localStorage, excludedKeys = new Set()) {
   const entries = [];
   for (let i = 0; i < localStorage.length; i++) {

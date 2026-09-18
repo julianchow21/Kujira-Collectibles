@@ -1310,6 +1310,66 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
 
 /* Global focus ring for keyboard navigation across interactive controls */
 :is(.btn,.icon-btn,.nav-btn,.btb-item,.sheet-item,th.sortable,.nav-dd-item,.nav-dd-subitem):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* v3.59 listing workspace */
+#page-listing.active{display:flex;flex-direction:column}
+#page-listing>#lst-tracker-card{order:1}
+#page-listing>.card:not(#lst-tracker-card){order:2}
+.kjr-listing-editor{margin-top:16px;border-top:1px solid var(--border);padding-top:12px}
+.kjr-listing-editor summary{cursor:pointer;color:var(--text2);font-size:12px;font-weight:600;list-style-position:inside}
+.kjr-listing-editor summary:hover{color:var(--text)}
+.kjr-listing-current-ref{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:14px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text2)}
+.kjr-listing-current-ref a{color:var(--accent);overflow-wrap:anywhere;word-break:break-word}
+.kjr-listing-current-ref small{flex-basis:100%;color:var(--text3);font-size:11px}
+.kjr-listing-history-form{margin-top:14px;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius)}
+.kjr-listing-history-title{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px}
+.kjr-listing-inline-status{font-size:11px;color:var(--text3);overflow-wrap:anywhere}
+.kjr-listing-toolbar{display:grid;grid-template-columns:minmax(180px,1fr) repeat(3,minmax(130px,0.55fr));gap:8px;margin-bottom:12px}
+.kjr-listing-selection-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;color:var(--text2);font-size:12px}
+.kjr-listing-selection-bar>div{display:flex;gap:6px;flex-wrap:wrap}
+.kjr-listing-table-wrap{overflow-x:auto}
+.kjr-listing-table{width:100%;min-width:780px;border-collapse:collapse;font-size:12px}
+/* The tracker scrolls horizontally inside its card. Keep its header in normal
+   flow so the global inventory sticky rule cannot cover the first record. */
+.kjr-listing-table thead{position:static;top:auto;z-index:auto}
+.kjr-listing-table th{padding:8px 9px;background:var(--bg3);border-bottom:1px solid var(--border2);color:var(--text3);font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.kjr-listing-table td{padding:9px;border-bottom:1px solid var(--border);vertical-align:top;color:var(--text2)}
+.kjr-listing-table tbody tr:hover{background:var(--bg3)}
+.kjr-listing-name{font-weight:600;color:var(--text);max-width:220px;overflow-wrap:anywhere;word-break:break-word}
+.kjr-listing-ref{margin-top:3px;color:var(--text3);font-size:10px;overflow-wrap:anywhere;word-break:break-word}
+.kjr-listing-cell-stack{display:flex;flex-direction:column;gap:3px;min-width:90px}
+.kjr-listing-status{display:inline-flex;align-items:center;width:max-content;max-width:180px;padding:2px 7px;border:1px solid var(--border2);border-radius:999px;color:var(--text2);font-size:10px;line-height:1.3;overflow-wrap:anywhere}
+.kjr-listing-status.ready{color:var(--green);border-color:var(--green)}
+.kjr-listing-status.hold{color:var(--amber);border-color:var(--amber)}
+.kjr-listing-status.reported{color:var(--accent);border-color:var(--accent)}
+.kjr-listing-empty{padding:38px 16px;text-align:center;color:var(--text3);font-size:13px}
+.kjr-listing-packet{background:var(--bg3);border-color:var(--border)}
+.kjr-listing-packet .card-head{background:transparent}
+.kjr-listing-packet-warning{margin-top:8px;color:var(--amber);font-size:11px;line-height:1.45}
+.kjr-listing-import-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:16px;margin-bottom:7px;color:var(--text2);font-size:12px}
+.kjr-listing-import-preview{margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.kjr-listing-import-preview ul{margin:7px 0 0;padding-left:18px}
+.kjr-listing-import-preview li{margin:3px 0}
+.kjr-listing-packet-output{font-family:'SF Mono','Fira Code',monospace;font-size:12px;line-height:1.55;resize:vertical;min-height:150px;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:768px){
+  .kjr-listing-toolbar{grid-template-columns:1fr 1fr}
+  .kjr-listing-toolbar input{grid-column:1/-1}
+  .kjr-listing-selection-bar{align-items:flex-start;flex-direction:column}
+  .kjr-listing-table{min-width:700px}
+}
+@media(max-width:600px){
+  /* The shared phone table rules intentionally fit inventory tables to the
+     viewport. The tracker keeps its seven review columns in a horizontal
+     scroller so identity, photo refs and readiness text remain readable. */
+  body:not(.force-tables) #page-listing .kjr-listing-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  body:not(.force-tables) #page-listing .kjr-listing-table-wrap>table{
+    width:max-content;min-width:700px;table-layout:auto}
+  body:not(.force-tables) #page-listing .kjr-listing-table-wrap>table>thead th,
+  body:not(.force-tables) #page-listing .kjr-listing-table-wrap>table>tbody td{
+    display:table-cell;width:auto}
+  body:not(.force-tables) #page-listing .kjr-listing-table-wrap>table>tbody>tr>td{
+    white-space:normal;overflow:visible;text-overflow:clip}
+}
   .kjr-status-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px;white-space:nowrap}
   .kjr-pill-stock{background:var(--pill-stock-bg);color:var(--pill-stock-fg);border:1px solid var(--pill-stock-bd)}
   .kjr-pill-sold{background:var(--pill-sold-bg);color:var(--pill-sold-fg);border:1px solid var(--pill-sold-bd)}

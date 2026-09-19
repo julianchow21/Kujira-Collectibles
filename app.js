@@ -3015,6 +3015,7 @@ function getLocalVersion() { return parseInt(localStorage.getItem(LS_VERSION_KEY
 
 // ── saveData: localStorage FIRST (instant), then cloud async ─
 let _saveTimer = null;
+let _dirtyFlushInFlight = null;
 // _dirty is persisted to localStorage so a failed sync isn't lost when the tab closes.
 const DIRTY_LS_KEY = 'pokeinv_dirty_v1';
 const DIRTY_V2_PREFIX = 'pokeinv_dirty_v2:';
@@ -4725,23 +4726,34 @@ function _applySyncConflict(conflict, operation) {
   return _resolveSyncConflict(conflict, operation).ok;
 }
 
-async function _flushDirtyToSupabase() {
+function _flushDirtyToSupabase() {
+  if (_dirtyFlushInFlight) return _dirtyFlushInFlight;
+  const run = Promise.resolve().then(() => _flushDirtyToSupabaseBody());
+  let tracked;
+  tracked = run.finally(() => {
+    if (_dirtyFlushInFlight === tracked) _dirtyFlushInFlight = null;
+  });
+  _dirtyFlushInFlight = tracked;
+  return tracked;
+}
+
+async function _flushDirtyToSupabaseBody() {
   // In a local preview (file:// or localhost) every write is gated off so we
   // never touch prod. Bail BEFORE the loop - otherwise the skipped upserts read
   // as success and we'd clear the dirty flags, so the reload-merge would drop
   // the local-only rows (silent data loss). Leaving them dirty makes the merge
   // preserve them across refresh.
-  if (isLocalhostPreview()) return;
+  if (isLocalhostPreview()) return { status: 'preview', confirmed: false };
   // Corrupt authoritative delete state cannot safely distinguish a legitimate
   // upsert from stale resurrection. Keep rows visible and dirty, but freeze
   // every outbound inventory write until the state is repaired.
-  if (!_deleteStateAllowsCloudWrites()) return;
-  if (!await _flushMutationGroups()) return;
+  if (!_deleteStateAllowsCloudWrites()) return { status: 'blocked', confirmed: false };
+  if (!await _flushMutationGroups()) return { status: 'blocked', confirmed: false };
   const groupedRows = _pendingMutationRowKeys();
   if (!groupedRows) {
     console.warn('[sync] Pending mutation queue is unavailable; ordinary writes are paused');
     setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
-    return;
+    return { status: 'blocked', confirmed: false };
   }
   const mutationQueueEpoch = _mutationQueueEpoch;
   const tables = ['singles', 'slabs', 'sales', 'etbs', 'booster_boxes', 'booster_packs', 'ebay_purchases'];
@@ -4760,7 +4772,7 @@ async function _flushDirtyToSupabase() {
       });
     if (records.length) toSync.push({ tbl, key, records });
   }
-  if (!toSync.length) return;
+  if (!toSync.length) return { status: 'idle', confirmed: true };
   setSyncStatus('saving');
   let anyError = false;
   let mutationQueueBlocked = false;
@@ -4768,9 +4780,9 @@ async function _flushDirtyToSupabase() {
   syncTables:
   for (const { tbl, key, records } of toSync) {
     try {
-      // Chunk into 200-row batches to stay under Supabase body size limits.
-      for (let i = 0; i < records.length; i += 200) {
-        const chunk = records.slice(i, i + 200);
+      // The CAS RPC accepts at most 100 operations per mutation.
+      for (let i = 0; i < records.length; i += 100) {
+        const chunk = records.slice(i, i + 100);
         // A delete can run while this flush is waiting on an earlier table.
         // Never dispatch a stale snapshot for a row that is now absent.
         const currentIds = new Set(DB[key].map(row => row.id));
@@ -4835,14 +4847,22 @@ async function _flushDirtyToSupabase() {
   if (mutationQueueBlocked) {
     console.warn('[sync] Pending mutation queue changed; ordinary writes are paused');
     setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
-    return;
+    return { status: 'blocked', confirmed: false };
   }
   if (!anyError) {
     const pendingAfter = _syncDiagPendingSnapshot();
-    if (pendingAfter.totals.dirty === 0 && pendingAfter.totals.mutation === 0) {
+    const confirmed = pendingAfter.totals.dirty === 0 && pendingAfter.totals.mutation === 0;
+    if (confirmed) {
       _syncDiagRecordSuccess('write', { clearFailure: false });
+      setSyncStatus('ok');
+    } else {
+      _syncDiagSetSettledStatus();
     }
-    setSyncStatus('ok');
+    // Opportunistic: retry any deletes and trash writes that failed previously.
+    // Trash first so the snapshot exists before its source row is deleted.
+    flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
+      .then(() => flushPendingDeletes()).catch(e => console.warn('flushPendingDeletes failed:', e));
+    return { status: confirmed ? 'confirmed' : 'pending', confirmed };
   } else {
     _syncDiagSetSettledStatus();
   }
@@ -4850,6 +4870,33 @@ async function _flushDirtyToSupabase() {
   // Trash first so the snapshot exists before its source row is deleted.
   flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
     .then(() => flushPendingDeletes()).catch(e => console.warn('flushPendingDeletes failed:', e));
+  return { status: 'error', confirmed: false };
+}
+
+function _kjrListingDirtyTargetsPending(targets) {
+  return (Array.isArray(targets) ? targets : []).some(target =>
+    target && _dirty[target.table] && _dirty[target.table].has(target.id));
+}
+
+async function _kjrAwaitListingDirtyPersistence(targets) {
+  if (_saveTimer !== null) {
+    clearTimeout(_saveTimer);
+    _saveTimer = null;
+  }
+  const hadInFlight = !!_dirtyFlushInFlight;
+  let result = await _flushDirtyToSupabase();
+  // If an older flush was already in flight, it could not have seen this
+  // import's marker. One bounded follow-up sends the current dirty-row
+  // snapshot, including the selected rows, without scanning clean tables.
+  if (!isLocalhostPreview() && (hadInFlight || (result && result.confirmed)) &&
+      result && result.status !== 'error' && result.status !== 'blocked' &&
+      _kjrListingDirtyTargetsPending(targets)) {
+    result = await _flushDirtyToSupabase();
+  }
+  const pending = _kjrListingDirtyTargetsPending(targets);
+  if (isLocalhostPreview()) return { status: 'preview', confirmed: false, pending };
+  return { ...(result || { status: 'pending', confirmed: false }), pending,
+    confirmed: !!(result && result.confirmed && !pending) };
 }
 
 // ── saveAllToSupabase: batch upload everything (used after import) ──
@@ -13944,10 +13991,10 @@ async function kjrApplyListingImport(raw) {
       renderListingTracker();
       throw new Error('Import could not be saved locally. Free storage and try again.');
     }
-    // Keep the established bulk-save contract. Localhost preview returns before
-    // any cloud call, while the live app reports a queued/local result through
-    // the existing sync status when the normal batch flush cannot complete.
-    await saveAllToSupabase();
+    const persistence = await _kjrAwaitListingDirtyPersistence(
+      report.changes.map(change => ({ table: change.record.source, id: change.record.id }))
+    );
+    report.persistence = persistence;
     renderListingTracker();
     return report;
   };
@@ -13968,7 +14015,12 @@ async function lstApplyImport() {
   if (!state || !state.report || !state.report.ok) return;
   try {
     const report = await kjrApplyListingImport(raw);
-    if (status) status.textContent = report.changes.length ? 'Metadata applied, stock fields untouched' : 'No changes to apply';
+    if (status) {
+      if (!report.changes.length) status.textContent = 'No changes to apply';
+      else if (report.persistence && report.persistence.confirmed) status.textContent = 'Metadata applied and synced, stock fields untouched';
+      else if (report.persistence && report.persistence.status === 'preview') status.textContent = 'Metadata saved locally in preview, stock fields untouched';
+      else status.textContent = 'Metadata applied locally, cloud sync pending, stock fields untouched';
+    }
     _kjrListingImportState = { raw, report };
     _kjrListingRenderImportReport(report);
   } catch (error) {

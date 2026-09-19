@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp } = require('./harness.js');
+const { loadApp, syncRequest, syncSuccessResponse, syncCalls } = require('./harness.js');
 
 function readyMeta(ctx, overrides) {
   return ctx.kjrListingNormalise({
@@ -117,6 +117,124 @@ test('listing import preserves existing stock fields and imported evidence stays
   assert.equal(db.singles[0].listingMeta.history[0].verification, 'reported');
   await ctx.undoLast();
   assert.equal(grab('DB').DB.singles[0].listingMeta, undefined);
+});
+
+test('listing import waits for a running dirty flush, follows with the selected row and skips clean tables', async () => {
+  const selectedSeed = { id: 'listing-target', name: 'Serperior', status: 'Available', qty: 1 };
+  const queuedSeed = { id: 'legacy-queued-row', name: 'Pikachu', status: 'Available', qty: 1 };
+  const lateSeed = { id: 'late-legacy-row', name: 'Eevee', status: 'Available', qty: 1 };
+  const cleanSlab = { id: 'clean-slab-row', name: 'Clean slab', status: 'Available', qty: 1 };
+  const loaded = await loadApp({ seed: { singles: [selectedSeed, queuedSeed, lateSeed], slabs: [cleanSlab] } });
+  const { ctx, grab, fetchMock, settle } = loaded;
+  const db = grab('DB').DB;
+  fetchMock.calls.length = 0;
+  ctx.markDirty('singles', queuedSeed.id, db.singles.find(row => row.id === queuedSeed.id));
+
+  let requestNo = 0;
+  let releaseFirst;
+  let releaseSecond;
+  let firstStartedResolve;
+  let secondStartedResolve;
+  const firstStarted = new Promise(resolve => { firstStartedResolve = resolve; });
+  const secondStarted = new Promise(resolve => { secondStartedResolve = resolve; });
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    requestNo++;
+    if (requestNo === 1) {
+      firstStartedResolve();
+      return new Promise(resolve => { releaseFirst = () => resolve(syncSuccessResponse(opts)); });
+    }
+    if (requestNo === 2) {
+      secondStartedResolve();
+      return new Promise(resolve => { releaseSecond = () => resolve(syncSuccessResponse(opts)); });
+    }
+    return syncSuccessResponse(opts);
+  });
+  const firstFlush = ctx._flushDirtyToSupabase();
+  await firstStarted;
+
+  grab('_kjrListingSelected')._kjrListingSelected.add('singles::' + selectedSeed.id);
+  const packet = ctx.kjrBuildListingHandoff();
+  packet.records[0].listingMeta = readyMeta(ctx, { draft: { title: 'Imported Serperior', description: 'Imported draft' } });
+  let fullSaveCalls = 0;
+  ctx.saveAllToSupabase = () => {
+    fullSaveCalls++;
+    return Promise.reject(new Error('listing import must not call saveAllToSupabase'));
+  };
+
+  let finished = false;
+  const applying = ctx.kjrApplyListingImport(packet).then(report => {
+    finished = true;
+    return report;
+  });
+  await settle();
+  assert.equal(finished, false, 'import remains pending while the older dirty flush is in flight');
+  assert.equal(syncCalls(fetchMock).length, 1, 'the follow-up request waits for the running request');
+
+  releaseFirst();
+  await firstFlush;
+  await secondStarted;
+  ctx.markDirty('singles', lateSeed.id, db.singles.find(row => row.id === lateSeed.id));
+  releaseSecond();
+  const report = await applying;
+  assert.equal(report.persistence.confirmed, false,
+    'a dirty row added after the selected follow-up snapshot keeps the result pending');
+  assert.equal(fullSaveCalls, 0, 'listing import never invokes the full-library save');
+  const batches = syncCalls(fetchMock).map(call => syncRequest(call.opts).operations);
+  assert.deepEqual(batches.map(batch => batch.map(operation => operation.id)), [
+    [queuedSeed.id], [selectedSeed.id],
+  ]);
+  assert.equal(batches.some(batch => batch.some(operation => operation.id === cleanSlab.id)), false,
+    'clean rows in other tables are excluded');
+  assert.equal(db.singles.find(row => row.id === selectedSeed.id).listingMeta.draft.title, 'Imported Serperior');
+  assert.equal(Number.isSafeInteger(db.singles.find(row => row.id === selectedSeed.id)._serverVersion), true,
+    'the selected row still receives the cloud acknowledgement');
+  assert.equal(grab('_dirty')._dirty.singles.has(selectedSeed.id), false);
+  assert.equal(grab('_dirty')._dirty.singles.has(queuedSeed.id), false);
+  assert.equal(grab('_dirty')._dirty.singles.has(lateSeed.id), true,
+    'a late unrelated dirty marker remains queued for its own later flush');
+});
+
+test('listing import keeps local metadata and its dirty marker when targeted cloud persistence fails', async () => {
+  const { ctx, grab, localStorage, fetchMock } = await loadApp({
+    seed: { singles: [{ id: 'listing-cloud-error', name: 'Umbreon', status: 'Available', qty: 1 }], slabs: [] },
+  });
+  const row = grab('DB').DB.singles[0];
+  grab('_kjrListingSelected')._kjrListingSelected.add('singles::' + row.id);
+  const packet = ctx.kjrBuildListingHandoff();
+  packet.records[0].listingMeta = readyMeta(ctx, { draft: { title: 'Saved locally', description: 'Cloud retry required' } });
+  fetchMock.calls.length = 0;
+  fetchMock.reject('/sync/v2/mutate', new TypeError('offline'));
+
+  const report = await ctx.kjrApplyListingImport(packet);
+  assert.equal(report.persistence.confirmed, false);
+  assert.equal(report.persistence.status, 'error');
+  const savedRow = grab('DB').DB.singles.find(candidate => candidate.id === row.id);
+  assert.equal(savedRow.listingMeta.draft.title, 'Saved locally');
+  assert.equal(grab('_dirty')._dirty.singles.has(row.id), true);
+  const cached = JSON.parse(localStorage.getItem('pokeinventory_v3'));
+  assert.equal(cached.singles.find(candidate => candidate.id === row.id).listingMeta.draft.title, 'Saved locally');
+  assert.equal(syncCalls(fetchMock).length, 1);
+});
+
+test('dirty persistence caps CAS batches at 100 and clears every queued row', async () => {
+  const rows = Array.from({ length: 101 }, (_, index) => ({
+    id: 'queued-listing-' + index,
+    name: 'Queued card ' + index,
+    status: 'Available',
+    qty: 1,
+  }));
+  const loaded = await loadApp({ seed: { singles: rows, slabs: [] } });
+  const { ctx, grab, fetchMock } = loaded;
+  fetchMock.calls.length = 0;
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  rows.forEach(row => ctx.markDirty('singles', row.id, row));
+
+  const result = await ctx._flushDirtyToSupabase();
+  assert.equal(result.confirmed, true);
+  const batches = syncCalls(fetchMock).map(call => syncRequest(call.opts).operations);
+  assert.deepEqual(batches.map(batch => batch.length), [100, 1]);
+  assert.equal(new Set(batches.flat().map(operation => operation.id)).size, 101);
+  assert.equal(grab('_dirty')._dirty.singles.size, 0);
 });
 
 test('listing tracker renders empty and many long rows with readable identity refs', async () => {

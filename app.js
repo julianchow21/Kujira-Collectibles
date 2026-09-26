@@ -5402,6 +5402,31 @@ function mergeTable(cloudRows, localRows, dirtySet, tableKey) {
 }
 
 async function initDB() {
+  if (_kjrDealerPreviewOnly()) {
+    // Dealer Desk's loopback fixture is a local metadata pilot. It must not
+    // start the normal authenticated pull, diagnostics, or cloud merge path.
+    // Keep the canonical local cache available for Dealer Desk and leave all
+    // production startup behaviour unchanged.
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const local = raw ? JSON.parse(raw) : {};
+      DB.singles = Array.isArray(local.singles) ? local.singles : [];
+      DB.slabs = Array.isArray(local.slabs) ? local.slabs : [];
+      DB.sales = Array.isArray(local.sales) ? local.sales : [];
+      DB.etbs = Array.isArray(local.etbs) ? local.etbs : [];
+      DB.boosterBoxes = Array.isArray(local.boosterBoxes) ? local.boosterBoxes : [];
+      DB.boosterPacks = Array.isArray(local.boosterPacks) ? local.boosterPacks : [];
+      DB.ebayPurchases = Array.isArray(local.ebayPurchases) ? local.ebayPurchases : [];
+    } catch (_) {
+      DB.singles = []; DB.slabs = []; DB.sales = [];
+      DB.etbs = []; DB.boosterBoxes = []; DB.boosterPacks = []; DB.ebayPurchases = [];
+    }
+    DB.trash = _loadLocalTrash();
+    _syncPullLoaded = false;
+    setSyncStatus('idle');
+    showPage('dealer');
+    return;
+  }
   const main = document.getElementById('main-content');
   _serverTombstones = _readCachedServerTombstones();
 
@@ -6797,6 +6822,7 @@ let cmdSellResultIdx = -1;
 let cmdSellResults = [];
 
 function openCmdBar(mode) {
+  if (_kjrDealerPreviewOnly()) return;
   cmdMode = mode || 'add';
   setCmdMode(cmdMode);
   kjrModalCtrl.open(document.getElementById('cmd-overlay'));
@@ -6823,7 +6849,7 @@ function closeCmdBar() {
 
 document.addEventListener('keydown', function(e) {
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key === 'k') { e.preventDefault(); openCmdBar(); }
+  if (mod && e.key === 'k') { e.preventDefault(); if (!_kjrDealerPreviewOnly()) openCmdBar(); }
 });
 
 function setCmdMode(mode) {
@@ -9353,7 +9379,17 @@ document.addEventListener('keydown', e => {
 
 // =========== NAVIGATION ===========
 let _kjrCurrentPage = null; // tracks the active tab so we only scroll-reset on an actual switch, never on a same-page re-render
+function _kjrDealerPreviewOnly() {
+  try {
+    const hostname = String(window.location && window.location.hostname || '').toLowerCase();
+    const protocol = String(window.location && window.location.protocol || '').toLowerCase();
+    const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    const localHttp = protocol === 'http:' || protocol === 'https:';
+    return window.__KJR_DEALER_PREVIEW__ === true && window.__KJR_DEALER_PREVIEW_RESTRICT_NAV__ === true && localHttp && loopback;
+  } catch (_) { return false; }
+}
 function showPage(name) {
+  if (_kjrDealerPreviewOnly() && name !== 'dealer') name = 'dealer';
   // Leaving Singles for any other tab drops the session-only unresolved
   // filter, so it can never sit silently active after a tab change.
   if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
@@ -9418,13 +9454,14 @@ function showPage(name) {
   if (name === 'listing') { populateListingSelect(); renderListingTracker(); }
   if (name === 'changelog') renderChangelog();
   if (name === 'trash') { renderTrash(); purgeExpiredTrash(); }
+  if (name === 'dealer' && typeof window.renderDealerDesk === 'function') window.renderDealerDesk();
   syncMoreActive(name);
 }
 
 // ── MORE SHEET (mobile nav hub) ──────────────────────────────
 // Pages that live behind the bottom bar's "More" button rather than a
 // dedicated tab. When one of these is active we light up the More item.
-const MORE_PAGES = new Set(['listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide']);
+const MORE_PAGES = new Set(['dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide']);
 function syncMoreActive(name) {
   const moreBtn = document.getElementById('btb-more');
   if (moreBtn) moreBtn.classList.toggle('active', MORE_PAGES.has(name));
@@ -16364,11 +16401,14 @@ async function getSgdRate() {
   return FALLBACK_RATE;
 }
 
-// Initialise rate on page load (non-blocking)
-getSgdRate().then(rate => {
-  const el = document.getElementById('fx-rate-display');
-  if (el) el.textContent = 'US$1 = S$' + rate.toFixed(4) + ' (live)';
-});
+// Initialise rate on page load (non-blocking). The strict local Dealer Desk
+// fixture is offline by design, so it must not start the legacy FX waterfall.
+if (!_kjrDealerPreviewOnly()) {
+  getSgdRate().then(rate => {
+    const el = document.getElementById('fx-rate-display');
+    if (el) el.textContent = 'US$1 = S$' + rate.toFixed(4) + ' (live)';
+  });
+}
 
 function usdToSgd(usd) {
   return usd * (_sgdRate || 1.27);
@@ -18388,6 +18428,10 @@ function kjrStartOwnerApp() {
   _kjrOwnerAppStarted = true;
   kjrCompactVersionCache();
   initDB();
+  // Keep the local synthetic fixture offline after hydrating its canonical DB.
+  // This guard is stricter than localhost alone and leaves production startup
+  // and its maintenance work unchanged.
+  if (_kjrDealerPreviewOnly()) return;
   setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
   setTimeout(() => { runRefreshQueue(false); }, 8000);
 }

@@ -1461,3 +1461,164 @@ dialog.kjr-complete-back::backdrop{background:var(--backdrop)}
   #intro-word-icon{animation:none}
   #intro-skip{animation:none;opacity:0.55}
 }
+
+/* ===== Dealer Desk Release 0 pilot ===== */
+.dealer-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:16px;border:1px solid var(--border2);border-radius:var(--radius-lg);background:var(--bg2);color:var(--text2);font-size:12px;line-height:1.45}
+.dealer-banner strong{color:var(--accent);font-size:11px;letter-spacing:.08em}
+.dealer-next-action{margin-left:auto;color:var(--text3)}
+.dealer-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0 auto 16px;max-width:1200px}
+.dealer-header h1{margin:0;font-size:22px;letter-spacing:-.02em}
+.dealer-header p{margin:5px 0 0;color:var(--text3);font-size:13px;line-height:1.5}
+.dealer-candidate-picker{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;min-width:240px}
+.dealer-select-label{display:flex;flex-direction:column;gap:5px;color:var(--text3);font-size:11px;font-weight:600}
+.dealer-select-label select{min-width:220px}
+.dealer-pager{display:flex;align-items:center;gap:6px;color:var(--text3);font-size:11px;white-space:nowrap}
+.dealer-section{max-width:1200px;margin:0 auto 12px;padding:0;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:clip}
+.dealer-section>summary{padding:14px 18px;cursor:pointer;color:var(--text);font-size:14px;font-weight:650;list-style-position:inside}
+.dealer-section>summary::marker{color:var(--accent)}
+.dealer-section[open]>summary{border-bottom:1px solid var(--border);background:var(--bg3)}
+.dealer-section>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.dealer-section>label,.dealer-section>.dealer-help,.dealer-section>.dealer-result,.dealer-section>.dealer-blocker,.dealer-section>.dealer-actions,.dealer-section>.dealer-grid,.dealer-section>.dealer-blockers,.dealer-section>.dealer-settlement,.dealer-section>.dealer-evidence{margin-left:18px;margin-right:18px}
+.dealer-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding-top:16px}
+.dealer-grid label{display:flex;flex-direction:column;gap:5px;min-width:0;color:var(--text2);font-size:12px;font-weight:550;line-height:1.35}
+.dealer-grid label input,.dealer-grid label select,.dealer-grid label textarea,.dealer-section>label textarea{width:100%;box-sizing:border-box}
+.dealer-grid .dealer-wide{grid-column:1/-1}
+.dealer-grid-identity{grid-template-columns:repeat(4,minmax(0,1fr))}
+.dealer-grid-money{grid-template-columns:repeat(3,minmax(0,1fr))}
+.dealer-grid-copy{grid-template-columns:repeat(4,minmax(0,1fr))}
+.dealer-grid-evidence{grid-template-columns:repeat(3,minmax(0,1fr));padding-top:12px}
+.dealer-help{color:var(--text3);font-size:11px;line-height:1.55}
+.dealer-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:14px;padding-bottom:16px}
+.dealer-actions button:disabled{opacity:.45;cursor:not-allowed}
+.dealer-result{margin-top:14px;margin-bottom:16px;padding:12px;max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.dealer-message{max-width:1200px;margin:0 auto 12px;padding:11px 14px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg2);color:var(--text2);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.dealer-message.success::before{content:'Saved: ';font-weight:700;color:var(--green)}
+.dealer-message.error::before{content:'Action blocked: ';font-weight:700;color:var(--red)}
+.dealer-message pre{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text3);font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+.dealer-blocked,.dealer-empty{max-width:1200px;margin:0 auto 16px;padding:28px;border:1px dashed var(--border2);border-radius:var(--radius-lg);background:var(--bg2)}
+.dealer-blocked h2,.dealer-empty h2{margin:0 0 8px;font-size:16px}
+.dealer-blocked p,.dealer-empty p{margin:0;color:var(--text3);font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.dealer-blockers{margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3);font-size:12px;line-height:1.5}
+.dealer-blockers strong{color:var(--amber)}
+.dealer-blockers ul{margin:7px 0 0;padding-left:18px;color:var(--text2)}
+.dealer-blocker{padding:12px;margin-top:14px;margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius);color:var(--amber);font-size:12px;line-height:1.5}
+.dealer-evidence{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
+.dealer-evidence summary{cursor:pointer;color:var(--text2);font-size:12px;font-weight:600}
+.dealer-evidence[open] summary{margin-bottom:4px}
+.dealer-settlement{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;line-height:1.5}
+.dealer-settlement strong{color:var(--amber)}
+
+@media(max-width:768px){
+  .dealer-banner{align-items:flex-start;flex-direction:column;gap:4px;margin-bottom:12px;padding:10px 12px}
+  .dealer-next-action{margin-left:0}
+  .dealer-header{display:block;margin-bottom:12px}
+  .dealer-header h1{font-size:20px}
+  .dealer-candidate-picker{margin-top:12px;display:block}
+  .dealer-select-label select{width:100%;min-width:0}
+  .dealer-pager{margin-top:8px;justify-content:space-between}
+  .dealer-section>summary{padding:13px 14px;font-size:13px}
+  .dealer-section>label,.dealer-section>.dealer-help,.dealer-section>.dealer-result,.dealer-section>.dealer-blocker,.dealer-section>.dealer-actions,.dealer-section>.dealer-grid,.dealer-section>.dealer-blockers,.dealer-section>.dealer-settlement,.dealer-section>.dealer-evidence{margin-left:14px;margin-right:14px}
+  .dealer-grid,.dealer-grid-identity,.dealer-grid-money,.dealer-grid-copy,.dealer-grid-evidence{grid-template-columns:1fr;padding-top:12px}
+  .dealer-grid .dealer-wide{grid-column:auto}
+  .dealer-actions{padding-bottom:14px}
+  .dealer-actions .btn{flex:1 1 auto;min-height:40px}
+  .dealer-result{max-height:240px}
+}
+
+/* Loopback Dealer Desk fixture: keep unrelated inventory mutators and cloud
+   status out of the review surface. The production page has no marker class. */
+html.dealer-preview-only .topbar .nav,
+html.dealer-preview-only .topbar-actions,
+html.dealer-preview-only .bottom-tab-bar,
+html.dealer-preview-only #sentry-drawer,
+html.dealer-preview-only #sentry-drawer-overlay,
+html.dealer-preview-only #sync-diagnostics-overlay,
+html.dealer-preview-only #page-dashboard,
+html.dealer-preview-only #page-inventory,
+html.dealer-preview-only #page-slabs,
+html.dealer-preview-only #page-sales,
+html.dealer-preview-only #page-ebay,
+html.dealer-preview-only #page-listing,
+html.dealer-preview-only #page-import,
+html.dealer-preview-only #page-changelog,
+html.dealer-preview-only #page-guide,
+html.dealer-preview-only #page-trash,
+html.dealer-preview-only #page-etbs,
+html.dealer-preview-only #page-boosterBoxes{display:none!important}
+html.dealer-preview-only #page-dealer{display:block!important}
+.dealer-money-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 18px;margin:12px 0 0;font:11px/1.45 system-ui,sans-serif}
+.dealer-money-summary>div{display:grid;grid-template-columns:minmax(9rem,auto) minmax(0,1fr);gap:8px;border-top:1px solid var(--border);padding-top:6px}
+.dealer-money-summary dt{color:var(--text3)}
+.dealer-money-summary dd{margin:0;color:var(--text);overflow-wrap:anywhere}
+.dealer-review-summary{font:12px/1.5 system-ui,sans-serif;color:var(--text2)}
+.dealer-review-summary ul{margin:8px 0;padding-left:18px}
+@media(max-width:768px){
+  .dealer-money-summary{grid-template-columns:1fr}
+  .dealer-money-summary>div{grid-template-columns:minmax(8rem,auto) minmax(0,1fr)}
+}
+
+/* Dealer Desk form controls use the same surface and focus tokens as the rest
+   of the app, so the guided pilot remains readable in both themes. */
+#dealer-root label{color:var(--text2)}
+#dealer-root .dealer-grid label{gap:6px;color:var(--text2);font-size:12px;font-weight:550}
+#dealer-root .dealer-section>label{display:flex;flex-direction:column;gap:6px;color:var(--text2);font-size:12px;font-weight:550;line-height:1.35}
+#dealer-root .dealer-grid label input,
+#dealer-root .dealer-grid label select,
+#dealer-root .dealer-grid label textarea,
+#dealer-root .dealer-candidate-picker select,
+#dealer-root .dealer-section>label textarea{
+  width:100%;
+  min-height:38px;
+  padding:9px 11px;
+  border:1px solid var(--border2);
+  border-radius:var(--radius);
+  background:var(--bg3);
+  color:var(--text);
+  font:inherit;
+  line-height:1.35;
+  box-shadow:none;
+}
+#dealer-root .dealer-grid label textarea,
+#dealer-root .dealer-section>label textarea{min-height:82px;resize:vertical}
+#dealer-root .dealer-grid label select,
+#dealer-root .dealer-candidate-picker select{cursor:pointer}
+#dealer-root .dealer-grid label input::placeholder,
+#dealer-root .dealer-grid label textarea::placeholder,
+#dealer-root .dealer-section>label textarea::placeholder{color:var(--text3);opacity:.95}
+#dealer-root .dealer-grid label input:focus-visible,
+#dealer-root .dealer-grid label select:focus-visible,
+#dealer-root .dealer-grid label textarea:focus-visible,
+#dealer-root .dealer-candidate-picker select:focus-visible,
+#dealer-root .dealer-section>label textarea:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-glow);
+}
+
+/* Visible controls for the loopback fixture's responsive QA data. */
+.dealer-fixture-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;max-width:1200px;margin:0 auto 12px;padding:10px 14px;border:1px solid var(--border2);border-radius:var(--radius-lg);background:var(--bg2);color:var(--text2)}
+.dealer-fixture-tools-copy{display:flex;align-items:baseline;gap:9px;min-width:0;flex-wrap:wrap;font-size:11px;line-height:1.45}
+.dealer-fixture-tools-copy strong{color:var(--text);font-size:12px}
+.dealer-fixture-tools-copy span{color:var(--text3)}
+.dealer-fixture-tools-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dealer-fixture-tools-actions .btn{min-height:36px}
+.dealer-fixture-tools-status{flex:1 1 100%;min-height:1.4em;margin:0;color:var(--text3);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
+.dealer-fixture-tools-status[data-tone="success"]{color:var(--green)}
+.dealer-fixture-tools-status[data-tone="error"]{color:var(--red)}
+.dealer-fixture-tools-actions .btn:disabled{opacity:.5;cursor:wait}
+
+@media(max-width:768px){
+  #dealer-root .dealer-grid label input,
+  #dealer-root .dealer-grid label select,
+  #dealer-root .dealer-grid label textarea,
+  #dealer-root .dealer-section>label textarea{min-height:42px}
+  #dealer-root .dealer-grid label textarea,
+  #dealer-root .dealer-section>label textarea{min-height:96px}
+  .dealer-fixture-tools{display:block;margin-bottom:12px;padding:10px 12px}
+  .dealer-fixture-tools-copy{display:block}
+  .dealer-fixture-tools-copy strong,.dealer-fixture-tools-copy span{display:block}
+  .dealer-fixture-tools-copy span{margin-top:2px}
+  .dealer-fixture-tools-actions{display:grid;grid-template-columns:1fr;gap:6px;margin-top:9px}
+  .dealer-fixture-tools-actions .btn{width:100%;min-height:40px;justify-content:center}
+}

@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.60',
+    release: 'kujira-collectibles@3.61',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="styles.css?v=3.60">
+<link rel="stylesheet" href="styles.css?v=3.61">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span>KUJIRA</span>
       <span>Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.60 (19 Sep)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3);opacity:0.85" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.61 (23 Sep)</span>
     </div>
   </button>
   <nav class="nav">
@@ -216,6 +216,10 @@
           Booster Boxes &amp; Packs
         </button>
         <div style="height:1px;background:var(--border);margin:4px 8px"></div>
+        <button class="nav-dd-item" onclick="showPage('dealer');closeNavDD()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="2"/></svg>
+          Dealer Desk
+        </button>
         <button class="nav-dd-item" onclick="showPage('listing');closeNavDD()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
           Listings
@@ -776,6 +780,11 @@
       </div>
     </div>
   </div>
+</div>
+
+<!-- DEALER DESK RELEASE 0 PAGE -->
+<div id="page-dealer" class="page">
+  <div id="dealer-root" aria-live="polite"></div>
 </div>
 
 <!-- LISTINGS PAGE -->
@@ -1500,6 +1509,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8L12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
         Boxes &amp; Packs
       </button>
+      <button class="sheet-item" data-page="dealer" onclick="moreGo('dealer')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="2"/></svg>
+        Dealer Desk
+      </button>
       <button class="sheet-item" data-page="listing" onclick="moreGo('listing')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M16 12a4 4 0 1 1-4-4" stroke-linecap="round"/><circle cx="16" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
         Listings
@@ -1932,7 +1945,10 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.60"></script>
-<script src="features.js?v=3.60"></script>
+<script src="app.js?v=3.61"></script>
+<script src="features.js?v=3.61"></script>
+<script src="dealer-money.js?v=3.61"></script>
+<script src="dealer-desk.js?v=3.61"></script>
+<script src="dealer-ui.js?v=3.61"></script>
 </body>
 </html>

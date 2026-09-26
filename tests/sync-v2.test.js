@@ -162,6 +162,38 @@ test('sync-v2: Command Sell groups repeated inventory targets into one atomic tr
   assert.strictEqual(syncRequest(syncCalls(loaded.fetchMock)[0].opts).operations.length, 3);
 });
 
+test('sync-v2: Command Sell blocks a mixed cart before any optimistic change or queue', async () => {
+  const generic = { id: 'command-generic-first', name: 'Generic card', set: 'Base', language: 'EN',
+    condition: 'Near Mint', type: 'raw', qty: 1, costPrice: 10, status: 'Available',
+    _serverVersion: 4, datePurchased: '1 Jan 2025' };
+  const dealer = { id: 'command-dealer-second', name: 'Dealer card', grader: 'PSA', grade: '10', certNo: 'D-1',
+    costPrice: 20, status: 'Available', _serverVersion: 7, dealerCopyId: 'copy-command-1',
+    dealerPaymentStatus: 'Unknown' };
+  const loaded = await loadApp({ seed: { singles: [generic], slabs: [dealer], sales: [] } });
+  const groupKey = loaded.ctx.cmdSingleGroupKey(generic);
+  loaded.ctx.cmdSellCart = [
+    { id: 'line-generic', _table: 'singles', name: generic.name, groupKey, qty: 1, price: 25 },
+    { id: dealer.id, _table: 'slabs', name: dealer.name, grader: dealer.grader, grade: dealer.grade, certNo: dealer.certNo, qty: 1, price: 40 },
+  ];
+  for (const [id, value] of Object.entries({ 'cmd-sell-ship': '0', 'cmd-sell-fees': '0',
+    'cmd-sell-channel': 'Carousell', 'cmd-sell-buyer': 'Test buyer', 'cmd-sell-date': '2026-09-05' })) {
+    loaded.document.getElementById(id).value = value;
+  }
+  const beforeDb = JSON.stringify(plain(loaded.grab('DB').DB));
+  const beforeCache = loaded.localStorage.getItem('pokeinventory_v3');
+  const dirty = loaded.grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+
+  loaded.ctx.cmdConfirmSell();
+
+  assert.strictEqual(JSON.stringify(plain(loaded.grab('DB').DB)), beforeDb);
+  assert.strictEqual(loaded.localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.strictEqual(loaded.localStorage.getItem('_kjrMutationGroupsV2'), null);
+  assert.strictEqual(dirty.singles.has(generic.id), false);
+  assert.strictEqual(dirty.slabs.has(dealer.id), false);
+  assert.strictEqual(dirty.sales.size, 0);
+});
+
 test('sync-v2: transaction queue failure leaves Command Sell and eBay completion data unchanged', async () => {
   const commandItem = { id: 'command-queue-fail', name: 'Queue card', set: 'Base', language: 'EN',
     condition: 'Near Mint', type: 'raw', qty: 1, costPrice: 10, status: 'Available', _serverVersion: 2 };

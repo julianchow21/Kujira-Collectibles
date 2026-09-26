@@ -9,6 +9,8 @@ node --check features.js || fail=1
 node --check dealer-money.js || fail=1
 node --check dealer-desk.js || fail=1
 node --check dealer-ui.js || fail=1
+node --check dealer-store.js || fail=1
+node --check dealer-production-ui.js || fail=1
 
 echo "- index.html structure"
 s=$(grep -c '<style' index.html)
@@ -18,7 +20,7 @@ b=$(grep -c '<script>' index.html)
 
 echo "- cache-bust matches badge"
 ver=$(grep 'id="app-ver"' index.html | sed 's/.*>v\([0-9][0-9.]*\) .*/\1/')
-for f in styles.css app.js features.js dealer-money.js dealer-desk.js dealer-ui.js; do
+for f in styles.css app.js features.js dealer-money.js dealer-desk.js dealer-ui.js dealer-store.js dealer-production-ui.js; do
   grep -qF "$f?v=$ver" index.html || { echo "FAIL: $f tag is not ?v=$ver"; fail=1; }
 done
 

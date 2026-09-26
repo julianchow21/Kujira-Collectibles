@@ -238,6 +238,14 @@
     }
 
     const arr = DB[schema.dbKey] = DB[schema.dbKey] || [];
+    if (newItems.some(item => typeof kjrDealerControlledRow === 'function' && kjrDealerControlledRow(schema.dbKey, item))) {
+      toastError('Import stopped because Dealer-controlled rows must be changed from Dealer Desk.');
+      return;
+    }
+    if (mode === 'replace' && arr.some(item => typeof kjrDealerControlledRow === 'function' && kjrDealerControlledRow(schema.dbKey, item))) {
+      toastError('Replace stopped because the selected table contains Dealer-controlled rows. Resolve them in Dealer Desk first.');
+      return;
+    }
     newItems.forEach(item => kjrStampCreatedMetadata(item, schema.dbKey));
     if (mode === 'replace') {
       if (arr.length && !await kjrConfirm('Replace all ' + arr.length + ' existing ' + esc(type) + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.', {ok:'Replace', danger:true})) {
@@ -709,6 +717,7 @@ function kjrSaveModal(){
   // onclick handler, so `item` is a *clone*, not a reference). Without this,
   // edits to ETBs / Booster Boxes / eBay Purchases silently no-op.
   const target = isNew ? item : (DB[dbKey].find(r => r.id === item.id) || item);
+  if (!isNew && typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(dbKey, target, 'edit')) return;
   // Snapshot the row BEFORE we mutate so we can diff against it for the
   // changelog entry. (Was logging an empty extra string before.)
   const beforeKjr = isNew ? null : { ...target };
@@ -769,6 +778,7 @@ async function kjrDeleteRow(dbKey, id){
   const idx = DB[dbKey].findIndex(r => r.id === id);
   if (idx < 0) return;
   const row = DB[dbKey][idx];
+  if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(dbKey, row, 'delete')) return;
   const label = row.product || row.name || row.tracking || id;
   // Unified deletion: ETB / Booster Box / Booster Pack / eBay rows now go to
   // Trash like Singles/Slabs/Sales. Recoverable from the Trash tab for 30
@@ -1605,6 +1615,7 @@ function kjrToggleDeclared(id) {
 function kjrEbaySetStatus(id, newStatus){
   const p = (DB.ebayPurchases||[]).find(r => r.id === id);
   if (!p) return;
+  if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('ebayPurchases', p, 'edit')) return;
   if (newStatus === 'Completed') return kjrOpenCompleteModal(id);
   p.status = newStatus;
   p.lastUpdated = Date.now();
@@ -1620,6 +1631,7 @@ function kjrEbaySetStatus(id, newStatus){
 async function kjrEbayResetToPaid(id){
   const p = (DB.ebayPurchases||[]).find(r => r.id === id);
   if (!p) return;
+  if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('ebayPurchases', p, 'edit')) return;
   if (!await kjrConfirm('Reset "'+ esc(p.product||p.tracking||p.id) +'" to "Paid"?\n\nIts current status "'+ esc(p.status||'(blank)') +'" isn\'t in the pipeline.', {ok:'Reset to Paid'})) return;
   p.status = 'Paid';
   p.lastUpdated = Date.now();
@@ -1682,6 +1694,7 @@ function kjrEbayBulkAdvanceSelected(){
 function kjrEbayInlineEdit(id, field, value){
   const p = (DB.ebayPurchases || []).find(r => r.id === id);
   if (!p) return;
+  if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('ebayPurchases', p, 'edit')) return;
   if (typeof snapshotForUndo === 'function') snapshotForUndo();
   const v = parseFloat(value);
   p[field] = isNaN(v) ? '' : v;

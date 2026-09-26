@@ -1622,3 +1622,93 @@ html.dealer-preview-only #page-dealer{display:block!important}
   .dealer-fixture-tools-actions{display:grid;grid-template-columns:1fr;gap:6px;margin-top:9px}
   .dealer-fixture-tools-actions .btn{width:100%;min-height:40px;justify-content:center}
 }
+
+/* ===== Dealer Desk production surface ===== */
+.dealer-production-shell{max-width:1400px;margin:0 auto;padding-bottom:32px}
+.dealer-production-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:11px 14px;border:1px solid var(--border2);border-radius:var(--radius-lg);background:var(--bg2);color:var(--text2);font-size:12px;line-height:1.45}
+.dealer-production-banner strong{color:var(--accent);font-size:11px;letter-spacing:.04em}
+.dealer-production-banner .btn{margin-left:auto}
+.dealer-production-message{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:0 auto 14px;padding:11px 14px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg2);color:var(--text2);font-size:12px;line-height:1.45}
+.dealer-production-message strong{color:var(--text)}
+.dealer-production-message.success strong{color:var(--green)}
+.dealer-production-message.warning strong{color:var(--amber)}
+.dealer-production-message.error strong{color:var(--red)}
+.dealer-production-message pre{flex:1 1 100%;max-height:180px;margin:4px 0 0;padding:8px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg3);border-radius:var(--radius);font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text3)}
+.dealer-production-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.dealer-production-header h1{margin:0;font-size:23px;letter-spacing:-.02em}
+.dealer-production-header p{max-width:720px;margin:5px 0 0;color:var(--text3);font-size:13px;line-height:1.5}
+.dealer-production-selected{display:flex;align-items:flex-end;flex-direction:column;gap:5px;max-width:300px;text-align:right;color:var(--text2);font-size:13px}
+.dealer-production-selected>strong{display:-webkit-box;max-width:100%;overflow:hidden;overflow-wrap:anywhere;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.dealer-production-local{display:inline-flex;padding:3px 7px;border:1px solid var(--amber);border-radius:999px;color:var(--amber);font-size:10px;font-weight:650;letter-spacing:.03em;text-transform:uppercase}
+.dealer-production-layout{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:14px;align-items:start}
+.dealer-production-list,.dealer-production-section,.dealer-production-pending{padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg2)}
+.dealer-production-list{position:sticky;top:calc(56px + env(safe-area-inset-top) + 12px);max-height:calc(100vh - 80px - env(safe-area-inset-top));overflow:auto;min-width:0}
+.dealer-production-list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+.dealer-production-list h2,.dealer-production-section h2{margin:0;font-size:15px}
+.dealer-production-picker{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;color:var(--text3);font-size:11px;font-weight:650}
+.dealer-production-picker select,.dealer-production-form input:not([type="checkbox"]),.dealer-production-form select,.dealer-production-form textarea,.dealer-production-stage-fields input:not([type="checkbox"]),.dealer-production-stage-fields select,.dealer-production-stage-fields textarea{width:100%;box-sizing:border-box;min-height:38px;padding:8px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font:inherit;line-height:1.35}
+.dealer-production-picker select:focus-visible,.dealer-production-form input:focus-visible,.dealer-production-form select:focus-visible,.dealer-production-form textarea:focus-visible,.dealer-production-stage-fields input:focus-visible,.dealer-production-stage-fields select:focus-visible,.dealer-production-stage-fields textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.dealer-production-cards{display:flex;flex-direction:column;gap:7px;max-height:52vh;overflow:auto}
+.dealer-production-card{display:flex;flex-direction:column;gap:3px;width:100%;padding:10px;text-align:left;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3);color:var(--text2);cursor:pointer}
+.dealer-production-card:hover,.dealer-production-card.selected{border-color:var(--accent);background:var(--accent-glow)}
+.dealer-production-card strong{display:-webkit-box;overflow:hidden;overflow-wrap:anywhere;color:var(--text);font-size:12px;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.dealer-production-card span,.dealer-production-card small{overflow-wrap:anywhere;color:var(--text3);font-size:11px}
+.dealer-production-pagination{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:12px;color:var(--text3);font-size:10px;text-align:center}
+.dealer-production-pagination span{flex:1;min-width:0}
+.dealer-production-detail{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dealer-production-section h2{margin-bottom:12px}
+.dealer-production-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+.dealer-production-form label,.dealer-production-stage-fields label{display:flex;flex-direction:column;gap:5px;min-width:0;color:var(--text2);font-size:11px;font-weight:600;line-height:1.35}
+.dealer-production-form textarea,.dealer-production-stage-fields textarea{min-height:88px;resize:vertical}
+.dealer-production-form label:last-child{grid-column:1/-1}
+.dealer-production-checkbox-field{justify-content:center;grid-column:1/-1}
+.dealer-production-check{display:flex;align-items:center;gap:8px;min-height:38px;color:var(--text2);font-size:11px;font-weight:600}
+.dealer-production-check input[type="checkbox"]{width:17px;height:17px;min-width:17px;min-height:17px;margin:0;accent-color:var(--accent)}
+.dealer-production-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}
+.dealer-production-actions .btn{min-height:36px}
+.dealer-production-action-help{flex:1 1 100%;margin-top:1px}
+.dealer-production-help{color:var(--text3);font-size:11px;line-height:1.5}
+.dealer-production-conflicts{margin-top:12px;padding:12px;border:1px solid var(--amber);border-radius:var(--radius);background:var(--bg3);color:var(--text2)}
+.dealer-production-conflicts h3{margin:0 0 5px;color:var(--text);font-size:13px}
+.dealer-production-conflict-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.dealer-production-conflict-variant{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2)}
+.dealer-production-conflict-variant strong{color:var(--text);font-size:11px}
+.dealer-production-conflict-variant p{flex:1;margin:0;color:var(--text3);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
+.dealer-production-conflict-variant .btn{flex:0 0 auto}
+.dealer-production-stage-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 12px}
+.dealer-production-stages{display:flex;flex-direction:column;gap:12px}
+.dealer-production-stage{min-width:0;margin:0;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3)}
+.dealer-production-stage legend{padding:0 6px;color:var(--text);font-size:13px;font-weight:700}
+.dealer-production-stage>p{margin:0 0 2px}
+.dealer-production-wide{grid-column:1/-1}
+.dealer-production-links{display:flex;gap:10px;flex-wrap:wrap;color:var(--text2);font-size:12px;overflow-wrap:anywhere}
+.dealer-production-link{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.dealer-production-unlinked{color:var(--text3)}
+.dealer-production-references{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--text3);font-size:11px;overflow-wrap:anywhere}
+.dealer-production-reference{color:var(--text2);text-decoration:underline;text-underline-offset:2px}
+.dealer-production-settlement{display:flex;flex-direction:column;gap:3px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;line-height:1.45}
+.dealer-production-settlement strong{color:var(--amber)}
+.dealer-production-settlement span{color:var(--text3)}
+.dealer-production-empty{padding:18px 4px;color:var(--text3);font-size:12px;line-height:1.5}
+.dealer-production-empty h2{margin:0 0 6px;color:var(--text);font-size:14px}
+.dealer-production-empty p{margin:0}
+.dealer-production-pending{color:var(--text2);font-size:12px;line-height:1.45}
+.dealer-production-pending strong{color:var(--amber)}
+.dealer-production-pending ul{display:flex;flex-direction:column;gap:8px;margin:10px 0 0;padding-left:18px}
+.dealer-production-pending li{display:flex;align-items:center;justify-content:space-between;gap:8px;overflow-wrap:anywhere}
+
+@media(max-width:900px){
+  .dealer-production-layout{grid-template-columns:1fr}
+  .dealer-production-list{position:static;max-height:none;overflow:visible}
+  .dealer-production-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:35vh;overflow:auto}
+}
+@media(max-width:600px){
+  .dealer-production-header{display:block}
+  .dealer-production-selected{align-items:flex-start;margin-top:10px;text-align:left}
+  .dealer-production-form,.dealer-production-stage-fields{grid-template-columns:1fr}
+  .dealer-production-form label:last-child,.dealer-production-wide,.dealer-production-checkbox-field{grid-column:auto}
+  .dealer-production-cards{grid-template-columns:1fr}
+  .dealer-production-banner{align-items:flex-start;flex-direction:column}
+  .dealer-production-banner .btn{width:100%;margin-left:0}
+  .dealer-production-actions .btn{flex:1 1 auto}
+}

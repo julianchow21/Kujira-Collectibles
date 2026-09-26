@@ -146,6 +146,32 @@ as $function$
   end;
 $function$;
 
+-- Dealer.sql replaces this hook with the owner-scoped link and marker guard.
+-- Install a false stub only on a CAS-first database. Reapplying CAS after
+-- Dealer must preserve the real guard, otherwise a later migration would
+-- silently reopen generic edits to Dealer-controlled rows.
+do $dealer_hook$
+begin
+  if to_regprocedure('public.collectibles_dealer_blocks_generic(text,text,jsonb)') is null then
+    execute $ddl$
+      create function public.collectibles_dealer_blocks_generic(
+        p_table text,
+        p_id text,
+        p_data jsonb default null
+      )
+      returns boolean
+      language sql
+      security definer
+      stable
+      set search_path = pg_catalog, public, pg_temp
+      as $function$
+        select false;
+      $function$;
+    $ddl$;
+  end if;
+end;
+$dealer_hook$;
+
 create or replace function public.collectibles_set_row_version()
 returns trigger
 language plpgsql
@@ -303,10 +329,12 @@ declare
   v_client_table text;
   v_seen text[] := array[]::text[];
   v_conflicts jsonb := '[]'::jsonb;
+  v_dealer_conflicts jsonb := '[]'::jsonb;
   v_results jsonb := '[]'::jsonb;
   v_result jsonb;
   v_now timestamptz;
   v_next_version bigint;
+  v_guard_data jsonb;
 begin
   if p_request is null or jsonb_typeof(p_request) <> 'object' then
     return jsonb_build_object('ok', false, 'code', 'invalid_request');
@@ -530,6 +558,18 @@ begin
       v_seen := array_append(v_seen, jsonb_build_array('trash', v_trash_id)::text);
     end if;
 
+    v_guard_data := case
+      when v_type in ('upsert', 'restore') then v_operation->'data'
+      else null
+    end;
+    if public.collectibles_dealer_blocks_generic(v_table, v_id, v_guard_data) then
+      v_dealer_conflicts := v_dealer_conflicts || jsonb_build_array(jsonb_build_object(
+        'table', v_table,
+        'id', v_id,
+        'code', 'dealer_controlled_row'
+      ));
+    end if;
+
     -- The identifier is formatted only after passing a hard-coded table allowlist.
     execute format(
       'select jsonb_build_object(''id'', id, ''data'', '
@@ -617,6 +657,13 @@ begin
       end if;
     end if;
   end loop;
+
+  if jsonb_array_length(v_dealer_conflicts) > 0 then
+    return jsonb_build_object(
+      'ok', false, 'code', 'dealer_controlled_row',
+      'conflicts', v_dealer_conflicts
+    );
+  end if;
 
   if jsonb_array_length(v_conflicts) > 0 then
     return jsonb_build_object(
@@ -733,11 +780,13 @@ $function$;
 
 revoke all on function public.collectibles_clean_data(jsonb) from public, anon, authenticated;
 revoke all on function public.collectibles_clean_trash_data(jsonb) from public, anon, authenticated;
+revoke all on function public.collectibles_dealer_blocks_generic(text, text, jsonb) from public, anon, authenticated;
 revoke all on function public.collectibles_set_row_version() from public, anon, authenticated;
 revoke all on function public.collectibles_pull_v2(integer) from public, anon, authenticated;
 revoke all on function public.collectibles_mutate_v2(jsonb) from public, anon, authenticated;
 grant execute on function public.collectibles_clean_data(jsonb) to service_role;
 grant execute on function public.collectibles_clean_trash_data(jsonb) to service_role;
+grant execute on function public.collectibles_dealer_blocks_generic(text, text, jsonb) to service_role;
 grant execute on function public.collectibles_set_row_version() to service_role;
 grant execute on function public.collectibles_pull_v2(integer) to service_role;
 grant execute on function public.collectibles_mutate_v2(jsonb) to service_role;

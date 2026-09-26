@@ -160,6 +160,8 @@ const SB_URL = USE_WORKER_DB ? SB_DB_PROXY_BASE : SB_DIRECT_URL;
 const SYNC_PROTOCOL = 2;
 const SYNC_PULL_URL = SB_WORKER_ORIGIN + '/sync/v2/pull';
 const SYNC_MUTATE_URL = SB_WORKER_ORIGIN + '/sync/v2/mutate';
+const DEALER_PULL_URL = SB_WORKER_ORIGIN + '/sync/v2/dealer/pull';
+const DEALER_COMMAND_URL = SB_WORKER_ORIGIN + '/sync/v2/dealer/command';
 const KJR_AUTH_KEY = '_kjrOwnerSessionV1';
 const KJR_AUTH_CALLBACK_KEY = '_kjrAuthCallback';
 const KJR_OWNER_VERIFIED_KEY = '_kjrOwnerVerifiedV1';
@@ -262,7 +264,7 @@ function _kjrSetAuthGate(active) {
   }
 }
 
-function _kjrHideOwnerData() {
+function _kjrHideOwnerData(clearDealer = true, ownerIdOverride) {
   _syncPullPromise = null;
   _syncPullLoaded = false;
   _serverTombstones = [];
@@ -271,11 +273,219 @@ function _kjrHideOwnerData() {
     ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases', 'trash']
       .forEach(key => { DB[key] = []; });
   }
+  // Dealer Desk production data has its own owner-scoped cache and request
+  // controllers. Clear it with the generic owner cache, while keeping the
+  // bearer entirely inside this app-owned facade.
+  if (clearDealer && window.DealerStore && typeof window.DealerStore.clearOwnerData === 'function') {
+    try { window.DealerStore.clearOwnerData(ownerIdOverride); } catch (_) {}
+  } else if (!clearDealer && window.DealerStore && typeof window.DealerStore.suspendOwnerData === 'function') {
+    try { window.DealerStore.suspendOwnerData(); } catch (_) {}
+  }
 }
+
+// Production Dealer Desk receives a narrow owner context and a fetch facade.
+// No bearer, refresh token, or auth headers leave app.js. The store can retain
+// confirmed records and candidate drafts, but it cannot manufacture a session
+// or silently reuse a response from a previous owner generation.
+function _kjrOwnerContext() {
+  const session = _kjrAuthSession;
+  return {
+    authenticated: !!session && typeof session.user_id === 'string' && !!session.user_id && typeof session.session_id === 'string' && !!session.session_id,
+    userId: session && session.user_id ? session.user_id : null,
+    sessionId: session && session.session_id ? session.session_id : null,
+    generation: _kjrAuthGeneration,
+    verified: !!session && _kjrOwnerVerifiedFor(session),
+    offline: typeof navigator !== 'undefined' && navigator.onLine === false
+  };
+}
+window.kjrOwnerContext = _kjrOwnerContext;
+
+async function _kjrDealerOwnerFetch(request) {
+  const input = request && typeof request === 'object' ? request : {};
+  const session = _kjrAuthSession;
+  const expectedGeneration = Number.isSafeInteger(input.generation) ? input.generation : _kjrAuthGeneration;
+  if (!session || !session.user_id || !session.session_id || !SB_HDR.Authorization) {
+    const error = new Error('Dealer Desk needs a verified owner session');
+    error.code = 'owner_session_required';
+    throw error;
+  }
+  if (expectedGeneration !== _kjrAuthGeneration) {
+    const error = new Error('The owner session changed');
+    error.code = 'owner_changed';
+    throw error;
+  }
+  const url = input.endpoint === 'pull' ? DEALER_PULL_URL : input.endpoint === 'command' ? DEALER_COMMAND_URL : null;
+  if (!url) {
+    const error = new Error('Dealer Desk endpoint is not recognised');
+    error.code = 'owner_transport_unavailable';
+    throw error;
+  }
+  // The store normally passes an endpoint name only. If a caller supplies a
+  // URL or path anyway, accept the exact configured Worker URL and reject
+  // absolute-host, traversal, and alternate-path attempts before fetch. The
+  // caller never supplies headers, so Authorization and Origin remain owned
+  // by this app facade.
+  const requestedUrl = input.url !== undefined ? input.url : input.path;
+  if (requestedUrl !== undefined && String(requestedUrl) !== url) {
+    const error = new Error('Dealer Desk endpoint is not recognised');
+    error.code = 'owner_transport_unavailable';
+    throw error;
+  }
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: _kjrAuthHeaders(session.access_token),
+      body: JSON.stringify(input.body || {}),
+      signal: input.signal
+    });
+  } catch (cause) {
+    if (expectedGeneration !== _kjrAuthGeneration) {
+      const error = new Error('The owner session changed');
+      error.code = 'owner_changed';
+      throw error;
+    }
+    throw cause;
+  }
+  if (expectedGeneration !== _kjrAuthGeneration || !_kjrAuthSession || _kjrAuthSession.session_id !== session.session_id) {
+    const error = new Error('The owner session changed');
+    error.code = 'owner_changed';
+    throw error;
+  }
+  let body;
+  try { body = await response.json(); }
+  catch (_) {
+    const error = new Error('Dealer Desk server returned an unreadable response');
+    error.code = 'server_response_invalid';
+    throw error;
+  }
+  if (!response.ok && body && typeof body === 'object' && body.ok === undefined) body.ok = false;
+  return body;
+}
+window.kjrDealerOwnerFetch = _kjrDealerOwnerFetch;
+
+// Read-only summaries for the production Dealer Desk stock picker. This is an
+// app-owned bridge, so the isolated store never reads DB or writes inventory.
+// The server still validates the selected table, id, and row version before a
+// Dealer command can link or acquire a copy.
+window.kjrDealerInventorySummaries = function () {
+  if (!_kjrAuthSession || !_kjrAuthSession.user_id) return { ok: false, code: 'owner_session_required', rows: [] };
+  const tables = [
+    ['singles', 'Singles', 'singles'], ['slabs', 'Slabs', 'slabs'], ['etbs', 'ETBs', 'etbs'],
+    ['boosterBoxes', 'Booster boxes', 'booster_boxes'], ['boosterPacks', 'Booster packs', 'booster_packs']
+  ];
+  const rows = [];
+  tables.forEach(([tableKey, label, table]) => {
+    const values = typeof DB === 'object' && DB && Array.isArray(DB[tableKey]) ? DB[tableKey] : [];
+    values.forEach(row => {
+      if (!row || row.id == null) return;
+      const name = row.name || row.cardName || row.title || row.productName || row.set || 'Unnamed item';
+      const detail = [row.set, row.number, row.condition].filter(value => value != null && String(value).trim()).join(' · ');
+      const rawCost = row.cost ?? row.pricePaid ?? row.purchasePrice ?? row.itemCost ?? row.dealerCostBasis ?? null;
+      const cost = rawCost && typeof rawCost === 'object' ? (rawCost.amount ?? rawCost.itemCost ?? rawCost.settledItemCost ?? null) : rawCost;
+      rows.push({
+        table,
+        tableLabel: label,
+        id: String(row.id),
+        label: label + ' · ' + String(name) + (detail ? ' · ' + detail : ''),
+        version: Number.isSafeInteger(Number(row.row_version ?? row._serverVersion ?? row.version)) ? Number(row.row_version ?? row._serverVersion ?? row.version) : null,
+        cost: cost == null ? null : String(cost),
+        currency: String(row.currency || row.costCurrency || (row.cost && row.cost.currency) || 'SGD').toUpperCase(),
+        dealerControlled: kjrDealerControlledRow(table, row),
+        syncBlocked: _kjrDealerCoreRowUnsynced(tableKey, row.id) || kjrDealerControlledRow(table, row)
+      });
+    });
+  });
+  return { ok: true, ownerId: _kjrAuthSession.user_id, generation: _kjrAuthGeneration, rows };
+};
+
+function _kjrDealerCoreRowUnsynced(tableKey, id) {
+  try {
+    if (typeof _dirty === 'object' && _dirty && _dirty[tableKey] instanceof Set && _dirty[tableKey].has(String(id))) return true;
+  } catch (_) {}
+  // A queued mutation can exist before the in-memory dirty set is rebuilt. Read
+  // only its table/id envelope, never its user data, so Dealer linking cannot
+  // race an unresolved generic edit.
+  try {
+    if (typeof localStorage.length !== 'number' || typeof localStorage.key !== 'function') return false;
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (typeof key !== 'string' || !key.startsWith(PENDING_MUTATION_GROUP_KEY_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      const group = raw ? JSON.parse(raw) : null;
+      const operations = group && Array.isArray(group.operations) ? group.operations : [];
+      const serverTable = tableKey === 'boosterBoxes' ? 'booster_boxes' : tableKey === 'boosterPacks' ? 'booster_packs' : tableKey;
+      if (operations.some(operation => operation && String(operation.table) === serverTable && String(operation.id) === String(id))) return true;
+    }
+  } catch (_) { return true; }
+  return false;
+}
+
+// Dealer-owned canonical rows carry a non-editable cost basis after the
+// authenticated pull. The private underscore markers are intentionally
+// stripped before the generic cache sees them, so this guard checks the
+// public marker that remains in the row or its nested data envelope.
+function kjrDealerControlledRow(table, row) {
+  if (!row || typeof row !== 'object') return false;
+  const sources = [row, row.data && typeof row.data === 'object' ? row.data : null].filter(Boolean);
+  const markerKeys = ['dealerOwnerId', 'dealerCopyId', 'dealerCandidateId', 'dealerCostBasis', 'dealerOutcomeId', 'dealerPaymentStatus', 'dealerRelease'];
+  return sources.some(source =>
+    markerKeys.some(key => source[key] != null) || source.dealerControlled === true ||
+    source._dealerOwnerId != null || source._dealerCopyId != null || source._dealerCandidateId != null
+  );
+}
+
+function kjrDealerWriteGuard(table, row, action) {
+  if (!kjrDealerControlledRow(table, row)) return false;
+  const label = row && (row.name || row.product || row.title || row.id) || 'this row';
+  const verb = action || 'change';
+  const message = 'Dealer Desk controls ' + label + '. ' + verb + ' it from Dealer Desk after the server confirms the action.';
+  if (typeof toastError === 'function') toastError(message);
+  else if (typeof toast === 'function') toast(message, 6000, true);
+  return true;
+}
+window.kjrDealerControlledRow = kjrDealerControlledRow;
+window.kjrDealerWriteGuard = kjrDealerWriteGuard;
+
+function _kjrDealerStateReplacementBlocked(before, after, action) {
+  const tables = ['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases'];
+  for (const table of tables) {
+    const beforeRows = before && Array.isArray(before[table]) ? before[table] : [];
+    const afterRows = after && Array.isArray(after[table]) ? after[table] : [];
+    const beforeMap = new Map(beforeRows.map(row => [String(row && row.id), row]));
+    const afterMap = new Map(afterRows.map(row => [String(row && row.id), row]));
+    const ids = new Set([...beforeMap.keys(), ...afterMap.keys()]);
+    for (const id of ids) {
+      const oldRow = beforeMap.get(id);
+      const newRow = afterMap.get(id);
+      if (!kjrDealerControlledRow(table, oldRow) && !kjrDealerControlledRow(table, newRow)) continue;
+      if (JSON.stringify(oldRow) !== JSON.stringify(newRow)) {
+        kjrDealerWriteGuard(table, oldRow || newRow, action || 'change');
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Dealer commands mutate canonical inventory or sales through the Worker. A
+// confirmed Dealer result must refresh the core cache through the existing
+// authenticated pull and merge path, which preserves unresolved generic edits
+// instead of creating a second optimistic write queue.
+window.kjrDealerRefreshCore = async function () {
+  if (_kjrDealerPreviewOnly()) return { ok: false, code: 'preview_core_refresh_blocked', message: 'Core refresh is unavailable in the local Dealer fixture' };
+  try {
+    const pulled = await _pullSyncState({ force: true });
+    if (!_syncDiagMergePulledState(pulled)) return { ok: false, code: 'core_refresh_apply_failed', message: 'The confirmed Dealer result was saved, but the core cache could not be refreshed safely' };
+    return { ok: true, tables: ['singles', 'slabs', 'sales'] };
+  } catch (cause) {
+    return { ok: false, code: 'core_refresh_failed', message: 'The confirmed Dealer result was saved, but the core records could not be refreshed safely', detail: cause && cause.message };
+  }
+};
 
 function _kjrExpireOwnerSession(clearOwnerVerified) {
   _kjrClearSession(!!clearOwnerVerified);
-  _kjrHideOwnerData();
+  _kjrHideOwnerData(false);
   _kjrSetAuthGate(true);
   _kjrShowAuthState('kjr-auth-expired');
 }
@@ -789,16 +999,25 @@ async function kjrSubmitNewPassword(event) {
 
 async function kjrSignOut() {
   const session = _kjrAuthSession;
+  const dealerStore = window.DealerStore;
+  const unsynced = dealerStore && typeof dealerStore.unsyncedCount === 'function'
+    ? Number(dealerStore.unsyncedCount()) || 0
+    : 0;
+  if (unsynced > 0) {
+    const prompt = 'Dealer Desk has ' + unsynced + ' local draft or pending request' + (unsynced === 1 ? '' : 's') + '. Cancel keeps you signed in. Continue only if you want to discard these unsynced items and sign out.';
+    if (typeof window.confirm !== 'function' || !window.confirm(prompt)) return false;
+  }
   const logout = session
     ? fetch(SB_DIRECT_URL + '/auth/v1/logout?scope=local', {
       method: 'POST', headers: _kjrAuthHeaders(session.access_token), signal: AbortSignal.timeout(10000)
     }).catch(() => undefined)
     : Promise.resolve();
   _kjrClearSession(true);
-  _kjrHideOwnerData();
+  _kjrHideOwnerData(true, session && session.user_id);
   _kjrSetAuthGate(true);
   kjrShowAuthForm();
   await logout;
+  return true;
 }
 
 // ── KJR: table-name translator (Supabase ↔ DB key) ──────────────
@@ -7411,6 +7630,7 @@ function cmdConfirmSell() {
     if (l._table === 'slabs') {
       const row = DB.slabs.find(i => i.id === l.id && (i.status||'Available') !== 'Sold');
       if (!row) continue;
+      if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('slabs', row, 'sell')) return;
       const rg = (typeof _resolveGrader === 'function') ? _resolveGrader(l.grader, l.grade, l.notes) : null;
       const gradeLabel = (rg && rg.grader)
         ? (rg.grader + ' ' + rg.grade).trim()
@@ -7421,11 +7641,13 @@ function cmdConfirmSell() {
     } else if (l._table === 'etbs' || l._table === 'boosterBoxes') {
       const row = DB[l._table].find(i => i.id === l.id && kjrIsActiveStatus(l._table, i.status||''));
       if (!row) continue;
+      if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(l._table, row, 'sell')) return;
       const dateAcqSealed = toDateMmmYyyy(row.date || '') || '';
       planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price: l.price || 0, dateAcquired: dateAcqSealed });
     } else if (l._table === 'boosterPacks') {
       const row = DB.boosterPacks.find(i => i.id === l.id && kjrIsActiveStatus('boosterPacks', i.status||''));
       if (!row) continue;
+      if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('boosterPacks', row, 'sell')) return;
       const unitCost = parseFloat(row.unitPrice) || 0;
       const available = Math.max(1, parseInt(row.qty) || 1);
       const take = Math.min(l.qty, available);
@@ -7447,6 +7669,8 @@ function cmdConfirmSell() {
       units.sort((a, b) => b.cost - a.cost);
       const take = Math.min(l.qty, units.length);
       for (let u = 0; u < take; u++) {
+        const row = DB.singles.find(i => i.id === units[u].id);
+        if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('singles', row, 'sell')) return;
         planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price: l.price || 0, dateAcquired: units[u].dateAcquired });
       }
     }
@@ -7814,6 +8038,7 @@ async function _undoLastBody() {
   // Snapshot the *current* state into redo before mutating.
   const beforeUndo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   const prev = JSON.parse(undoStack[undoStack.length - 1]);
+  if (_kjrDealerStateReplacementBlocked(beforeUndo, prev, 'undo')) return;
   if (!await _prepareExplicitRowRestores(beforeUndo, prev, 'additions')) {
     toastError('Undo stopped because delete recovery state could not be saved safely');
     return;
@@ -7870,6 +8095,7 @@ async function _redoLastBody() {
   if (redoStack.length === 0) { toast('Nothing to redo'); return; }
   const beforeRedo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   const next = JSON.parse(redoStack[redoStack.length - 1]);
+  if (_kjrDealerStateReplacementBlocked(beforeRedo, next, 'redo')) return;
   if (!await _prepareExplicitRowRestores(beforeRedo, next, 'additions')) {
     toastError('Redo stopped because delete recovery state could not be saved safely');
     return;
@@ -8130,6 +8356,21 @@ async function restoreVersion(id) {
   if (!ver) { toast('Version not found'); return; }
   if (!ver.data) { toast('⚠ This version\'s snapshot is only in the cloud and it could not be reached. Try again when online.'); return; }
   if (!await kjrConfirm('Restore "' + esc(ver.name) + '"? Current data will be overwritten (a backup version will be saved first).', {ok:'Restore'})) return;
+  let restored;
+  try {
+    restored = JSON.parse(ver.data);
+  } catch(e) {
+    toast('⚠ This version\'s snapshot is unreadable - restore cancelled');
+    return;
+  }
+  const beforeRestoreState = {
+    singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases,
+  };
+  if (_kjrDealerStateReplacementBlocked(beforeRestoreState, restored, 'restore')) {
+    toastError('Version restore stopped because Dealer-controlled rows must be changed from Dealer Desk');
+    return;
+  }
   // Auto-save current state before restoring
   const backup = {
     id: genId('v'),
@@ -8150,20 +8391,6 @@ async function restoreVersion(id) {
   // Apply the restored snapshot. Restore ALL seven tables that the snapshot
   // captures - previously only singles/slabs/sales were applied, so the other
   // four tables stayed at their current state and the version restore was lying.
-  // The auto-backup above has already run at this point (that's fine, it's a
-  // harmless extra save) - but a corrupt/truncated snapshot must not reach any
-  // DB mutation below, so guard the parse and bail out cleanly.
-  let restored;
-  try {
-    restored = JSON.parse(ver.data);
-  } catch(e) {
-    toast('⚠ This version\'s snapshot is unreadable - restore cancelled');
-    return;
-  }
-  const beforeRestoreState = {
-    singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
-    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases,
-  };
   if (!await _prepareExplicitRowRestores(beforeRestoreState, restored, 'additions')) {
     toastError('Version restore stopped because delete recovery state could not be saved safely');
     return;
@@ -8354,6 +8581,7 @@ async function markStatus(table, id, status) {
     const clicked = arr.find(i => i.id === id);
     if (!clicked) return;
     const item = pickHigherCostDuplicate(table, clicked);
+    if (kjrDealerWriteGuard(table, item, 'sell')) return;
     const usingDup = item.id !== clicked.id;
     document.getElementById('qs-table').value = table;
     document.getElementById('qs-id').value = item.id;
@@ -8379,6 +8607,7 @@ async function markStatus(table, id, status) {
     const arr = DB[table];
     const item = arr.find(i => i.id === id);
     if (!item) return;
+    if (kjrDealerWriteGuard(table, item, 'edit')) return;
     const linked = DB.sales.filter(s => s.inventoryId === id && s.inventoryTable === table);
     let removeSales = false;
     if (linked.length) {
@@ -8744,8 +8973,10 @@ function runHealthCheck(){
 // Backfill dateAcquired + daysHeld for linked sales that are missing it.
 function healthBackfillDateAcquired() {
   let n = 0;
+  let skipped = 0;
   (DB.sales || []).forEach(s => {
     if (s.dateAcquired || !s.inventoryId || !s.inventoryTable) return;
+    if (typeof kjrDealerControlledRow === 'function' && kjrDealerControlledRow('sales', s)) { skipped++; return; }
     const srcRow = (DB[s.inventoryTable] || []).find(r => r.id === s.inventoryId);
     if (!srcRow) return;
     const da = toDateMmmYyyy(srcRow.datePurchased || srcRow.dateListed || srcRow.date || '') || '';
@@ -8756,17 +8987,20 @@ function healthBackfillDateAcquired() {
     markDirty('sales', s.id);
     n++;
   });
-  if (n > 0) { saveData(); toast('Backfilled dateAcquired on ' + n + ' sale(s)'); }
-  else toast('Nothing to backfill');
+  const suffix = skipped ? ' (skipped ' + skipped + ' Dealer-controlled row' + (skipped === 1 ? '' : 's') + ')' : '';
+  if (n > 0) { saveData(); toast('Backfilled dateAcquired on ' + n + ' sale(s)' + suffix); }
+  else toast(skipped ? 'Nothing to backfill' + suffix : 'Nothing to backfill');
   runHealthCheck();
 }
 
 // Bulk auto-fix: re-canonicalises every date field across the DB.
 function healthFixDates(){
   let n = 0;
+  let skipped = 0;
   const fix = (item, field, table) => {
     if (!item[field]) return;
     const canon = toDateMmmYyyy(item[field]);
+    if (canon !== item[field] && typeof kjrDealerControlledRow === 'function' && kjrDealerControlledRow(table, item)) { skipped++; return; }
     if (canon !== item[field]) { item[field] = canon; markDirty(table, item.id); n++; }
   };
   (DB.singles||[]).forEach(i => fix(i, 'datePurchased', 'singles'));
@@ -8777,7 +9011,7 @@ function healthFixDates(){
   (DB.boosterBoxes||[]).forEach(i => fix(i, 'date', 'boosterBoxes'));
   (DB.boosterPacks||[]).forEach(i => fix(i, 'date', 'boosterPacks'));
   saveData();
-  toast('Canonicalised ' + n + ' date(s)');
+  toast('Canonicalised ' + n + ' date(s)' + (skipped ? ' (skipped ' + skipped + ' Dealer-controlled row' + (skipped === 1 ? '' : 's') + ')' : ''));
   runHealthCheck();
 }
 
@@ -9390,6 +9624,7 @@ function _kjrDealerPreviewOnly() {
 }
 function showPage(name) {
   if (_kjrDealerPreviewOnly() && name !== 'dealer') name = 'dealer';
+  if (!_kjrDealerPreviewOnly() && name === 'dealer') name = 'dealerProduction';
   // Leaving Singles for any other tab drops the session-only unresolved
   // filter, so it can never sit silently active after a tab change.
   if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
@@ -9455,6 +9690,7 @@ function showPage(name) {
   if (name === 'changelog') renderChangelog();
   if (name === 'trash') { renderTrash(); purgeExpiredTrash(); }
   if (name === 'dealer' && typeof window.renderDealerDesk === 'function') window.renderDealerDesk();
+  if (name === 'dealerProduction' && typeof window.renderDealerDeskProduction === 'function') window.renderDealerDeskProduction();
   syncMoreActive(name);
 }
 
@@ -10326,6 +10562,10 @@ function updateField(table, id, field, val) {
   const arr = DB[table];
   const item = arr.find(i => i.id === id);
   if (!item) return;
+  if (kjrDealerWriteGuard(table, item, 'edit')) {
+    _kjrRerenderTable(table);
+    return;
+  }
   const prevVal = item[field];
   // No-op if the value is identical - avoid spurious changelog rows from
   // a click-out that didn't actually mutate anything.
@@ -10363,6 +10603,7 @@ function updateField(table, id, field, val) {
 // Auto-purge after 30 days; manual restore brings them back to original table.
 
 async function sendToTrash(table, item, reason) {
+  if (kjrDealerWriteGuard(table, item, 'delete')) return false;
   const trashEntry = {
     id: genId('trash'),
     data: {
@@ -10391,6 +10632,11 @@ async function sendToTrash(table, item, reason) {
 }
 
 async function sendBatchToTrash(table, items, reason) {
+  if ((items || []).some(item => kjrDealerControlledRow(table, item))) {
+    const blocked = (items || []).find(item => kjrDealerControlledRow(table, item));
+    kjrDealerWriteGuard(table, blocked, 'delete');
+    return false;
+  }
   const rows = items.map(item => ({
     id: genId('trash') + '_' + item.id.slice(-4),
     data: { originalTable: table, originalId: item.id, item, reason: reason || 'bulk', deletedAt: new Date().toISOString() },
@@ -10549,6 +10795,7 @@ async function restoreFromTrash(trashId) {
   const validationError = _restoreEntryValidationError(trashId, entry);
   if (validationError) { toastError(validationError); return; }
   const { originalTable, item } = entry.data;
+  if (originalTable !== 'savedChart' && kjrDealerWriteGuard(originalTable, item, 'restore')) return;
   if (!isLocalhostPreview() && originalTable !== 'savedChart') {
     if (!DB[originalTable]) { toastError('Unknown inventory table'); return; }
     const table = _tblName(originalTable);
@@ -10824,6 +11071,7 @@ function renderTrash(forcePull) {
 async function deleteItem(id, table) {
   const item = DB[table].find(i => i.id === id);
   if (!item) return;
+  if (kjrDealerWriteGuard(table, item, 'delete')) return;
   if (!await kjrConfirm('Move this item to trash? You can restore it within 30 days from the Trash tab.', {ok:'Move to trash', danger:true})) return;
 
   // If there are linked sales, offer to void them so they don't become orphans.
@@ -11236,6 +11484,10 @@ function saveSingle() {
 }
 
 function _saveSingleNow(id) {
+  if (id) {
+    const current = DB.singles.find(row => row.id === id);
+    if (kjrDealerWriteGuard('singles', current, 'edit')) return;
+  }
   if (id && _rejectStaleModalEdit('singles', id)) return;
   const name = document.getElementById('ms-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
@@ -11607,6 +11859,10 @@ function saveSlab() {
 }
 
 function _saveSlabNow(id) {
+  if (id) {
+    const current = DB.slabs.find(row => row.id === id);
+    if (kjrDealerWriteGuard('slabs', current, 'edit')) return;
+  }
   if (id && _rejectStaleModalEdit('slabs', id)) return;
   const name = document.getElementById('msl-name').value.trim();
   if (!name) { toast('Card name is required'); return; }
@@ -11796,6 +12052,39 @@ function _setTagRank(id, el) {
 }
 
 // =========== SALES ===========
+function kjrDealerSaleState(row) {
+  if (!row || typeof row !== 'object') return null;
+  const marked = ['dealerOwnerId', 'dealerCopyId', 'dealerCandidateId', 'dealerCostBasis', 'dealerOutcomeId', 'dealerPaymentStatus', 'dealerRelease', 'dealerControlled']
+    .some(key => row[key] != null && row[key] !== false);
+  if (!marked) return null;
+  const raw = row.dealerPaymentStatus != null ? row.dealerPaymentStatus : row.paymentStatus;
+  const state = String(raw == null || raw === '' ? 'Unknown' : raw).trim().toLowerCase();
+  return { status: state || 'unknown', settled: state === 'settled' || state === 'confirmed' };
+}
+
+function kjrDealerSaleFinancials(row) {
+  const dealer = kjrDealerSaleState(row);
+  if (!dealer) {
+    return { dealer: false, known: true, revenue: parseFloat(row && row.totalCollected) || 0, cost: parseFloat(row && row.costPrice) || 0, profit: parseFloat(row && row.profit) || 0, fees: parseFloat(row && row.fees) || 0, shipping: parseFloat(row && row.shippingCost) || 0 };
+  }
+  if (!dealer.settled) return { dealer: true, known: false, status: dealer.status, revenue: null, cost: null, profit: null, fees: null, shipping: null };
+  const values = ['totalCollected', 'costPrice', 'profit', 'fees', 'shippingCost'];
+  const parsed = Object.fromEntries(values.map(key => [key, parseFloat(row && row[key])]));
+  return {
+    dealer: true,
+    known: Number.isFinite(parsed.totalCollected) && Number.isFinite(parsed.profit),
+    status: dealer.status,
+    revenue: Number.isFinite(parsed.totalCollected) ? parsed.totalCollected : null,
+    cost: Number.isFinite(parsed.costPrice) ? parsed.costPrice : null,
+    profit: Number.isFinite(parsed.profit) ? parsed.profit : null,
+    fees: Number.isFinite(parsed.fees) ? parsed.fees : null,
+    shipping: Number.isFinite(parsed.shippingCost) ? parsed.shippingCost : null
+  };
+}
+
+window.kjrDealerSaleState = kjrDealerSaleState;
+window.kjrDealerSaleFinancials = kjrDealerSaleFinancials;
+
 function renderSales() {
   const q = (document.getElementById('sales-search').value||'').toLowerCase();
   const fDate    = colFilter('slf-date');
@@ -11830,20 +12119,26 @@ function renderSales() {
 
   items = _pinRecentsToTop(sortItems(items, 'sales'), 'sales');
   
-  const totalRevenue = items.reduce((s,i) => s + (parseFloat(i.totalCollected)||0), 0);
-  const totalCost    = items.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
-  const totalProfit  = items.reduce((s,i) => s + (parseFloat(i.profit)||0), 0);
-  const totalFees    = items.reduce((s,i) => s + (parseFloat(i.fees)||0), 0);
+  const financialItems = items.map(i => ({ row: i, financials: kjrDealerSaleFinancials(i) }));
+  const realisedItems = financialItems.filter(item => item.financials.known);
+  const pendingDealerCount = financialItems.filter(item => item.financials.dealer && !item.financials.known).length;
+  const totalRevenue = realisedItems.reduce((s,item) => s + (item.financials.revenue || 0), 0);
+  const totalCost    = realisedItems.reduce((s,item) => s + (item.financials.cost || 0), 0);
+  const totalProfit  = realisedItems.reduce((s,item) => s + (item.financials.profit || 0), 0);
+  const totalFees    = realisedItems.reduce((s,item) => s + (item.financials.fees || 0), 0);
   const avgMargin    = totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(0) : 0;
   const profitCls    = totalProfit >= 0 ? 'pos' : 'neg';
 
-  document.getElementById('sales-sub').textContent = '';
+  document.getElementById('sales-sub').textContent = pendingDealerCount
+    ? pendingDealerCount + ' Dealer sale' + (pendingDealerCount === 1 ? '' : 's') + ' awaiting settlement, financial totals exclude Unknown values'
+    : '';
   const _sgd = n => Math.round(n).toLocaleString('en-SG');
   const profitDisplay = totalProfit >= 0 ? 'S$' + _sgd(totalProfit) : '-S$' + _sgd(Math.abs(totalProfit));
   document.getElementById('sales-metrics').innerHTML =
     '<div class="metric"><div class="metric-label">Total Profit</div><div class="metric-value ' + profitCls + '">' + profitDisplay + '</div></div>' +
     '<div class="metric"><div class="metric-label">Avg Margin</div><div class="metric-value ' + (avgMargin >= 0 ? 'pos' : 'neg') + '">' + avgMargin + '%</div></div>' +
     '<div class="metric"><div class="metric-label">Transactions</div><div class="metric-value">' + items.length + '</div></div>' +
+    '<div class="metric"><div class="metric-label">Pending settlement</div><div class="metric-value' + (pendingDealerCount ? ' warn' : '') + '">' + pendingDealerCount + '</div></div>' +
     '<div class="metric"><div class="metric-label">Total Revenue</div><div class="metric-value">S$' + _sgd(totalRevenue) + '</div></div>' +
     '<div class="metric"><div class="metric-label">Total Cost</div><div class="metric-value">S$' + _sgd(totalCost) + '</div></div>' +
     (totalFees > 0 ? '<div class="metric"><div class="metric-label">Total Fees</div><div class="metric-value" style="color:var(--text2)">S$' + _sgd(totalFees) + '</div></div>' : '');
@@ -11868,12 +12163,13 @@ function renderSales() {
     return;
   }
   tbody.innerHTML = items.map(i => {
-    const cls = (i.profit||0) >= 0 ? 'sale-profit-pos' : 'sale-profit-neg';
+    const financials = kjrDealerSaleFinancials(i);
+    const cls = !financials.known ? '' : (financials.profit >= 0 ? 'sale-profit-pos' : 'sale-profit-neg');
     const chk = selectedIds.sales.has(i.id);
     const product = i.product || '-';
     const isMulti = product.includes(' | ');
     const splitItems = isMulti ? product.split(' | ').map(p => p.trim()) : [];
-    const totalCollected = parseFloat(i.totalCollected) || 0;
+    const totalCollected = financials.revenue;
     // Build tooltip: for multi-item, show each item with its cost and % of total
     let tooltipLines;
     if (isMulti) {
@@ -11912,14 +12208,14 @@ function renderSales() {
         '</div>' +
       '</td>' +
       '<td data-col-key="buyer" style="font-size:12px;color:var(--text2)">' + esc(i.buyer||'-') + '</td>' +
-      '<td data-col-key="costPrice" class="num">' + fmt(i.costPrice) + '</td>' +
-      '<td data-col-key="totalCollected" class="num" style="font-weight:500">' + fmt(i.totalCollected) + '</td>' +
-      '<td data-col-key="shippingCost" class="num" style="color:var(--text3)">' + fmt(i.shippingCost) + '</td>' +
-      '<td data-col-key="fees" class="num" style="color:var(--text3)">' + (parseFloat(i.fees) > 0 ? fmt(i.fees) : '-') + '</td>' +
+      '<td data-col-key="costPrice" class="num">' + (financials.known ? fmt(financials.cost) : 'Unknown') + '</td>' +
+      '<td data-col-key="totalCollected" class="num" style="font-weight:500">' + (financials.known ? fmt(financials.revenue) : 'Unknown') + '</td>' +
+      '<td data-col-key="shippingCost" class="num" style="color:var(--text3)">' + (financials.known ? fmt(financials.shipping) : 'Unknown') + '</td>' +
+      '<td data-col-key="fees" class="num" style="color:var(--text3)">' + (financials.known ? (financials.fees > 0 ? fmt(financials.fees) : '-') : 'Unknown') + '</td>' +
       '<td data-col-key="channel" style="font-size:12px;color:var(--text2)">' + esc(i.channel || '-') + '</td>' +
       '<td data-col-key="daysHeld" class="num" style="color:var(--text3)">' + (i.daysHeld != null ? i.daysHeld + 'd' : '-') + '</td>' +
-      '<td data-col-key="profit" class="num ' + cls + '" style="font-weight:600">' + fmtSigned(parseFloat(i.profit)||0) + '</td>' +
-      '<td data-col-key="margin" class="num ' + cls + '">' + esc(i.margin||'-') + '</td>' +
+      '<td data-col-key="profit" class="num ' + cls + '" style="font-weight:600">' + (financials.known ? fmtSigned(financials.profit) : 'Unknown') + '</td>' +
+      '<td data-col-key="margin" class="num ' + cls + '">' + (financials.known ? esc(i.margin||'-') : 'Unknown') + '</td>' +
       '<td data-col-key="actions" style="white-space:nowrap;text-align:center">' +
         '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openEditSale(\'' + safeId + '\')" title="Edit sale">✎</button>' +
         '<button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:11px" onclick="deleteItem(\'' + safeId + '\',\'sales\')" title="Delete sale">✕</button>' +
@@ -12041,6 +12337,10 @@ function saveSale() {
 }
 
 function _saveSaleNow(id) {
+  if (id) {
+    const current = DB.sales.find(row => row.id === id);
+    if (kjrDealerWriteGuard('sales', current, 'edit')) return;
+  }
   if (id && _rejectStaleModalEdit('sales', id)) return;
   const product = document.getElementById('msa-product').value.trim();
   if (!product) { toast('Product name required'); return; }
@@ -12324,15 +12624,21 @@ function computeDashboardStats() {
     ? DB.sales.filter(s => { const k = normaliseToMonthYear(s.dateSold); if (!k) return false; return new Date('1 ' + k) >= cutoff; })
     : DB.sales;
 
-  const totalRevenue   = filteredSales.reduce((s,i) => s + (i.totalCollected||0), 0);
-  const totalProfit    = filteredSales.reduce((s,i) => s + (i.profit||0), 0);
-  const avgProfitPerTx = filteredSales.length > 0 ? (totalProfit / filteredSales.length) : 0;
+  const filteredFinancials = filteredSales.map(row => ({ row, financials: kjrDealerSaleFinancials(row) }));
+  const filteredRealised = filteredFinancials.filter(item => item.financials.known);
+  const pendingDealerSales = filteredFinancials.filter(item => item.financials.dealer && !item.financials.known).length;
+  const totalRevenue   = filteredRealised.reduce((s,item) => s + (item.financials.revenue || 0), 0);
+  const totalProfit    = filteredRealised.reduce((s,item) => s + (item.financials.profit || 0), 0);
+  const avgProfitPerTx = filteredRealised.length > 0 ? (totalProfit / filteredRealised.length) : 0;
 
   // KPI tiles are always lifetime - the range picker only filters the charts
   // below, never the four headline numbers (owner decision, 29/05/2026).
   const allTimeSales   = DB.sales;
-  const allTimeRevenue = allTimeSales.reduce((s,i) => s + (i.totalCollected||0), 0);
-  const allTimeProfit  = allTimeSales.reduce((s,i) => s + (i.profit||0), 0);
+  const allTimeFinancials = allTimeSales.map(row => ({ row, financials: kjrDealerSaleFinancials(row) }));
+  const allTimeRealised = allTimeFinancials.filter(item => item.financials.known);
+  const allTimePendingDealerSales = allTimeFinancials.filter(item => item.financials.dealer && !item.financials.known).length;
+  const allTimeRevenue = allTimeRealised.reduce((s,item) => s + (item.financials.revenue || 0), 0);
+  const allTimeProfit  = allTimeRealised.reduce((s,item) => s + (item.financials.profit || 0), 0);
   // Realised ROI = Profit ÷ Cost basis of sold items × 100 (null when there's
   // nothing sold yet, so callers can render "-" instead of a false 0%).
   const roiPct = (allTimeSales.length === 0 || allTimeRevenue === 0)
@@ -12360,8 +12666,8 @@ function computeDashboardStats() {
     invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
     invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
     mktSingles, mktSlabs, mktEtb, mktBb, mktBp, mktSealed, totalMktValue, unrealisedPL,
-    cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx,
-    allTimeSales, allTimeRevenue, allTimeProfit, roiPct,
+    cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx, pendingDealerSales,
+    allTimeSales, allTimeRevenue, allTimeProfit, allTimePendingDealerSales, roiPct,
     singlesAvail, singlesSold, slabsAvail, slabsSold, totalItems,
     sealedItemCount, grandItemCount,
   };
@@ -12373,7 +12679,7 @@ function renderDashboard() {
     invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
     mktSingles, mktSlabs, mktEtb, mktBb, mktBp, mktSealed, totalMktValue, unrealisedPL,
     cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx,
-    allTimeSales, allTimeRevenue, allTimeProfit, roiPct,
+    allTimeSales, allTimeRevenue, allTimeProfit, allTimePendingDealerSales, roiPct,
     singlesAvail, singlesSold, slabsAvail, slabsSold, totalItems,
     sealedItemCount, grandItemCount,
   } = computeDashboardStats();
@@ -12531,7 +12837,8 @@ function renderDashboard() {
     ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _manualLangDiag;
   // Drop the leading "+" on profit - the green colour already signals positive.
   const profitDisplay = allTimeSales.length === 0 ? '-'
-    : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG'));
+    : (allTimePendingDealerSales > 0 && allTimeRevenue === 0 && allTimeProfit === 0 ? 'Unknown'
+    : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG')));
   // roiPct now comes from computeDashboardStats() (destructured above).
   const roiDisplay = roiPct == null ? '-' : Math.round(roiPct) + '%';
   // Trust dot for Total Market Value: the dot colour warns at a glance how
@@ -12552,8 +12859,11 @@ function renderDashboard() {
       '',
       trustMeta) +
     dashMetric('All-time Profit', profitDisplay,
-      'Sum of profit across every sale you have ever logged (' + allTimeSales.length + (allTimeSales.length === 1 ? ' sale' : ' sales') + '). Not affected by the range picker.',
-      allTimeProfit >= 0 ? 'pos' : 'neg') +
+      'Confirmed profit across ' + allTimeSales.length + (allTimeSales.length === 1 ? ' sale' : ' sales') + '. Dealer sales with Unknown settlement are excluded until confirmed.' + (allTimePendingDealerSales ? ' Pending Dealer settlements: ' + allTimePendingDealerSales + '.' : ''),
+      profitDisplay === 'Unknown' ? '' : (allTimeProfit >= 0 ? 'pos' : 'neg')) +
+    dashMetric('Pending settlement', String(allTimePendingDealerSales),
+      'Dealer sale records awaiting server-confirmed settlement. Their revenue and profit are shown as Unknown and excluded from realised totals.',
+      allTimePendingDealerSales ? 'neg' : '') +
     dashMetric('Realised ROI', roiDisplay,
       'Realised ROI = Profit ÷ Cost basis of sold items × 100. Tells you the multiplier on the money you actually put in. If you bought S$56 of cards and sold them for S$100, profit is S$44 and ROI is 78%.' + (allTimeSales.length === 0 ? ' No sales logged yet.' : ''),
       (roiPct ?? 0) >= 0 ? 'pos' : 'neg');
@@ -12935,14 +13245,19 @@ function _buildAnalystSnapshot(){
   // Sales: include ALL, sorted by profit DESC so the top of the array is
   // the top-profit row. Stripped of free-form `margin`; replaced with
   // explicit `gross_margin_pct` and `roi_on_cost_pct`.
-  const sales = [...salesAll].sort((a,b) => num(b.profit) - num(a.profit)).map(s => ({
-    product: trim(s.product, 60), date: s.dateSold, buyer: s.buyer,
-    cost_sgd:           round(s.costPrice),
-    revenue_sgd:        round(s.totalCollected),
-    profit_sgd:         round(s.profit),
-    gross_margin_pct:   saleGM(s.totalCollected, s.profit),
-    roi_on_cost_pct:    saleRoi(s.costPrice, s.profit)
-  }));
+  const sales = [...salesAll].sort((a,b) => num(b.profit) - num(a.profit)).map(s => {
+    const financials = kjrDealerSaleFinancials(s);
+    const known = financials.known;
+    return {
+      product: trim(s.product, 60), date: s.dateSold, buyer: s.buyer,
+      cost_sgd:           known ? round(financials.cost) : null,
+      revenue_sgd:        known ? round(financials.revenue) : null,
+      profit_sgd:         known ? round(financials.profit) : null,
+      gross_margin_pct:   known ? saleGM(financials.revenue, financials.profit) : null,
+      roi_on_cost_pct:    known ? saleRoi(financials.cost, financials.profit) : null,
+      settlement_status:  financials.dealer ? (known ? 'Settled' : 'Unknown') : 'Confirmed'
+    };
+  });
   const sealed = [
     ...bySgdValue(etbsAll).slice(0, TOP.sealed).map(r => ({ type:'ETB', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: sealedMarket(r), roi_on_cost_pct: sealedRoi(r) })),
     ...bySgdValue(bbAll).slice(0, TOP.sealed).map(r => ({ type:'Booster Box', name: trim(r.product,60), qty: parseInt(r.qty)||1, cost_sgd: round(r.totalPrice), market_sgd: sealedMarket(r), roi_on_cost_pct: sealedRoi(r) })),
@@ -12953,6 +13268,10 @@ function _buildAnalystSnapshot(){
   // fields are separately zero-guarded elsewhere) but sealed totals below
   // are summed over priced rows only - see sumSealedMarket.
   const sumCost   = arr => arr.reduce((s,i) => s + (num(i.costPrice||i.totalPrice) * (parseInt(i.qty)||1)), 0);
+  const sumRealisedCost = arr => arr.reduce((s,i) => {
+    const financials = kjrDealerSaleFinancials(i);
+    return financials.known ? s + (financials.cost || 0) : s;
+  }, 0);
   // Routed through effectiveMarketInfo (F2): only ever called with singles
   // or slabs (never the sealed arrays, which use sumSealedMarket below), so
   // no totalPrice tail is needed here.
@@ -12960,10 +13279,20 @@ function _buildAnalystSnapshot(){
   // Sealed-only: sum market over priced rows, never fall back to cost.
   const sumSealedMarket = arr => arr.reduce((s,r) => s + (kjrNum(r.marketPrice) > 0 ? kjrNum(r.marketPrice) * (parseInt(r.qty)||1) : 0), 0);
   const countSealedPriced = arr => arr.filter(r => kjrNum(r.marketPrice) > 0).length;
-  const sumProfit = arr => arr.reduce((s,i) => s + num(i.profit), 0);
-  const sumRevenue= arr => arr.reduce((s,i) => s + num(i.totalCollected), 0);
-  const totalRealisedCost   = sumCost(salesAll);
+  const sumProfit = arr => arr.reduce((s,i) => {
+    const financials = kjrDealerSaleFinancials(i);
+    return financials.known ? s + (financials.profit || 0) : s;
+  }, 0);
+  const sumRevenue= arr => arr.reduce((s,i) => {
+    const financials = kjrDealerSaleFinancials(i);
+    return financials.known ? s + (financials.revenue || 0) : s;
+  }, 0);
+  const totalRealisedCost   = sumRealisedCost(salesAll);
   const totalRealisedProfit = sumProfit(salesAll);
+  const dealerPendingSettlementCount = salesAll.filter(row => {
+    const financials = kjrDealerSaleFinancials(row);
+    return financials.dealer && !financials.known;
+  }).length;
   const totals = {
     singles_count: singlesAll.length,
     slabs_count:   slabsAll.length,
@@ -12982,7 +13311,8 @@ function _buildAnalystSnapshot(){
     realised_revenue_sgd: round(sumRevenue(salesAll)),
     realised_profit_sgd:  round(totalRealisedProfit),
     realised_roi_on_cost_pct: totalRealisedCost > 0 ? r1((totalRealisedProfit/totalRealisedCost)*100) : null,
-    realised_gross_margin_pct: sumRevenue(salesAll) > 0 ? r1((totalRealisedProfit/sumRevenue(salesAll))*100) : null
+    realised_gross_margin_pct: sumRevenue(salesAll) > 0 ? r1((totalRealisedProfit/sumRevenue(salesAll))*100) : null,
+    dealer_pending_settlement_count: dealerPendingSettlementCount
   };
   return { totals, singles, slabs, sealed, sales,
     _meta: {
@@ -12995,6 +13325,7 @@ function _buildAnalystSnapshot(){
       glossary: {
         roi_on_cost_pct:   'Profit / Cost x 100. ROI from the buyer\'s point of view. Held inventory uses (Market − Cost). Sales use realised profit.',
         gross_margin_pct:  'Profit / Revenue x 100. The fraction of the sale price that is profit. Sales only.',
+        dealer_pending_settlement_count: 'Dealer sales whose server settlement is Unknown. Their revenue and profit fields stay null and are excluded from realised totals.',
         unrealised_pnl_sgd:'Market value minus cost on a still-held item.',
         market_sgd_null:   'null on a sealed row (ETB/Booster Box/Booster Pack) means no market price has been entered yet - treat as unpriced, never assume it equals cost.',
         sealed_priced_count: 'How many of sealed_count sealed items have a market price set. Compare against sealed_count before stating a total sealed market value.'
@@ -13604,6 +13935,7 @@ function _kjrListingCommitMeta(table, id, meta, after) {
   const run = () => {
     let row = _kjrListingFind(table, id);
     if (!row) { toastError('Listing item no longer exists'); return false; }
+    if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(table, row, 'edit')) return false;
     if (_kjrListingEditorStale(table, id)) return false;
     const context = _kjrListingEditorContext && _kjrListingEditorContext.table === table && _kjrListingEditorContext.id === String(id)
       ? _kjrListingEditorContext
@@ -13994,10 +14326,32 @@ async function kjrApplyListingImport(raw) {
   const run = async () => {
     const base = _modalCacheSnapshot();
     if (!base) throw new Error('Import could not verify the latest local cache');
+    // Check the durable cache snapshot before copying it into the live DB. The
+    // full preflight below still validates the packet and re-checks the live
+    // row, which covers a marker added by another tab between these steps.
+    let packetForGuard = null;
+    try { packetForGuard = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) {}
+    if (packetForGuard && Array.isArray(packetForGuard.records)) {
+      for (const record of packetForGuard.records) {
+        if (!record || !['singles', 'slabs'].includes(record.source) || record.id == null || !record.listingMeta) continue;
+        const key = _dbKey(record.source);
+        const row = (base[key] || []).find(item => item && String(item.id) === String(record.id));
+        if (row && typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(record.source, row, 'edit')) {
+          throw new Error('Dealer-controlled rows must be changed from Dealer Desk');
+        }
+      }
+    }
     _applyModalCachePayload(base);
     const report = kjrPreflightListingImport(raw);
     if (!report.ok) throw new Error(report.errors.join(', '));
     if (!report.changes.length) return report;
+    for (const change of report.changes) {
+      const row = _kjrListingFind(change.record.source, change.record.id);
+      if (!row) throw new Error('record ' + change.key + ' is no longer in the local cache');
+      if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(change.record.source, row, 'edit')) {
+        throw new Error('Dealer-controlled rows must be changed from Dealer Desk');
+      }
+    }
     const candidate = {};
     for (const cacheKey of _MODAL_CACHE_KEYS) candidate[cacheKey] = _cloneModalRows(base[cacheKey]);
     report.changes.forEach(change => {
@@ -16850,6 +17204,17 @@ async function importData() {
   if (!newItems.length) {
     showOnlyRejectedRows('Nothing imported · ' + skippedRows.length + ' skipped');
     toast('Nothing to import - all rows were skipped or duplicates');
+    return;
+  }
+
+  const importDbKey = type === 'sales' ? 'sales' : _dbKey(type);
+  const importExistingRows = Array.isArray(DB[importDbKey]) ? DB[importDbKey] : [];
+  if (newItems.some(item => kjrDealerControlledRow(importDbKey, item))) {
+    toastError('Import stopped because Dealer-controlled rows must be changed from Dealer Desk.');
+    return;
+  }
+  if (mode === 'replace' && importExistingRows.some(item => kjrDealerControlledRow(importDbKey, item))) {
+    toastError('Replace stopped because the selected table contains Dealer-controlled rows. Resolve them in Dealer Desk first.');
     return;
   }
 

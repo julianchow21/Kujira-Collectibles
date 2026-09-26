@@ -414,6 +414,37 @@ test('listing editor and import preserve another tab change and reject same-row 
   assert.equal(second.grab('_dirty')._dirty.singles.has(row3.id), true);
 });
 
+test('listing editor and import block Dealer-controlled rows before cache or dirty writes', async () => {
+  const { ctx, grab, localStorage } = await loadApp();
+  const db = grab('DB').DB;
+  const row = {
+    id: 'dealer-listing-guard', name: 'Dealer listing', status: 'Available', qty: 1,
+    dealerCopyId: 'copy-listing-guard', dealerPaymentStatus: 'Unknown',
+    listingMeta: readyMeta(ctx, { draft: { title: 'Dealer before', description: 'Dealer before' } }),
+  };
+  db.singles = [row]; db.slabs = [];
+  ctx.saveData();
+  grab('_kjrListingSelected')._kjrListingSelected.add('singles::' + row.id);
+  ctx._kjrListingLoadEditor('singles', row);
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  const beforeMeta = JSON.stringify(row.listingMeta);
+  const beforeCache = localStorage.getItem('pokeinventory_v3');
+  const editorResult = await ctx._kjrListingCommitMeta('singles', row.id,
+    readyMeta(ctx, { draft: { title: 'Should be blocked', description: 'Should be blocked' } }));
+  assert.strictEqual(editorResult, false);
+  assert.strictEqual(JSON.stringify(row.listingMeta), beforeMeta);
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.strictEqual(dirty.singles.has(row.id), false);
+
+  const packet = ctx.kjrBuildListingHandoff();
+  packet.records[0].listingMeta = readyMeta(ctx, { draft: { title: 'Import blocked', description: 'Import blocked' } });
+  await assert.rejects(() => ctx.kjrApplyListingImport(packet), /Dealer-controlled rows must be changed/);
+  assert.strictEqual(JSON.stringify(row.listingMeta), beforeMeta);
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), beforeCache);
+  assert.strictEqual(dirty.singles.has(row.id), false);
+});
+
 test('listing editor rolls back metadata and dirty state when local cache persistence fails', async () => {
   const { ctx, grab, localStorage } = await loadApp();
   const db = grab('DB').DB;

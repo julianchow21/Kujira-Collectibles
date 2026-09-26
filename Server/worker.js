@@ -30,6 +30,7 @@
  */
 
 const ALLOWED_ORIGIN = 'https://julianchow21.github.io';
+const WORKER_BUILD_VERSION = '3.62';
 
 // Tables the DB proxy will touch. Anything else is rejected.
 const DB_TABLES = new Set([
@@ -39,7 +40,13 @@ const DB_TABLES = new Set([
 const DB_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE']);
 const LEGACY_MUTATION_METHODS = new Set(['POST', 'PATCH', 'DELETE']);
 const SYNC_PROTOCOL = 2;
+const DEALER_SCHEMA_VERSION = 1;
 const MAX_SYNC_BODY_BYTES = 2 * 1024 * 1024;
+const DEALER_COMMANDS = new Set([
+  'create_candidate', 'update_candidate', 'add_evidence', 'create_plan',
+  'approve_buy', 'acquire_copy', 'link_copy', 'set_asking', 'prepare_listing',
+  'record_sale', 'settle_sale', 'record_non_sale', 'review_outcome'
+]);
 
 // Cache TTL for OK price responses (seconds). DB responses are never cached.
 const CACHE_TTL_SECONDS = 21600;
@@ -58,6 +65,12 @@ export default {
     }
     if (url.pathname === '/sync/v2/mutate') {
       return handleSync(request, env, 'mutate');
+    }
+    if (url.pathname === '/sync/v2/dealer/pull') {
+      return handleDealer(request, env, 'pull');
+    }
+    if (url.pathname === '/sync/v2/dealer/command') {
+      return handleDealer(request, env, 'command');
     }
 
     // ── DB proxy ──────────────────────────────────────────────────
@@ -129,8 +142,8 @@ async function handleDb(request, env, url) {
 
   // Compatibility flags never bypass the owner check. This keeps every
   // service-role database request behind Supabase Auth, including GET reads.
-  const authError = await authoriseOwner(request, env);
-  if (authError) return authError;
+  const authResult = await authoriseOwner(request, env);
+  if (isResponse(authResult)) return authResult;
   if (LEGACY_MUTATION_METHODS.has(request.method)) {
     return json({ ok: false, code: 'legacy_mutations_disabled' }, 403);
   }
@@ -169,8 +182,8 @@ async function handleDb(request, env, url) {
 async function handleSync(request, env, action) {
   if (request.method !== 'POST') return json({ ok: false, code: 'method_not_allowed' }, 405);
 
-  const authError = await authoriseOwner(request, env);
-  if (authError) return authError;
+  const authResult = await authoriseOwner(request, env);
+  if (isResponse(authResult)) return authResult;
 
   const lengthHeader = request.headers.get('Content-Length');
   if (lengthHeader && Number(lengthHeader) > MAX_SYNC_BODY_BYTES) {
@@ -231,6 +244,87 @@ async function handleSync(request, env, action) {
   return json(result, syncStatus(result));
 }
 
+async function handleDealer(request, env, action) {
+  if (request.method !== 'POST') {
+    return json({ ok: false, client_protocol: SYNC_PROTOCOL, schema_version: DEALER_SCHEMA_VERSION, code: 'method_not_allowed' }, 405);
+  }
+
+  const authResult = await authoriseOwner(request, env);
+  if (isResponse(authResult)) return authResult;
+
+  const lengthHeader = request.headers.get('Content-Length');
+  if (lengthHeader && Number(lengthHeader) > MAX_SYNC_BODY_BYTES) {
+    return dealerJson({ ok: false, code: 'request_too_large' }, action === 'command' ? null : undefined, 413);
+  }
+
+  let raw, payload;
+  try {
+    raw = await request.text();
+    if (new TextEncoder().encode(raw).byteLength > MAX_SYNC_BODY_BYTES) {
+      return dealerJson({ ok: false, code: 'request_too_large' }, action === 'command' ? null : undefined, 413);
+    }
+    payload = JSON.parse(raw);
+  } catch (_) {
+    return dealerJson({ ok: false, code: 'invalid_json' }, null, 400);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return dealerJson({ ok: false, code: 'invalid_request' }, payload && payload.command_id, 400);
+  }
+
+  const base = { client_protocol: SYNC_PROTOCOL, schema_version: DEALER_SCHEMA_VERSION };
+  if (payload.client_protocol === undefined) return dealerJson({ ...base, ok: false, code: 'protocol_required' }, payload.command_id, 428);
+  if (payload.client_protocol !== SYNC_PROTOCOL) return dealerJson({ ...base, ok: false, code: 'protocol_mismatch', server_protocol: SYNC_PROTOCOL }, payload.command_id, 428);
+  if (payload.schema_version === undefined) return dealerJson({ ...base, ok: false, code: 'schema_required' }, payload.command_id, 428);
+  if (payload.schema_version !== DEALER_SCHEMA_VERSION) return dealerJson({ ...base, ok: false, code: 'schema_mismatch', server_schema_version: DEALER_SCHEMA_VERSION }, payload.command_id, 503);
+
+  let allowed;
+  if (action === 'pull') {
+    allowed = new Set(['client_protocol', 'schema_version', 'limit', 'cursor', 'candidateId']);
+    if (Object.keys(payload).some(key => !allowed.has(key))) return dealerJson({ ...base, ok: false, code: 'invalid_request' }, null, 400);
+    if (payload.limit !== undefined && (!Number.isInteger(payload.limit) || payload.limit < 1 || payload.limit > 50)) return dealerJson({ ...base, ok: false, code: 'invalid_limit' }, null, 400);
+    if (payload.cursor !== undefined && payload.cursor !== null && (typeof payload.cursor !== 'string' || payload.cursor.length > 256)) return dealerJson({ ...base, ok: false, code: 'invalid_cursor' }, null, 400);
+    if (payload.candidateId !== undefined && payload.candidateId !== null && (typeof payload.candidateId !== 'string' || payload.candidateId.length < 1 || payload.candidateId.length > 256)) return dealerJson({ ...base, ok: false, code: 'invalid_candidate' }, null, 400);
+  } else {
+    allowed = new Set(['client_protocol', 'schema_version', 'command_id', 'command', 'expected', 'payload']);
+    if (Object.keys(payload).some(key => !allowed.has(key))) return dealerJson({ ...base, ok: false, code: 'invalid_request' }, payload.command_id, 400);
+    if (typeof payload.command_id !== 'string' || !UUID_RE.test(payload.command_id)) return dealerJson({ ...base, ok: false, code: 'invalid_command_id' }, payload.command_id, 400);
+    if (typeof payload.command !== 'string' || !DEALER_COMMANDS.has(payload.command)) return dealerJson({ ...base, ok: false, code: 'invalid_command' }, payload.command_id, 400);
+    if (payload.expected !== undefined && (!payload.expected || typeof payload.expected !== 'object' || Array.isArray(payload.expected))) return dealerJson({ ...base, ok: false, code: 'invalid_expected_version' }, payload.command_id, 400);
+    if (payload.payload !== undefined && (!payload.payload || typeof payload.payload !== 'object' || Array.isArray(payload.payload))) return dealerJson({ ...base, ok: false, code: 'invalid_payload' }, payload.command_id, 400);
+  }
+
+  const rpcName = action === 'pull' ? 'collectibles_dealer_pull_v1' : 'collectibles_dealer_command_v1';
+  const forwarded = { ...payload, owner_user_id: authResult.userId };
+  const rpcBody = { p_request: forwarded };
+  const target = env.SUPABASE_URL.replace(/\/$/, '') + '/rest/v1/rpc/' + rpcName;
+  let upstream;
+  try {
+    upstream = await fetch(target, {
+      method: 'POST',
+      headers: {
+        'apikey': env.SUPABASE_SERVICE_KEY,
+        'Authorization': 'Bearer ' + env.SUPABASE_SERVICE_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(rpcBody)
+    });
+  } catch (_) {
+    return dealerJson({ ...base, ok: false, code: 'sync_upstream_unavailable', uncertain: action === 'command' }, action === 'command' ? payload.command_id : null, 502);
+  }
+
+  let result;
+  try { result = await upstream.json(); }
+  catch (_) { return dealerJson({ ...base, ok: false, code: 'sync_upstream_invalid', uncertain: action === 'command' }, action === 'command' ? payload.command_id : null, 502); }
+  if (!upstream.ok) {
+    if (upstream.status === 404 || (result && typeof result === 'object' && ['PGRST202', 'PGRST204', '42P01', '42883'].includes(result.code))) {
+      return dealerJson({ ...base, ok: false, code: 'schema_missing', message: 'Dealer schema is unavailable' }, action === 'command' ? payload.command_id : null, 503);
+    }
+    if (result && typeof result === 'object' && result.code) return dealerJson(result, action === 'command' ? payload.command_id : null, syncStatus(result));
+    return dealerJson({ ...base, ok: false, code: 'sync_upstream_error', uncertain: action === 'command' }, action === 'command' ? payload.command_id : null, upstream.status >= 500 ? 502 : 500);
+  }
+  return dealerJson(result, action === 'command' ? payload.command_id : null, syncStatus(result));
+}
+
 async function authoriseOwner(request, env) {
   const originError = requireExactOrigin(request);
   if (originError) return originError;
@@ -269,7 +363,7 @@ async function authoriseOwner(request, env) {
   if (user.id !== env.COLLECTIBLES_OWNER_USER_ID) {
     return json({ ok: false, code: 'owner_forbidden' }, 403);
   }
-  return null;
+  return { userId: user.id };
 }
 
 function requireExactOrigin(request) {
@@ -282,9 +376,20 @@ function requireExactOrigin(request) {
 
 function syncStatus(result) {
   if (!result || result.ok !== false) return 200;
-  if (result.code === 'version_conflict' || result.code === 'mutation_id_reused' || result.code === 'state_conflict') return 409;
-  if (result.code === 'missing_expected_version' || result.code === 'protocol_required' || result.code === 'protocol_mismatch') return 428;
+  if (result.code === 'version_conflict' || result.code === 'mutation_id_reused' || result.code === 'state_conflict' || result.code === 'dealer_controlled_row' || result.code === 'canonical_already_linked' || result.code === 'already_sold') return 409;
+  if (result.code === 'missing_expected_version' || result.code === 'protocol_required' || result.code === 'schema_required' || result.code === 'protocol_mismatch') return 428;
+  if (result.code === 'schema_mismatch' || result.code === 'schema_missing') return 503;
   return 400;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isResponse(value) { return value && typeof value.status === 'number' && value.headers && typeof value.text === 'function'; }
+function dealerJson(result, commandId, status) {
+  const body = result && typeof result === 'object' ? { ...result } : { ok: false, code: 'sync_upstream_invalid' };
+  if (body.client_protocol === undefined) body.client_protocol = SYNC_PROTOCOL;
+  if (body.schema_version === undefined) body.schema_version = DEALER_SCHEMA_VERSION;
+  if (commandId && body.command_id === undefined) body.command_id = commandId;
+  return json(body, status === undefined ? syncStatus(body) : status);
 }
 
 function corsHeaders() {
@@ -292,7 +397,9 @@ function corsHeaders() {
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, apikey, Prefer',
+    'Access-Control-Expose-Headers': 'X-Collectibles-Worker-Version',
     'Access-Control-Max-Age': '86400',
+    'X-Collectibles-Worker-Version': WORKER_BUILD_VERSION,
     'Vary': 'Origin'
   };
 }

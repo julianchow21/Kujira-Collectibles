@@ -39,6 +39,36 @@ This candidate contains no schema-drop rollback. Never remove tombstones or
 mutation receipts as a rollback shortcut. Any later schema removal needs a
 separate approved migration, an export, and a verified recovery plan.
 
+## Production migration order and evidence
+
+The production change is additive and must be applied in this order:
+
+1. Apply the reviewed CAS migration, then verify row-version, tombstone and
+   mutation-receipt metadata
+2. Apply the reviewed Dealer migration, then verify Dealer tables, owner scope,
+   helper-function privileges and the RPC execute boundary
+3. Deploy the Worker with the matching Dealer schema version and build header,
+   retaining the existing variables and secrets
+4. Publish the Pages client, then prove that the served bytes contain the
+   matching Worker route, client version and service-worker cache version
+
+Before the first production SQL apply, capture schema metadata and confirm an
+actual restorable backup or provider backup point. A backup setting or a local
+SQL dump by itself is not restore proof. Reapplying CAS or Dealer migrations is
+expected to be safe because the scripts use additive columns, guarded objects,
+and `create or replace` definitions. Preserve existing rows and do not use a
+destructive rollback.
+
+The production SQL apply belongs in the signed-in Supabase SQL editor after the
+reviewed backup check. The Worker deploy must use the named existing Worker and
+keep its current compatibility date, variables and secrets. No secret values
+belong in this note or in test output.
+
+The local gate is synthetic only. It proves the Worker RPC path against the
+disposable PostgreSQL 17 fixture, not a live Supabase migration, Worker
+deployment or Pages propagation. Live completion needs separate evidence for
+the scoped schema result, Worker deployment result, and served Pages bytes.
+
 Synthetic gates run with:
 
 node --test tests/worker-server.test.mjs

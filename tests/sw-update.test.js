@@ -5,13 +5,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { ROOT } = require('./harness.js');
 
-test('sw-update: v3.61 badge, asset URLs and cache v64 are pinned', () => {
+test('sw-update: v3.62 badge, asset URLs and cache v65 are pinned', () => {
   const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /id="app-ver"[^>]*>v3\.61 \(23 Sep\)</);
-  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js']) assert.ok(html.includes(asset + '?v=3.61'));
-  assert.match(sw, /const CACHE = 'kujira-v64'/);
-  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js']) assert.ok(sw.includes(asset + '?v=3.61'));
+  assert.match(html, /id="app-ver"[^>]*>v3\.62 \(26 Sep\)</);
+  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) assert.ok(html.includes(asset + '?v=3.62'));
+  assert.match(sw, /const CACHE = 'kujira-v65'/);
+  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) assert.ok(sw.includes(asset + '?v=3.62'));
 });
 
 test('sw-update: waiting update action is a keyboard-native button which posts SKIP_WAITING', () => {

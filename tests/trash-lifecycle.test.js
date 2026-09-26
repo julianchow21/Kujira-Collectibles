@@ -1194,6 +1194,75 @@ test('trash-lifecycle: same-id version restore replaces a mismatched allowed res
     'the marker follows the deliberate same-id recovery before it can be marked dirty or synced');
 });
 
+test('trash-lifecycle: version restore blocks Dealer-controlled replacement before backup or dirty state', async () => {
+  const dealer = {
+    id: 'dealer-restore-guard', name: 'Dealer restore row', status: 'Sold', costPrice: 20,
+    dealerCopyId: 'copy-restore-guard', dealerPaymentStatus: 'Unknown', _serverVersion: 5,
+  };
+  const snapshot = { singles: [], slabs: [], sales: [], etbs: [], boosterBoxes: [], boosterPacks: [], ebayPurchases: [] };
+  const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [dealer] } });
+  localStorage.setItem('pokeinv_versions', JSON.stringify([{
+    id: 'version_dealer_guard', name: 'Dealer replacement', ts: Date.now(), data: JSON.stringify(snapshot),
+  }]));
+  ctx.kjrConfirm = async () => true;
+  const beforeDb = JSON.stringify(plain(grab('DB').DB));
+  const beforeVersions = localStorage.getItem('pokeinv_versions');
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  fetchMock.calls.length = 0;
+
+  await ctx.restoreVersion('version_dealer_guard');
+
+  assert.strictEqual(JSON.stringify(plain(grab('DB').DB)), beforeDb);
+  assert.strictEqual(localStorage.getItem('pokeinv_versions'), beforeVersions);
+  assert.strictEqual(fetchMock.calls.length, 0);
+  assert.strictEqual(localStorage.getItem('_kjrMutationGroupsV2'), null);
+  assert.strictEqual(dirty.singles.has(dealer.id), false);
+});
+
+test('trash-lifecycle: health repairs skip Dealer rows and report the skipped count', async () => {
+  const dealerCopy = { id: 'dealer-health-copy', name: 'Dealer copy', datePurchased: '1 Jan 2026', status: 'Available',
+    dealerCopyId: 'copy-health-1', dealerPaymentStatus: 'Unknown' };
+  const genericCopy = { id: 'generic-health-copy', name: 'Generic copy', datePurchased: '1 Jan 2026', status: 'Available' };
+  const dealerSale = { id: 'dealer-health-sale', product: 'Dealer sale', inventoryId: dealerCopy.id, inventoryTable: 'singles',
+    dateSold: '5 Sep 2026', dealerCopyId: 'copy-health-1', dealerPaymentStatus: 'Unknown' };
+  const genericSale = { id: 'generic-health-sale', product: 'Generic sale', inventoryId: genericCopy.id, inventoryTable: 'singles',
+    dateSold: '5 Sep 2026' };
+  const { ctx, grab } = await loadApp({ seed: {
+    singles: [dealerCopy, genericCopy], sales: [dealerSale, genericSale],
+  } });
+  const db = grab('DB').DB;
+  const dealerCopyRow = db.singles.find(row => row.id === dealerCopy.id);
+  const genericCopyRow = db.singles.find(row => row.id === genericCopy.id);
+  const dealerSaleRow = db.sales.find(row => row.id === dealerSale.id);
+  const genericSaleRow = db.sales.find(row => row.id === genericSale.id);
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+  const dealerSaleBefore = JSON.stringify(dealerSaleRow);
+
+  ctx.healthBackfillDateAcquired();
+
+  assert.strictEqual(JSON.stringify(dealerSaleRow), dealerSaleBefore);
+  assert.strictEqual(genericSaleRow.dateAcquired, '1 Jan 2026');
+  assert.strictEqual(dirty.sales.has(dealerSaleRow.id), false);
+  assert.strictEqual(dirty.sales.has(genericSaleRow.id), true);
+  assert.match(toastMessages.at(-1), /skipped 1 Dealer-controlled row/);
+
+  Object.values(dirty).forEach(set => set.clear());
+  dealerCopyRow.datePurchased = '2026-01-01';
+  genericCopyRow.datePurchased = '2026-01-01';
+  ctx.healthFixDates();
+
+  assert.strictEqual(dealerCopyRow.datePurchased, '2026-01-01');
+  assert.strictEqual(genericCopyRow.datePurchased, '1 Jan 2026');
+  assert.strictEqual(dirty.singles.has(dealerCopyRow.id), false);
+  assert.strictEqual(dirty.singles.has(genericCopyRow.id), true);
+  assert.match(toastMessages.at(-1), /skipped 1 Dealer-controlled row/);
+});
+
 test('trash-lifecycle: Replace preflight saves the Trash snapshot before its delete marker and retry does not duplicate either', async () => {
   const oldRow = { id: 'replace_preflight_order', name: 'Recoverable old row', costPrice: 432, status: 'Available' };
   const { ctx, grab, localStorage } = await loadApp({ seed: { singles: [oldRow] } });

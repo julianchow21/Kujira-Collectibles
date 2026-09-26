@@ -67,6 +67,44 @@ function tokenBody(userId, expiresIn) {
   };
 }
 
+test('auth-owner: Dealer fetch locks the Worker URL and app-owned auth headers', async () => {
+  const app = await authApp();
+  const saveSession = app.grab('_kjrSaveSession')._kjrSaveSession;
+  assert.equal(saveSession({
+    access_token: 'dealer-owner-token',
+    refresh_token: 'dealer-refresh-token',
+    expires_at: 4102444800,
+    user_id: 'owner-id',
+    session_id: 'dealer-session'
+  }), true);
+  const pullUrl = app.grab('DEALER_PULL_URL').DEALER_PULL_URL;
+  app.fetchMock.route('/sync/v2/dealer/pull', jsonResponse({ ok: true, client_protocol: 2, schema_version: 1 }));
+  await app.ctx.kjrDealerOwnerFetch({
+    endpoint: 'pull',
+    url: pullUrl,
+    body: { client_protocol: 2, schema_version: 1 },
+    generation: app.ctx.kjrOwnerContext().generation,
+    headers: { Authorization: 'Bearer attacker-token', Origin: 'https://attacker.example' }
+  });
+  const call = app.fetchMock.calls.at(-1);
+  assert.equal(call.url, pullUrl);
+  assert.equal(call.opts.headers.Authorization, 'Bearer dealer-owner-token');
+  assert.equal(call.opts.headers.Origin, undefined);
+
+  const callsBeforeRejects = app.fetchMock.calls.length;
+  for (const attempted of [
+    'https://attacker.example/steal',
+    pullUrl + '/../command',
+    '/sync/v2/dealer/command'
+  ]) {
+    await assert.rejects(
+      () => app.ctx.kjrDealerOwnerFetch({ endpoint: 'pull', url: attempted, generation: app.ctx.kjrOwnerContext().generation }),
+      error => error && error.code === 'owner_transport_unavailable'
+    );
+  }
+  assert.equal(app.fetchMock.calls.length, callsBeforeRejects);
+});
+
 async function bootRecovery(app, userId) {
   routeUser(app.fetchMock, userId || 'owner-id');
   app.sessionStorage.setItem('_kjrAuthCallback', recoveryCallback());

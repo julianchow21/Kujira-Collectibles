@@ -29,14 +29,45 @@ function previewSingle(id, name, index) {
   };
 }
 
-const PENDING_SINGLES = Array.from({ length: 24 }, (_, index) =>
-  previewSingle('sync-preview-' + String(index + 1).padStart(2, '0'), 'Synthetic card ' + (index + 1), index + 1));
+const PENDING_SINGLES = Array.from({ length: 125 }, (_, index) =>
+  previewSingle(
+    'sync-preview-' + String(index + 1).padStart(3, '0'),
+    index === 0 ? 'Synthetic card ' + 'L'.repeat(120 - 'Synthetic card '.length) : 'Synthetic card ' + (index + 1),
+    index + 1));
 const EMPTY_SEED = {
   singles: [], slabs: [], sales: [], etbs: [], boosterBoxes: [], boosterPacks: [], ebayPurchases: [],
 };
 const PENDING_SEED = {
   ...EMPTY_SEED,
   singles: PENDING_SINGLES,
+};
+const QUEUE_MANY_SINGLES = Array.from({ length: 125 }, (_, index) =>
+  previewSingle('sync-preview-over-100-' + String(index + 1).padStart(3, '0'), 'Synthetic queue item ' + (index + 1), index + 1));
+const QUEUE_MANY_SEED = {
+  ...EMPTY_SEED,
+  singles: QUEUE_MANY_SINGLES,
+};
+const QUEUE_LONG_SINGLES = Array.from({ length: 4 }, (_, index) =>
+  previewSingle(
+    'sync-preview-long-' + (index + 1),
+    'Synthetic queue label ' + (index + 1) + ' ' + 'Long display name '.repeat(18) + 'end',
+    index + 1));
+const QUEUE_LONG_SEED = {
+  ...EMPTY_SEED,
+  singles: QUEUE_LONG_SINGLES,
+};
+const BACKFILL_SEED = {
+  ...EMPTY_SEED,
+  singles: [
+    { ...previewSingle('sync-preview-backfill-full-source', 'Synthetic full date source', 1), datePurchased: '1 Jan 2026', status: 'Sold' },
+    { ...previewSingle('sync-preview-backfill-month-source', 'Synthetic month only source', 2), datePurchased: 'Jan 2026', status: 'Sold' },
+    { ...previewSingle('sync-preview-backfill-invalid-source', 'Synthetic invalid date source', 3), datePurchased: '31 Feb 2026', status: 'Sold' },
+  ],
+  sales: [
+    { id: 'sync-preview-backfill-full-sale', product: 'Synthetic full date sale', inventoryId: 'sync-preview-backfill-full-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'sync-preview-backfill-month-sale', product: 'Synthetic month only sale', inventoryId: 'sync-preview-backfill-month-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'sync-preview-backfill-invalid-sale', product: 'Synthetic invalid date sale', inventoryId: 'sync-preview-backfill-invalid-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+  ],
 };
 const ACK_ID = 'sync-preview-ack-row';
 const ACK_TOKEN = 'peer-tab:sync-preview-ack';
@@ -54,12 +85,12 @@ const WARNING_SEED = {
 };
 const PENDING_DELETE_STATE = {
   schema: 2, revision: 'sync-preview-delete-state',
-  pending: [{ table: 'singles', id: 'sync-preview-01', ts: 1 }], confirmed: [],
+  pending: [{ table: 'singles', id: 'sync-preview-001', ts: 1 }], confirmed: [],
 };
 const PENDING_TRASH = [{
   id: 'sync-preview-trash-01',
   data: {
-    originalTable: 'singles', originalId: 'sync-preview-02', item: PENDING_SINGLES[1],
+    originalTable: 'singles', originalId: 'sync-preview-002', item: PENDING_SINGLES[1],
     reason: 'synthetic preview', deletedAt: '2026-09-16T00:00:00.000Z',
   },
   updated_at: '2026-09-16T00:00:00.000Z',
@@ -118,6 +149,8 @@ const PREVIEW_TOOLS = `
   <strong style="color:var(--accent);white-space:nowrap">SYNC PREVIEW</strong>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('empty')">Empty</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('pending')">Pending many</button>
+  <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('queue-many')">Queue 125</button>
+  <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('queue-long')">Long queue names</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('failure')">Long failure</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('offline')">Offline</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('recovered')">Recovered local</button>
@@ -125,6 +158,7 @@ const PREVIEW_TOOLS = `
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('ack')">Ack demo</button>
   <button id="kjr-sync-preview-restore-ack" type="button" hidden onclick="window.__KJR_SYNC_PREVIEW_RESTORE_ACK()">Acknowledge restore</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('warnings')">Health warnings</button>
+  <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('backfill')">Backfill guards</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_ACK()">Acknowledge</button>
   <button type="button" onclick="openSyncDiagnostics()">Show details</button>
   <button type="button" onclick="document.documentElement.classList.toggle('light')">Toggle theme</button>
@@ -138,6 +172,9 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   var SCENARIO_KEY = ${JSON.stringify(SCENARIO_KEY)};
   var EMPTY_SEED = ${jsonForScript(EMPTY_SEED)};
   var PENDING_SEED = ${jsonForScript(PENDING_SEED)};
+  var QUEUE_MANY_SEED = ${jsonForScript(QUEUE_MANY_SEED)};
+  var QUEUE_LONG_SEED = ${jsonForScript(QUEUE_LONG_SEED)};
+  var BACKFILL_SEED = ${jsonForScript(BACKFILL_SEED)};
   var ACK_SEED = ${jsonForScript(ACK_SEED)};
   var ACK_ID = ${JSON.stringify(ACK_ID)};
   var ACK_TOKEN = ${JSON.stringify(ACK_TOKEN)};
@@ -192,14 +229,19 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   localStorage.removeItem(SCENARIO_KEY);
   var restoreAckButton = document.getElementById('kjr-sync-preview-restore-ack');
   if (restoreAckButton) restoreAckButton.hidden = scenario !== 'restore-ack';
-  var initialSeed = scenario === 'pending' || scenario === 'review' ? PENDING_SEED : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+  var initialSeed = scenario === 'pending' || scenario === 'review' ? PENDING_SEED
+    : scenario === 'queue-many' ? QUEUE_MANY_SEED
+    : scenario === 'queue-long' ? QUEUE_LONG_SEED
+    : scenario === 'backfill' ? BACKFILL_SEED
+    : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED : EMPTY_SEED;
   if (!localStorage.getItem(STORAGE_KEY)) write(STORAGE_KEY, initialSeed);
   if (scenario === 'restore-ack') {
     clearFixtureStorage();
     seedRestoreAckFixture();
-  } else if (scenario === 'pending' || scenario === 'review') {
-    write(STORAGE_KEY, PENDING_SEED);
-    write(DIRTY_KEY, { singles: PENDING_SINGLES_PLACEHOLDER });
+  } else if (scenario === 'pending' || scenario === 'review' || scenario === 'queue-many' || scenario === 'queue-long') {
+    var queuedSeed = scenario === 'queue-many' ? QUEUE_MANY_SEED : scenario === 'queue-long' ? QUEUE_LONG_SEED : PENDING_SEED;
+    write(STORAGE_KEY, queuedSeed);
+    write(DIRTY_KEY, { singles: queuedSeed.singles.map(function (row) { return row.id; }) });
     if (scenario === 'review') {
       write('_kjrDeleteStateV2', PENDING_DELETE_STATE);
       write('_kjrPendingTrashWrites', PENDING_TRASH);
@@ -213,18 +255,28 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
     write(STORAGE_KEY, WARNING_SEED);
     write(DIRTY_KEY, { singles: [WARNING_ID], _revisions: { singles: { [WARNING_ID]: [WARNING_TOKEN] } } });
     write(WARNING_MARKER_KEY, { table: 'singles', id: WARNING_ID, token: WARNING_TOKEN, owner: 'peer-tab', createdAt: 1 });
+  } else if (scenario === 'backfill') {
+    write(STORAGE_KEY, BACKFILL_SEED);
+    write(DIRTY_KEY, { singles: [], sales: [] });
   }
 
   window.__KJR_SYNC_PREVIEW_SCENARIO = function (next) {
     clearFixtureStorage();
-    var nextSeed = next === 'pending' || next === 'review' ? PENDING_SEED : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+    var nextSeed = next === 'pending' || next === 'review' ? PENDING_SEED
+      : next === 'queue-many' ? QUEUE_MANY_SEED
+      : next === 'queue-long' ? QUEUE_LONG_SEED
+      : next === 'backfill' ? BACKFILL_SEED
+      : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED : EMPTY_SEED;
     write(STORAGE_KEY, nextSeed);
-    if (next === 'pending' || next === 'review') {
-      var dirtyIds = PENDING_SEED.singles.map(function (row) { return row.id; });
+    if (next === 'pending' || next === 'review' || next === 'queue-many' || next === 'queue-long') {
+      var queuedNextSeed = next === 'queue-many' ? QUEUE_MANY_SEED : next === 'queue-long' ? QUEUE_LONG_SEED : PENDING_SEED;
+      var dirtyIds = queuedNextSeed.singles.map(function (row) { return row.id; });
       write(DIRTY_KEY, { singles: dirtyIds });
-      write('_kjrDeleteStateV2', PENDING_DELETE_STATE);
-      write('_kjrPendingTrashWrites', PENDING_TRASH);
-      write('_kjrMutationGroupV2:' + PENDING_MUTATION.mutation_id, PENDING_MUTATION);
+      if (next === 'pending' || next === 'review') {
+        write('_kjrDeleteStateV2', PENDING_DELETE_STATE);
+        write('_kjrPendingTrashWrites', PENDING_TRASH);
+        write('_kjrMutationGroupV2:' + PENDING_MUTATION.mutation_id, PENDING_MUTATION);
+      }
     } else if (next === 'restore-ack') {
       seedRestoreAckFixture();
     } else if (next === 'ack') {
@@ -233,6 +285,8 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
     } else if (next === 'warnings') {
       write(DIRTY_KEY, { singles: [WARNING_ID], _revisions: { singles: { [WARNING_ID]: [WARNING_TOKEN] } } });
       write(WARNING_MARKER_KEY, { table: 'singles', id: WARNING_ID, token: WARNING_TOKEN, owner: 'peer-tab', createdAt: 1 });
+    } else if (next === 'backfill') {
+      write(DIRTY_KEY, { singles: [], sales: [] });
     }
     localStorage.setItem(SCENARIO_KEY, next);
     location.reload();
@@ -376,8 +430,9 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
 
   // The placeholder is replaced by the server with a real JSON array. It
   // keeps the bootstrap source independent from any row values.
-  var dirtyIds = PENDING_SEED.singles.map(function (row) { return row.id; });
-  if (scenario === 'pending') write(DIRTY_KEY, { singles: dirtyIds });
+  var initialQueuedSeed = scenario === 'queue-many' ? QUEUE_MANY_SEED : scenario === 'queue-long' ? QUEUE_LONG_SEED : PENDING_SEED;
+  var dirtyIds = initialQueuedSeed.singles.map(function (row) { return row.id; });
+  if (scenario === 'pending' || scenario === 'queue-many' || scenario === 'queue-long') write(DIRTY_KEY, { singles: dirtyIds });
 
   window.setTimeout(function () {
     function clearDiagnosticsForFixture() {
@@ -389,7 +444,7 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       _syncDiagRenderIndicator();
     }
     clearDiagnosticsForFixture();
-    if (scenario === 'pending') {
+    if (scenario === 'pending' || scenario === 'queue-many' || scenario === 'queue-long') {
       _syncDiagSetSettledStatus();
     } else if (scenario === 'review') {
       // Synthetic chronology only. Production timestamps come from validated
@@ -425,8 +480,10 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       showPage('trash');
     } else if (scenario === 'warnings') {
       runHealthCheck();
+    } else if (scenario === 'backfill') {
+      runHealthCheck();
     }
-    if (scenario !== 'warnings' && scenario !== 'restore-ack') openSyncDiagnostics();
+    if (scenario !== 'warnings' && scenario !== 'backfill' && scenario !== 'restore-ack') openSyncDiagnostics();
   }, 700);
 })();
 </script>`;
@@ -527,7 +584,7 @@ if (require.main === module) {
   const server = createPreviewServer();
   server.listen(PORT, HOST, function () {
     console.log('Cloud Sync diagnostics preview: http://' + HOST + ':' + PORT + '/');
-    console.log('Synthetic controls: Empty, Pending many, Long failure, Offline, Recovered local, Retained receipt, Ack demo, Health warnings, Acknowledge, Show details, Toggle theme');
+    console.log('Synthetic controls: Empty, Pending many, Queue 125, Long queue names, Long failure, Offline, Recovered local, Retained receipt, Ack demo, Health warnings, Backfill guards, Acknowledge, Show details, Toggle theme');
     console.log('Cloud, auth and service-worker access: disabled. Google Fonts remains enabled for visual parity.');
   });
   const stop = function () { server.close(function () { process.exit(0); }); };
@@ -535,4 +592,8 @@ if (require.main === module) {
   process.on('SIGTERM', stop);
 }
 
-module.exports = { HOST, PORT, ROOT, STATIC_FILES, PENDING_SINGLES, EMPTY_SEED, PENDING_SEED, ACK_SEED, WARNING_SEED, buildPreviewIndex, createPreviewServer, handleRequest };
+module.exports = {
+  HOST, PORT, ROOT, STATIC_FILES, PENDING_SINGLES, EMPTY_SEED, PENDING_SEED,
+  QUEUE_MANY_SINGLES, QUEUE_MANY_SEED, QUEUE_LONG_SINGLES, QUEUE_LONG_SEED,
+  BACKFILL_SEED, ACK_SEED, WARNING_SEED, buildPreviewIndex, createPreviewServer, handleRequest,
+};

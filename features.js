@@ -1281,7 +1281,9 @@ function kjrOpenEbayModal(idOrItem){
   // auto-detection stops fighting them.
   _kjrEbUserPickedTarget = !!(target.targetTable);
   // Convert stored "D MMM YYYY" → "YYYY-MM-DD" so the date input populates.
-  const dateIso = _kjrDateToIso(target.date) || new Date().toISOString().slice(0,10);
+  // Existing blank or invalid dates stay blank. New purchases keep today's
+  // default, so editing another field cannot invent a purchase date.
+  const dateIso = _kjrDateToIso(target.date) || (isNew ? new Date().toISOString().slice(0,10) : '');
   // Field blocks. Status and Freight only show when editing an existing
   // purchase - a new purchase sets status via the pipeline and freight inline
   // in the table, so the Add form stays to the essentials.

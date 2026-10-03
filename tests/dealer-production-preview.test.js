@@ -43,7 +43,7 @@ test('production fixture serves the real page with a loopback-only synthetic tra
   assert.match(html, /DEALER FIXTURE/);
   assert.doesNotMatch(html, /<script[^>]+src="https?:\/\//i);
   assert.doesNotMatch(html, /<link[^>]+href="https?:\/\//i);
-  assert.match(html, /dealer-production-ui\.js\?v=3\.63/);
+  assert.match(html, /dealer-production-ui\.js\?v=3\.64/);
   assert.match(html, /#kjr-production-fixture-tools\{bottom:96px!important/);
   assert.match(html, /production command contract accepts candidate fields at the/);
   assert.match(html, /mode === 'existing' \? 'Fixture Graded Charizard' : 'Fixture golden candidate'/);
@@ -57,7 +57,7 @@ test('production fixture serves only allowlisted app assets', () => {
   assert.equal(pageResponse.status, 200);
   assert.match(pageResponse.headers['Content-Security-Policy'], /connect-src 'self'/);
   const appResponse = fakeResponse();
-  preview.handleRequest({ method: 'GET', url: '/app.js?v=3.63' }, appResponse);
+  preview.handleRequest({ method: 'GET', url: '/app.js?v=3.64' }, appResponse);
   assert.equal(appResponse.status, 200);
   const blockedResponse = fakeResponse();
   preview.handleRequest({ method: 'GET', url: '/not-an-asset.js' }, blockedResponse);

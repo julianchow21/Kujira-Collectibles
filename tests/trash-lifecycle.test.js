@@ -1243,7 +1243,7 @@ test('trash-lifecycle: health repairs skip Dealer rows and report the skipped co
   ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
   const dealerSaleBefore = JSON.stringify(dealerSaleRow);
 
-  ctx.healthBackfillDateAcquired();
+  await ctx.healthBackfillDateAcquired();
 
   assert.strictEqual(JSON.stringify(dealerSaleRow), dealerSaleBefore);
   assert.strictEqual(genericSaleRow.dateAcquired, '1 Jan 2026');
@@ -1261,6 +1261,203 @@ test('trash-lifecycle: health repairs skip Dealer rows and report the skipped co
   assert.strictEqual(dirty.singles.has(dealerCopyRow.id), false);
   assert.strictEqual(dirty.singles.has(genericCopyRow.id), true);
   assert.match(toastMessages.at(-1), /skipped 1 Dealer-controlled row/);
+});
+
+test('trash-lifecycle: holding-period backfill requires a full valid source date and keeps failed writes queued', async () => {
+  const rows = [
+    { id: 'full-date-source', name: 'Full date source', datePurchased: '1 Jan 2026', status: 'Available' },
+    { id: 'month-only-source', name: 'Month only source', datePurchased: 'Jan 2026', status: 'Available' },
+    { id: 'day-month-source', name: 'Day month source', datePurchased: '1 Jan', status: 'Available' },
+    { id: 'invalid-date-source', name: 'Invalid source', datePurchased: '31 Feb 2026', status: 'Available' },
+    { id: 'dealer-full-source', name: 'Dealer source', datePurchased: '1 Jan 2026', status: 'Available', dealerCopyId: 'copy-backfill-1', dealerPaymentStatus: 'Unknown' },
+  ];
+  const sales = [
+    { id: 'full-date-sale', product: 'Full date sale', inventoryId: 'full-date-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'month-only-sale', product: 'Month only sale', inventoryId: 'month-only-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'day-month-sale', product: 'Day month sale', inventoryId: 'day-month-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'invalid-date-sale', product: 'Invalid date sale', inventoryId: 'invalid-date-source', inventoryTable: 'singles', dateSold: '5 Jan 2026' },
+    { id: 'dealer-full-sale', product: 'Dealer sale', inventoryId: 'dealer-full-source', inventoryTable: 'singles', dateSold: '5 Jan 2026', dealerCopyId: 'copy-backfill-1', dealerPaymentStatus: 'Unknown' },
+  ];
+  const { ctx, grab, fetchMock } = await loadApp({ seed: { singles: rows, sales } });
+  const db = grab('DB').DB;
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ code: 'offline_for_backfill' }, 503));
+  const beforeSoldDates = new Map(db.sales.map(row => [row.id, row.dateSold]));
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+
+  assert.equal(ctx._kjrFullAcquisitionDate('Jan 2026'), '');
+  assert.equal(ctx._kjrFullAcquisitionDate('1 Jan'), '');
+  assert.equal(ctx._kjrFullAcquisitionDate('31 Feb 2026'), '');
+  assert.equal(ctx._kjrFullAcquisitionDate('01/02/2026'), '1 Feb 2026');
+  assert.equal(ctx._kjrFullAcquisitionDate('1 Jan 2026'), '1 Jan 2026');
+  await ctx.healthBackfillDateAcquired();
+
+  const byId = id => db.sales.find(row => row.id === id);
+  assert.equal(byId('full-date-sale').dateAcquired, '1 Jan 2026');
+  assert.equal(byId('full-date-sale').daysHeld, 4);
+  for (const id of ['month-only-sale', 'day-month-sale', 'invalid-date-sale', 'dealer-full-sale']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(byId(id), 'dateAcquired'), false, id + ' remains without guessed acquisition date');
+    assert.equal(byId(id).dateSold, beforeSoldDates.get(id), id + ' keeps dateSold');
+  }
+  assert.equal(dirty.sales.has('full-date-sale'), true, 'the changed sale remains dirty after rejected sync');
+  assert.equal(dirty.sales.has('month-only-sale'), false);
+  assert.equal(dirty.sales.has('day-month-sale'), false);
+  assert.equal(dirty.sales.has('invalid-date-sale'), false);
+  assert.equal(dirty.sales.has('dealer-full-sale'), false);
+  assert.match(toastMessages.at(-1), /kept here and queued for cloud retry/);
+});
+
+test('trash-lifecycle: holding-period backfill confirms a target from a fresh pull despite unrelated pending work', async () => {
+  const source = { id: 'fresh-pull-source', name: 'Fresh pull source', datePurchased: '1 Jan 2026', status: 'Available' };
+  const target = { id: 'fresh-pull-sale', product: 'Fresh pull sale', inventoryId: source.id, inventoryTable: 'singles', dateSold: '5 Jan 2026' };
+  const { ctx, grab, fetchMock } = await loadApp({ seed: { singles: [source], sales: [target] } });
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  // Keep one unrelated missing marker so the aggregate flush cannot report
+  // every pending item as drained while this target is independently checked.
+  dirty.sales.add('unrelated-missing-sale');
+  fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    sales: [{
+      id: target.id,
+      data: { ...target, dateAcquired: '1 Jan 2026', daysHeld: 4 },
+      row_version: 1,
+      updated_at: '2026-09-04T00:00:00.000Z',
+    }],
+  }));
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+
+  await ctx.healthBackfillDateAcquired();
+
+  assert.equal(dirty.sales.has(target.id), false);
+  assert.equal(dirty.sales.has('unrelated-missing-sale'), true);
+  assert.match(toastMessages.at(-1), /1 cloud confirmed after a fresh pull/);
+  assert.doesNotMatch(toastMessages.at(-1), /cloud confirmation unavailable/);
+});
+
+test('trash-lifecycle: holding-period backfill keeps fresh-pull proof per target after an unrelated grouped conflict', async () => {
+  const source = { id: 'grouped-source', name: 'Grouped source', datePurchased: '1 Jan 2026', status: 'Available' };
+  const target = { id: 'grouped-target-sale', product: 'Grouped target sale', inventoryId: source.id, inventoryTable: 'singles', dateSold: '5 Jan 2026' };
+  const grouped = { id: 'grouped-unrelated-sale', product: 'Grouped unrelated sale', dateAcquired: '10 Jan 2026', daysHeld: 2, _serverVersion: 4 };
+  const { ctx, grab, fetchMock, localStorage } = await loadApp({ seed: { singles: [source], sales: [target, grouped] } });
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  const group = ctx._queueMutationGroup([ctx._upsertOperation('sales', { ...grouped, product: 'Grouped local replacement' })]);
+  assert.ok(group);
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    if (request.operations.some(item => item.id === grouped.id)) {
+      return jsonResponse({
+        ok: false,
+        code: 'version_conflict',
+        mutation_id: request.mutation_id,
+        conflicts: [{
+          table: 'sales', id: grouped.id,
+          current: {
+            id: grouped.id,
+            data: { ...grouped, product: 'Grouped server replacement' },
+            row_version: 5,
+            updated_at: '2026-09-04T00:00:00.000Z',
+          },
+          tombstone: null,
+        }],
+      });
+    }
+    return syncSuccessResponse(opts);
+  });
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    sales: [
+      { id: target.id, data: { ...target, dateAcquired: '1 Jan 2026', daysHeld: 4 }, row_version: 1, updated_at: '2026-09-04T00:00:00.000Z' },
+      { id: grouped.id, data: { ...grouped, product: 'Grouped server replacement' }, row_version: 5, updated_at: '2026-09-04T00:00:00.000Z' },
+    ],
+  }));
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+
+  await ctx.healthBackfillDateAcquired();
+
+  assert.equal(JSON.parse(localStorage.getItem('_kjrMutationGroupsV2') || '[]').length, 0);
+  assert.equal(dirty.sales.has(target.id), false);
+  assert.match(toastMessages.at(-1), /1 cloud confirmed after a fresh pull/);
+  assert.doesNotMatch(toastMessages.at(-1), /needs review after a cloud conflict or replacement/);
+});
+
+test('trash-lifecycle: holding-period backfill does not call a mismatched fresh server row a queued success', async () => {
+  const source = { id: 'mismatch-source', name: 'Mismatch source', datePurchased: '1 Jan 2026', status: 'Available' };
+  const target = { id: 'mismatch-sale', product: 'Mismatch sale', inventoryId: source.id, inventoryTable: 'singles', dateSold: '5 Jan 2026' };
+  const { ctx, grab, fetchMock } = await loadApp({ seed: { singles: [source], sales: [target] } });
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'server_error' }, 503));
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    sales: [{
+      id: target.id,
+      data: { ...target, dateAcquired: '2 Jan 2026', daysHeld: 3 },
+      row_version: 2,
+      updated_at: '2026-09-04T00:00:00.000Z',
+    }],
+  }));
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+
+  await ctx.healthBackfillDateAcquired();
+
+  assert.equal(dirty.sales.has(target.id), true);
+  assert.match(toastMessages.at(-1), /needs review after a cloud conflict or replacement/);
+  assert.doesNotMatch(toastMessages.at(-1), /kept here and queued for cloud retry/);
+});
+
+test('trash-lifecycle: holding-period backfill reports a direct CAS replacement for review', async () => {
+  const source = { id: 'conflict-source', name: 'Conflict source', datePurchased: '1 Jan 2026', status: 'Available' };
+  const target = { id: 'conflict-sale', product: 'Conflict sale', inventoryId: source.id, inventoryTable: 'singles', dateSold: '5 Jan 2026' };
+  const { ctx, grab, fetchMock } = await loadApp({ seed: { singles: [source], sales: [target] } });
+  const dirty = grab('_dirty')._dirty;
+  Object.values(dirty).forEach(set => set.clear());
+  fetchMock.route('/sync/v2/mutate', (url, opts) => {
+    const request = syncRequest(opts);
+    return jsonResponse({
+      ok: false,
+      code: 'version_conflict',
+      mutation_id: request.mutation_id,
+      conflicts: [{
+        table: 'sales', id: target.id,
+        current: {
+          id: target.id,
+          data: { ...target, dateAcquired: '2 Jan 2026', daysHeld: 3 },
+          row_version: 9,
+          updated_at: '2026-09-04T00:00:00.000Z',
+        },
+        tombstone: null,
+      }],
+    });
+  });
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({
+    sales: [{
+      id: target.id,
+      data: { ...target, dateAcquired: '2 Jan 2026', daysHeld: 3 },
+      row_version: 9,
+      updated_at: '2026-09-04T00:00:00.000Z',
+    }],
+  }));
+  const toastMessages = [];
+  const originalToast = ctx.toast;
+  ctx.toast = (message, ...rest) => { toastMessages.push(String(message)); return originalToast(message, ...rest); };
+
+  await ctx.healthBackfillDateAcquired();
+
+  const sale = grab('DB').DB.sales.find(row => row.id === target.id);
+  assert.equal(sale.dateAcquired, '2 Jan 2026');
+  assert.equal(sale.daysHeld, 3);
+  assert.equal(dirty.sales.has(target.id), false, 'the replaced row is no longer presented as the intended dirty edit');
+  assert.match(toastMessages.at(-1), /needs review after a cloud conflict or replacement/);
+  assert.doesNotMatch(toastMessages.at(-1), /cloud confirmed after a fresh pull/);
 });
 
 test('trash-lifecycle: Replace preflight saves the Trash snapshot before its delete marker and retry does not duplicate either', async () => {

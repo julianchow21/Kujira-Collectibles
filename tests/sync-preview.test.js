@@ -22,7 +22,7 @@ function bootstrapSource() {
   return match[1];
 }
 
-function runBootstrap() {
+function runBootstrap(scenario) {
   const values = new Map();
   const button = { hidden: true };
   const localStorage = {
@@ -35,7 +35,7 @@ function runBootstrap() {
   const sandbox = {
     URL,
     localStorage,
-    location: { href: 'http://127.0.0.1:3817/?scenario=restore-ack' },
+    location: { href: 'http://127.0.0.1:3817/?scenario=' + (scenario || 'restore-ack') },
     navigator: { onLine: true, serviceWorker: null },
     document: {
       documentElement: { classList: { remove() {} } },
@@ -53,6 +53,9 @@ function runBootstrap() {
 test('sync preview restore acknowledgement is labelled and fixture-only', () => {
   const html = preview.buildPreviewIndex();
   assert.match(html, /SYNC PREVIEW/);
+  assert.match(html, /__KJR_SYNC_PREVIEW_SCENARIO\('queue-many'\)/);
+  assert.match(html, /__KJR_SYNC_PREVIEW_SCENARIO\('queue-long'\)/);
+  assert.match(html, /__KJR_SYNC_PREVIEW_SCENARIO\('backfill'\)/);
   assert.match(html, /id="kjr-sync-preview-restore-ack"/);
   assert.match(html, /scenario === 'restore-ack'/);
   assert.match(html, /Synthetic restore fixture rejects unknown request/);
@@ -87,4 +90,28 @@ test('restore acknowledgement bootstrap seeds one synthetic Trash row and tombst
   assert.deepEqual(trash.map(entry => entry.id), ['sync-preview-restore-trash']);
   assert.deepEqual(tombstones.map(entry => entry.id), ['sync-preview-restore-card']);
   assert.equal(JSON.parse(fixture.values.get('pokeinventory_v3')).singles.length, 0);
+});
+
+test('sync preview queue layout fixtures are synthetic and bounded for browser review', () => {
+  const pending = runBootstrap('pending');
+  const pendingSeed = JSON.parse(pending.values.get('pokeinventory_v3'));
+  assert.equal(pendingSeed.singles.length, 125);
+  assert.equal(pendingSeed.singles[0].name.length, 120);
+
+  const many = runBootstrap('queue-many');
+  const manySeed = JSON.parse(many.values.get('pokeinventory_v3'));
+  const manyDirty = JSON.parse(many.values.get('pokeinv_dirty_v1'));
+  assert.equal(manySeed.singles.length, 125);
+  assert.equal(manyDirty.singles.length, 125);
+
+  const long = runBootstrap('queue-long');
+  const longSeed = JSON.parse(long.values.get('pokeinventory_v3'));
+  assert.equal(longSeed.singles.length, 4);
+  assert.ok(longSeed.singles.every(row => row.name.length > 300));
+
+  const backfill = runBootstrap('backfill');
+  const backfillSeed = JSON.parse(backfill.values.get('pokeinventory_v3'));
+  assert.equal(backfillSeed.singles.length, 3);
+  assert.equal(backfillSeed.sales.length, 3);
+  assert.equal(backfill.values.get('pokeinv_dirty_v1'), JSON.stringify({ singles: [], sales: [] }));
 });

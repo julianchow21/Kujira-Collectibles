@@ -1184,6 +1184,8 @@ const SYNC_DIAG_OPERATION_LABELS = {
 let _syncDiagStorageAvailable = true;
 let _syncDiagInstallationPersisted = false;
 let _syncDiagRetryInFlight = null;
+const SYNC_DIAG_QUEUE_PAGE_SIZE = 100;
+let _syncDiagQueueReviewLimit = SYNC_DIAG_QUEUE_PAGE_SIZE;
 
 function _syncDiagNewInstallationRef() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1584,6 +1586,281 @@ function _syncDiagPendingSnapshot() {
   return { byTable, totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0), unknown: [...new Set(unknown)] };
 }
 
+function _syncDiagQueueTable(table) {
+  const key = _dbKey(table);
+  return SYNC_DIAG_TABLES.includes(key) ? key : null;
+}
+
+function _syncDiagQueueName(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const candidate = [value.name, value.product, value.cardName, value.title, value.productName]
+    .find(item => typeof item === 'string' && item.trim());
+  return candidate ? _syncDiagSafeText(candidate, 120) : '';
+}
+
+// Read-only reconciliation aid. This deliberately reports queue references
+// and small summaries only. Row JSON, mutation payloads, credentials and
+// storage keys never leave this function.
+function _syncDiagQueueInspector() {
+  const items = new Map();
+  const unknown = new Set();
+  const confirmedDeleteRefs = [];
+  const dirtySources = new Set();
+  const dirtyMarkerSources = new Set();
+  const addUnknown = label => { if (label) unknown.add(label); };
+  const itemKey = (table, id) => table + '\u0000' + id;
+  const ensure = (table, id) => {
+    const key = _syncDiagQueueTable(table);
+    if (!key || typeof id !== 'string' || !id) {
+      addUnknown('queue item reference');
+      return null;
+    }
+    const displayId = _syncDiagSafeText(id, 256);
+    if (!displayId || displayId === 'Unknown sync failure') {
+      addUnknown('queue item reference');
+      return null;
+    }
+    // Keep the exact internal id for joins. The display id is bounded and
+    // redacted, so it must never decide which authoritative row is matched.
+    const mapKey = itemKey(key, id);
+    if (!items.has(mapKey)) {
+      let activeLocal = null;
+      let localRow = null;
+      try {
+        const rows = DB && Array.isArray(DB[key]) ? DB[key] : null;
+        if (rows) {
+          localRow = rows.find(row => row && row.id === id) || null;
+          activeLocal = !!localRow;
+        }
+      } catch (_) { addUnknown('local inventory'); }
+      items.set(mapKey, {
+        table: key,
+        rawId: id,
+        id: displayId,
+        displayName: _syncDiagQueueName(localRow),
+        queueClasses: new Set(),
+        snapshotEvidence: { present: false, absent: false, unknown: false },
+        snapshotSources: new Set(),
+        activeLocal,
+        activeAuthoritative: 'unknown',
+        trash: { pending: false, visible: false },
+        deletion: { pending: false, confirmed: false },
+        mutation: { types: new Set() },
+        tombstone: { status: 'unknown', rowVersion: null },
+      });
+    }
+    return items.get(mapKey);
+  };
+  const addName = (item, value) => {
+    if (!item || item.displayName) return;
+    const name = _syncDiagQueueName(value);
+    if (name) item.displayName = name;
+  };
+  const addSnapshot = (item, state, source) => {
+    if (!item) return;
+    if (state === 'present') item.snapshotEvidence.present = true;
+    else if (state === 'absent') item.snapshotEvidence.absent = true;
+    else item.snapshotEvidence.unknown = true;
+    if (source) item.snapshotSources.add(source);
+  };
+  const addQueueClass = (item, queueClass) => {
+    if (item) item.queueClasses.add(queueClass);
+  };
+
+  const dirty = (typeof _dirty === 'object' && _dirty) ? _dirty : null;
+  for (const table of SYNC_DIAG_TABLES) {
+    const ids = dirty && dirty[table];
+    if (!(ids instanceof Set)) {
+      addUnknown('unsynced changes');
+      continue;
+    }
+    for (const id of ids) {
+      const item = ensure(table, id);
+      addQueueClass(item, 'dirty');
+      if (typeof id === 'string' && id) dirtySources.add(itemKey(table, id));
+    }
+  }
+
+  let markers = [];
+  try { markers = _readDirtyV2Markers(); }
+  catch (_) { markers = null; }
+  if (!Array.isArray(markers)) addUnknown('sync markers');
+  for (const marker of Array.isArray(markers) ? markers : []) {
+    if (!_syncDiagValidDirtyMarkerShape(marker, marker && marker.key, false, true)) {
+      addUnknown('sync markers');
+      continue;
+    }
+    const item = ensure(marker.table, marker.id);
+    addQueueClass(item, 'dirty');
+    const markerTable = _syncDiagQueueTable(marker.table);
+    if (markerTable && marker.id) dirtyMarkerSources.add(itemKey(markerTable, marker.id));
+    if (typeof marker.rowJson === 'string') {
+      try {
+        const row = JSON.parse(marker.rowJson);
+        if (row && typeof row === 'object' && !Array.isArray(row) && row.id === marker.id) {
+          addName(item, row);
+          addSnapshot(item, 'present', 'Dirty row snapshot');
+        } else if (row && typeof row === 'object' && !Array.isArray(row)) {
+          addSnapshot(item, 'unknown', 'Dirty row snapshot identity mismatch');
+        } else addSnapshot(item, 'unknown', 'Dirty row snapshot unreadable');
+      } catch (_) { addSnapshot(item, 'unknown', 'Dirty row snapshot unreadable'); }
+    } else addSnapshot(item, 'absent', 'No durable dirty snapshot');
+  }
+  for (const source of dirtySources) {
+    if (dirtyMarkerSources.has(source)) continue;
+    const separator = source.indexOf('\u0000');
+    const item = separator >= 0 ? items.get(source) : null;
+    addSnapshot(item, 'absent', 'No durable dirty snapshot');
+  }
+
+  const deleteState = _readDeleteState();
+  if (!deleteState.valid) addUnknown('delete recovery queue');
+  else {
+    const addDeleteEntries = (entries, confirmed) => {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        if (!entry || typeof entry.table !== 'string' || typeof entry.id !== 'string' || !entry.id) {
+          addUnknown('delete recovery queue');
+          continue;
+        }
+        if (confirmed) {
+          if (!_syncDiagQueueTable(entry.table)) addUnknown('delete recovery queue');
+          else confirmedDeleteRefs.push({ table: entry.table, id: entry.id });
+          continue;
+        }
+        const item = ensure(entry.table, entry.id);
+        addQueueClass(item, 'delete');
+        if (item) {
+          item.deletion.pending = true;
+          item.snapshotSources.add('Delete retry marker');
+        }
+      }
+    };
+    addDeleteEntries(deleteState.state.pending, false);
+    addDeleteEntries(deleteState.state.confirmed, true);
+  }
+
+  const pendingTrash = _syncDiagReadStorage(PENDING_TRASH_KEY);
+  if (!pendingTrash.ok || (pendingTrash.present && !Array.isArray(pendingTrash.value))) {
+    addUnknown('Trash recovery queue');
+  } else {
+    for (const entry of (Array.isArray(pendingTrash.value) ? pendingTrash.value : [])) {
+      const data = entry && entry.data;
+      const table = data && typeof data.originalTable === 'string' ? _syncDiagQueueTable(data.originalTable) : null;
+      const id = data && typeof data.originalId === 'string' ? data.originalId : '';
+      if (!entry || !table || !id) {
+        addUnknown('Trash recovery queue');
+        continue;
+      }
+      const item = ensure(table, id);
+      addQueueClass(item, 'trash');
+      if (item) {
+        item.trash.pending = true;
+        item.snapshotSources.add('Pending Trash snapshot');
+        if (data.item && typeof data.item === 'object' && !Array.isArray(data.item)) {
+          addName(item, data.item);
+          addSnapshot(item, 'present', 'Pending Trash snapshot');
+        } else addSnapshot(item, 'unknown', 'Pending Trash snapshot unreadable');
+      }
+    }
+  }
+
+  let mutationGroups = null;
+  try { mutationGroups = _readMutationGroups(); }
+  catch (_) { mutationGroups = null; }
+  if (!Array.isArray(mutationGroups)) addUnknown('queued transactions');
+  else {
+    for (const group of mutationGroups) {
+      const plan = _mutationReplayPlan(group);
+      if (!plan) {
+        addUnknown('queued transactions');
+        continue;
+      }
+      for (const entry of plan) {
+        const operation = entry && entry.op;
+        if (!operation) {
+          addUnknown('queued transactions');
+          continue;
+        }
+        const item = ensure(operation.table, operation.id);
+        addQueueClass(item, 'mutation');
+        if (!item) continue;
+        item.mutation.types.add(operation.type === 'restore' ? 'restore' : 'upsert');
+        item.snapshotSources.add('Queued transaction data');
+        addName(item, operation.data);
+        addSnapshot(item, 'present', 'Queued transaction data');
+        if (operation.type === 'restore') {
+          if (entry.trashSnapshot) addSnapshot(item, 'present', 'Restore Trash snapshot');
+          else addSnapshot(item, 'unknown', 'Restore Trash snapshot not recorded');
+        }
+      }
+    }
+  }
+
+  // A confirmed delete marker is historical protection state. Annotate it
+  // only when another queue source already points at the same row, so an old
+  // marker cannot create a new item-level pending entry by itself.
+  for (const reference of confirmedDeleteRefs) {
+    const table = _syncDiagQueueTable(reference.table);
+    const id = typeof reference.id === 'string' ? reference.id : '';
+    const item = table && id ? items.get(itemKey(table, id)) : null;
+    if (item) {
+      item.deletion.confirmed = true;
+      item.snapshotSources.add('Confirmed delete marker');
+    }
+  }
+
+  // A visible Trash entry is evidence only when another queue source already
+  // points at the same source row. It must not turn the whole Trash tab into a
+  // list of pending work.
+  try {
+    if (!DB || !Array.isArray(DB.trash)) addUnknown('local Trash');
+    else for (const entry of DB.trash) {
+      const data = entry && entry.data;
+      const table = data && typeof data.originalTable === 'string' ? _syncDiagQueueTable(data.originalTable) : null;
+      const id = data && typeof data.originalId === 'string' ? data.originalId : '';
+      if (!table || !id) continue;
+      const item = items.get(itemKey(table, id));
+      if (!item) continue;
+      item.trash.visible = true;
+      item.snapshotSources.add('Visible Trash entry');
+      if (data.item && typeof data.item === 'object' && !Array.isArray(data.item)) {
+        addName(item, data.item);
+        addSnapshot(item, 'present', 'Visible Trash entry');
+      }
+    }
+  } catch (_) { addUnknown('local Trash'); }
+
+  const freshPull = _syncPullLoaded === true;
+  for (const item of items.values()) {
+    if (item.snapshotEvidence.present) item.snapshot = { status: 'present', sources: [...item.snapshotSources] };
+    else if (item.snapshotEvidence.unknown) item.snapshot = { status: 'unknown', sources: [...item.snapshotSources] };
+    else item.snapshot = { status: 'absent', sources: [...item.snapshotSources] };
+    delete item.snapshotEvidence;
+    if (!item.queueClasses.size) item.queueClasses.add('unknown');
+    if (!freshPull || !(_authoritativeServerRows instanceof Map)) {
+      item.activeAuthoritative = 'unknown';
+      item.tombstone = { status: 'unknown', rowVersion: null };
+    } else {
+      const serverTable = _tblName(item.table);
+      item.activeAuthoritative = _authoritativeServerRows.has(_authoritativeRowKey(serverTable, item.rawId)) ? 'present' : 'absent';
+      const tombstone = Array.isArray(_serverTombstones)
+        ? _serverTombstones.find(candidate => candidate && candidate.table === serverTable && candidate.id === item.rawId)
+        : null;
+      item.tombstone = tombstone
+        ? { status: 'recorded', rowVersion: tombstone.row_version }
+        : { status: 'unknown', rowVersion: null };
+    }
+    item.id = _syncDiagSafeText(item.rawId, 256);
+    delete item.rawId;
+    item.queueClasses = [...item.queueClasses];
+    item.mutation = { types: [...item.mutation.types] };
+  }
+  const sorted = [...items.values()].sort((left, right) =>
+    String(SYNC_DIAG_TABLE_LABELS[left.table] || left.table).localeCompare(String(SYNC_DIAG_TABLE_LABELS[right.table] || right.table)) ||
+    left.id.localeCompare(right.id));
+  return { freshPull, evidenceScope: 'last_authenticated_pull_in_this_session', items: sorted, unknown: [...unknown] };
+}
+
 function _syncDiagMergePulledState(pulled) {
   if (!pulled || !pulled.tables || typeof DB === 'undefined' || !DB) return false;
   try {
@@ -1835,10 +2112,83 @@ function _syncDiagProblem(pending) {
   return { tone: 'ok', icon: '✓', title: 'No current sync problem', reason: 'The latest confirmed cloud activity is clear.', remedy: 'You can close this panel.' };
 }
 
+function _syncDiagQueueReviewShowMore(event) {
+  if (event && typeof event.preventDefault === 'function') event.preventDefault();
+  const current = Number.isSafeInteger(_syncDiagQueueReviewLimit) && _syncDiagQueueReviewLimit >= SYNC_DIAG_QUEUE_PAGE_SIZE
+    ? _syncDiagQueueReviewLimit : SYNC_DIAG_QUEUE_PAGE_SIZE;
+  _syncDiagQueueReviewLimit = current + SYNC_DIAG_QUEUE_PAGE_SIZE;
+  _syncDiagRenderBody();
+  const details = document.querySelector('.sync-diag-queue-review');
+  if (details) {
+    details.open = true;
+    const button = details.querySelector('[data-sync-queue-more="true"]');
+    if (button && typeof button.focus === 'function') button.focus();
+  }
+}
+
+function _syncDiagQueueReviewMarkup(review) {
+  const queueLabels = {
+    dirty: 'Dirty change', delete: 'Delete recovery', trash: 'Trash recovery',
+    mutation: 'Queued transaction', unknown: 'Unknown queue state',
+  };
+  const status = value => value === true || value === 'present' ? 'Present'
+    : value === false || value === 'absent' ? 'Absent' : 'Unknown';
+  const items = Array.isArray(review && review.items) ? review.items : [];
+  const requestedLimit = Number.isSafeInteger(_syncDiagQueueReviewLimit) && _syncDiagQueueReviewLimit >= SYNC_DIAG_QUEUE_PAGE_SIZE
+    ? _syncDiagQueueReviewLimit : SYNC_DIAG_QUEUE_PAGE_SIZE;
+  const visibleItems = items.slice(0, requestedLimit);
+  const itemRows = visibleItems.map(item => {
+    const table = SYNC_DIAG_TABLE_LABELS[item.table] || item.table || 'Unknown table';
+    const name = item.displayName ? ' · ' + item.displayName : '';
+    const queues = (Array.isArray(item.queueClasses) ? item.queueClasses : [])
+      .map(queueClass => queueLabels[queueClass] || 'Unknown queue state').join(', ') || 'Unknown';
+    const snapshotStatus = item.snapshot && item.snapshot.status === 'present' ? 'Present'
+      : item.snapshot && item.snapshot.status === 'absent' ? 'Absent'
+      : 'Unknown';
+    const snapshotSources = item.snapshot && Array.isArray(item.snapshot.sources) && item.snapshot.sources.length
+      ? ' (' + item.snapshot.sources.join(', ') + ')' : '';
+    const references = [];
+    if (item.trash && item.trash.pending) references.push('Pending Trash snapshot');
+    if (item.trash && item.trash.visible) references.push('Visible Trash entry');
+    if (item.deletion && item.deletion.pending) references.push('Delete retry pending');
+    if (item.deletion && item.deletion.confirmed) references.push('Delete marker retained');
+    for (const type of (item.mutation && Array.isArray(item.mutation.types) ? item.mutation.types : [])) {
+      references.push(type === 'restore' ? 'Queued restore' : 'Queued upsert');
+    }
+    const tombstone = item.tombstone && item.tombstone.status === 'recorded'
+      ? 'Recorded, version ' + item.tombstone.rowVersion
+      : review && review.freshPull
+        ? 'Unknown, no retained matching tombstone'
+        : 'Unknown, no fresh authenticated pull recorded';
+    return '<div class="sync-diag-row"><span class="sync-diag-row-label"><strong>' +
+      _syncDiagEscape(table + ' · ' + item.id + name) +
+      '</strong></span><span class="sync-diag-row-value">' +
+      _syncDiagEscape('Queue: ' + queues) + '<br>' +
+      _syncDiagEscape('Snapshot: ' + snapshotStatus + snapshotSources) + '<br>' +
+      _syncDiagEscape('Active row here: ' + status(item.activeLocal)) + '<br>' +
+      _syncDiagEscape('Last authenticated pull active row: ' + status(item.activeAuthoritative)) + '<br>' +
+      _syncDiagEscape('References: ' + (references.length ? references.join(', ') : 'None recorded')) + '<br>' +
+      _syncDiagEscape('Last authenticated pull tombstone: ' + tombstone) +
+      '</span></div>';
+  }).join('');
+  const remaining = Math.max(0, items.length - visibleItems.length);
+  const pageNote = items.length > visibleItems.length
+    ? '<p class="sync-diag-muted">Showing ' + _syncDiagEscape(visibleItems.length) + ' of ' + _syncDiagEscape(items.length) + ' queue items. More remain below.</p>' : '';
+  const moreButton = remaining > 0
+    ? '<button type="button" class="btn btn-sm" data-sync-queue-more="true" aria-label="Show more queued items" onclick="_syncDiagQueueReviewShowMore(event)">Show 100 more (' + _syncDiagEscape(remaining) + ' remaining)</button>' : '';
+  const unknown = review && Array.isArray(review.unknown) && review.unknown.length
+    ? '<div class="sync-diag-row"><span class="sync-diag-row-label">Some queue state</span><span class="sync-diag-row-value">Could not read safely</span></div>' : '';
+  return '<details class="sync-diag-section sync-diag-queue-review"><summary>Item-level queue review (' +
+    _syncDiagEscape(items.length) + ')</summary><p class="sync-diag-muted">Read-only summaries preserve queued bytes. Authenticated pull evidence is from the last successful pull in this session, and a missing tombstone remains Unknown.</p>' + pageNote + '<div class="sync-diag-list">' +
+    (itemRows || '<div class="sync-diag-muted">No item-level queue references were readable.</div>') + unknown +
+    '</div>' + moreButton + '</details>';
+}
+
 function _syncDiagRenderBody() {
   const body = document.getElementById('sync-diagnostics-body');
   if (!body) return;
   const pending = _syncDiagPendingSnapshot();
+  const queueReview = _syncDiagQueueReviewMarkup(_syncDiagQueueInspector());
   const problem = _syncDiagProblem(pending);
   const pendingRows = Object.entries(pending.byTable)
     .filter(([, counts]) => Object.values(counts).some(value => value > 0))
@@ -1863,6 +2213,7 @@ function _syncDiagRenderBody() {
   body.innerHTML =
     '<div class="sync-diag-problem" data-tone="' + _syncDiagEscape(problem.tone) + '"><span class="sync-diag-problem-icon" aria-hidden="true">' + _syncDiagEscape(problem.icon) + '</span><div class="sync-diag-problem-copy"><strong>' + _syncDiagEscape(problem.title) + '</strong><span>' + _syncDiagEscape(problem.reason) + '</span><br><span>' + _syncDiagEscape(problem.remedy) + '</span></div></div>' +
     '<div class="sync-diag-section"><div class="sync-diag-label">Pending work here</div><div class="sync-diag-list">' + (pendingRows || '<div class="sync-diag-muted">No queued changes or recovery actions.</div>') + unknownRows + '</div></div>' +
+    queueReview +
     '<div class="sync-diag-section"><div class="sync-diag-label">Last confirmed activity</div><div class="sync-diag-list"><div class="sync-diag-row"><span class="sync-diag-row-label">Last checked cloud</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagFormatTime(_syncDiagnostics.successes.read)) + '</span></div><div class="sync-diag-row"><span class="sync-diag-row-label">Last saved to cloud</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagFormatTime(_syncDiagnostics.successes.write)) + '</span></div></div></div>' +
     '<div class="sync-diag-section"><div class="sync-diag-label">This copy</div><div class="sync-diag-row"><span class="sync-diag-row-label">Local reference</span><span class="sync-diag-row-value">' + _syncDiagEscape(_syncDiagnostics.installationRef) + '</span></div><p class="sync-diag-muted">Browsers and Dock apps with separate storage have different references. Check each copy for unsent changes. This reference is never sent to the cloud.</p>' + statusNotice + '</div>' + technical;
   const status = document.getElementById('sync-diagnostics-status');
@@ -1874,6 +2225,7 @@ function _syncDiagRenderBody() {
 function openSyncDiagnostics() {
   const dlg = document.getElementById('sync-diagnostics-overlay');
   if (!dlg) return;
+  _syncDiagQueueReviewLimit = SYNC_DIAG_QUEUE_PAGE_SIZE;
   _syncDiagRenderBody();
   const indicator = document.getElementById('sync-indicator');
   if (indicator) indicator.setAttribute('aria-expanded', 'true');
@@ -9100,26 +9452,83 @@ function runHealthCheck(){
   _renderHealthResults(findings);
 }
 
+// Backfill only from a complete calendar date. The general normaliser accepts
+// month/year and day/month inputs by design, but acquisition backfill must not
+// invent a day or year for financial holding-period data.
+function _kjrFullAcquisitionDate(value) {
+  const source = String(value == null ? '' : value).trim();
+  if (!source || !(/^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4})$/).test(source)) return '';
+  const canonical = toDateMmmYyyy(source);
+  return /^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$/.test(canonical) && Number.isFinite(dateToMs(canonical))
+    ? canonical : '';
+}
+
 // Backfill dateAcquired + daysHeld for linked sales that are missing it.
-function healthBackfillDateAcquired() {
+async function healthBackfillDateAcquired() {
   let n = 0;
   let skipped = 0;
+  let skippedDate = 0;
+  const changedTargets = [];
+  const intended = new Map();
   (DB.sales || []).forEach(s => {
     if (s.dateAcquired || !s.inventoryId || !s.inventoryTable) return;
     if (typeof kjrDealerControlledRow === 'function' && kjrDealerControlledRow('sales', s)) { skipped++; return; }
     const srcRow = (DB[s.inventoryTable] || []).find(r => r.id === s.inventoryId);
     if (!srcRow) return;
-    const da = toDateMmmYyyy(srcRow.datePurchased || srcRow.dateListed || srcRow.date || '') || '';
-    if (!da) return;
+    const sourceDate = srcRow.datePurchased || srcRow.dateListed || srcRow.date || '';
+    const da = _kjrFullAcquisitionDate(sourceDate);
+    if (!da) { skippedDate++; return; }
     s.dateAcquired = da;
     const dh = _kjrDaysHeld(da, s.dateSold);
     if (dh !== null) s.daysHeld = dh;
     markDirty('sales', s.id);
+    changedTargets.push({ table: 'sales', id: s.id });
+    intended.set(s.id, { dateAcquired: s.dateAcquired, daysHeld: s.daysHeld });
     n++;
   });
-  const suffix = skipped ? ' (skipped ' + skipped + ' Dealer-controlled row' + (skipped === 1 ? '' : 's') + ')' : '';
-  if (n > 0) { saveData(); toast('Backfilled dateAcquired on ' + n + ' sale(s)' + suffix); }
-  else toast(skipped ? 'Nothing to backfill' + suffix : 'Nothing to backfill');
+  const suffixParts = [];
+  if (skipped) suffixParts.push('skipped ' + skipped + ' Dealer-controlled row' + (skipped === 1 ? '' : 's'));
+  if (skippedDate) suffixParts.push('skipped ' + skippedDate + ' source date' + (skippedDate === 1 ? '' : 's') + ' without a full day, month and year');
+  const suffix = suffixParts.length ? ' (' + suffixParts.join('; ') + ')' : '';
+  if (n > 0) {
+    saveData();
+    let freshPull = null;
+    let freshPullError = null;
+    try { await _kjrAwaitListingDirtyPersistence(changedTargets); }
+    catch (_) {}
+    if (!isLocalhostPreview()) {
+      try { freshPull = await _pullSyncState({ force: true }); }
+      catch (error) { freshPullError = error; }
+    }
+    const authoritativeRows = freshPull && _authoritativeServerRows instanceof Map ? _authoritativeServerRows : null;
+    const sameValues = (row, expected) => !!row && Object.is(row.dateAcquired, expected.dateAcquired) && Object.is(row.daysHeld, expected.daysHeld);
+    const classifications = changedTargets.map(target => {
+      const expected = intended.get(target.id) || {};
+      const current = (DB.sales || []).find(row => row && row.id === target.id) || null;
+      const retained = sameValues(current, expected);
+      const stillDirty = !!(_dirty.sales && _dirty.sales.has(target.id));
+      const authoritative = authoritativeRows
+        ? authoritativeRows.get(_authoritativeRowKey('sales', target.id)) || null : null;
+      const serverConfirmed = sameValues(authoritative, expected);
+      const hasAuthoritativeRow = !!authoritativeRows && authoritativeRows.has(_authoritativeRowKey('sales', target.id));
+      if (!retained) return { target, status: 'review' };
+      if (hasAuthoritativeRow && !serverConfirmed) return { target, status: 'review' };
+      if (serverConfirmed && !stillDirty) return { target, status: 'confirmed' };
+      if (stillDirty) return { target, status: 'queued' };
+      return { target, status: freshPullError ? 'unverified' : 'review' };
+    });
+    const counts = classifications.reduce((outcome, item) => {
+      outcome[item.status] = (outcome[item.status] || 0) + 1;
+      return outcome;
+    }, {});
+    const syncParts = [];
+    if (counts.confirmed) syncParts.push(counts.confirmed + ' cloud confirmed after a fresh pull');
+    if (counts.queued) syncParts.push(counts.queued + ' kept here and queued for cloud retry');
+    if (counts.unverified) syncParts.push(counts.unverified + ' kept locally, cloud confirmation unavailable');
+    if (counts.review) syncParts.push(counts.review + ' needs review after a cloud conflict or replacement');
+    if (!syncParts.length) syncParts.push('cloud confirmation unavailable');
+    toast('Backfilled dateAcquired on ' + n + ' sale(s), ' + syncParts.join('; ') + suffix);
+  } else toast(suffixParts.length ? 'Nothing to backfill' + suffix : 'Nothing to backfill');
   runHealthCheck();
 }
 

@@ -278,6 +278,10 @@ dialog.overlay::backdrop{background:var(--backdrop);transition:background 0.22s 
 .sync-diag-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;line-height:1.45}
 .sync-diag-row-label{color:var(--text2);flex:0 0 auto;min-width:7.5em;white-space:nowrap}
 .sync-diag-row-value{color:var(--text);font-variant-numeric:tabular-nums;text-align:right;white-space:normal;overflow-wrap:anywhere;min-width:0;flex:1 1 56%}
+.sync-diag-queue-review .sync-diag-row{display:block;text-align:left}
+.sync-diag-queue-review .sync-diag-row-label{display:block;min-width:0;margin-bottom:6px;white-space:normal;text-align:left;overflow-wrap:anywhere;word-break:break-word}
+.sync-diag-queue-review .sync-diag-row-value{display:block;width:100%;text-align:left;overflow-wrap:anywhere;word-break:break-word;line-height:1.55}
+.sync-diag-queue-review>[data-sync-queue-more="true"]{margin-top:8px;width:100%;text-align:center}
 .sync-diag-muted{font-size:12px;color:var(--text3);line-height:1.5}
 .sync-diag-tech{margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3);font-size:12px}
 .sync-diag-tech summary{cursor:pointer;padding:9px 10px;color:var(--text2);font-weight:500;list-style-position:inside}

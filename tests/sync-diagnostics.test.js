@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   loadApp, jsonResponse, syncSuccessResponse, syncPullResponse,
+  plain,
 } = require('./harness.js');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -93,6 +94,142 @@ test('sync diagnostics: pending work is derived from dirty and recovery queues, 
   localStorage.setItem('_kjrPendingTrashWrites', 'null');
   const nullTrashState = ctx._syncDiagPendingSnapshot();
   assert.ok(nullTrashState.unknown.includes('Trash recovery queue'));
+});
+
+test('sync diagnostics: item queue review is read-only, source-scoped and redacted', async () => {
+  const active = { id: 'active-review-row', name: 'Active synthetic card', status: 'Available' };
+  const loaded = await loadApp({ seed: { singles: [active] } });
+  const { ctx, localStorage, document, grab } = loaded;
+  const missingId = 'missing-review-row';
+  const markerToken = 'fixture-tab:1';
+  localStorage.setItem('pokeinv_dirty_v2:' + markerToken, JSON.stringify({
+    table: 'singles', id: 'active-review-row', token: markerToken, owner: 'fixture-tab', createdAt: 1,
+    rowJson: JSON.stringify({
+      id: 'active-review-row', name: 'Marker synthetic card', access_token: 'marker-secret',
+      notes: 'https://private.example/marker',
+    }),
+  }));
+  localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: ['active-review-row', missingId] }));
+  grab('_dirty')._dirty.singles.add(missingId);
+  localStorage.setItem('pokeinv_dirty_v2:fixture-tab:2', JSON.stringify({
+    table: 'singles', id: missingId, token: 'fixture-tab:2', owner: 'fixture-tab', createdAt: 2,
+  }));
+  const mismatchId = 'marker-mismatch-row';
+  grab('_dirty')._dirty.singles.add(mismatchId);
+  localStorage.setItem('pokeinv_dirty_v2:fixture-tab:3', JSON.stringify({
+    table: 'singles', id: mismatchId, token: 'fixture-tab:3', owner: 'fixture-tab', createdAt: 3,
+    rowJson: JSON.stringify({ id: 'different-row', name: 'Should not be trusted' }),
+  }));
+  localStorage.setItem('_kjrDeleteStateV2', JSON.stringify({
+    schema: 2, revision: 'fixture', pending: [{ table: 'singles', id: missingId, ts: 1 }],
+    confirmed: [{ table: 'singles', id: 'historical-confirmed-row', state: 'deleted', ts: 1 }],
+  }));
+  localStorage.setItem('_kjrPendingTrashWrites', JSON.stringify([{
+    id: 'trash-review',
+    data: {
+      originalTable: 'singles', originalId: missingId,
+      item: { id: missingId, name: 'Deleted synthetic card', access_token: 'trash-secret', notes: 'https://private.example/trash' },
+    },
+  }]));
+  const mutationId = '123e4567-e89b-42d3-a456-426614174001';
+  localStorage.setItem('_kjrMutationGroupV2:' + mutationId, JSON.stringify({
+    mutation_id: mutationId, created_at: 1,
+    operations: [{ type: 'upsert', table: 'singles', id: 'transaction-review-row', expected_version: 0, data: {
+      name: 'Transaction synthetic card', notes: 'https://private.example/transaction', token: 'transaction-secret',
+    } }],
+    before_states: [{ table: 'singles', id: 'transaction-review-row', present: false }],
+  }));
+  ctx.DB.trash.push({
+    id: 'trash-visible-review',
+    data: { originalTable: 'singles', originalId: missingId, item: { id: missingId, name: 'Visible synthetic Trash' } },
+  });
+  ctx._setAuthoritativeServerRows({ singles: [{ id: 'active-review-row' }] });
+  ctx._syncPullLoaded = true;
+  ctx._serverTombstones = [{ table: 'singles', id: missingId, row_version: 7, deleted_at: '2026-09-04T00:00:00.000Z' }];
+
+  const storageBefore = new Map(localStorage._store);
+  const dbBefore = JSON.stringify(ctx.DB);
+  const review = plain(ctx._syncDiagQueueInspector());
+  const activeReview = review.items.find(item => item.id === active.id);
+  const missingReview = review.items.find(item => item.id === missingId);
+  const transactionReview = review.items.find(item => item.id === 'transaction-review-row');
+  const mismatchReview = review.items.find(item => item.id === mismatchId);
+  assert.equal(review.freshPull, true);
+  assert.deepEqual(activeReview.queueClasses, ['dirty']);
+  assert.equal(activeReview.activeLocal, true);
+  assert.equal(activeReview.activeAuthoritative, 'present');
+  assert.equal(activeReview.snapshot.status, 'present');
+  assert.ok(!activeReview.snapshot.sources.includes('No durable dirty snapshot'), 'a durable marker does not show a contradictory missing snapshot');
+  assert.equal(missingReview.displayName, 'Deleted synthetic card');
+  assert.ok(missingReview.queueClasses.includes('dirty'));
+  assert.ok(missingReview.queueClasses.includes('delete'));
+  assert.ok(missingReview.queueClasses.includes('trash'));
+  assert.equal(missingReview.activeLocal, false);
+  assert.equal(missingReview.activeAuthoritative, 'absent');
+  assert.deepEqual(missingReview.tombstone, { status: 'recorded', rowVersion: 7 });
+  assert.equal(missingReview.trash.pending, true);
+  assert.equal(missingReview.trash.visible, true);
+  assert.equal(missingReview.deletion.pending, true);
+  assert.equal(mismatchReview.snapshot.status, 'unknown');
+  assert.ok(mismatchReview.snapshot.sources.includes('Dirty row snapshot identity mismatch'));
+  assert.equal(mismatchReview.displayName, '');
+  assert.equal(review.items.some(item => item.id === 'historical-confirmed-row'), false, 'historical confirmed markers do not create pending rows');
+  assert.equal(transactionReview.mutation.types[0], 'upsert');
+  assert.equal(transactionReview.snapshot.status, 'present');
+  const reportText = JSON.stringify(review);
+  assert.doesNotMatch(reportText, /marker-secret|trash-secret|transaction-secret|private\.example|access_token|rowJson|notes/);
+
+  ctx._syncDiagRenderBody();
+  const html = document.getElementById('sync-diagnostics-body').innerHTML;
+  assert.match(html, /Item-level queue review/);
+  assert.match(html, /missing-review-row/);
+  assert.match(html, /Last authenticated pull tombstone: Recorded, version 7/);
+  assert.doesNotMatch(html, /marker-secret|trash-secret|transaction-secret|private\.example|access_token|rowJson|notes/);
+  assert.deepEqual(new Map(localStorage._store), storageBefore, 'inspector does not rewrite queue bytes');
+  assert.equal(JSON.stringify(ctx.DB), dbBefore, 'inspector does not mutate local records');
+});
+
+test('sync diagnostics: queue joins use raw ids and the review renders in bounded pages', async () => {
+  const { ctx, document, grab } = await loadApp();
+  const sharedPrefix = 'synthetic-' + 'x'.repeat(250);
+  const presentId = sharedPrefix + '-present';
+  const absentId = sharedPrefix + '-absent';
+  grab('_dirty')._dirty.singles.add(presentId);
+  grab('_dirty')._dirty.singles.add(absentId);
+  ctx._setAuthoritativeServerRows({ singles: [{ id: presentId }] });
+  ctx._syncPullLoaded = true;
+
+  const review = plain(ctx._syncDiagQueueInspector());
+  const collidingDisplayIds = review.items.filter(item => item.id === ctx._syncDiagSafeText(presentId, 256));
+  assert.equal(collidingDisplayIds.length, 2, 'bounded display ids may collide without changing joins');
+  assert.deepEqual(collidingDisplayIds.map(item => item.activeAuthoritative).sort(), ['absent', 'present']);
+
+  const items = Array.from({ length: 105 }, (_, index) => ({
+    table: 'singles', id: 'queue-' + index, displayName: '', queueClasses: ['dirty'],
+    snapshot: { status: 'absent', sources: [] }, activeLocal: false,
+    activeAuthoritative: 'unknown', trash: { pending: false, visible: false },
+    deletion: { pending: false, confirmed: false }, mutation: { types: [] },
+    tombstone: { status: 'unknown', rowVersion: null },
+  }));
+  const markup = ctx._syncDiagQueueReviewMarkup({ freshPull: false, items, unknown: [] });
+  assert.match(markup, /Showing 100 of 105 queue items/);
+  assert.match(markup, /Show 100 more \(5 remaining\)/);
+  assert.equal((markup.match(/class="sync-diag-row"/g) || []).length, 100,
+    'the initial diagnostic render is bounded to one page');
+
+  const body = document.getElementById('sync-diagnostics-body');
+  assert.ok(body, 'diagnostic body exists for the native action');
+  ctx._syncDiagQueueReviewShowMore({ preventDefault() {} });
+  const expanded = ctx._syncDiagQueueReviewMarkup({ freshPull: false, items, unknown: [] });
+  assert.doesNotMatch(expanded, /Show 100 more \(5 remaining\)/);
+});
+
+test('sync diagnostics: queue review cards stack without changing global diagnostic rows', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  assert.match(css, /\.sync-diag-row\{display:flex/);
+  assert.match(css, /\.sync-diag-queue-review \.sync-diag-row\{display:block;text-align:left\}/);
+  assert.match(css, /\.sync-diag-queue-review \.sync-diag-row-value\{display:block;width:100%;text-align:left/);
+  assert.match(css, /\.sync-diag-queue-review>\[data-sync-queue-more="true"\]/);
 });
 
 test('sync diagnostics: malformed persisted dirty state is surfaced and retry fails closed before network', async () => {

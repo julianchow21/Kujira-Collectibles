@@ -57,6 +57,9 @@ test('sync preview restore acknowledgement is labelled and fixture-only', () => 
   assert.match(html, /__KJR_SYNC_PREVIEW_SCENARIO\('queue-long'\)/);
   assert.match(html, /__KJR_SYNC_PREVIEW_SCENARIO\('backfill'\)/);
   assert.match(html, /id="kjr-sync-preview-restore-ack"/);
+  assert.match(html, /id="kjr-sync-preview-multi-orphan"/);
+  assert.match(html, /__KJR_SYNC_PREVIEW_MULTI_ORPHAN_CLEANUP/);
+  assert.match(html, /expected four snapshotless markers/);
   assert.match(html, /scenario === 'restore-ack'/);
   assert.match(html, /Synthetic restore fixture rejects unknown request/);
   assert.match(html, /isLocalhostPreview = function \(\) \{ return false; \}/);
@@ -114,4 +117,20 @@ test('sync preview queue layout fixtures are synthetic and bounded for browser r
   assert.equal(backfillSeed.singles.length, 3);
   assert.equal(backfillSeed.sales.length, 3);
   assert.equal(backfill.values.get('pokeinv_dirty_v1'), JSON.stringify({ singles: [], sales: [] }));
+});
+
+test('sync preview four-marker orphan fixture carries explicit deletion proof and no row bytes', () => {
+  const fixture = runBootstrap('multi-orphan');
+  const dirty = JSON.parse(fixture.values.get('pokeinv_dirty_v1'));
+  const deleteState = JSON.parse(fixture.values.get('_kjrDeleteStateV2'));
+  const markerKeys = [...fixture.values.keys()].filter(key => key.startsWith('pokeinv_dirty_v2:'));
+  assert.equal(markerKeys.length, 4);
+  assert.equal(dirty.singles.length, 1);
+  assert.equal(deleteState.confirmed[0].state, 'deleted');
+  assert.equal(deleteState.confirmed[0].row_version, 22);
+  assert.ok(markerKeys.every(key => {
+    const marker = JSON.parse(fixture.values.get(key));
+    return marker.table === 'singles' && marker.id === 'sync-preview-four-marker-orphan' && !Object.hasOwn(marker, 'rowJson');
+  }));
+  assert.equal(JSON.parse(fixture.values.get('pokeinventory_v3')).singles.length, 0);
 });

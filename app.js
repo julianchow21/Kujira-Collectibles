@@ -1644,7 +1644,7 @@ function _syncDiagQueueInspector() {
         activeLocal,
         activeAuthoritative: 'unknown',
         trash: { pending: false, visible: false },
-        deletion: { pending: false, confirmed: false, state: 'unknown', stateSource: 'none' },
+        deletion: { pending: false, confirmed: false, state: 'unknown', stateSource: 'none', rowVersion: null, _rowVersionObserved: false },
         dirtyMarkers: { v2: 0, legacyOnly: false },
         mutation: { types: new Set() },
         tombstone: { status: 'unknown', rowVersion: null },
@@ -1738,6 +1738,8 @@ function _syncDiagQueueInspector() {
               id: entry.id,
               state,
               stateSource: hasState ? 'explicit' : 'legacy-omitted',
+              rowVersion: Number.isSafeInteger(entry.row_version) && entry.row_version >= 1
+                ? entry.row_version : null,
             });
           }
           continue;
@@ -1830,6 +1832,10 @@ function _syncDiagQueueInspector() {
       const priorSources = item.deletion.stateSource && item.deletion.stateSource !== 'none'
         ? item.deletion.stateSource.split(', ').filter(Boolean) : [];
       item.deletion.stateSource = [...new Set(priorSources.concat(reference.stateSource))].sort().join(', ');
+      if (!item.deletion._rowVersionObserved) {
+        item.deletion.rowVersion = reference.rowVersion;
+        item.deletion._rowVersionObserved = true;
+      } else if (item.deletion.rowVersion !== reference.rowVersion) item.deletion.rowVersion = null;
       item.snapshotSources.add('Confirmed delete marker');
     }
   }
@@ -1877,6 +1883,7 @@ function _syncDiagQueueInspector() {
     }
     item.id = _syncDiagSafeText(item.rawId, 256);
     delete item.rawId;
+    delete item.deletion._rowVersionObserved;
     item.queueClasses = [...item.queueClasses];
     item.mutation = { types: [...item.mutation.types] };
   }
@@ -2178,6 +2185,9 @@ function _syncDiagQueueReviewMarkup(review) {
     const deleteState = item.deletion && item.deletion.confirmed
       ? (item.deletion.state || 'unknown') + ' (' + (item.deletion.stateSource || 'unknown source') + ')'
       : 'None recorded';
+    const deleteRevision = item.deletion && item.deletion.confirmed && Number.isSafeInteger(item.deletion.rowVersion)
+      ? 'Deletion marker revision: ' + item.deletion.rowVersion
+      : 'Deletion marker revision: Unknown';
     const references = [];
     if (item.trash && item.trash.pending) references.push('Pending Trash snapshot');
     if (item.trash && item.trash.visible) references.push('Visible Trash entry');
@@ -2197,6 +2207,7 @@ function _syncDiagQueueReviewMarkup(review) {
       _syncDiagEscape('Queue: ' + queues) + '<br>' +
       _syncDiagEscape('Dirty marker evidence: ' + markerEvidence) + '<br>' +
       _syncDiagEscape('Confirmed delete state: ' + deleteState) + '<br>' +
+      _syncDiagEscape(deleteRevision) + '<br>' +
       _syncDiagEscape('Snapshot: ' + snapshotStatus + snapshotSources) + '<br>' +
       _syncDiagEscape('Active row here: ' + status(item.activeLocal)) + '<br>' +
       _syncDiagEscape('Last authenticated pull active row: ' + status(item.activeAuthoritative)) + '<br>' +
@@ -3913,8 +3924,9 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
       allMarkerKeys.length !== allMarkers.length || !allMarkerKeys.includes(marker.key)) return null;
 
   const serverTable = _tblName(marker.table);
-  if (!Array.isArray(tombstones) || !tombstones.some(tombstone =>
-      tombstone && tombstone.table === serverTable && tombstone.id === marker.id)) return null;
+  const currentTombstone = Array.isArray(tombstones) ? tombstones.find(tombstone =>
+    tombstone && tombstone.table === serverTable && tombstone.id === marker.id) : null;
+  if (!currentTombstone) return null;
   if (!tables || !Array.isArray(tables[serverTable]) ||
       tables[serverTable].some(row => row && row.id === marker.id)) return null;
   if (!DB || !Array.isArray(DB[marker.table]) ||
@@ -3928,6 +3940,7 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
     return !stored || stored.table !== candidate.table || stored.id !== candidate.id || stored.token !== candidate.token;
   })) return null;
   const markerTokens = new Set(sameRowMarkers.map(candidate => candidate.token));
+  const sameRowMarkerKeys = sameRowMarkers.map(candidate => candidate.key).sort();
   const snapshotless = sameRowMarkers.length > 0 && sameRowMarkers.every(candidate =>
     !Object.prototype.hasOwnProperty.call(candidate, 'rowJson'));
   const recovery = _orphanDirtyMarkerRecoveryStatus(serverTable, marker.id);
@@ -3969,7 +3982,33 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
     // A current pull tombstone plus a matching confirmed deletion means the
     // pre-pull cache row is already hidden by delete state. It cannot be a
     // later UI edit, so it must not retain an otherwise abandoned marker.
-    if (sameRowMarkers.length !== 1 || (cache.hasRow && !recovery.confirmedDeleted)) return null;
+    // One old marker may use the legacy omitted-state shape. A set of old
+    // markers is safe to settle only when its exact confirmed-delete evidence
+    // explicitly says deleted. This keeps the single-marker compatibility
+    // path while preventing a broad legacy-only sweep.
+    let explicitDeletedCount = 0;
+    try {
+      explicitDeletedCount = recovery.deleteState.state.confirmed.filter(entry =>
+        entry && entry.table === serverTable && entry.id === marker.id &&
+        Object.prototype.hasOwnProperty.call(entry, 'state') && entry.state === 'deleted'
+      ).length;
+    } catch (_) { return null; }
+    let matchingExplicitRevision = false;
+    if (sameRowMarkers.length > 1 && explicitDeletedCount === 1) {
+      const explicitDeleted = recovery.deleteState.state.confirmed.find(entry =>
+        entry && entry.table === serverTable && entry.id === marker.id &&
+        Object.prototype.hasOwnProperty.call(entry, 'state') && entry.state === 'deleted');
+      matchingExplicitRevision = !!explicitDeleted &&
+        Number.isSafeInteger(explicitDeleted.row_version) && explicitDeleted.row_version >= 1 &&
+        Number.isSafeInteger(currentTombstone.row_version) && currentTombstone.row_version >= 1 &&
+        explicitDeleted.row_version === currentTombstone.row_version;
+    }
+    const canSettleMarkerSet = sameRowMarkers.length === 1
+      ? true
+      : sameRowMarkers.length > 1 && matchingExplicitRevision;
+    if (!canSettleMarkerSet ||
+        (sameRowMarkers.length > 1 && cache.hasRow) ||
+        (sameRowMarkers.length === 1 && cache.hasRow && !recovery.confirmedDeleted)) return null;
   }
 
   const markerRaws = new Map();
@@ -4015,6 +4054,7 @@ function _prepareProvenOrphanDirtyMarker(marker, allMarkers, allMarkerKeys, tomb
   return {
     marker,
     markers: sameRowMarkers,
+    sameRowMarkerKeys,
     markerRaws,
     markerTokens,
     legacyRaw,
@@ -4085,6 +4125,15 @@ function _commitProvenOrphanDirtyMarkerCleanup(prepared) {
     // Re-check every observed byte immediately before the first write. If a
     // tab changed a marker, legacy mirror, or cache after preflight, retain
     // recovery state instead of guessing which edit is current.
+    const currentMarkerKeys = _listDirtyV2MarkerKeys();
+    const currentMarkers = _readDirtyV2Markers();
+    if (!currentMarkerKeys || currentMarkerKeys.length !== currentMarkers.length) return false;
+    const currentSameRowMarkerKeys = currentMarkers
+      .filter(candidate => candidate.table === prepared.marker.table && candidate.id === prepared.marker.id)
+      .map(candidate => candidate.key)
+      .sort();
+    if (currentSameRowMarkerKeys.length !== prepared.sameRowMarkerKeys.length ||
+        currentSameRowMarkerKeys.some((key, index) => key !== prepared.sameRowMarkerKeys[index])) return false;
     if ([...prepared.markerRaws].some(([key, raw]) => localStorage.getItem(key) !== raw) ||
         localStorage.getItem(DIRTY_LS_KEY) !== prepared.legacyRaw ||
         localStorage.getItem(STORAGE_KEY) !== prepared.cacheRaw) return false;

@@ -180,6 +180,7 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   assert.equal(missingReview.deletion.confirmed, true);
   assert.equal(missingReview.deletion.state, 'deleted');
   assert.equal(missingReview.deletion.stateSource, 'legacy-omitted');
+  assert.equal(missingReview.deletion.rowVersion, null, 'an omitted marker revision is reported as Unknown');
   assert.equal(mismatchReview.snapshot.status, 'unknown');
   assert.ok(mismatchReview.snapshot.sources.includes('Dirty row snapshot identity mismatch'));
   assert.equal(mismatchReview.displayName, '');
@@ -195,10 +196,64 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   assert.match(html, /missing-review-row/);
   assert.match(html, /V2 markers: 1/);
   assert.match(html, /Confirmed delete state: deleted \(legacy-omitted\)/);
+  assert.match(html, /Deletion marker revision: Unknown/);
   assert.match(html, /Last authenticated pull tombstone: Recorded, version 7/);
   assert.doesNotMatch(html, /marker-secret|trash-secret|transaction-secret|private\.example|access_token|rowJson|notes/);
   assert.deepEqual(new Map(localStorage._store), storageBefore, 'inspector does not rewrite queue bytes');
   assert.equal(JSON.stringify(ctx.DB), dbBefore, 'inspector does not mutate local records');
+});
+
+test('sync diagnostics: explicit confirmed deletion revision is exposed only for the matching queued item', async () => {
+  const id = 'explicit-delete-revision-review';
+  const token = 'fixture-tab:explicit-delete-revision';
+  const { ctx, localStorage, grab } = await loadApp({ seed: null });
+  grab('_dirty')._dirty.singles.add(id);
+  localStorage.setItem('pokeinv_dirty_v2:' + token, JSON.stringify({
+    table: 'singles', id, token, owner: 'fixture-tab', createdAt: 1,
+  }));
+  localStorage.setItem('_kjrDeleteStateV2', JSON.stringify({
+    schema: 2, revision: 'explicit-delete-revision-review', pending: [],
+    confirmed: [{ table: 'singles', id, ts: 1, restoreToken: 'delete-token', state: 'deleted', row_version: 12 }],
+  }));
+  ctx._setAuthoritativeServerRows({ singles: [] });
+  ctx._syncPullLoaded = true;
+  ctx._serverTombstones = [{ table: 'singles', id, row_version: 12, deleted_at: '2026-09-04T00:00:00.000Z' }];
+
+  const review = plain(ctx._syncDiagQueueInspector());
+  const item = review.items.find(candidate => candidate.id === id);
+  assert.ok(item);
+  assert.equal(item.deletion.rowVersion, 12);
+  assert.deepEqual(item.tombstone, { status: 'recorded', rowVersion: 12 });
+});
+
+test('sync diagnostics: any missing confirmed deletion revision remains Unknown regardless of marker order', async () => {
+  for (const confirmed of [
+    [
+      { table: 'singles', id: 'order-independent-delete', ts: 1, state: 'deleted' },
+      { table: 'singles', id: 'order-independent-delete', ts: 2, state: 'deleted', row_version: 12 },
+    ],
+    [
+      { table: 'singles', id: 'order-independent-delete', ts: 2, state: 'deleted', row_version: 12 },
+      { table: 'singles', id: 'order-independent-delete', ts: 1, state: 'deleted' },
+    ],
+  ]) {
+    const id = 'order-independent-delete';
+    const token = 'fixture-tab:order-independent-delete';
+    const { ctx, localStorage, grab } = await loadApp({ seed: null });
+    grab('_dirty')._dirty.singles.add(id);
+    localStorage.setItem('pokeinv_dirty_v2:' + token, JSON.stringify({
+      table: 'singles', id, token, owner: 'fixture-tab', createdAt: 1,
+    }));
+    localStorage.setItem('_kjrDeleteStateV2', JSON.stringify({
+      schema: 2, revision: 'order-independent-delete', pending: [], confirmed,
+    }));
+    ctx._setAuthoritativeServerRows({ singles: [] });
+    ctx._syncPullLoaded = true;
+    ctx._serverTombstones = [{ table: 'singles', id, row_version: 12, deleted_at: '2026-09-04T00:00:00.000Z' }];
+    const item = plain(ctx._syncDiagQueueInspector()).items.find(candidate => candidate.id === id);
+    assert.ok(item);
+    assert.equal(item.deletion.rowVersion, null);
+  }
 });
 
 test('sync diagnostics: queue joins use raw ids and the review renders in bounded pages', async () => {
@@ -220,7 +275,7 @@ test('sync diagnostics: queue joins use raw ids and the review renders in bounde
     table: 'singles', id: 'queue-' + index, displayName: '', queueClasses: ['dirty'],
     snapshot: { status: 'absent', sources: [] }, activeLocal: false,
     activeAuthoritative: 'unknown', trash: { pending: false, visible: false },
-    deletion: { pending: false, confirmed: false }, mutation: { types: [] },
+    deletion: { pending: false, confirmed: false, rowVersion: null }, mutation: { types: [] },
     tombstone: { status: 'unknown', rowVersion: null },
   }));
   const markup = ctx._syncDiagQueueReviewMarkup({ freshPull: false, items, unknown: [] });

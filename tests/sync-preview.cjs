@@ -83,6 +83,23 @@ const WARNING_SEED = {
   sales: [{ id: 'sync-preview-warning-sale', product: 'Synthetic orphan sale', dateSold: '16 Sep 2026', buyer: 'Preview', inventoryId: 'missing-preview-row', inventoryTable: 'singles' }],
   ebayPurchases: [{ id: 'sync-preview-warning-ebay', product: 'Synthetic eBay purchase', priceUsd: 100, freightSgd: 0, totalSgd: 1, date: '16 Sep 2026' }],
 };
+const MULTI_ORPHAN_ID = 'sync-preview-four-marker-orphan';
+const MULTI_ORPHAN_TOKENS = [
+  'old-tab-a:' + MULTI_ORPHAN_ID,
+  'old-tab-b:' + MULTI_ORPHAN_ID,
+  'old-tab-c:' + MULTI_ORPHAN_ID,
+  'old-tab-d:' + MULTI_ORPHAN_ID,
+];
+const MULTI_ORPHAN_TOMBSTONE = {
+  table: 'singles', id: MULTI_ORPHAN_ID, row_version: 22,
+  deleted_at: '2026-09-04T00:00:00.000Z',
+};
+const MULTI_ORPHAN_DELETE_STATE = {
+  schema: 2, revision: 'sync-preview-four-marker-delete-proof', pending: [],
+  confirmed: [{ table: 'singles', id: MULTI_ORPHAN_ID, ts: 456,
+    restoreToken: 'sync-preview-delete-token', state: 'deleted', row_version: 22 }],
+};
+const MULTI_ORPHAN_SEED = { ...EMPTY_SEED, singles: [] };
 const PENDING_DELETE_STATE = {
   schema: 2, revision: 'sync-preview-delete-state',
   pending: [{ table: 'singles', id: 'sync-preview-001', ts: 1 }], confirmed: [],
@@ -157,6 +174,7 @@ const PREVIEW_TOOLS = `
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('review')">Retained receipt</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('ack')">Ack demo</button>
   <button id="kjr-sync-preview-restore-ack" type="button" hidden onclick="window.__KJR_SYNC_PREVIEW_RESTORE_ACK()">Acknowledge restore</button>
+  <button id="kjr-sync-preview-multi-orphan" type="button" hidden onclick="window.__KJR_SYNC_PREVIEW_MULTI_ORPHAN_CLEANUP()">Run four-marker pull cleanup</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('warnings')">Health warnings</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('backfill')">Backfill guards</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_ACK()">Acknowledge</button>
@@ -184,6 +202,11 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   var WARNING_ID = ${JSON.stringify(WARNING_ID)};
   var WARNING_TOKEN = ${JSON.stringify(WARNING_TOKEN)};
   var WARNING_MARKER_KEY = ${JSON.stringify(WARNING_MARKER_KEY)};
+  var MULTI_ORPHAN_ID = ${JSON.stringify(MULTI_ORPHAN_ID)};
+  var MULTI_ORPHAN_TOKENS = ${jsonForScript(MULTI_ORPHAN_TOKENS)};
+  var MULTI_ORPHAN_TOMBSTONE = ${jsonForScript(MULTI_ORPHAN_TOMBSTONE)};
+  var MULTI_ORPHAN_DELETE_STATE = ${jsonForScript(MULTI_ORPHAN_DELETE_STATE)};
+  var MULTI_ORPHAN_SEED = ${jsonForScript(MULTI_ORPHAN_SEED)};
   var PENDING_DELETE_STATE = ${jsonForScript(PENDING_DELETE_STATE)};
   var PENDING_TRASH = ${jsonForScript(PENDING_TRASH)};
   var PENDING_MUTATION = ${jsonForScript(PENDING_MUTATION)};
@@ -197,6 +220,20 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   var RESTORE_ACK_GROUP = ${jsonForScript(RESTORE_ACK_GROUP)};
   var clone = function (value) { return JSON.parse(JSON.stringify(value)); };
   var write = function (key, value) { localStorage.setItem(key, JSON.stringify(clone(value))); };
+  var seedMultiOrphanFixture = function () {
+    write(STORAGE_KEY, ${jsonForScript(MULTI_ORPHAN_SEED)});
+    write(DIRTY_KEY, { singles: [MULTI_ORPHAN_ID], _revisions: { singles: { [MULTI_ORPHAN_ID]: MULTI_ORPHAN_TOKENS.slice() } } });
+    write('_kjrDeleteStateV2', MULTI_ORPHAN_DELETE_STATE);
+    write('_kjrPendingTrashWrites', []);
+    write('_kjrLocalTrash', []);
+    write('_kjrMutationGroupsV2', []);
+    MULTI_ORPHAN_TOKENS.forEach(function (token, index) {
+      write('pokeinv_dirty_v2:' + token, {
+        table: 'singles', id: MULTI_ORPHAN_ID, token: token,
+        owner: 'old-tab-' + index, createdAt: 456,
+      });
+    });
+  };
   var seedRestoreAckFixture = function () {
     write(STORAGE_KEY, EMPTY_SEED);
     write(DIRTY_KEY, { singles: [], _revisions: { singles: {} } });
@@ -229,15 +266,21 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   localStorage.removeItem(SCENARIO_KEY);
   var restoreAckButton = document.getElementById('kjr-sync-preview-restore-ack');
   if (restoreAckButton) restoreAckButton.hidden = scenario !== 'restore-ack';
+  var multiOrphanButton = document.getElementById('kjr-sync-preview-multi-orphan');
+  if (multiOrphanButton) multiOrphanButton.hidden = scenario !== 'multi-orphan';
   var initialSeed = scenario === 'pending' || scenario === 'review' ? PENDING_SEED
     : scenario === 'queue-many' ? QUEUE_MANY_SEED
     : scenario === 'queue-long' ? QUEUE_LONG_SEED
     : scenario === 'backfill' ? BACKFILL_SEED
-    : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+    : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED
+    : scenario === 'multi-orphan' ? MULTI_ORPHAN_SEED : EMPTY_SEED;
   if (!localStorage.getItem(STORAGE_KEY)) write(STORAGE_KEY, initialSeed);
   if (scenario === 'restore-ack') {
     clearFixtureStorage();
     seedRestoreAckFixture();
+  } else if (scenario === 'multi-orphan') {
+    clearFixtureStorage();
+    seedMultiOrphanFixture();
   } else if (scenario === 'pending' || scenario === 'review' || scenario === 'queue-many' || scenario === 'queue-long') {
     var queuedSeed = scenario === 'queue-many' ? QUEUE_MANY_SEED : scenario === 'queue-long' ? QUEUE_LONG_SEED : PENDING_SEED;
     write(STORAGE_KEY, queuedSeed);
@@ -266,7 +309,8 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       : next === 'queue-many' ? QUEUE_MANY_SEED
       : next === 'queue-long' ? QUEUE_LONG_SEED
       : next === 'backfill' ? BACKFILL_SEED
-      : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+      : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED
+      : next === 'multi-orphan' ? MULTI_ORPHAN_SEED : EMPTY_SEED;
     write(STORAGE_KEY, nextSeed);
     if (next === 'pending' || next === 'review' || next === 'queue-many' || next === 'queue-long') {
       var queuedNextSeed = next === 'queue-many' ? QUEUE_MANY_SEED : next === 'queue-long' ? QUEUE_LONG_SEED : PENDING_SEED;
@@ -279,6 +323,8 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       }
     } else if (next === 'restore-ack') {
       seedRestoreAckFixture();
+    } else if (next === 'multi-orphan') {
+      seedMultiOrphanFixture();
     } else if (next === 'ack') {
       write(DIRTY_KEY, { singles: [ACK_ID], _revisions: { singles: { [ACK_ID]: [ACK_TOKEN] } } });
       write(ACK_MARKER_KEY, { table: 'singles', id: ACK_ID, token: ACK_TOKEN, owner: 'peer-tab', createdAt: 1, rowJson: JSON.stringify(ACK_ROW) });
@@ -316,6 +362,35 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
     dispatchStorage(DIRTY_KEY, legacyRaw, localStorage.getItem(DIRTY_KEY));
     if (typeof _syncDiagRenderBody === 'function') _syncDiagRenderBody();
     if (typeof toast === 'function') toast('Synthetic peer acknowledgement received');
+  };
+
+  window.__KJR_SYNC_PREVIEW_MULTI_ORPHAN_CLEANUP = function () {
+    if (scenario !== 'multi-orphan') {
+      if (typeof toast === 'function') toast('Choose four-marker pull cleanup first');
+      return;
+    }
+    var button = document.getElementById('kjr-sync-preview-multi-orphan');
+    try {
+      var markerCount = typeof _readDirtyV2Markers === 'function' ? _readDirtyV2Markers().filter(function (marker) {
+        return marker && marker.table === 'singles' && marker.id === MULTI_ORPHAN_ID;
+      }).length : 0;
+      if (markerCount !== MULTI_ORPHAN_TOKENS.length) throw new Error('expected four snapshotless markers, found ' + markerCount);
+      var tables = {
+        singles: [], slabs: [], sales: [], etbs: [], booster_boxes: [],
+        booster_packs: [], ebay_purchases: [], trash: [],
+      };
+      var cleared = _clearProvenOrphanDirtyMarkersAfterPull([MULTI_ORPHAN_TOMBSTONE], tables, []);
+      _setAuthoritativeServerRows(tables);
+      _serverTombstones = [MULTI_ORPHAN_TOMBSTONE];
+      _syncPullLoaded = true;
+      if (typeof _syncDiagRenderBody === 'function') _syncDiagRenderBody();
+      if (cleared !== 1) throw new Error('four-marker cleanup cleared ' + cleared + ' items');
+      if (button) { button.disabled = true; button.textContent = 'Four-marker cleanup complete'; }
+      if (typeof toast === 'function') toast('Synthetic fresh pull cleared the four-marker orphan');
+    } catch (error) {
+      if (typeof toastError === 'function') toastError('Synthetic four-marker cleanup failed: ' + error.message);
+      console.error('[sync preview] four-marker cleanup failed:', error);
+    }
   };
 
   window.__KJR_SYNC_PREVIEW_RESTORE_ACK = async function () {
@@ -478,12 +553,14 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       setSyncStatus('ok');
     } else if (scenario === 'restore-ack') {
       showPage('trash');
+    } else if (scenario === 'multi-orphan') {
+      openSyncDiagnostics();
     } else if (scenario === 'warnings') {
       runHealthCheck();
     } else if (scenario === 'backfill') {
       runHealthCheck();
     }
-    if (scenario !== 'warnings' && scenario !== 'backfill' && scenario !== 'restore-ack') openSyncDiagnostics();
+    if (scenario !== 'warnings' && scenario !== 'backfill' && scenario !== 'restore-ack' && scenario !== 'multi-orphan') openSyncDiagnostics();
   }, 700);
 })();
 </script>`;
@@ -595,5 +672,6 @@ if (require.main === module) {
 module.exports = {
   HOST, PORT, ROOT, STATIC_FILES, PENDING_SINGLES, EMPTY_SEED, PENDING_SEED,
   QUEUE_MANY_SINGLES, QUEUE_MANY_SEED, QUEUE_LONG_SINGLES, QUEUE_LONG_SEED,
-  BACKFILL_SEED, ACK_SEED, WARNING_SEED, buildPreviewIndex, createPreviewServer, handleRequest,
+  BACKFILL_SEED, ACK_SEED, WARNING_SEED, MULTI_ORPHAN_ID, MULTI_ORPHAN_TOKENS,
+  MULTI_ORPHAN_TOMBSTONE, buildPreviewIndex, createPreviewServer, handleRequest,
 };

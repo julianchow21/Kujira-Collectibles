@@ -644,6 +644,101 @@ test('dirty-persistence: a current authenticated tombstone pull clears only a sn
   assert.ok(!reloaded.grab('DB').DB.singles.some(row => row.id === id), 'the tombstoned row stays absent after reload');
 });
 
+test('dirty-persistence: a qualifying V2 orphan with an omitted confirmed-delete state is treated as legacy deleted', async () => {
+  const id = 'legacy_omitted_delete_state';
+  const token = 'older-tab:legacy-omitted-delete-state';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const loaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([{ table: 'singles', id, row_version: 4, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+    localStorage: {
+      [markerKey]: JSON.stringify(orphanMarker(id, token)),
+      _kjrDeleteStateV2: JSON.stringify({
+        schema: 2, revision: 'legacy-omitted-delete-state', pending: [],
+        confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'legacy-delete-token' }],
+      }),
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+
+  assert.equal(loaded.localStorage.getItem(markerKey), null,
+    'a legacy omitted-state marker clears only after the existing orphan proof passes');
+  assert.equal(loaded.grab('_dirty')._dirty.singles.has(id), false);
+  assert.equal(loaded.localStorage.getItem('_kjrDeleteStateV2') !== null, true,
+    'confirmed deletion evidence remains durable');
+});
+
+test('dirty-persistence: an omitted-state orphan stays queued while pending or pre-pull Trash retains its recovery copy', async () => {
+  const cases = [
+    { label: 'pending Trash', key: '_kjrPendingTrashWrites' },
+    { label: 'pre-pull local Trash', key: '_kjrLocalTrash' },
+  ];
+  for (const item of cases) {
+    const id = 'legacy_omitted_' + item.key.replace(/[^a-z]+/g, '_');
+    const token = 'older-tab:' + id;
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const recovery = { id: 'trash-' + id, data: {
+      originalTable: 'singles', originalId: id, item: { id, name: 'Synthetic recovery copy' },
+    } };
+    const loaded = await loadApp({
+      seed: null,
+      fetch: currentPullWith([{ table: 'singles', id, row_version: 4, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+      localStorage: {
+        [markerKey]: JSON.stringify(orphanMarker(id, token)),
+        [item.key]: JSON.stringify([recovery]),
+        _kjrDeleteStateV2: JSON.stringify({
+          schema: 2, revision: 'legacy-omitted-trash-guard', pending: [],
+          confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'legacy-delete-token' }],
+        }),
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      },
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), item.label + ' keeps the V2 marker');
+    assert.ok(JSON.parse(loaded.localStorage.getItem('pokeinv_dirty_v1')).singles.includes(id),
+      item.label + ' keeps the legacy dirty id');
+  }
+});
+
+test('dirty-persistence: explicit non-deleted confirmed states stay fail-closed', async () => {
+  for (const state of ['pending', null, '', 'unknown']) {
+    const id = 'explicit_delete_state_' + (state === null ? 'null' : state || 'empty');
+    const token = 'older-tab:' + id;
+    const markerKey = 'pokeinv_dirty_v2:' + token;
+    const loaded = await loadApp({
+      seed: null,
+      fetch: currentPullWith([{ table: 'singles', id, row_version: 4, deleted_at: '2026-09-04T00:00:00.000Z' }]),
+      localStorage: {
+        [markerKey]: JSON.stringify(orphanMarker(id, token)),
+        _kjrDeleteStateV2: JSON.stringify({
+          schema: 2, revision: 'explicit-delete-state', pending: [],
+          confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'restore-token', state }],
+        }),
+        pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+      },
+    });
+    assert.ok(loaded.localStorage.getItem(markerKey), 'state ' + String(state) + ' keeps the marker');
+  }
+});
+
+test('dirty-persistence: an omitted-state orphan stays queued without a fresh authenticated tombstone', async () => {
+  const id = 'legacy_omitted_without_cloud_proof';
+  const token = 'older-tab:legacy-omitted-without-cloud-proof';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const loaded = await loadApp({
+    seed: null,
+    fetch: currentPullWith([]),
+    localStorage: {
+      [markerKey]: JSON.stringify(orphanMarker(id, token)),
+      _kjrDeleteStateV2: JSON.stringify({
+        schema: 2, revision: 'legacy-omitted-no-cloud-proof', pending: [],
+        confirmed: [{ table: 'singles', id, ts: 456, restoreToken: 'legacy-delete-token' }],
+      }),
+      pokeinv_dirty_v1: JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }),
+    },
+  });
+  assert.ok(loaded.localStorage.getItem(markerKey), 'without a current tombstone the marker remains queued');
+});
+
 test('dirty-persistence: a current tombstone clears legacy hidden cache markers after confirmed deletes', async () => {
   const singlesId = 's_f73519c7-72e3-43b7-8121-c2165dcf6e15';
   const salesId = 'sale_243efe29-e69f-4165-b98a-815bb9773dbb';

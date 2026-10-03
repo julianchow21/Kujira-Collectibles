@@ -1644,7 +1644,8 @@ function _syncDiagQueueInspector() {
         activeLocal,
         activeAuthoritative: 'unknown',
         trash: { pending: false, visible: false },
-        deletion: { pending: false, confirmed: false },
+        deletion: { pending: false, confirmed: false, state: 'unknown', stateSource: 'none' },
+        dirtyMarkers: { v2: 0, legacyOnly: false },
         mutation: { types: new Set() },
         tombstone: { status: 'unknown', rowVersion: null },
       });
@@ -1693,7 +1694,10 @@ function _syncDiagQueueInspector() {
     const item = ensure(marker.table, marker.id);
     addQueueClass(item, 'dirty');
     const markerTable = _syncDiagQueueTable(marker.table);
-    if (markerTable && marker.id) dirtyMarkerSources.add(itemKey(markerTable, marker.id));
+    if (markerTable && marker.id) {
+      dirtyMarkerSources.add(itemKey(markerTable, marker.id));
+      if (item) item.dirtyMarkers.v2++;
+    }
     if (typeof marker.rowJson === 'string') {
       try {
         const row = JSON.parse(marker.rowJson);
@@ -1710,6 +1714,7 @@ function _syncDiagQueueInspector() {
     if (dirtyMarkerSources.has(source)) continue;
     const separator = source.indexOf('\u0000');
     const item = separator >= 0 ? items.get(source) : null;
+    if (item) item.dirtyMarkers.legacyOnly = true;
     addSnapshot(item, 'absent', 'No durable dirty snapshot');
   }
 
@@ -1724,7 +1729,17 @@ function _syncDiagQueueInspector() {
         }
         if (confirmed) {
           if (!_syncDiagQueueTable(entry.table)) addUnknown('delete recovery queue');
-          else confirmedDeleteRefs.push({ table: entry.table, id: entry.id });
+          else {
+            const hasState = Object.prototype.hasOwnProperty.call(entry, 'state');
+            const state = !hasState ? 'deleted'
+              : entry.state === 'deleted' || entry.state === 'restored' ? entry.state : 'unknown';
+            confirmedDeleteRefs.push({
+              table: entry.table,
+              id: entry.id,
+              state,
+              stateSource: hasState ? 'explicit' : 'legacy-omitted',
+            });
+          }
           continue;
         }
         const item = ensure(entry.table, entry.id);
@@ -1805,6 +1820,16 @@ function _syncDiagQueueInspector() {
     const item = table && id ? items.get(itemKey(table, id)) : null;
     if (item) {
       item.deletion.confirmed = true;
+      if (item.deletion.state === 'unknown' && item.deletion.stateSource !== 'none') {
+        item.deletion.state = 'unknown';
+      } else if (item.deletion.stateSource === 'none') {
+        item.deletion.state = reference.state;
+      } else if (item.deletion.state !== reference.state) {
+        item.deletion.state = 'unknown';
+      }
+      const priorSources = item.deletion.stateSource && item.deletion.stateSource !== 'none'
+        ? item.deletion.stateSource.split(', ').filter(Boolean) : [];
+      item.deletion.stateSource = [...new Set(priorSources.concat(reference.stateSource))].sort().join(', ');
       item.snapshotSources.add('Confirmed delete marker');
     }
   }
@@ -2147,6 +2172,12 @@ function _syncDiagQueueReviewMarkup(review) {
       : 'Unknown';
     const snapshotSources = item.snapshot && Array.isArray(item.snapshot.sources) && item.snapshot.sources.length
       ? ' (' + item.snapshot.sources.join(', ') + ')' : '';
+    const markerEvidence = item.dirtyMarkers && Number.isSafeInteger(item.dirtyMarkers.v2)
+      ? 'V2 markers: ' + item.dirtyMarkers.v2 + (item.dirtyMarkers.legacyOnly ? ', legacy-only dirty ID' : '')
+      : 'V2 marker count unknown';
+    const deleteState = item.deletion && item.deletion.confirmed
+      ? (item.deletion.state || 'unknown') + ' (' + (item.deletion.stateSource || 'unknown source') + ')'
+      : 'None recorded';
     const references = [];
     if (item.trash && item.trash.pending) references.push('Pending Trash snapshot');
     if (item.trash && item.trash.visible) references.push('Visible Trash entry');
@@ -2164,6 +2195,8 @@ function _syncDiagQueueReviewMarkup(review) {
       _syncDiagEscape(table + ' · ' + item.id + name) +
       '</strong></span><span class="sync-diag-row-value">' +
       _syncDiagEscape('Queue: ' + queues) + '<br>' +
+      _syncDiagEscape('Dirty marker evidence: ' + markerEvidence) + '<br>' +
+      _syncDiagEscape('Confirmed delete state: ' + deleteState) + '<br>' +
       _syncDiagEscape('Snapshot: ' + snapshotStatus + snapshotSources) + '<br>' +
       _syncDiagEscape('Active row here: ' + status(item.activeLocal)) + '<br>' +
       _syncDiagEscape('Last authenticated pull active row: ' + status(item.activeAuthoritative)) + '<br>' +
@@ -3804,10 +3837,14 @@ function _orphanDirtyMarkerRecoveryStatus(table, id) {
       return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
     }
     if (entry.table === table && entry.id === id) {
-      if (entry.state === 'deleted') {
+      // Older V2 confirmed-delete markers omitted state. Row blocking has
+      // always treated that legacy shape as deleted, so orphan cleanup must
+      // apply the same narrow interpretation after all other guards pass.
+      const markerState = Object.prototype.hasOwnProperty.call(entry, 'state') ? entry.state : 'deleted';
+      if (markerState === 'deleted') {
         if (confirmedRestored) return { blocked: true, confirmedDeleted: false, confirmedRestored: null };
         confirmedDeleted = true;
-      } else if (entry.state === 'restored') {
+      } else if (markerState === 'restored') {
         if (confirmedDeleted || confirmedRestored || typeof entry.restoreToken !== 'string' ||
             !entry.restoreToken || !Number.isFinite(entry.ts)) {
           return { blocked: true, confirmedDeleted: false, confirmedRestored: null };

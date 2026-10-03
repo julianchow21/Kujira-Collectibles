@@ -122,7 +122,10 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   }));
   localStorage.setItem('_kjrDeleteStateV2', JSON.stringify({
     schema: 2, revision: 'fixture', pending: [{ table: 'singles', id: missingId, ts: 1 }],
-    confirmed: [{ table: 'singles', id: 'historical-confirmed-row', state: 'deleted', ts: 1 }],
+    confirmed: [
+      { table: 'singles', id: missingId, ts: 2 },
+      { table: 'singles', id: 'historical-confirmed-row', state: 'deleted', ts: 1 },
+    ],
   }));
   localStorage.setItem('_kjrPendingTrashWrites', JSON.stringify([{
     id: 'trash-review',
@@ -159,8 +162,12 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   assert.equal(activeReview.activeLocal, true);
   assert.equal(activeReview.activeAuthoritative, 'present');
   assert.equal(activeReview.snapshot.status, 'present');
+  assert.equal(activeReview.dirtyMarkers.v2, 1);
+  assert.equal(activeReview.dirtyMarkers.legacyOnly, false);
   assert.ok(!activeReview.snapshot.sources.includes('No durable dirty snapshot'), 'a durable marker does not show a contradictory missing snapshot');
   assert.equal(missingReview.displayName, 'Deleted synthetic card');
+  assert.equal(missingReview.dirtyMarkers.v2, 1);
+  assert.equal(missingReview.dirtyMarkers.legacyOnly, false);
   assert.ok(missingReview.queueClasses.includes('dirty'));
   assert.ok(missingReview.queueClasses.includes('delete'));
   assert.ok(missingReview.queueClasses.includes('trash'));
@@ -170,6 +177,9 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   assert.equal(missingReview.trash.pending, true);
   assert.equal(missingReview.trash.visible, true);
   assert.equal(missingReview.deletion.pending, true);
+  assert.equal(missingReview.deletion.confirmed, true);
+  assert.equal(missingReview.deletion.state, 'deleted');
+  assert.equal(missingReview.deletion.stateSource, 'legacy-omitted');
   assert.equal(mismatchReview.snapshot.status, 'unknown');
   assert.ok(mismatchReview.snapshot.sources.includes('Dirty row snapshot identity mismatch'));
   assert.equal(mismatchReview.displayName, '');
@@ -183,6 +193,8 @@ test('sync diagnostics: item queue review is read-only, source-scoped and redact
   const html = document.getElementById('sync-diagnostics-body').innerHTML;
   assert.match(html, /Item-level queue review/);
   assert.match(html, /missing-review-row/);
+  assert.match(html, /V2 markers: 1/);
+  assert.match(html, /Confirmed delete state: deleted \(legacy-omitted\)/);
   assert.match(html, /Last authenticated pull tombstone: Recorded, version 7/);
   assert.doesNotMatch(html, /marker-secret|trash-secret|transaction-secret|private\.example|access_token|rowJson|notes/);
   assert.deepEqual(new Map(localStorage._store), storageBefore, 'inspector does not rewrite queue bytes');

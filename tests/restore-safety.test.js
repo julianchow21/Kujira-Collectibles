@@ -450,9 +450,18 @@ test('restore-safety: production restore sends exact legacy Trash bytes, then re
   assert.strictEqual(app.ctx._dirty.singles.has(id), true);
   assert.strictEqual(app.ctx.DB.trash.some(row => row.id === entry.id), true);
 
+  app.document.querySelector = selector => selector === '.page.active' ? { id: 'page-trash' } : null;
+  app.ctx.renderTrash(false);
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(app.document.getElementById('trash-list').innerHTML, /Synthetic legacy condition/);
+
   assert.strictEqual(await app.ctx._flushMutationGroups(), true);
   assert.ok(restoreRequest, 'the restore request was sent');
   assert.strictEqual(queuedGroup(app.localStorage).length, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(app.document.getElementById('trash-list').innerHTML, /Synthetic legacy condition/);
   assert.strictEqual(app.ctx.DB.trash.some(row => row.id === entry.id), false);
   assert.strictEqual(app.ctx._serverTombstones.some(row => row.id === id), false);
   assert.strictEqual(app.ctx.DB.singles.find(row => row.id === id).condition, 'Near Mint');

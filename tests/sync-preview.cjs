@@ -18,7 +18,7 @@ const SCENARIO_KEY = '_kjrSyncPreviewScenario';
 const FIXTURE_OWNED_KEYS = [
   STORAGE_KEY, DIRTY_KEY, SCENARIO_KEY, '_kjrDeleteStateV2', '_kjrPendingCloudDeletes',
   '_kjrConfirmedCloudDeletes', '_kjrPendingTrashWrites', '_kjrLocalTrash',
-  '_kjrMutationGroupsV2', '_kjrSyncDiagnosticsV1', 'pokeinventory_version',
+  '_kjrServerTombstonesV1', '_kjrMutationGroupsV2', '_kjrSyncDiagnosticsV1', 'pokeinventory_version',
 ];
 
 function previewSingle(id, name, index) {
@@ -74,6 +74,40 @@ const PENDING_MUTATION = {
   }],
   before_states: [{ table: 'singles', id: 'sync-preview-queued', present: false }],
 };
+const RESTORE_ACK_ID = 'sync-preview-restore-card';
+const RESTORE_ACK_TRASH_ID = 'sync-preview-restore-trash';
+const RESTORE_ACK_MUTATION_ID = '123e4567-e89b-42d3-a456-426614174001';
+const RESTORE_ACK_DELETED_AT = '2026-09-16T00:00:00.000Z';
+const RESTORE_ACK_ITEM = {
+  ...previewSingle(RESTORE_ACK_ID, 'Synthetic restore acknowledgement card', 3),
+  condition: 'Near Mint',
+};
+const RESTORE_ACK_DATA = Object.fromEntries(Object.entries(RESTORE_ACK_ITEM)
+  .filter(([key]) => key !== 'id' && !key.startsWith('_')));
+const RESTORE_ACK_ENTRY = {
+  id: RESTORE_ACK_TRASH_ID,
+  data: {
+    originalTable: 'singles', originalId: RESTORE_ACK_ID, item: RESTORE_ACK_ITEM,
+    reason: 'synthetic restore acknowledgement', deletedAt: RESTORE_ACK_DELETED_AT,
+  },
+  updated_at: RESTORE_ACK_DELETED_AT,
+  _serverVersion: 4,
+};
+const RESTORE_ACK_TOMBSTONE = {
+  table: 'singles', id: RESTORE_ACK_ID, row_version: 4, deleted_at: RESTORE_ACK_DELETED_AT,
+};
+const RESTORE_ACK_OPERATION = {
+  type: 'restore', table: 'singles', id: RESTORE_ACK_ID, expected_version: 0,
+  tombstone_version: RESTORE_ACK_TOMBSTONE.row_version, data: RESTORE_ACK_DATA,
+  trash_id: RESTORE_ACK_TRASH_ID,
+};
+const RESTORE_ACK_GROUP = {
+  mutation_id: RESTORE_ACK_MUTATION_ID,
+  created_at: 1726444800000,
+  operations: [RESTORE_ACK_OPERATION],
+  before_states: [{ table: 'singles', id: RESTORE_ACK_ID, present: false }],
+  restore_snapshots: [RESTORE_ACK_ENTRY],
+};
 
 function jsonForScript(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
@@ -87,7 +121,9 @@ const PREVIEW_TOOLS = `
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('failure')">Long failure</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('offline')">Offline</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('recovered')">Recovered local</button>
+  <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('review')">Retained receipt</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('ack')">Ack demo</button>
+  <button id="kjr-sync-preview-restore-ack" type="button" hidden onclick="window.__KJR_SYNC_PREVIEW_RESTORE_ACK()">Acknowledge restore</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_SCENARIO('warnings')">Health warnings</button>
   <button type="button" onclick="window.__KJR_SYNC_PREVIEW_ACK()">Acknowledge</button>
   <button type="button" onclick="openSyncDiagnostics()">Show details</button>
@@ -114,8 +150,24 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   var PENDING_DELETE_STATE = ${jsonForScript(PENDING_DELETE_STATE)};
   var PENDING_TRASH = ${jsonForScript(PENDING_TRASH)};
   var PENDING_MUTATION = ${jsonForScript(PENDING_MUTATION)};
+  var RESTORE_ACK_ID = ${JSON.stringify(RESTORE_ACK_ID)};
+  var RESTORE_ACK_TRASH_ID = ${JSON.stringify(RESTORE_ACK_TRASH_ID)};
+  var RESTORE_ACK_MUTATION_ID = ${JSON.stringify(RESTORE_ACK_MUTATION_ID)};
+  var RESTORE_ACK_ITEM = ${jsonForScript(RESTORE_ACK_ITEM)};
+  var RESTORE_ACK_ENTRY = ${jsonForScript(RESTORE_ACK_ENTRY)};
+  var RESTORE_ACK_TOMBSTONE = ${jsonForScript(RESTORE_ACK_TOMBSTONE)};
+  var RESTORE_ACK_OPERATION = ${jsonForScript(RESTORE_ACK_OPERATION)};
+  var RESTORE_ACK_GROUP = ${jsonForScript(RESTORE_ACK_GROUP)};
   var clone = function (value) { return JSON.parse(JSON.stringify(value)); };
   var write = function (key, value) { localStorage.setItem(key, JSON.stringify(clone(value))); };
+  var seedRestoreAckFixture = function () {
+    write(STORAGE_KEY, EMPTY_SEED);
+    write(DIRTY_KEY, { singles: [], _revisions: { singles: {} } });
+    write('_kjrLocalTrash', [RESTORE_ACK_ENTRY]);
+    write('_kjrServerTombstonesV1', [RESTORE_ACK_TOMBSTONE]);
+    write('_kjrPendingTrashWrites', []);
+    write('_kjrMutationGroupsV2', []);
+  };
 
   // No owner session, production data or credentials are created by this
   // fixture. The localhost write guard remains active in the real app.
@@ -134,13 +186,25 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
   } catch (_) {}
   document.documentElement.classList.remove('auth-gated');
 
-  var scenario = localStorage.getItem(SCENARIO_KEY) || 'empty';
+  var requestedScenario = '';
+  try { requestedScenario = new URL(location.href).searchParams.get('scenario') || ''; } catch (_) {}
+  var scenario = localStorage.getItem(SCENARIO_KEY) || requestedScenario || 'empty';
   localStorage.removeItem(SCENARIO_KEY);
-  var initialSeed = scenario === 'pending' ? PENDING_SEED : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+  var restoreAckButton = document.getElementById('kjr-sync-preview-restore-ack');
+  if (restoreAckButton) restoreAckButton.hidden = scenario !== 'restore-ack';
+  var initialSeed = scenario === 'pending' || scenario === 'review' ? PENDING_SEED : scenario === 'ack' ? ACK_SEED : scenario === 'warnings' ? WARNING_SEED : EMPTY_SEED;
   if (!localStorage.getItem(STORAGE_KEY)) write(STORAGE_KEY, initialSeed);
-  if (scenario === 'pending') {
+  if (scenario === 'restore-ack') {
+    clearFixtureStorage();
+    seedRestoreAckFixture();
+  } else if (scenario === 'pending' || scenario === 'review') {
     write(STORAGE_KEY, PENDING_SEED);
     write(DIRTY_KEY, { singles: PENDING_SINGLES_PLACEHOLDER });
+    if (scenario === 'review') {
+      write('_kjrDeleteStateV2', PENDING_DELETE_STATE);
+      write('_kjrPendingTrashWrites', PENDING_TRASH);
+      write('_kjrMutationGroupV2:' + PENDING_MUTATION.mutation_id, PENDING_MUTATION);
+    }
   } else if (scenario === 'ack') {
     write(STORAGE_KEY, ACK_SEED);
     write(DIRTY_KEY, { singles: [ACK_ID], _revisions: { singles: { [ACK_ID]: [ACK_TOKEN] } } });
@@ -153,14 +217,16 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
 
   window.__KJR_SYNC_PREVIEW_SCENARIO = function (next) {
     clearFixtureStorage();
-    var nextSeed = next === 'pending' ? PENDING_SEED : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED : EMPTY_SEED;
+    var nextSeed = next === 'pending' || next === 'review' ? PENDING_SEED : next === 'ack' ? ACK_SEED : next === 'warnings' ? WARNING_SEED : EMPTY_SEED;
     write(STORAGE_KEY, nextSeed);
-    if (next === 'pending') {
+    if (next === 'pending' || next === 'review') {
       var dirtyIds = PENDING_SEED.singles.map(function (row) { return row.id; });
       write(DIRTY_KEY, { singles: dirtyIds });
       write('_kjrDeleteStateV2', PENDING_DELETE_STATE);
       write('_kjrPendingTrashWrites', PENDING_TRASH);
       write('_kjrMutationGroupV2:' + PENDING_MUTATION.mutation_id, PENDING_MUTATION);
+    } else if (next === 'restore-ack') {
+      seedRestoreAckFixture();
     } else if (next === 'ack') {
       write(DIRTY_KEY, { singles: [ACK_ID], _revisions: { singles: { [ACK_ID]: [ACK_TOKEN] } } });
       write(ACK_MARKER_KEY, { table: 'singles', id: ACK_ID, token: ACK_TOKEN, owner: 'peer-tab', createdAt: 1, rowJson: JSON.stringify(ACK_ROW) });
@@ -198,6 +264,106 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
     if (typeof toast === 'function') toast('Synthetic peer acknowledgement received');
   };
 
+  window.__KJR_SYNC_PREVIEW_RESTORE_ACK = async function () {
+    if (scenario !== 'restore-ack') {
+      if (typeof toast === 'function') toast('Choose Restore ack demo first');
+      return;
+    }
+    if (window.__KJR_SYNC_PREVIEW_RESTORE_ACK.running) return;
+    window.__KJR_SYNC_PREVIEW_RESTORE_ACK.running = true;
+    var button = document.getElementById('kjr-sync-preview-restore-ack');
+    if (button) { button.disabled = true; button.textContent = 'Acknowledging…'; }
+    var originalPreviewGuard = isLocalhostPreview;
+    var originalFetch = window.fetch;
+    var originalRenderTrash = renderTrash;
+    var originalSession = _kjrAuthSession;
+    var originalAuthHeader = SB_HDR.Authorization;
+    var requestCount = 0;
+    var repaintRequested = false;
+    try {
+      if (!DB.trash.some(function (entry) { return entry && entry.id === RESTORE_ACK_TRASH_ID; })) {
+        throw new Error('synthetic Trash entry is missing');
+      }
+      if (DB.singles.some(function (row) { return row && row.id === RESTORE_ACK_ID; })) {
+        throw new Error('synthetic restore row already exists');
+      }
+      var optimistic = clone(RESTORE_ACK_ITEM);
+      optimistic._serverVersion = RESTORE_ACK_OPERATION.expected_version;
+      DB.singles.push(optimistic);
+      markDirty('singles', RESTORE_ACK_ID, optimistic);
+      // Keep this isolated to the mutation-group path below. Calling the
+      // normal save helper would schedule an unrelated debounced row flush.
+      write('_kjrMutationGroupV2:' + RESTORE_ACK_MUTATION_ID, RESTORE_ACK_GROUP);
+      write('_kjrMutationGroupsV2', [RESTORE_ACK_GROUP]);
+
+      // This override exists only for this synthetic acknowledgement action.
+      // The shipped app's localhost write guard is restored in finally below.
+      isLocalhostPreview = function () { return false; };
+      _kjrAuthSession = {
+        user_id: 'synthetic-preview-user', session_id: 'synthetic-preview-session',
+        access_token: 'synthetic-preview-token',
+      };
+      SB_HDR.Authorization = 'Bearer synthetic-preview-token';
+      window.fetch = function (url, options) {
+        var requestUrl = String(url);
+        var opts = options || {};
+        if (requestUrl !== SYNC_MUTATE_URL || opts.method !== 'POST') {
+          return Promise.reject(new TypeError('Synthetic restore fixture rejects unknown request'));
+        }
+        requestCount++;
+        var body;
+        try { body = JSON.parse(opts.body); } catch (_) { body = null; }
+        var keys = body && typeof body === 'object' ? Object.keys(body).sort().join(',') : '';
+        var exact = keys === 'client_protocol,mutation_id,operations' &&
+          body.client_protocol === 2 && body.mutation_id === RESTORE_ACK_MUTATION_ID &&
+          JSON.stringify(body.operations) === JSON.stringify([RESTORE_ACK_OPERATION]);
+        if (!exact) return Promise.reject(new TypeError('Synthetic restore fixture rejects unknown mutation envelope'));
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: function () { return Promise.resolve({
+            ok: true,
+            mutation_id: RESTORE_ACK_MUTATION_ID,
+            results: [{
+              type: 'restore', table: 'singles', id: RESTORE_ACK_ID,
+              row_version: RESTORE_ACK_TOMBSTONE.row_version + 1,
+              updated_at: '2026-09-16T00:01:00.000Z',
+            }],
+          }); },
+        });
+      };
+      renderTrash = function () {
+        repaintRequested = true;
+        var guard = isLocalhostPreview;
+        isLocalhostPreview = function () { return true; };
+        try { return originalRenderTrash(false); }
+        finally { isLocalhostPreview = guard; }
+      };
+
+      var flushed = await _flushMutationGroups();
+      await new Promise(function (resolve) { setTimeout(resolve, 0); });
+      await new Promise(function (resolve) { setTimeout(resolve, 0); });
+      if (!flushed || requestCount !== 1 || !repaintRequested ||
+          DB.trash.some(function (entry) { return entry && entry.id === RESTORE_ACK_TRASH_ID; })) {
+        throw new Error('synthetic restore acknowledgement did not repaint Trash');
+      }
+      if (button) button.textContent = 'Restore acknowledged';
+      if (typeof toast === 'function') toast('Synthetic restore acknowledged');
+    } catch (error) {
+      if (button) { button.disabled = false; button.textContent = 'Acknowledge restore'; }
+      if (typeof toastError === 'function') toastError('Synthetic restore fixture failed: ' + error.message);
+      console.error('[sync preview] restore acknowledgement failed:', error);
+    } finally {
+      window.fetch = originalFetch;
+      isLocalhostPreview = originalPreviewGuard;
+      renderTrash = originalRenderTrash;
+      _kjrAuthSession = originalSession;
+      if (originalAuthHeader === undefined) delete SB_HDR.Authorization;
+      else SB_HDR.Authorization = originalAuthHeader;
+      window.__KJR_SYNC_PREVIEW_RESTORE_ACK.running = false;
+    }
+  };
+
   function clearFixtureStorage() {
     var owned = ${jsonForScript(FIXTURE_OWNED_KEYS)};
     var keys = [];
@@ -217,12 +383,32 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
     function clearDiagnosticsForFixture() {
       _syncDiagnostics.failures = {};
       _syncDiagnostics.successes = { read: null, write: null };
+      _syncDiagnostics.retryReview = null;
       _syncStatus = 'idle';
       _syncDiagPersist();
       _syncDiagRenderIndicator();
     }
     clearDiagnosticsForFixture();
     if (scenario === 'pending') {
+      _syncDiagSetSettledStatus();
+    } else if (scenario === 'review') {
+      // Synthetic chronology only. Production timestamps come from validated
+      // cloud acknowledgements, never from preview fixtures.
+      var now = Date.now();
+      var previousFailureAt = now - 60000;
+      _syncDiagnostics.failures.write = {
+        at: previousFailureAt,
+        code: 'owner_session_expired',
+        detail: 'Synthetic previous sign-in expiry',
+      };
+      _syncDiagnostics.successes.read = now - 2000;
+      _syncDiagnostics.successes.write = now - 1000;
+      _syncDiagnostics.retryReview = {
+        kind: 'pending_review', at: now, pullConfirmed: true,
+        historicalWriteAt: previousFailureAt, writeConfirmed: true,
+        skipped: { missing: 0, blocked: 0 },
+      };
+      _syncDiagPersist();
       _syncDiagSetSettledStatus();
     } else if (scenario === 'failure') {
       setSyncStatus('error', 'POST https://synthetic.invalid/sync/v2/pull Bearer fixture-token {"access_token":"fixture-token","email":"fixture@example.test"} ' + 'x'.repeat(600), 'read');
@@ -235,10 +421,12 @@ const PREVIEW_BOOTSTRAP = `<script id="kjr-sync-preview-bootstrap">
       _syncDiagRecordSuccess('read');
       _syncDiagRecordSuccess('write');
       setSyncStatus('ok');
+    } else if (scenario === 'restore-ack') {
+      showPage('trash');
     } else if (scenario === 'warnings') {
       runHealthCheck();
     }
-    if (scenario !== 'warnings') openSyncDiagnostics();
+    if (scenario !== 'warnings' && scenario !== 'restore-ack') openSyncDiagnostics();
   }, 700);
 })();
 </script>`;
@@ -339,7 +527,7 @@ if (require.main === module) {
   const server = createPreviewServer();
   server.listen(PORT, HOST, function () {
     console.log('Cloud Sync diagnostics preview: http://' + HOST + ':' + PORT + '/');
-    console.log('Synthetic controls: Empty, Pending many, Long failure, Offline, Recovered local, Ack demo, Health warnings, Acknowledge, Show details, Toggle theme');
+    console.log('Synthetic controls: Empty, Pending many, Long failure, Offline, Recovered local, Retained receipt, Ack demo, Health warnings, Acknowledge, Show details, Toggle theme');
     console.log('Cloud, auth and service-worker access: disabled. Google Fonts remains enabled for visual parity.');
   });
   const stop = function () { server.close(function () { process.exit(0); }); };

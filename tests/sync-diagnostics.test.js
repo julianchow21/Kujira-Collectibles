@@ -18,6 +18,7 @@ const LOCALHOST_LOCATION = {
 function clearDiagnostics(ctx) {
   ctx._syncDiagnostics.failures = {};
   ctx._syncDiagnostics.successes = { read: null, write: null };
+  ctx._syncDiagnostics.retryReview = null;
   ctx._syncDiagPersist();
   ctx._syncStatus = 'idle';
 }
@@ -215,6 +216,93 @@ test('sync diagnostics: a successful write on another row does not erase the ret
   await ctx._syncMutate([second], 'mutation-healthy');
   assert.ok(ctx._syncDiagnostics.failures.write, 'the earlier failed operation remains visible');
   assert.ok(ctx._syncDiagnostics.successes.write, 'the later acknowledgement still records last confirmed write time');
+});
+
+test('sync diagnostics: a newer confirmed write turns an old auth receipt into pending work review', async () => {
+  const row = { id: 'review-current-row', name: 'Synthetic current row', status: 'Available' };
+  const { ctx } = await loadApp({
+    seed: { singles: [row] },
+    localStorage: {
+      _kjrPendingTrashWrites: [{
+        id: 'review-trash',
+        data: { originalTable: 'singles', originalId: 'review-old-row', item: { id: 'review-old-row' } },
+      }],
+    },
+  });
+  clearDiagnostics(ctx);
+  ctx._syncDiagRecordFailure('write', 'owner_session_expired');
+  const retained = ctx._syncDiagnostics.failures.write;
+  ctx._syncDiagnostics.successes.write = retained.at + 1;
+  ctx._syncDiagPersist();
+  const problem = ctx._syncDiagProblem(ctx._syncDiagPendingSnapshot());
+  assert.equal(problem.title, 'Pending work needs review');
+  assert.match(problem.reason, /cloud save was confirmed/i);
+  assert.doesNotMatch(problem.remedy, /sign in again/i);
+  assert.strictEqual(ctx._syncDiagnostics.failures.write, retained, 'the historical receipt remains durable');
+  ctx._syncDiagRenderBody();
+  assert.match(ctx.document.getElementById('sync-diagnostics-body').innerHTML, /Cloud write \(previous\)/);
+});
+
+test('sync diagnostics: a confirmed pull with no eligible row keeps a byte-bearing marker and records skipped work', async () => {
+  const id = 'review-orphan-row';
+  const token = 'review-tab:orphan-row';
+  const markerKey = 'pokeinv_dirty_v2:' + token;
+  const row = { id, name: 'Synthetic recoverable row', status: 'Available' };
+  const loaded = await loadApp({ seed: { singles: [] } });
+  const { ctx, localStorage, fetchMock, grab } = loaded;
+  clearDiagnostics(ctx);
+  const failure = { at: 1700000000000, code: 'owner_session_expired', detail: 'Synthetic previous auth receipt' };
+  ctx._syncDiagnostics.failures.write = failure;
+  ctx._syncDiagPersist();
+  localStorage.setItem(markerKey, JSON.stringify({
+    table: 'singles', id, token, owner: 'review-tab', createdAt: 456, rowJson: JSON.stringify(row),
+  }));
+  grab('_dirty')._dirty.singles.add(id);
+  grab('_dirtyRevisions')._dirtyRevisions.singles.set(id, token);
+  localStorage.setItem('pokeinv_dirty_v1', JSON.stringify({ singles: [id], _revisions: { singles: { [id]: [token] } } }));
+  fetchMock.route('/sync/v2/pull', orphanPull(id));
+  await ctx.retrySyncDiagnostics();
+  assert.equal(ctx._syncDiagnostics.retryReview.kind, 'pending_review');
+  assert.ok(ctx._syncDiagnostics.retryReview.skipped.missing >= 1);
+  assert.equal(grab('_dirty')._dirty.singles.has(id), true, 'missing row remains dirty');
+  assert.ok(localStorage.getItem(markerKey), 'byte-bearing recovery marker remains durable');
+  assert.equal(ctx._syncDiagnostics.failures.write, failure, 'historical receipt remains unchanged');
+  assert.equal(ctx._syncDiagWriteFailureIsHistorical(failure), false, 'a pull without a write does not age the receipt');
+  const problem = ctx._syncDiagProblem(ctx._syncDiagPendingSnapshot());
+  assert.equal(problem.title, 'Pending work needs review');
+  assert.doesNotMatch(problem.reason, /cloud save was confirmed/i, 'a read-only retry never claims a write');
+});
+
+test('sync diagnostics: a clean retry clears review evidence without inventing a write', async () => {
+  const { ctx, fetchMock } = await loadApp({ seed: null });
+  clearDiagnostics(ctx);
+  ctx._syncDiagnostics.retryReview = {
+    kind: 'pending_review', at: 1700000000000, pullConfirmed: true,
+    historicalWriteAt: null, writeConfirmed: false, skipped: { missing: 1, blocked: 0 },
+  };
+  ctx._syncDiagPersist();
+  const before = ctx._syncDiagProblem(ctx._syncDiagPendingSnapshot());
+  assert.equal(before.title, 'Pending work needs review');
+  assert.doesNotMatch(before.reason, /cloud save was confirmed/i);
+  fetchMock.route('/sync/v2/pull', () => syncPullResponse({}));
+  await ctx.retrySyncDiagnostics();
+  assert.equal(ctx._syncDiagnostics.retryReview, null, 'obsolete review evidence is cleared');
+  assert.equal(ctx._syncDiagnostics.successes.write, null, 'a read-only retry does not create a write receipt');
+  assert.equal(ctx._syncDiagProblem(ctx._syncDiagPendingSnapshot()).title, 'No current sync problem');
+});
+
+test('sync diagnostics: a newer genuine auth failure still wins over an earlier successful write', async () => {
+  const { ctx } = await loadApp();
+  clearDiagnostics(ctx);
+  ctx._syncDiagRecordSuccess('write');
+  ctx._syncDiagRecordFailure('write', 'owner_session_expired');
+  const current = ctx._syncDiagnostics.failures.write;
+  ctx._syncDiagnostics.successes.write = current.at - 1;
+  ctx._syncDiagPersist();
+  const problem = ctx._syncDiagProblem(ctx._syncDiagPendingSnapshot());
+  assert.match(problem.title, /Cloud write needs attention/);
+  assert.match(problem.reason, /sign-in expired/i);
+  assert.match(problem.remedy, /Sign in again/);
 });
 
 test('sync diagnostics: a successful dirty flush keeps an earlier write failure, then manual retry clears it without changing write time', async () => {

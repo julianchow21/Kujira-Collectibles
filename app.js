@@ -1264,7 +1264,33 @@ function _syncDiagInferOperation(operation, detail) {
 }
 
 function _syncDiagBlankState() {
-  return { schema: 1, installationRef: _syncDiagNewInstallationRef(), successes: { read: null, write: null }, failures: {} };
+  return {
+    schema: 1,
+    installationRef: _syncDiagNewInstallationRef(),
+    successes: { read: null, write: null },
+    failures: {},
+    retryReview: null,
+  };
+}
+
+function _syncDiagNormaliseRetryReview(value) {
+  if (!value || typeof value !== 'object' || value.kind !== 'pending_review') return null;
+  const count = candidate => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0;
+  const at = Number.isFinite(value.at) && value.at > 0 ? value.at : null;
+  if (at === null) return null;
+  const historicalWriteAt = Number.isFinite(value.historicalWriteAt) && value.historicalWriteAt > 0
+    ? value.historicalWriteAt : null;
+  return {
+    kind: 'pending_review',
+    at,
+    pullConfirmed: value.pullConfirmed === true,
+    historicalWriteAt,
+    writeConfirmed: value.writeConfirmed === true,
+    skipped: {
+      missing: count(value.skipped && value.skipped.missing),
+      blocked: count(value.skipped && value.skipped.blocked),
+    },
+  };
 }
 
 function _syncDiagLoad() {
@@ -1290,6 +1316,7 @@ function _syncDiagLoad() {
         detail: _syncDiagSafeText(failure.detail || failure.code, 220),
       };
     }
+    base.retryReview = _syncDiagNormaliseRetryReview(saved.retryReview);
   } catch (_) {
     _syncDiagStorageAvailable = false;
   }
@@ -1318,6 +1345,7 @@ if (!_syncDiagInstallationPersisted) _syncDiagPersist();
 function _syncDiagRecordSuccess(operation, options) {
   if (!SYNC_DIAG_OPERATIONS.includes(operation)) return;
   if (operation === 'read' || operation === 'write') _syncDiagnostics.successes[operation] = Date.now();
+  if (operation === 'write' && _syncDiagnostics.retryReview) _syncDiagnostics.retryReview.writeConfirmed = true;
   if (!options || options.clearFailure !== false) delete _syncDiagnostics.failures[operation];
   _syncDiagPersist();
   _syncDiagRenderIndicator();
@@ -1328,14 +1356,16 @@ function _syncDiagRecordSuccess(operation, options) {
 // has queued work, while no new write happened in that retry, so it must not
 // manufacture a fresh cloud-write timestamp.
 function _syncDiagClearFailure(operation) {
-  if (!SYNC_DIAG_OPERATIONS.includes(operation) || !_syncDiagnostics.failures[operation]) return;
-  delete _syncDiagnostics.failures[operation];
+  if (!SYNC_DIAG_OPERATIONS.includes(operation)) return;
+  if (_syncDiagnostics.failures[operation]) delete _syncDiagnostics.failures[operation];
+  if (operation === 'write') _syncDiagnostics.retryReview = null;
   _syncDiagPersist();
   _syncDiagRenderIndicator();
 }
 
 function _syncDiagRecordFailure(operation, detail) {
   const key = _syncDiagInferOperation(operation, detail);
+  if (key === 'write') _syncDiagnostics.retryReview = null;
   _syncDiagnostics.failures[key] = {
     at: Date.now(), code: _syncDiagCode(detail), detail: _syncDiagSafeText(detail, 220),
   };
@@ -1581,7 +1611,47 @@ function _syncDiagMergePulledState(pulled) {
   }
 }
 
-function _syncDiagHasFailure() { return Object.keys(_syncDiagnostics.failures || {}).length > 0; }
+function _syncDiagWriteFailureIsHistorical(failure) {
+  if (!failure || !Number.isFinite(failure.at) || failure.at <= 0) return false;
+  const writeSuccess = _syncDiagnostics.successes && _syncDiagnostics.successes.write;
+  if (Number.isFinite(writeSuccess) && writeSuccess > failure.at) return true;
+  const review = _syncDiagnostics.retryReview;
+  return !!(review && review.writeConfirmed === true && Number.isFinite(review.historicalWriteAt) &&
+    review.historicalWriteAt === failure.at);
+}
+
+function _syncDiagWriteFailureRetainedForReview(failure) {
+  if (!failure || !Number.isFinite(failure.at) || failure.at <= 0) return false;
+  const review = _syncDiagnostics.retryReview;
+  return !!(review && review.pullConfirmed === true && Number.isFinite(review.historicalWriteAt) &&
+    review.historicalWriteAt === failure.at);
+}
+
+function _syncDiagRetryReviewHasSkipped(review) {
+  return !!(review && review.skipped && (review.skipped.missing > 0 || review.skipped.blocked > 0));
+}
+
+function _syncDiagRecordRetryReview(options) {
+  const skipped = options && options.skipped ? options.skipped : {};
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  _syncDiagnostics.retryReview = {
+    kind: 'pending_review',
+    at: Date.now(),
+    pullConfirmed: !!(options && options.pullConfirmed),
+    historicalWriteAt: options && Number.isFinite(options.historicalWriteAt) && options.historicalWriteAt > 0
+      ? options.historicalWriteAt : null,
+    writeConfirmed: !!(options && options.writeConfirmed),
+    skipped: { missing: count(skipped.missing), blocked: count(skipped.blocked) },
+  };
+  _syncDiagPersist();
+  _syncDiagRenderIndicator();
+}
+
+function _syncDiagHasFailure() {
+  return Object.entries(_syncDiagnostics.failures || {}).some(([operation, failure]) =>
+    operation !== 'write' || (!_syncDiagWriteFailureIsHistorical(failure) &&
+      !_syncDiagWriteFailureRetainedForReview(failure)));
+}
 
 function _syncDiagIndicatorState(requested) {
   if (requested === 'saving') return 'saving';
@@ -1656,6 +1726,8 @@ function _syncDiagProblem(pending) {
   for (const operation of ['local', 'read', 'mutation', 'delete', 'trash', 'write']) {
     const failure = failures[operation];
     if (!failure) continue;
+    if (operation === 'write' && (_syncDiagWriteFailureIsHistorical(failure) ||
+        _syncDiagWriteFailureRetainedForReview(failure))) continue;
     const copy = {
       owner_session_required: {
         reason: 'You are not signed in or this sign-in is no longer available.',
@@ -1736,6 +1808,21 @@ function _syncDiagProblem(pending) {
     };
   }
   if (pending.unknown.length) return { tone: 'error', icon: '⚠', title: 'Sync status is incomplete', reason: 'Some local recovery state could not be read safely.', remedy: 'Avoid clearing browser data, free storage, then retry.' };
+  const retryReview = _syncDiagnostics.retryReview;
+  const historicalWrite = _syncDiagWriteFailureIsHistorical(failures.write);
+  const retainedWriteFailure = _syncDiagWriteFailureRetainedForReview(failures.write);
+  if ((retryReview && retryReview.pullConfirmed === true || historicalWrite || retainedWriteFailure) &&
+      (pending.total > 0 || _syncDiagRetryReviewHasSkipped(retryReview))) {
+    const writeConfirmed = historicalWrite || (retryReview && retryReview.writeConfirmed === true);
+    return {
+      tone: 'pending', icon: '⚠', title: 'Pending work needs review',
+      reason: writeConfirmed
+        ? 'A cloud save was confirmed, but other queued changes or recovery data remain.'
+        : 'Cloud data was checked, but some queued changes or recovery data were not eligible for this retry.',
+      remedy: 'Keep this browser data and review the pending work before retrying.',
+      retryDisabled: _syncDiagOnlyUnretryableTrash(pending),
+    };
+  }
   if (_syncDiagOnlyUnretryableTrash(pending)) return {
     tone: 'error', icon: '⚠', title: 'Recovery snapshot needs review',
     reason: 'A Trash recovery copy is still queued.',
@@ -1769,7 +1856,7 @@ function _syncDiagRenderBody() {
   const failures = Object.entries(_syncDiagnostics.failures || {}).filter(([, value]) => value);
   const technical = failures.length
     ? '<details class="sync-diag-tech"><summary>Technical details</summary><div class="sync-diag-tech-body">' + failures.map(([operation, failure]) =>
-      '<div class="sync-diag-tech-item"><strong>' + _syncDiagEscape(SYNC_DIAG_OPERATION_LABELS[operation] || operation) + '</strong><span>' + _syncDiagEscape(failure.code) + ' · ' + _syncDiagEscape(failure.detail) + ' · ' + _syncDiagEscape(_syncDiagFormatTime(failure.at, failure.at === null)) + '</span></div>'
+      '<div class="sync-diag-tech-item"><strong>' + _syncDiagEscape(operation === 'write' && (_syncDiagWriteFailureIsHistorical(failure) || _syncDiagWriteFailureRetainedForReview(failure)) ? 'Cloud write (previous)' : (SYNC_DIAG_OPERATION_LABELS[operation] || operation)) + '</strong><span>' + _syncDiagEscape(failure.code) + ' · ' + _syncDiagEscape(failure.detail) + ' · ' + _syncDiagEscape(_syncDiagFormatTime(failure.at, failure.at === null)) + '</span></div>'
     ).join('') + '</div></details>' : '';
   const statusNotice = !_syncDiagStorageAvailable || !_syncDiagInstallationPersisted
     ? '<p class="sync-diag-muted">Browser storage could not verify the local reference, so it applies to this tab only.</p>' : '';
@@ -1837,9 +1924,11 @@ async function retrySyncDiagnostics() {
       return;
     }
     const writeFailureBefore = _syncDiagnostics.failures.write || null;
+    const writeSuccessBefore = _syncDiagnostics.successes.write || null;
     setSyncStatus('saving');
     let pullReturned = false;
     let pullMerged = false;
+    let flushResult = null;
     try {
       const pulled = await _pullSyncState({ force: true });
       pullReturned = true;
@@ -1849,7 +1938,7 @@ async function retrySyncDiagnostics() {
     // continue. If that local merge fails, leave queued writes untouched so a
     // storage problem cannot send stale in-memory bytes as a repair attempt.
     if (!pullReturned || pullMerged) {
-      try { await _flushDirtyToSupabase(); }
+      try { flushResult = await _flushDirtyToSupabase(); }
       catch (error) { _syncDiagRecordFailure('write', error); }
     } else {
       _syncDiagRecordFailure('local', 'Cloud refresh could not be applied locally');
@@ -1862,9 +1951,29 @@ async function retrySyncDiagnostics() {
     const pendingAfterRetry = _syncDiagPendingSnapshot();
     const writeFailureAfter = _syncDiagnostics.failures.write || null;
     const nonWriteFailures = Object.keys(_syncDiagnostics.failures || {}).filter(operation => operation !== 'write');
-    if (pullReturned && pullMerged && writeFailureBefore && writeFailureAfter === writeFailureBefore &&
-        pendingAfterRetry.unknown.length === 0 && pendingAfterRetry.total === 0 && nonWriteFailures.length === 0) {
-      _syncDiagClearFailure('write');
+    const skipped = flushResult && flushResult.skipped ? flushResult.skipped : {};
+    const hasSkipped = Number(skipped.missing) > 0 || Number(skipped.blocked) > 0;
+    const writeConfirmed = Number.isFinite(_syncDiagnostics.successes.write) &&
+      _syncDiagnostics.successes.write !== writeSuccessBefore;
+    const cleanRetry = pullReturned && pullMerged && pendingAfterRetry.unknown.length === 0 &&
+      pendingAfterRetry.total === 0 && !hasSkipped && nonWriteFailures.length === 0 &&
+      (!writeFailureAfter || (writeFailureBefore && writeFailureAfter === writeFailureBefore));
+    if (cleanRetry) {
+      if (writeFailureBefore) _syncDiagClearFailure('write');
+      else if (_syncDiagnostics.retryReview) {
+        _syncDiagnostics.retryReview = null;
+        _syncDiagPersist();
+        _syncDiagRenderIndicator();
+      }
+    } else if (pullReturned && pullMerged && pendingAfterRetry.unknown.length === 0 &&
+        nonWriteFailures.length === 0 && writeFailureAfter === writeFailureBefore &&
+        (pendingAfterRetry.total > 0 || hasSkipped)) {
+      _syncDiagRecordRetryReview({
+        pullConfirmed: true,
+        historicalWriteAt: writeFailureBefore && writeFailureBefore.at,
+        writeConfirmed,
+        skipped,
+      });
     }
     _syncDiagSetSettledStatus();
     _syncDiagRenderBody();
@@ -4710,8 +4819,10 @@ async function _flushMutationGroups() {
       return false;
     }
     _syncDiagRecordSuccess('mutation', { clearFailure: false });
-    if (outcome.ok && group.operations.some(op => op.type === 'restore') && typeof toast === 'function') {
-      toast('Restore synced');
+    if (outcome.ok && group.operations.some(op => op.type === 'restore')) {
+      if (typeof toast === 'function') toast('Restore synced');
+      const activePage = typeof document !== 'undefined' && document.querySelector('.page.active');
+      if (activePage && activePage.id === 'page-trash' && typeof renderTrash === 'function') renderTrash(false);
     }
   }
   const remainingGroups = _readMutationGroups();
@@ -4979,10 +5090,14 @@ async function _flushDirtyToSupabaseBody() {
   // Snapshot dirty IDs NOW before any await, so new mutations during upload stay dirty
   const toSync = [];
   const flushed = {};
+  const skipped = { missing: new Set(), blocked: new Set() };
   for (const tbl of tables) {
     const key = _dbKey(tbl);
     const dirtyIds = new Set(_dirty[key]);
-    const records = DB[key]
+    const rows = DB[key] || [];
+    const currentIds = new Set(rows.map(row => row.id));
+    for (const id of dirtyIds) if (!currentIds.has(id)) skipped.missing.add(tbl + '/' + id);
+    const records = rows
       .filter(row => dirtyIds.has(row.id))
       .map(row => {
         const snapshot = JSON.parse(JSON.stringify(row));
@@ -4991,7 +5106,11 @@ async function _flushDirtyToSupabaseBody() {
       });
     if (records.length) toSync.push({ tbl, key, records });
   }
-  if (!toSync.length) return { status: 'idle', confirmed: true };
+  const skippedCounts = () => ({ missing: skipped.missing.size, blocked: skipped.blocked.size });
+  if (!toSync.length) {
+    const observed = skippedCounts();
+    return { status: 'idle', confirmed: true, skipped: observed };
+  }
   setSyncStatus('saving');
   let anyError = false;
   let mutationQueueBlocked = false;
@@ -5011,9 +5130,19 @@ async function _flushDirtyToSupabaseBody() {
           anyError = true;
           break syncTables;
         }
-        const dispatch = chunk.filter(record => currentIds.has(record.id) &&
-          !groupedRows.has(tbl + '/' + record.id) &&
-          !latestGroupedRows.has(tbl + '/' + record.id) && !_deleteBlocksRow(tbl, record.snapshot));
+        const dispatch = [];
+        for (const record of chunk) {
+          const rowKey = tbl + '/' + record.id;
+          if (!currentIds.has(record.id)) {
+            skipped.missing.add(rowKey);
+            continue;
+          }
+          if (groupedRows.has(rowKey) || latestGroupedRows.has(rowKey) || _deleteBlocksRow(tbl, record.snapshot)) {
+            skipped.blocked.add(rowKey);
+            continue;
+          }
+          dispatch.push(record);
+        }
         if (!dispatch.length) continue;
         const outcome = await sbBatchUpsert(tbl, dispatch.map(record => record.snapshot), mutationQueueEpoch);
         if (outcome.skipped) continue;
@@ -5066,10 +5195,11 @@ async function _flushDirtyToSupabaseBody() {
   if (mutationQueueBlocked) {
     console.warn('[sync] Pending mutation queue changed; ordinary writes are paused');
     setSyncStatus('error', 'Pending sync transaction needs repair', 'mutation');
-    return { status: 'blocked', confirmed: false };
+    return { status: 'blocked', confirmed: false, skipped: skippedCounts() };
   }
   if (!anyError) {
     const pendingAfter = _syncDiagPendingSnapshot();
+    const observed = skippedCounts();
     const confirmed = pendingAfter.totals.dirty === 0 && pendingAfter.totals.mutation === 0;
     if (confirmed) {
       _syncDiagRecordSuccess('write', { clearFailure: false });
@@ -5081,7 +5211,7 @@ async function _flushDirtyToSupabaseBody() {
     // Trash first so the snapshot exists before its source row is deleted.
     flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
       .then(() => flushPendingDeletes()).catch(e => console.warn('flushPendingDeletes failed:', e));
-    return { status: confirmed ? 'confirmed' : 'pending', confirmed };
+    return { status: confirmed ? 'confirmed' : 'pending', confirmed, skipped: observed };
   } else {
     _syncDiagSetSettledStatus();
   }
@@ -5089,7 +5219,7 @@ async function _flushDirtyToSupabaseBody() {
   // Trash first so the snapshot exists before its source row is deleted.
   flushPendingTrash().catch(e => console.warn('flushPendingTrash failed:', e))
     .then(() => flushPendingDeletes()).catch(e => console.warn('flushPendingDeletes failed:', e));
-  return { status: 'error', confirmed: false };
+  return { status: 'error', confirmed: false, skipped: skippedCounts() };
 }
 
 function _kjrListingDirtyTargetsPending(targets) {

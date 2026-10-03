@@ -51,6 +51,22 @@ test('flush-guard: localhost preview -> _flushDirtyToSupabase makes ZERO fetch c
   assert.strictEqual(_dirty.singles.has('single_seed_1'), true, 'dirty flag survives - a guard-skipped write must never be treated as synced');
 });
 
+test('flush-guard: a dirty ID with no current row reports skipped work and preserves its queue', async () => {
+  const id = 'flush-missing-row';
+  const { ctx, fetchMock, grab } = await loadApp({
+    seed: { singles: [] },
+    localStorage: { pokeinv_dirty_v1: JSON.stringify({ singles: [id] }) },
+  });
+  fetchMock.calls.length = 0;
+  const result = await ctx._flushDirtyToSupabase();
+  assert.equal(result.skipped.missing, 1);
+  assert.equal(result.skipped.blocked, 0);
+  assert.equal(result.status, 'idle');
+  assert.equal(result.confirmed, true);
+  assert.equal(grab('_dirty')._dirty.singles.has(id), true, 'missing row stays queued');
+  assert.equal(fetchMock.calls.length, 0, 'no mutation is sent for a row that is not present');
+});
+
 test('flush-guard: preview import then Undo cannot resurrect the addition, while an unrelated foreign edit stays durable', async () => {
   const foreignBase = { id: 'foreign-row', name: 'Foreign row', costPrice: 10, status: 'Available' };
   const loaded = await loadApp({ location: LOCALHOST_LOCATION, seed: { singles: [foreignBase], boosterPacks: [] } });

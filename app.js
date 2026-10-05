@@ -16157,6 +16157,11 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // pricing; the other half is _pickBestMatch's language bonus.
     const lang = (language||'').toString().trim().toUpperCase();
     const langWord = lang === 'JP' ? 'japanese' : lang === 'CN' ? 'chinese' : lang === 'KR' ? 'korean' : lang === 'ID' ? 'indonesian' : '';
+    // The Worker answers a blank search with HTTP 400 before any vendor call,
+    // so a nameless row can never price. Report a data miss, not a transport
+    // failure, or the row would be retried forever and count towards the
+    // five-in-a-row auto-pause.
+    if (!String(name || '').trim()) return { error: 'no card name', _ppt_requests: 0, usedFallback: false };
 
     let reqCount = 0;
     // One PPT search + fuzzy pick. Candidates are always scored against the
@@ -17225,6 +17230,7 @@ function _renderQueueStatus() {
       if (/401|403|invalid|unauthor/i.test(dominant))     advice = 'Likely cause: API key invalid or expired. Open 🔑 Price API Settings and re-test.';
       else if (/429|rate/i.test(dominant))                advice = 'Likely cause: rate-limited by the vendor. The queue will retry these tomorrow automatically.';
       else if (/HTTP 5\d\d/.test(dominant))               advice = 'Likely cause: vendor API is down. The queue will retry these tomorrow.';
+      else if (/HTTP 400/.test(dominant))                 advice = 'Likely cause: the price proxy rejected the request format, so this app version and the Worker disagree. Waiting will not fix it, reload to load the latest app.';
       else if (/no match|no price/i.test(dominant))       advice = 'Likely cause: card name doesn\'t match the vendor\'s catalogue. Try renaming the card on the Singles/Slabs tab and run again.';
       else if (/network|fetch|aborted|timeout|cors/i.test(dominant)) advice = 'Likely cause: your network blocked the request (Wi-Fi, VPN, browser extension). Items kept for retry.';
       return `<div style="font-size:11px;color:#f59e0b;background:#f59e0b14;border:1px solid #f59e0b40;border-radius:6px;padding:8px 10px;margin-bottom:10px;line-height:1.5">

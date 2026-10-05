@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0//EN">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Collectibles Desktop</string>
+	<key>CFBundleExecutable</key>
+	<string>Collectibles</string>
+    <key>CFBundleIconFile</key>
+    <string>ApplicationIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.kujira.collectibles.desktop</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Collectibles Desktop</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

@@ -356,8 +356,12 @@ test('flush-guard: conflicting orphan snapshots choose createdAt then token, log
   assert.strictEqual(localStorage.getItem(keys.low), null);
   assert.ok(localStorage.getItem(keys.winner), 'the winning snapshot remains durable until upload');
   const log = JSON.parse(localStorage.getItem('pokeinv_changelog'));
-  assert.ok(log.some(entry => entry.extra.includes(JSON.stringify(older))));
-  assert.ok(log.some(entry => entry.extra.includes(JSON.stringify(tieLow))), 'every discarded conflicting snapshot is recoverable from Changelog');
+  const batchLabel = 'preserved older snapshots: ';
+  const recovered = log.filter(entry => entry.extra.includes(batchLabel))
+    .flatMap(entry => JSON.parse(entry.extra.slice(entry.extra.indexOf(batchLabel) + batchLabel.length)))
+    .map(snapshot => snapshot.rowJson);
+  assert.ok(recovered.includes(JSON.stringify(older)));
+  assert.ok(recovered.includes(JSON.stringify(tieLow)), 'every discarded conflicting snapshot is exactly recoverable from the batched Changelog entry');
 
   const reloaded = await loadApp({ localStorage: copyStorage(localStorage) });
   assert.strictEqual(reloaded.grab('DB').DB.singles[0].name, 'Tie high token');

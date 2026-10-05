@@ -67,7 +67,8 @@ test('misc-consistency: every app-owned row-id constructor delegates to genId', 
   for (const call of ["genId('cl')", "genId('v')", "genId('trash')", "genId('sc')"]) {
     assert.ok(appSrc.includes(call), call + ' must use the shared generator');
   }
-  assert.match(featureSrc, /function kjrGenId\(p\)\{ return genId\(p\); \}/);
+  assert.match(featureSrc, /identities = kjrImportRowIdentities\(/,
+    'feature imports use the same validated identity constructor as the main importer');
   assert.match(featureSrc, /function kjrId\(p\)\{ return genId\(p\); \}/);
 });
 

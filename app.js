@@ -3088,7 +3088,15 @@ function _stateAfterExplicitRestores(pending, confirmed, active) {
   return { pending: nextPending, confirmed: nextConfirmed };
 }
 
-async function _prepareExplicitRowRestores(_currentState, nextState, _mode) {
+async function _prepareExplicitRowRestores(_currentState, nextState, _mode, _action, _options) {
+  if (_mode === 'replacement') {
+    return _prepareReplacementSafety(nextState, _stateReplacementDeleteTargets(_currentState, nextState), {
+      canReplace: () => !_stateReplacementMutationBlocked(_currentState, nextState, _action || 'Restore') &&
+        !_stateReplacementRestoreBlocked(_currentState, nextState, _action || 'Restore') &&
+        (!_options || typeof _options.canReplace !== 'function' || _options.canReplace()),
+      apply: _options && _options.apply,
+    });
+  }
   // Every incoming row must be marker-checked. A Replace import can
   // deliberately reintroduce an ID that is absent from current memory but
   // still carries a pending or confirmed delete marker from an earlier
@@ -3115,12 +3123,38 @@ async function _prepareExplicitRowRestores(_currentState, nextState, _mode) {
   return true;
 }
 
-async function _prepareReplacementSafety(nextState, deleteTargets) {
-  if (isLocalhostPreview()) return true;
+function _applyStateReplacement(nextState, options) {
+  if (!options || typeof options.apply !== 'function') return true;
+  const before = _captureModalSaveState();
+  if (!before) return false;
+  try {
+    // A Promise would reintroduce the await gap: apply must be synchronous.
+    if (options.apply() !== true) throw new Error('replacement_apply_not_confirmed');
+    return true;
+  } catch (error) {
+    // Match saveData's exact persisted shape, including callers whose nextState
+    // also contains non-persisted tables such as Trash or Changelog.
+    const attemptedCache = {
+      singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+      boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases,
+    };
+    _restoreModalSaveState(before, attemptedCache);
+    console.warn('[replace] local replacement rolled back:', error);
+    return false;
+  }
+}
+
+async function _prepareReplacementSafety(nextState, deleteTargets, options) {
+  if (isLocalhostPreview()) {
+    if (options && typeof options.canReplace === 'function' && !options.canReplace()) return false;
+    return _applyStateReplacement(nextState, options);
+  }
   const candidates = _explicitRestoreCandidates(nextState);
   let applied = null;
   try {
     applied = await _queueDeleteStateOp(() => {
+      // Check again after waiting for the lock, before any recovery write.
+      if (options && typeof options.canReplace === 'function' && !options.canReplace()) return null;
       const touchedKeys = [PENDING_TRASH_KEY, DELETE_STATE_V2_KEY, PENDING_DEL_KEY, CONFIRMED_DEL_KEY];
       const before = new Map();
       for (const key of touchedKeys) before.set(key, localStorage.getItem(key));
@@ -3213,6 +3247,13 @@ async function _prepareReplacementSafety(nextState, deleteTargets) {
             (item.restoreToken || '') === (target.restoreToken || '')))) {
           throw new Error('replace_delete_marker_unverified');
         }
+        // Commit inside this synchronous callback. Peer storage events that
+        // arrive before the lock promise resolves must not be overwritten later.
+        if (options && typeof options.canReplace === 'function' && !options.canReplace()) {
+          throw new Error('replacement_review_changed');
+        }
+        for (const candidate of active) candidate.row._restoreToken = candidate.token;
+        if (!_applyStateReplacement(nextState, options)) throw new Error('replacement_apply_failed');
         return active;
       } catch (error) {
         if (!restorePreviousBytes()) {
@@ -3227,7 +3268,6 @@ async function _prepareReplacementSafety(nextState, deleteTargets) {
     return false;
   }
   if (applied === null) return false;
-  for (const candidate of applied) candidate.row._restoreToken = candidate.token;
   return true;
 }
 
@@ -4341,17 +4381,30 @@ function _recoverDirtyV2Snapshots() {
     const winner = candidates[0];
     const differentLosers = candidates.filter(candidate => candidate.marker.rowJson !== winner.marker.rowJson);
     if (differentLosers.length) {
+      // Preserve every losing payload before granting permission to compact its
+      // marker. A single immutable recovery entry also survives the 500-entry
+      // audit limit when a large batch is recovered together.
+      const recoveryExtra = 'dirty journal kept token ' + winner.marker.token +
+        ' and preserved older snapshots: ' + JSON.stringify(differentLosers.map(candidate => ({
+          token: candidate.marker.token, rowJson: candidate.marker.rowJson,
+        })));
+      const alreadyArchived = _clRecoveryEntries().some(entry =>
+        entry.table === winner.marker.table && entry.extra === recoveryExtra);
+      const archiveDurable = alreadyArchived || clLog('conflict', winner.marker.table,
+        winner.row.name || winner.row.product || winner.marker.id, recoveryExtra);
       const supersedes = [...new Set([
         ...(Array.isArray(winner.marker.supersedes) ? winner.marker.supersedes : []),
         ...differentLosers.map(candidate => candidate.marker.token),
       ])];
       let resolutionDurable = false;
       try {
+        if (!archiveDurable) throw new Error('conflict_recovery_not_saved');
         const resolvedWinner = { ...winner.marker, supersedes };
         delete resolvedWinner.key;
         localStorage.setItem(winner.marker.key, JSON.stringify(resolvedWinner));
         const saved = JSON.parse(localStorage.getItem(winner.marker.key) || 'null');
-        resolutionDurable = !!saved && Array.isArray(saved.supersedes) &&
+        resolutionDurable = !!saved && saved.token === winner.marker.token &&
+          saved.rowJson === winner.marker.rowJson && Array.isArray(saved.supersedes) &&
           supersedes.every(token => saved.supersedes.includes(token));
         if (resolutionDurable) winner.marker.supersedes = supersedes;
       } catch(e) {
@@ -4361,16 +4414,12 @@ function _recoverDirtyV2Snapshots() {
         _unresolvedDirtyWinnerTokens.add(winner.marker.token);
         warnOnce('dirty-v2-conflict-save-failed', 'Conflicting unsynced edits could not be resolved durably. Sync will keep retrying without discarding them.');
       } else {
+        _unresolvedDirtyWinnerTokens.delete(winner.marker.token);
         if (!discarded[winner.marker.table]) discarded[winner.marker.table] = new Map();
         discarded[winner.marker.table].set(winner.marker.id, new Set(differentLosers.map(candidate => candidate.marker.token)));
         for (const loser of differentLosers) {
           try { localStorage.removeItem(loser.marker.key); }
           catch(e) { console.warn('[dirty] superseded foreign marker cleanup deferred:', e); }
-          const label = loser.row.name || loser.row.product || loser.marker.id;
-          if (typeof clLog === 'function') {
-            clLog('conflict', winner.marker.table, label,
-              'dirty journal kept token ' + winner.marker.token + ' and discarded older snapshot: ' + loser.marker.rowJson);
-          }
         }
       }
     }
@@ -6229,7 +6278,10 @@ async function initDB() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const local = JSON.parse(raw);
-      if (local.singles?.length || local.slabs?.length || local.sales?.length) {
+      // Every inventory table can be the only cached data on an offline device.
+      // Hydrate secondary tables before features.js migrations and cloud I/O.
+      if (['singles', 'slabs', 'sales', 'etbs', 'boosterBoxes', 'boosterPacks', 'ebayPurchases']
+          .some(key => Array.isArray(local[key]) && local[key].length > 0)) {
         DB.singles       = _withoutPendingDeletes('singles',        local.singles       || []);
         DB.slabs         = _withoutPendingDeletes('slabs',          local.slabs         || []);
         DB.sales         = _withoutPendingDeletes('sales',          local.sales         || []);
@@ -7959,18 +8011,94 @@ function cmdLineCost(line, n) {
   return units.slice(0, want).reduce((s, c) => s + c, 0);
 }
 
+// Pin the inventory facts reviewed by a seller. Server versions catch remote
+// changes, while the selected fields also catch unsynced edits in this tab.
+function _kjrSaleRowReview(table, row) {
+  if (!row) return null;
+  const fields = ['status', 'qty', 'name', 'product', 'set', 'language', 'condition',
+    'type', 'grader', 'grade', 'certNo', 'notes', 'costPrice', 'unitPrice',
+    'totalPrice', 'datePurchased', 'dateListed', 'date'];
+  return JSON.stringify([table, row.id,
+    Number.isSafeInteger(row._serverVersion) ? row._serverVersion : 0,
+    fields.map(key => row[key] == null ? null : row[key]),
+    kjrDealerControlledRow(table, row)]);
+}
+
+function _kjrSaleAvailableQty(table, row) {
+  if (!row || !kjrIsActiveStatus(table, row.status || 'Available')) return 0;
+  if (table !== 'singles' && table !== 'boosterPacks') return 1;
+  const qty = row.qty == null || row.qty === '' ? 1 : Number(row.qty);
+  return Number.isSafeInteger(qty) && qty > 0 ? qty : 0;
+}
+
+// A second atomic transaction cannot safely reuse the first transaction's
+// unacknowledged row version. Keep the user's form intact until it has synced.
+function _kjrSalePendingChange(table, row) {
+  const pending = _pendingMutationRowKeys();
+  if (pending === null) {
+    toastError('Sales are paused until the pending sync queue is repaired.');
+    return true;
+  }
+  if (row && pending.has(_tblName(table) + '/' + row.id)) {
+    toast('This item has a pending sync transaction. Sync it before recording another sale.');
+    return true;
+  }
+  return false;
+}
+
+function _cmdSellReviewSnapshot(line) {
+  const rows = line._table === 'singles'
+    ? (DB.singles || []).filter(row => _kjrSaleAvailableQty('singles', row) > 0 && cmdSingleGroupKey(row) === line.groupKey)
+    : (DB[line._table] || []).filter(row => row.id === line.id && _kjrSaleAvailableQty(line._table, row) > 0);
+  return JSON.stringify(rows.map(row => [row.id, _kjrSaleRowReview(line._table, row)])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+}
+
+function _cmdSaleMoney(raw, options) {
+  const result = kjrParseNonNegativeNumber(raw, options);
+  if (!result.ok) return result;
+  const cents = Math.round(result.value * 100);
+  if (!Number.isSafeInteger(cents)) return { ok: false, reason: (options.label || 'Amount') + ' is too large' };
+  if (Math.abs(result.value * 100 - cents) > 0.000001) {
+    return { ok: false, reason: (options.label || 'Amount') + ' must have at most 2 decimal places' };
+  }
+  return { ...result, value: cents / 100, cents };
+}
+
+// Allocate whole cents by largest remainder. Every share is nonnegative and
+// the sum is exactly the entered amount, including an all-zero-price disposal.
+function _cmdAllocateSaleCents(totalCents, priceCents) {
+  const sum = priceCents.reduce((total, cents) => total + BigInt(cents), 0n);
+  const weights = sum > 0n ? priceCents.map(cents => BigInt(cents)) : priceCents.map(() => 1n);
+  const denominator = sum > 0n ? sum : BigInt(weights.length);
+  if (!weights.length) return [];
+  const parts = weights.map((weight, index) => {
+    const numerator = BigInt(totalCents) * weight;
+    return { index, cents: Number(numerator / denominator), remainder: numerator % denominator };
+  });
+  const remaining = totalCents - parts.reduce((total, part) => total + part.cents, 0);
+  const order = parts.slice().sort((a, b) => a.remainder === b.remainder
+    ? a.index - b.index : a.remainder > b.remainder ? -1 : 1);
+  for (let index = 0; index < remaining; index++) order[index].cents++;
+  return parts.map(part => part.cents);
+}
+
 // Add the inventory the user picked from search. Slabs add as a single unique
 // row. Singles add (or bump) a grouped line covering every matching available
 // lot, with the qty stepper capped at the total owned count.
 function cmdSellAddToCart(idx) {
-  const picked = cmdSellResults[idx];
-  if (!picked) return;
+  const result = cmdSellResults[idx];
+  if (!result) return;
+  const current = (DB[result._table] || []).find(row => row.id === result.id);
+  if (!_kjrSaleAvailableQty(result._table, current)) { toast('That item is no longer available'); return; }
+  if (kjrDealerWriteGuard(result._table, current, 'sell') || _kjrSalePendingChange(result._table, current)) return;
+  const picked = { ...current, _table: result._table };
   const isSlab = picked._table === 'slabs';
 
   if (isSlab) {
     const existing = cmdSellCart.find(l => l._table === 'slabs' && l.id === picked.id);
     if (existing) {
-      toast('That slab is already in the sale');
+      toast('That slab is already in the sale'); return;
     } else {
       cmdSellCart.push({
         id: picked.id, _table: 'slabs', name: picked.name || '',
@@ -7987,7 +8115,7 @@ function cmdSellAddToCart(idx) {
   } else if (picked._table === 'etbs' || picked._table === 'boosterBoxes') {
     const existing = cmdSellCart.find(l => l._table === picked._table && l.id === picked.id);
     if (existing) {
-      toast('That item is already in the sale');
+      toast('That item is already in the sale'); return;
     } else {
       cmdSellCart.push({
         id: picked.id, _table: picked._table, name: picked.product || '',
@@ -7998,9 +8126,11 @@ function cmdSellAddToCart(idx) {
     }
   } else if (picked._table === 'boosterPacks') {
     const existing = cmdSellCart.find(l => l._table === 'boosterPacks' && l.id === picked.id);
-    const availQty = Math.max(1, parseInt(picked.qty) || 1);
+    const availQty = _kjrSaleAvailableQty('boosterPacks', picked);
     if (existing) {
       existing.availQty = availQty;
+      existing.costPrice = parseFloat(picked.unitPrice) || 0;
+      existing.name = picked.product || '';
       if (existing.qty >= availQty) { toast('Only ' + availQty + ' packs available'); return; }
       existing.qty += 1;
     } else {
@@ -8014,8 +8144,8 @@ function cmdSellAddToCart(idx) {
   } else {
     const key = cmdSingleGroupKey(picked);
     const lots = DB.singles
-      .filter(i => (i.status||'Available') !== 'Sold' && cmdSingleGroupKey(i) === key)
-      .map(i => ({ id: i.id, costPrice: parseFloat(i.costPrice) || 0, availUnits: Math.max(1, parseInt(i.qty) || 1) }))
+      .filter(i => _kjrSaleAvailableQty('singles', i) > 0 && cmdSingleGroupKey(i) === key)
+      .map(i => ({ id: i.id, costPrice: parseFloat(i.costPrice) || 0, availUnits: _kjrSaleAvailableQty('singles', i) }))
       .sort((a, b) => b.costPrice - a.costPrice);
     const availQty = lots.reduce((s, l) => s + l.availUnits, 0);
     const existing = cmdSellCart.find(l => l._table === 'singles' && l.groupKey === key);
@@ -8033,6 +8163,10 @@ function cmdSellAddToCart(idx) {
       });
     }
   }
+  const reviewedLine = cmdSellCart.find(line => picked._table === 'singles'
+    ? line._table === 'singles' && line.groupKey === cmdSingleGroupKey(picked)
+    : line._table === picked._table && line.id === picked.id);
+  reviewedLine._reviewSnapshot = _cmdSellReviewSnapshot(reviewedLine);
   // First item opens the form and seeds shared fields.
   const form = document.getElementById('cmd-sell-form');
   if (form.style.display === 'none' || !document.getElementById('cmd-sell-date').value) {
@@ -8070,7 +8204,8 @@ function cmdSellSetPrice(id, val) {
   // parseFloat(val) || 0 used to collapse both to the same value, which is
   // what let cmdConfirmSell wave through a cart with no price entered at all.
   const trimmed = (val == null) ? '' : String(val).trim();
-  line.price = trimmed === '' ? '' : (parseFloat(trimmed) || 0);
+  const parsed = _cmdSaleMoney(trimmed, { label: 'Sold price' });
+  line.price = parsed.ok ? parsed.value : trimmed;
   // Recompute totals only - don't rebuild the list (would drop input focus).
   cmdCalcProfit();
 }
@@ -8117,9 +8252,9 @@ function renderCmdSellCart() {
       const qtyCtrl = isFixedQty
         ? '<span class="sell-cart-qty-fixed" title="Unique unit - one in sale">×1</span>'
         : '<div class="sell-qty">' +
-            '<button onclick="cmdSellSetQty(\'' + l.id + '\',-1)"' + (l.qty <= 1 ? ' disabled' : '') + '>−</button>' +
+            '<button onclick="cmdSellSetQty(' + kjrInlineArg(l.id) + ',-1)"' + (l.qty <= 1 ? ' disabled' : '') + '>−</button>' +
             '<span>' + l.qty + '</span>' +
-            '<button onclick="cmdSellSetQty(\'' + l.id + '\',1)"' + (l.qty >= l.availQty ? ' disabled' : '') + '>+</button>' +
+            '<button onclick="cmdSellSetQty(' + kjrInlineArg(l.id) + ',1)"' + (l.qty >= l.availQty ? ' disabled' : '') + '>+</button>' +
           '</div>';
       const availNote = (!isSlab && l.availQty > 1) ? ' · ' + l.availQty + ' avail' : '';
       // Grouped multi-unit lines blend several lot costs, so show the total
@@ -8135,7 +8270,7 @@ function renderCmdSellCart() {
       return '<div class="sell-cart-line">' +
         '<div class="sell-cart-top">' +
           '<div class="sell-cart-name">' + esc(l.name || '-') + badge + '</div>' +
-          '<button class="sell-cart-remove" onclick="cmdSellRemove(\'' + l.id + '\')" title="Remove from sale">✕</button>' +
+          '<button class="sell-cart-remove" onclick="cmdSellRemove(' + kjrInlineArg(l.id) + ')" title="Remove from sale">✕</button>' +
         '</div>' +
         '<div class="sell-cart-bottom">' +
           '<span class="sell-cart-meta">' + costLabel + availNote + '</span>' +
@@ -8144,8 +8279,8 @@ function renderCmdSellCart() {
             '<label class="sell-cart-price-field" title="What this item actually sold for, per item">' +
               '<span class="sell-cart-price-lbl">Sold</span>' +
               '<span class="sell-cart-price-cur">S$</span>' +
-              '<input class="sell-cart-price" type="number" step="0.01" min="0" inputmode="decimal" value="' + priceVal + '" ' +
-                'placeholder="0" aria-label="Sold price per item in S$" oninput="cmdSellSetPrice(\'' + l.id + '\',this.value)">' +
+              '<input class="sell-cart-price" type="number" step="0.01" min="0" inputmode="decimal" value="' + esc(priceVal) + '" ' +
+                'placeholder="0" aria-label="Sold price per item in S$" oninput="cmdSellSetPrice(' + kjrInlineArg(l.id) + ',this.value)">' +
             '</label>' +
           '</div>' +
         '</div>' +
@@ -8156,16 +8291,20 @@ function renderCmdSellCart() {
 }
 
 function cmdCalcProfit() {
-  const ship = kjrNum(document.getElementById('cmd-sell-ship').value);
-  const fees = kjrNum(document.getElementById('cmd-sell-fees').value);
+  const shipping = _cmdSaleMoney(document.getElementById('cmd-sell-ship').value, { label: 'Shipping', allowBlank: true, blankValue: 0 });
+  const feeAmount = _cmdSaleMoney(document.getElementById('cmd-sell-fees').value, { label: 'Fees', allowBlank: true, blankValue: 0 });
+  const prices = cmdSellCart.map(line => _cmdSaleMoney(line.price, { label: 'Sold price' }));
+  const ship = shipping.value, fees = feeAmount.value;
   let totalCost = 0, totalRev = 0, units = 0;
-  cmdSellCart.forEach(l => {
+  cmdSellCart.forEach((l, index) => {
     totalCost += cmdLineCost(l);
-    totalRev  += (l.price || 0) * l.qty;
+    totalRev  += (prices[index].value || 0) * l.qty;
     units     += l.qty;
   });
   const el = document.getElementById('cmd-sell-profit-preview');
   if (units === 0) { el.innerHTML = 'Add items to see totals'; return; }
+  const invalidMoney = [...prices, shipping, feeAmount].find(result => !result.ok);
+  if (invalidMoney) { el.innerHTML = esc(invalidMoney.reason); return; }
   const profit = totalRev - totalCost - ship - fees;
   const margin = totalRev > 0 ? ((profit / totalRev) * 100).toFixed(0) + '%' : '-';
   const cls = profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
@@ -8182,11 +8321,22 @@ function cmdCalcProfit() {
 function cmdConfirmSell() {
   if (cmdSellCart.length === 0) { toast('Add at least one item to the sale'); return; }
 
-  // A blank price entry stays blocked (still l.price === '' from add-to-cart
-  // or cmdSellSetPrice), but an explicitly entered 0 is a real disposal
-  // (giveaway/trade) and must be allowed through, even for the whole cart.
-  if (cmdSellCart.some(l => l.price === '' || l.price === null || l.price === undefined)) {
-    toast('Enter a sold price for the items'); return;
+  const prices = cmdSellCart.map(line => _cmdSaleMoney(line.price,
+    { label: 'Sold price', blankReason: 'Enter a sold price for the items' }));
+  const shipping = _cmdSaleMoney(document.getElementById('cmd-sell-ship').value,
+    { label: 'Shipping', allowBlank: true, blankValue: 0 });
+  const feeAmount = _cmdSaleMoney(document.getElementById('cmd-sell-fees').value,
+    { label: 'Fees', allowBlank: true, blankValue: 0 });
+  const invalidMoney = [...prices, shipping, feeAmount].find(result => !result.ok);
+  if (invalidMoney) { toast(invalidMoney.reason); return; }
+  const inventoryChanged = () => toast('Inventory changed. Remove and add the affected items again to review this sale.');
+  for (const line of cmdSellCart) {
+    if (!['singles', 'slabs', 'etbs', 'boosterBoxes', 'boosterPacks'].includes(line._table) ||
+        !Number.isSafeInteger(line.qty) || line.qty < 1 ||
+        (!['singles', 'boosterPacks'].includes(line._table) && line.qty !== 1) ||
+        typeof line._reviewSnapshot !== 'string' || line._reviewSnapshot !== _cmdSellReviewSnapshot(line)) {
+      inventoryChanged(); return;
+    }
   }
 
   // Resolve every cart line into a flat list of per-unit sales, reading CURRENT
@@ -8194,59 +8344,74 @@ function cmdConfirmSell() {
   // Grouped singles allocate their units across matching lots most-expensive-
   // first (the agreed cost-basis rule); slabs are one unique unit each.
   const planned = [];   // { name, productName, table, rowId, cost, price }
-  for (const l of cmdSellCart) {
+  const reservedUnits = new Map();
+  for (const [lineIndex, l] of cmdSellCart.entries()) {
+    const price = prices[lineIndex].value;
     if (l._table === 'slabs') {
-      const row = DB.slabs.find(i => i.id === l.id && (i.status||'Available') !== 'Sold');
-      if (!row) continue;
+      const row = DB.slabs.find(i => i.id === l.id && _kjrSaleAvailableQty('slabs', i) > 0);
+      if (!row || reservedUnits.has('slabs/' + row.id)) { inventoryChanged(); return; }
+      reservedUnits.set('slabs/' + row.id, 1);
       if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('slabs', row, 'sell')) return;
+      if (_kjrSalePendingChange('slabs', row)) return;
       const rg = (typeof _resolveGrader === 'function') ? _resolveGrader(l.grader, l.grade, l.notes) : null;
       const gradeLabel = (rg && rg.grader)
         ? (rg.grader + ' ' + rg.grade).trim()
         : [l.grader, l.grade].filter(Boolean).join(' ').trim();
       const productName = l.name + (gradeLabel ? ' ' + gradeLabel : '') + (l.certNo ? ' #' + l.certNo : '');
       const dateAcqSlab = toDateMmmYyyy(row.datePurchased || row.dateListed || row.date || '') || '';
-      planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price: l.price || 0, dateAcquired: dateAcqSlab });
+      planned.push({ name: l.name, productName, table: 'slabs', rowId: row.id, cost: parseFloat(row.costPrice) || 0, price, dateAcquired: dateAcqSlab });
     } else if (l._table === 'etbs' || l._table === 'boosterBoxes') {
       const row = DB[l._table].find(i => i.id === l.id && kjrIsActiveStatus(l._table, i.status||''));
-      if (!row) continue;
+      if (!row || reservedUnits.has(l._table + '/' + row.id)) { inventoryChanged(); return; }
+      reservedUnits.set(l._table + '/' + row.id, 1);
       if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard(l._table, row, 'sell')) return;
+      if (_kjrSalePendingChange(l._table, row)) return;
       const dateAcqSealed = toDateMmmYyyy(row.date || '') || '';
-      planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price: l.price || 0, dateAcquired: dateAcqSealed });
+      planned.push({ name: l.name, productName: l.name, table: l._table, rowId: row.id, cost: parseFloat(row.totalPrice) || 0, price, dateAcquired: dateAcqSealed });
     } else if (l._table === 'boosterPacks') {
       const row = DB.boosterPacks.find(i => i.id === l.id && kjrIsActiveStatus('boosterPacks', i.status||''));
-      if (!row) continue;
+      if (!row) { inventoryChanged(); return; }
       if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('boosterPacks', row, 'sell')) return;
+      if (_kjrSalePendingChange('boosterPacks', row)) return;
       const unitCost = parseFloat(row.unitPrice) || 0;
-      const available = Math.max(1, parseInt(row.qty) || 1);
-      const take = Math.min(l.qty, available);
+      const key = 'boosterPacks/' + row.id;
+      const reserved = reservedUnits.get(key) || 0;
+      const available = _kjrSaleAvailableQty('boosterPacks', row) - reserved;
+      if (l.qty > available) { inventoryChanged(); return; }
+      const take = l.qty;
+      reservedUnits.set(key, reserved + take);
       const dateAcqBp = toDateMmmYyyy(row.date || '') || '';
       for (let u = 0; u < take; u++) {
-        planned.push({ name: l.name, productName: l.name, table: 'boosterPacks', rowId: row.id, cost: unitCost, price: l.price || 0, dateAcquired: dateAcqBp });
+        planned.push({ name: l.name, productName: l.name, table: 'boosterPacks', rowId: row.id, cost: unitCost, price, dateAcquired: dateAcqBp });
       }
     } else {
       const key = l.groupKey;
       const units = [];
       DB.singles
-        .filter(i => (i.status||'Available') !== 'Sold' && cmdSingleGroupKey(i) === key)
+        .filter(i => _kjrSaleAvailableQty('singles', i) > 0 && cmdSingleGroupKey(i) === key)
         .forEach(i => {
           const c = parseFloat(i.costPrice) || 0;
-          const n = Math.max(1, parseInt(i.qty) || 1);
+          const n = _kjrSaleAvailableQty('singles', i) - (reservedUnits.get('singles/' + i.id) || 0);
           const da = toDateMmmYyyy(i.datePurchased || '') || '';
           for (let u = 0; u < n; u++) units.push({ id: i.id, cost: c, dateAcquired: da });
         });
       units.sort((a, b) => b.cost - a.cost);
-      const take = Math.min(l.qty, units.length);
+      if (l.qty > units.length) { inventoryChanged(); return; }
+      const take = l.qty;
       for (let u = 0; u < take; u++) {
         const row = DB.singles.find(i => i.id === units[u].id);
+        const reservedKey = 'singles/' + row.id;
+        reservedUnits.set(reservedKey, (reservedUnits.get(reservedKey) || 0) + 1);
         if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('singles', row, 'sell')) return;
-        planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price: l.price || 0, dateAcquired: units[u].dateAcquired });
+        if (_kjrSalePendingChange('singles', row)) return;
+        planned.push({ name: l.name, productName: l.name, table: 'singles', rowId: units[u].id, cost: units[u].cost, price, dateAcquired: units[u].dateAcquired });
       }
     }
   }
   if (planned.length === 0) { toast('Those items are no longer available'); return; }
 
-  const ship    = kjrNum(document.getElementById('cmd-sell-ship').value);
-  const fees    = kjrNum(document.getElementById('cmd-sell-fees').value);
+  const ship    = shipping.value;
+  const fees    = feeAmount.value;
   const channel = document.getElementById('cmd-sell-channel').value || 'Carousell';
   const buyer   = document.getElementById('cmd-sell-buyer').value;
   const dateSold = formatDateInput(document.getElementById('cmd-sell-date').value);
@@ -8260,12 +8425,14 @@ function cmdConfirmSell() {
   const totalUnits = planned.length;
   let totalRev = 0;
   planned.forEach(p => { totalRev += p.price; });
-  // Blank entries are already blocked above, so an all-zero cart (explicit
-  // S$0 disposals) is a legitimate sale here - only negative revenue blocks.
-  if (totalRev < 0) { toast('Enter a sold price for the items'); return; }
-
+  if (!Number.isFinite(totalRev) || !Number.isSafeInteger(Math.round(totalRev * 100))) {
+    toast('The sale total is too large'); return;
+  }
+  const priceCents = planned.map(item => Math.round(item.price * 100));
+  const shippingCents = _cmdAllocateSaleCents(shipping.cents, priceCents);
+  const feeCents = _cmdAllocateSaleCents(feeAmount.cents, priceCents);
   const newSales = [];
-  let shipAllocated = 0, feesAllocated = 0, unitsDone = 0, grandProfit = 0;
+  let grandProfit = 0;
   const retireSingles = {};      // rowId -> units to retire
   const retireBoosterPacks = {}; // rowId -> units to retire
   const stagedRows = new Map();
@@ -8281,18 +8448,9 @@ function cmdConfirmSell() {
     update(staged.next);
   };
 
-  planned.forEach(p => {
-    unitsDone++;
-    // Pro-rata shipping and fees by revenue share. Last unit absorbs rounding.
-    let unitShip, unitFees;
-    if (unitsDone === totalUnits) {
-      unitShip = +(ship - shipAllocated).toFixed(2);
-      unitFees = +(fees - feesAllocated).toFixed(2);
-    } else {
-      const share = totalRev > 0 ? (p.price / totalRev) : (1 / totalUnits);
-      unitShip = +(ship * share).toFixed(2); shipAllocated += unitShip;
-      unitFees = +(fees * share).toFixed(2); feesAllocated += unitFees;
-    }
+  planned.forEach((p, index) => {
+    const unitShip = shippingCents[index] / 100;
+    const unitFees = feeCents[index] / 100;
     const profit = p.price - p.cost - unitShip - unitFees;
     const margin = p.price > 0 ? ((profit / p.price) * 100).toFixed(0) + '%' : '-';
     grandProfit += profit;
@@ -8389,25 +8547,70 @@ function cmdConfirmSell() {
 // =========== CHANGELOG ===========
 const CL_KEY = 'pokeinv_changelog';
 const CL_LIMIT = 500;
+const CL_RECOVERY_PREFIX = 'pokeinv_conflict_recovery_v1:';
+
+function _clStoredEntries() {
+  try {
+    const entries = JSON.parse(localStorage.getItem(CL_KEY) || '[]');
+    return Array.isArray(entries) ? entries : [];
+  } catch (_) { return []; }
+}
+
+function _clRecoveryEntries() {
+  const entries = [];
+  try {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(CL_RECOVERY_PREFIX)) continue;
+      try {
+        const entry = JSON.parse(localStorage.getItem(key));
+        if (entry && entry.action === 'conflict' && typeof entry.id === 'string' &&
+            key === CL_RECOVERY_PREFIX + entry.id && Number.isFinite(entry.ts) &&
+            typeof entry.table === 'string' && typeof entry.detail === 'string' &&
+            typeof entry.extra === 'string') entries.push(entry);
+      } catch (_) { /* Preserve unreadable recovery bytes for manual recovery. */ }
+    }
+  } catch (_) { /* Storage can be unavailable; never delete recovery records. */ }
+  return entries;
+}
 
 function clLog(action, table, detail, extra) {
-  const log = clLoad();
-  log.unshift({ id: genId('cl'), ts: Date.now(), action, table: table||'', detail: detail||'', extra: extra||'' });
+  const entry = { id: genId('cl'), ts: Date.now(), action, table: table||'', detail: detail||'', extra: extra||'' };
+  let recoveryDurable = false;
+  if (action === 'conflict') {
+    try {
+      const key = CL_RECOVERY_PREFIX + entry.id;
+      const raw = JSON.stringify(entry);
+      if (localStorage.getItem(key) !== null) throw new Error('recovery_key_collision');
+      localStorage.setItem(key, raw);
+      recoveryDurable = localStorage.getItem(key) === raw;
+      if (!recoveryDurable) return false;
+    } catch (e) {
+      console.warn('[changelog] conflict recovery save failed:', e);
+      return false;
+    }
+  }
+  const log = _clStoredEntries();
+  log.unshift(entry);
   if (log.length > CL_LIMIT) log.splice(CL_LIMIT);
-  // Changelog is an audit trail, not the source of truth for any row - a
-  // failed write here loses one log entry, not inventory data.
+  // The shared audit list is only a mirror for conflicts. Another tab can
+  // replace it, while each immutable recovery key retains the actual payload.
   try {
     const raw = JSON.stringify(log);
     localStorage.setItem(CL_KEY, raw);
-    return localStorage.getItem(CL_KEY) === raw;
+    return recoveryDurable || localStorage.getItem(CL_KEY) === raw;
   } catch(e) {
     console.warn('[changelog] entry save failed:', e);
-    return false;
+    return recoveryDurable;
   }
 }
 
 function clLoad() {
-  try { return JSON.parse(localStorage.getItem(CL_KEY) || '[]'); } catch(e) { return []; }
+  const entries = new Map();
+  for (const entry of [..._clStoredEntries(), ..._clRecoveryEntries()]) {
+    if (entry && typeof entry.id === 'string') entries.set(entry.id, entry);
+  }
+  return [...entries.values()].sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0));
 }
 
 // ── Changelog helpers ────────────────────────────────────────
@@ -8467,10 +8670,10 @@ function _clSummary(table, item) {
 }
 
 async function clearChangelog() {
-  if (!await kjrConfirm('Clear all changelog entries?', {ok:'Clear all', danger:true})) return;
+  if (!await kjrConfirm('Clear ordinary changelog entries? Conflict recovery copies will be kept.', {ok:'Clear', danger:true})) return;
   localStorage.removeItem(CL_KEY);
   renderChangelog();
-  toast('Changelog cleared');
+  toast('Changelog cleared. Conflict recovery copies kept.');
 }
 
 function renderChangelog() {
@@ -8601,51 +8804,153 @@ function _discardPreviewUndoAdditions(deleteTargets, beforeUndo) {
   }
 }
 
+function _captureStateReplacementReview(currentState) {
+  try {
+    return {
+      rows: JSON.stringify(SYNCED_TABLES.map(table => {
+        const key = _dbKey(table);
+        return [key, (currentState || DB)[key] || []];
+      })),
+      cache: localStorage.getItem(STORAGE_KEY),
+    };
+  } catch (_) { return null; }
+}
+
+function _stateReplacementReviewUnchanged(review, action) {
+  const current = _captureStateReplacementReview(DB);
+  if (review && current && review.rows === current.rows && review.cache === current.cache) return true;
+  toastError((action || 'Restore') + ' stopped because inventory changed while it was being prepared. Review the latest inventory and try again.');
+  return false;
+}
+
+function _stateReplacementMutationBlocked(currentState, nextState, action) {
+  if (isLocalhostPreview()) return false;
+  const label = action || 'Restore';
+  if (_dirtyFlushInFlight) {
+    toastError(label + ' stopped while a sync request is in progress. Wait for sync, then try again.');
+    return true;
+  }
+  const groups = _readMutationGroups();
+  if (!groups || groups.some(group => !_mutationReplayPlan(group))) {
+    toastError(label + ' stopped because queued transaction recovery needs repair. No inventory was changed.');
+    return true;
+  }
+  const changed = new Set();
+  for (const table of SYNCED_TABLES) {
+    const key = _dbKey(table);
+    const before = new Map((currentState[key] || []).map(row => [row.id, row]));
+    const after = new Map((nextState[key] || []).map(row => [row.id, row]));
+    for (const id of new Set([...before.keys(), ...after.keys()])) {
+      const left = before.get(id), right = after.get(id);
+      if (!left || !right || !_mutationDataEqual(_stripInternalData(left), _stripInternalData(right))) {
+        changed.add(table + '/' + id);
+      }
+    }
+  }
+  // An unacknowledged transaction may already have committed. Never cancel its
+  // durable receipt or let replay overwrite an apparently successful Undo.
+  if (groups.some(group => group.operations.some(op => changed.has(op.table + '/' + op.id)))) {
+    toastError(label + ' stopped because these items belong to a pending sync transaction. Connect and sync, then try again; its server result may be unknown.');
+    return true;
+  }
+  return false;
+}
+
+function _stateReplacementRestoreBlocked(currentState, nextState, action) {
+  if (isLocalhostPreview()) return false;
+  const saved = _readDeleteState();
+  if (!saved.valid) {
+    toastError((action || 'Restore') + ' stopped because delete recovery state needs repair.');
+    return true;
+  }
+  for (const table of SYNCED_TABLES) {
+    const key = _dbKey(table);
+    const current = new Map((currentState[key] || []).map(row => [row.id, row]));
+    for (const row of (nextState[key] || [])) {
+      const live = current.get(row.id);
+      const matches = marker => marker.table === table && marker.id === row.id;
+      const pendingDelete = saved.state.pending.some(matches);
+      const confirmedDelete = saved.state.confirmed.some(marker => matches(marker) && marker.state !== 'restored');
+      const anyMarker = saved.state.confirmed.some(matches);
+      const tombstone = _serverTombstones.some(matches);
+      const historicalStamp = Number.isSafeInteger(row._serverVersion) && row._serverVersion > 0;
+      const currentStamp = live && Number.isSafeInteger(live._serverVersion) && live._serverVersion > 0;
+      if (pendingDelete || confirmedDelete || tombstone || (!live && (historicalStamp || anyMarker)) ||
+          (live && historicalStamp && !currentStamp)) {
+        toastError((action || 'Restore') + ' stopped because it would restore a deleted or missing synced item. Restore that item from Trash or refresh its current cloud state first, then try again.');
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function _rebaseStateReplacementRows(currentState, nextState) {
+  // Restore business values using the current CAS revision, never the historic
+  // revision stored alongside the Undo/version snapshot.
+  for (const table of SYNCED_TABLES) {
+    const key = _dbKey(table);
+    const current = new Map((currentState[key] || []).map(row => [row.id, row]));
+    for (const row of (nextState[key] || [])) {
+      const live = current.get(row.id);
+      if (!live) continue;
+      for (const field of ['_serverVersion', '_updatedAt', '_restoreToken']) {
+        if (Object.prototype.hasOwnProperty.call(live, field)) row[field] = live[field];
+        else delete row[field];
+      }
+    }
+  }
+}
+
 async function _undoLastBody() {
-  if (undoStack.length === 0) { toast('Nothing to undo'); return; }
-  // Snapshot the *current* state into redo before mutating.
+  if (undoStack.length === 0) { toast('Nothing to undo'); return false; }
   const beforeUndo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   const prev = JSON.parse(undoStack[undoStack.length - 1]);
-  if (_kjrDealerStateReplacementBlocked(beforeUndo, prev, 'undo')) return;
-  if (!await _prepareExplicitRowRestores(beforeUndo, prev, 'additions')) {
-    toastError('Undo stopped because delete recovery state could not be saved safely');
-    return;
-  }
+  if (_kjrDealerStateReplacementBlocked(beforeUndo, prev, 'undo')) return false;
+  if (_stateReplacementMutationBlocked(beforeUndo, prev, 'Undo')) return false;
+  if (_stateReplacementRestoreBlocked(beforeUndo, prev, 'Undo')) return false;
+  _rebaseStateReplacementRows(beforeUndo, prev);
+  const review = _captureStateReplacementReview(beforeUndo);
   const deleteTargets = _stateReplacementDeleteTargets(beforeUndo, prev);
-  if (!await _preflightPendingDeletes(deleteTargets)) {
-    toastError('Undo stopped because its cloud deletes could not be queued safely');
-    return;
-  }
-  if (!_discardPreviewUndoAdditions(deleteTargets, beforeUndo)) {
-    toastError('Undo stopped because its local sync state could not be updated safely');
-    return;
-  }
-  redoStack.push(JSON.stringify(beforeUndo));
-  undoStack.pop();
-  // Diff old vs new so we only mark records that actually changed (or were
-  // added/removed) as dirty, instead of re-uploading the entire DB.
-  const changedRows = (oldArr, newArr) => {
-    const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
-    return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
+  const apply = () => {
+    if (!_discardPreviewUndoAdditions(deleteTargets, beforeUndo)) {
+      toastError('Undo stopped because its local sync state could not be updated safely');
+      return false;
+    }
+    redoStack.push(JSON.stringify(beforeUndo));
+    undoStack.pop();
+    // Diff old vs new so we only mark records that actually changed (or were
+    // added/removed) as dirty, instead of re-uploading the entire DB.
+    const changedRows = (oldArr, newArr) => {
+      const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
+      return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
+    };
+    changedRows(beforeUndo.singles,        prev.singles       ).forEach(row => markDirty('singles', row.id, row));
+    changedRows(beforeUndo.slabs,          prev.slabs         ).forEach(row => markDirty('slabs',   row.id, row));
+    changedRows(beforeUndo.sales,          prev.sales         ).forEach(row => markDirty('sales',   row.id, row));
+    changedRows(beforeUndo.etbs||[],       prev.etbs||[]      ).forEach(row => markDirty('etbs',           row.id, row));
+    changedRows(beforeUndo.boosterBoxes||[], prev.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
+    changedRows(beforeUndo.boosterPacks||[], prev.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
+    changedRows(beforeUndo.ebayPurchases||[], prev.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
+    DB.singles       = prev.singles;
+    DB.slabs         = prev.slabs;
+    DB.sales         = prev.sales;
+    DB.etbs          = prev.etbs          || DB.etbs;
+    DB.boosterBoxes  = prev.boosterBoxes  || DB.boosterBoxes;
+    DB.boosterPacks  = prev.boosterPacks  || DB.boosterPacks;
+    DB.ebayPurchases = prev.ebayPurchases || DB.ebayPurchases;
+    return saveData() === true;
   };
-  changedRows(beforeUndo.singles,        prev.singles       ).forEach(row => markDirty('singles', row.id, row));
-  changedRows(beforeUndo.slabs,          prev.slabs         ).forEach(row => markDirty('slabs',   row.id, row));
-  changedRows(beforeUndo.sales,          prev.sales         ).forEach(row => markDirty('sales',   row.id, row));
-  changedRows(beforeUndo.etbs||[],       prev.etbs||[]      ).forEach(row => markDirty('etbs',           row.id, row));
-  changedRows(beforeUndo.boosterBoxes||[], prev.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
-  changedRows(beforeUndo.boosterPacks||[], prev.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
-  changedRows(beforeUndo.ebayPurchases||[], prev.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
-  DB.singles       = prev.singles;
-  DB.slabs         = prev.slabs;
-  DB.sales         = prev.sales;
-  DB.etbs          = prev.etbs          || DB.etbs;
-  DB.boosterBoxes  = prev.boosterBoxes  || DB.boosterBoxes;
-  DB.boosterPacks  = prev.boosterPacks  || DB.boosterPacks;
-  DB.ebayPurchases = prev.ebayPurchases || DB.ebayPurchases;
-  saveData();
-  // Delete from Supabase any id that existed before the undo but not after -
-  // routed directly through sbDelete (which already queues its own retries),
-  // NOT through the dirty system, since a removed row has nothing to upload.
+  if (!await _prepareExplicitRowRestores(beforeUndo, prev, 'replacement', 'Undo', {
+    canReplace: () => _stateReplacementReviewUnchanged(review, 'Undo'),
+    apply,
+  })) {
+    if (!_stateReplacementReviewUnchanged(review, 'Undo')) return false;
+    if (_stateReplacementMutationBlocked(beforeUndo, prev, 'Undo')) return false;
+    if (_stateReplacementRestoreBlocked(beforeUndo, prev, 'Undo')) return false;
+    toastError('Undo stopped because recovery state or inventory could not be saved safely');
+    return false;
+  }
   await _runPreflightedDeletes(deleteTargets);
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
@@ -8653,6 +8958,7 @@ async function _undoLastBody() {
   if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
   if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
   toast('Undone ↩');
+  return true;
 }
 
 function redoLast() {
@@ -8660,41 +8966,49 @@ function redoLast() {
 }
 
 async function _redoLastBody() {
-  if (redoStack.length === 0) { toast('Nothing to redo'); return; }
+  if (redoStack.length === 0) { toast('Nothing to redo'); return false; }
   const beforeRedo = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
   const next = JSON.parse(redoStack[redoStack.length - 1]);
-  if (_kjrDealerStateReplacementBlocked(beforeRedo, next, 'redo')) return;
-  if (!await _prepareExplicitRowRestores(beforeRedo, next, 'additions')) {
-    toastError('Redo stopped because delete recovery state could not be saved safely');
-    return;
-  }
+  if (_kjrDealerStateReplacementBlocked(beforeRedo, next, 'redo')) return false;
+  if (_stateReplacementMutationBlocked(beforeRedo, next, 'Redo')) return false;
+  if (_stateReplacementRestoreBlocked(beforeRedo, next, 'Redo')) return false;
+  _rebaseStateReplacementRows(beforeRedo, next);
+  const review = _captureStateReplacementReview(beforeRedo);
   const deleteTargets = _stateReplacementDeleteTargets(beforeRedo, next);
-  if (!await _preflightPendingDeletes(deleteTargets)) {
-    toastError('Redo stopped because its cloud deletes could not be queued safely');
-    return;
-  }
-  undoStack.push(JSON.stringify(beforeRedo));
-  redoStack.pop();
-  // Same diff approach as undoLast - only sync records that changed.
-  const changedRows = (oldArr, newArr) => {
-    const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
-    return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
+  const apply = () => {
+    undoStack.push(JSON.stringify(beforeRedo));
+    redoStack.pop();
+    // Same diff approach as undoLast - only sync records that changed.
+    const changedRows = (oldArr, newArr) => {
+      const oldMap = new Map(oldArr.map(r => [r.id, JSON.stringify(r)]));
+      return newArr.filter(row => oldMap.get(row.id) !== JSON.stringify(row));
+    };
+    changedRows(beforeRedo.singles,         next.singles        ).forEach(row => markDirty('singles', row.id, row));
+    changedRows(beforeRedo.slabs,           next.slabs          ).forEach(row => markDirty('slabs',   row.id, row));
+    changedRows(beforeRedo.sales,           next.sales          ).forEach(row => markDirty('sales',   row.id, row));
+    changedRows(beforeRedo.etbs||[],        next.etbs||[]       ).forEach(row => markDirty('etbs',          row.id, row));
+    changedRows(beforeRedo.boosterBoxes||[], next.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
+    changedRows(beforeRedo.boosterPacks||[], next.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
+    changedRows(beforeRedo.ebayPurchases||[], next.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
+    DB.singles       = next.singles;
+    DB.slabs         = next.slabs;
+    DB.sales         = next.sales;
+    DB.etbs          = next.etbs          || DB.etbs;
+    DB.boosterBoxes  = next.boosterBoxes  || DB.boosterBoxes;
+    DB.boosterPacks  = next.boosterPacks  || DB.boosterPacks;
+    DB.ebayPurchases = next.ebayPurchases || DB.ebayPurchases;
+    return saveData() === true;
   };
-  changedRows(beforeRedo.singles,         next.singles        ).forEach(row => markDirty('singles', row.id, row));
-  changedRows(beforeRedo.slabs,           next.slabs          ).forEach(row => markDirty('slabs',   row.id, row));
-  changedRows(beforeRedo.sales,           next.sales          ).forEach(row => markDirty('sales',   row.id, row));
-  changedRows(beforeRedo.etbs||[],        next.etbs||[]       ).forEach(row => markDirty('etbs',          row.id, row));
-  changedRows(beforeRedo.boosterBoxes||[], next.boosterBoxes||[]).forEach(row => markDirty('boosterBoxes', row.id, row));
-  changedRows(beforeRedo.boosterPacks||[], next.boosterPacks||[]).forEach(row => markDirty('boosterPacks', row.id, row));
-  changedRows(beforeRedo.ebayPurchases||[], next.ebayPurchases||[]).forEach(row => markDirty('ebayPurchases', row.id, row));
-  DB.singles       = next.singles;
-  DB.slabs         = next.slabs;
-  DB.sales         = next.sales;
-  DB.etbs          = next.etbs          || DB.etbs;
-  DB.boosterBoxes  = next.boosterBoxes  || DB.boosterBoxes;
-  DB.boosterPacks  = next.boosterPacks  || DB.boosterPacks;
-  DB.ebayPurchases = next.ebayPurchases || DB.ebayPurchases;
-  saveData();
+  if (!await _prepareExplicitRowRestores(beforeRedo, next, 'replacement', 'Redo', {
+    canReplace: () => _stateReplacementReviewUnchanged(review, 'Redo'),
+    apply,
+  })) {
+    if (!_stateReplacementReviewUnchanged(review, 'Redo')) return false;
+    if (_stateReplacementMutationBlocked(beforeRedo, next, 'Redo')) return false;
+    if (_stateReplacementRestoreBlocked(beforeRedo, next, 'Redo')) return false;
+    toastError('Redo stopped because recovery state or inventory could not be saved safely');
+    return false;
+  }
   await _runPreflightedDeletes(deleteTargets);
   renderSingles(); renderSlabs(); renderSales();
   if (typeof renderEtbs === 'function') renderEtbs();
@@ -8702,13 +9016,133 @@ async function _redoLastBody() {
   if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
   if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
   toast('Redone ↪');
+  return true;
 }
 
 // =========== VERSION HISTORY (Supabase-backed) ===========
-// Versions are stored in Supabase 'versions' table so they persist across devices.
-// localStorage is used only as a fast cache; Supabase is the source of truth.
+// Pending uploads own immutable, durable snapshots. Only confirmed cloud
+// copies may be reduced to metadata when the local cache needs space.
 const VER_KEY = 'pokeinv_versions';
-let _versionsCache = null; // in-memory cache for this session
+const VER_PENDING_PREFIX = 'pokeinv_version_upload:';
+const VER_LS_KEEP_FULL = 2;
+let _versionsCache = null;
+let _versionUploadFlight = null;
+
+function _versionCloudConfirmed(version) {
+  return !!version && Number.isSafeInteger(version._serverVersion) && version._serverVersion >= 1;
+}
+
+function _readVersionCache() {
+  try {
+    const versions = JSON.parse(localStorage.getItem(VER_KEY) || '[]');
+    return Array.isArray(versions) ? versions.filter(v => v && typeof v.id === 'string') : [];
+  } catch (_) { return []; }
+}
+
+function _pendingVersionUploads() {
+  const entries = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(VER_PENDING_PREFIX)) continue;
+      const entry = JSON.parse(localStorage.getItem(key));
+      if (!entry || !MUTATION_UUID_RE.test(entry.mutation_id) || !entry.version ||
+          typeof entry.version.id !== 'string' || key !== VER_PENDING_PREFIX + entry.version.id ||
+          typeof entry.version.data !== 'string' || !entry.operation ||
+          entry.operation.table !== 'versions' || entry.operation.type !== 'upsert' ||
+          entry.operation.id !== entry.version.id || !_validSyncOperation(entry.operation) ||
+          !_mutationDataEqual(entry.operation.data, {
+            name: entry.version.name, ts: entry.version.ts, data: entry.version.data
+          })) throw new Error('invalid_version_upload');
+      entries.push(entry);
+    }
+    return entries;
+  } catch (_) {
+    console.warn('[versions] Pending backup storage needs recovery; uploads are paused');
+    return null;
+  }
+}
+
+function _mergeVersionRecords(...lists) {
+  const byId = new Map();
+  lists.forEach(list => (list || []).forEach(version => {
+    if (version && typeof version.id === 'string') byId.set(version.id, version);
+  }));
+  return Array.from(byId.values()).sort((a, b) => (b.ts || b._ts || 0) - (a.ts || a._ts || 0));
+}
+
+function loadVersions() {
+  // Durable metadata wins over an old tab's session cache (including upload
+  // acknowledgements and deletions made in another tab). Memory may only fill
+  // the heavy blob for the same immutable snapshot already present on disk.
+  const memory = new Map((_versionsCache || []).map(ver => [ver.id, ver]));
+  const cached = _readVersionCache().map(ver => {
+    const full = memory.get(ver.id);
+    return !ver.data && full && full.data && full.name === ver.name && full.ts === ver.ts
+      ? { ...ver, data: full.data } : ver;
+  });
+  const pending = _pendingVersionUploads();
+  return _mergeVersionRecords(cached, (pending || []).map(entry => ({ ...entry.version, _pendingUpload: true })));
+}
+
+function _queueVersionUpload(ver) {
+  const entries = _pendingVersionUploads();
+  if (!entries) return null;
+  const existing = entries.find(entry => entry.version.id === ver.id);
+  if (existing) return existing.version.data === ver.data && existing.version.name === ver.name ? existing : null;
+  const version = { id: ver.id, name: ver.name, ts: ver.ts, data: ver.data };
+  const entry = { mutation_id: _newMutationId(), version,
+    operation: { type: 'upsert', table: 'versions', id: ver.id,
+      expected_version: Number.isSafeInteger(ver._serverVersion) ? ver._serverVersion : 0,
+      data: { name: ver.name, ts: ver.ts, data: ver.data } } };
+  try {
+    const raw = JSON.stringify(entry);
+    const key = VER_PENDING_PREFIX + ver.id;
+    localStorage.setItem(key, raw);
+    return localStorage.getItem(key) === raw ? entry : null;
+  } catch (_) { return null; }
+}
+
+function _cacheVersions(versions, acknowledgedId, removedId) {
+  const pending = _pendingVersionUploads();
+  if (!pending) return false;
+  const protectedLocal = _readVersionCache().filter(v => v.id !== removedId && v.data && !_versionCloudConfirmed(v));
+  versions = _mergeVersionRecords(protectedLocal, versions,
+    pending.filter(entry => entry.version.id !== acknowledgedId && entry.version.id !== removedId)
+      .map(entry => ({ ...entry.version, _pendingUpload: true })));
+  _versionsCache = versions;
+  const pendingIds = new Set(pending.filter(entry => entry.version.id !== acknowledgedId).map(entry => entry.version.id));
+  const writeLite = keepFull => {
+    const lite = versions.map((v, i) => {
+      // Pending blobs already have their own durable key. Legacy blobs have
+      // no such protection, so retain them until a cloud copy is verified.
+      if ((!pendingIds.has(v.id) && !_versionCloudConfirmed(v)) || (i < keepFull && !pendingIds.has(v.id))) return v;
+      const { data, ...meta } = v;
+      return meta;
+    });
+    const raw = JSON.stringify(lite);
+    localStorage.setItem(VER_KEY, raw);
+    return localStorage.getItem(VER_KEY) === raw;
+  };
+  try { return writeLite(VER_LS_KEEP_FULL); }
+  catch (_) { try { return writeLite(0); } catch (_) { return false; } }
+}
+
+function _evictVersionBlobsFromLS() {
+  try {
+    const raw = localStorage.getItem(VER_KEY);
+    if (!raw) return;
+    const cached = JSON.parse(raw);
+    if (!Array.isArray(cached)) throw new Error('invalid_version_cache');
+    const versions = cached.map(version => {
+      if (!_versionCloudConfirmed(version)) return version;
+      const { data, ...meta } = version;
+      return meta;
+    });
+    localStorage.setItem(VER_KEY, JSON.stringify(versions));
+  } catch (_) { console.warn('[versions] Cache cleanup failed; unconfirmed backups were retained'); }
+  _versionsCache = null;
+}
 
 async function sbFetchVersions() {
   try {
@@ -8718,296 +9152,236 @@ async function sbFetchVersions() {
     if (!Array.isArray(rows) || !rows.every(row => row && typeof row.id === 'string' &&
         row.data && typeof row.data === 'object' && !Array.isArray(row.data) &&
         Number.isSafeInteger(row.row_version) && row.row_version >= 1)) throw new Error('version_read_failed');
-    return rows.map(row => ({ ...JSON.parse(JSON.stringify(row.data)), id: row.id,
+    const cloud = rows.map(row => ({ ...JSON.parse(JSON.stringify(row.data)), id: row.id,
       _serverVersion: row.row_version, _ts: new Date(row.updated_at).getTime() }));
-  } catch(e) {
+    const pending = _pendingVersionUploads();
+    return _mergeVersionRecords(loadVersions().filter(ver => !_versionCloudConfirmed(ver)), cloud,
+      (pending || []).map(entry => ({ ...entry.version, _pendingUpload: true })));
+  } catch (_) {
     console.warn('Could not fetch versions from Supabase');
-    // Fall back to localStorage cache
-    try { return JSON.parse(localStorage.getItem(VER_KEY) || '[]'); } catch(e2) { return []; }
+    return loadVersions();
   }
 }
 
-// Returns true only on a confirmed cloud write, so callers (e.g. the version
-// pruning step) can tell a real success from a swallowed failure and never
-// delete anything after a save that didn't actually reach the cloud.
-async function sbSaveVersion(ver) {
-  if (isLocalhostPreview()) { return false; } // never write to prod from a local preview
-  // ver = { id, name, ts, data (stringified snapshot) }
-  const operation = { type: 'upsert', table: 'versions', id: ver.id,
-    expected_version: Number.isSafeInteger(ver._serverVersion) ? ver._serverVersion : 0,
-    data: { name: ver.name, ts: ver.ts, data: ver.data } };
+async function _sendVersionUpload(entry, ver) {
+  if (isLocalhostPreview()) return false;
+  const key = VER_PENDING_PREFIX + entry.version.id;
+  const originalRaw = JSON.stringify(entry);
   try {
-    const outcome = await _syncMutate([operation], _newMutationId());
+    // A replay never manufactures a new create from a stale scan. Another
+    // tab may already have acknowledged or replaced this exact entry.
+    if (localStorage.getItem(key) !== originalRaw) return false;
+    const outcome = await _syncMutate([entry.operation], entry.mutation_id);
     if (!outcome.ok) return false;
-    const result = outcome.results.find(row => row.table === 'versions' && row.id === ver.id);
+    const result = outcome.results.find(row => row.table === 'versions' && row.id === entry.version.id);
     if (!result) return false;
-    ver._serverVersion = result.row_version;
+    const acknowledged = { ...entry.version, _serverVersion: result.row_version };
+    if (ver) { ver._serverVersion = result.row_version; delete ver._pendingUpload; }
+    // Persist proof before removing the outbox, and never remove a newer
+    // entry created while this acknowledgement was in flight.
+    if (localStorage.getItem(key) === originalRaw &&
+        _cacheVersions(_mergeVersionRecords(loadVersions(), [acknowledged]), acknowledged.id) &&
+        localStorage.getItem(key) === originalRaw) localStorage.removeItem(key);
     return true;
-  } catch(_) {
+  } catch (_) {
     console.warn('Could not save version to Supabase');
-    // Still persisted in localStorage below
     return false;
   }
 }
 
+async function sbSaveVersion(ver) {
+  const entry = _queueVersionUpload(ver);
+  return entry ? _sendVersionUpload(entry, ver) : false;
+}
+
+function _flushPendingVersionUploads() {
+  if (_versionUploadFlight) return _versionUploadFlight;
+  _versionUploadFlight = (async () => {
+    const pending = _pendingVersionUploads();
+    if (!pending || isLocalhostPreview() || !_kjrAuthSession || !SB_HDR.Authorization) return false;
+    for (const entry of pending) {
+      let currentRaw;
+      try { currentRaw = localStorage.getItem(VER_PENDING_PREFIX + entry.version.id); }
+      catch (_) { return false; }
+      if (currentRaw !== JSON.stringify(entry)) continue;
+      if (!await _sendVersionUpload(entry)) {
+        // A peer acknowledgement between the read above and send is settled
+        // work, not a reason to recreate its outbox record.
+        if (localStorage.getItem(VER_PENDING_PREFIX + entry.version.id) !== currentRaw) continue;
+        return false;
+      }
+    }
+    return true;
+  })().finally(() => { _versionUploadFlight = null; });
+  return _versionUploadFlight;
+}
+window.addEventListener('online', () => { _flushPendingVersionUploads(); });
+document.addEventListener('DOMContentLoaded', () => setTimeout(_flushPendingVersionUploads, 2000));
+setInterval(_flushPendingVersionUploads, 5 * 60 * 1000);
+
 async function sbDeleteVersion(id, knownVersion) {
-  if (isLocalhostPreview()) { return false; } // never write to prod from a local preview
+  if (isLocalhostPreview()) return false;
   try {
     const ver = loadVersions().find(row => row.id === id);
     const operation = { type: 'delete', table: 'versions', id,
       expected_version: Number.isSafeInteger(knownVersion) ? knownVersion :
         (ver && Number.isSafeInteger(ver._serverVersion) ? ver._serverVersion : 0) };
     const outcome = await _syncMutate([operation], _newMutationId());
-    return outcome.ok && outcome.results.some(result =>
-      result.type === 'delete' && result.table === 'versions' && result.id === id);
-  } catch(_) { console.warn('Could not delete version from Supabase'); return false; }
-}
-
-function loadVersions() {
-  if (_versionsCache) return _versionsCache;
-  try { return JSON.parse(localStorage.getItem(VER_KEY) || '[]'); } catch(e) { return []; }
-}
-
-// How many recent version snapshots keep their FULL data blob in localStorage.
-// The rest store metadata only (name/date) and pull their data from Supabase
-// on restore. A full snapshot is ~300-400KB, so keeping all 50 here would try
-// to hold ~18MB and overflow the browser's ~5MB localStorage quota - that was
-// the "Local storage full" cause. Supabase holds the complete history.
-const VER_LS_KEEP_FULL = 2;
-function _cacheVersions(versions) {
-  _versionsCache = versions; // session cache keeps everything (full data) in memory
-  const writeLite = (keepFull) => {
-    const lite = versions.map((v, i) => {
-      if (i < keepFull) return v;          // recent: keep full snapshot for offline restore
-      const { data, ...meta } = v;          // older: drop the heavy blob, keep metadata
-      return meta;
-    });
-    localStorage.setItem(VER_KEY, JSON.stringify(lite));
-  };
-  try {
-    writeLite(VER_LS_KEEP_FULL);
-  } catch(e) {
-    // Even the trimmed list won't fit - fall back to metadata only (no blobs).
-    try { writeLite(0); } catch(e2) { /* Supabase still has everything */ }
-  }
-}
-
-// Strip every full-DB blob out of the cached versions in localStorage to
-// reclaim space. Called when an inventory save hits the quota. Versions stay
-// safe in Supabase; only the local offline copies of their data are dropped.
-function _evictVersionBlobsFromLS() {
-  try {
-    const raw = localStorage.getItem(VER_KEY);
-    if (raw) {
-      const metaOnly = JSON.parse(raw).map(({ data, ...meta }) => meta);
-      localStorage.setItem(VER_KEY, JSON.stringify(metaOnly));
-    }
-  } catch(e) {
-    // Trim-in-place failed (e.g. still over quota even after stripping
-    // blobs) - fall back to dropping the whole versions cache. Versions are
-    // mirrored to Supabase, so this only loses the local offline copy.
-    console.warn('[versions] trim-in-place failed, clearing local versions cache instead:', e);
-    try { localStorage.removeItem(VER_KEY); } catch(_) { console.warn('[versions] VER_KEY removeItem also failed, localStorage may be unusable'); }
-  }
-  _versionsCache = null; // force a fresh load (with blobs) next time it's needed
+    return outcome.ok && outcome.results.some(result => result.type === 'delete' && result.table === 'versions' && result.id === id);
+  } catch (_) { console.warn('Could not delete version from Supabase'); return false; }
 }
 
 async function saveVersion() {
-  const nameInput = document.getElementById('ver-name-input');
-  const name = (nameInput ? nameInput.value.trim() : '') ||
-    'Version ' + new Date().toLocaleString('en-GB', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
-  await _saveVersionWithName(name);
-  if (nameInput) nameInput.value = '';
+  const input = document.getElementById('ver-name-input');
+  const name = (input ? input.value.trim() : '') || 'Version ' + new Date().toLocaleString('en-GB',
+    { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const ver = await _saveVersionWithName(name);
+  if (!ver) { toastError('Version was not saved: local backup storage is full or unavailable'); return; }
+  if (input) input.value = '';
   renderVerList();
-  toast('Version saved: ' + name + ' ✓');
+  toast(_versionCloudConfirmed(ver) ? 'Version saved to cloud: ' + name + ' ✓' :
+    'Version saved on this device; cloud upload pending: ' + name);
 }
 
-// Lower-level helper used by both the manual Save Version button and the
-// automatic daily snapshot. Skips the toast / input clear.
-async function _saveVersionWithName(name){
-  const ver = {
-    id: genId('v'),
-    name,
-    ts: Date.now(),
-    data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })
-  };
-  const versions = loadVersions();
-  versions.unshift(ver);
-  if (versions.length > 50) versions.splice(50);
-  _cacheVersions(versions);
-  const cloudSaved = await sbSaveVersion(ver);
-  if (cloudSaved) await _pruneCloudVersions();
+async function _saveVersionWithName(name) {
+  const ver = { id: genId('v'), name, ts: Date.now(),
+    data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+      boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases }) };
+  const entry = _queueVersionUpload(ver);
+  if (!entry) return null;
+  _cacheVersions(_mergeVersionRecords(loadVersions(), [{ ...ver, _pendingUpload: true }]));
+  if (await _sendVersionUpload(entry, ver)) await _pruneCloudVersions();
   return ver;
 }
 
-// Keep the cloud `versions` table capped at the newest 50 rows. Only runs
-// after a successful save (never on a failure path - a save that didn't
-// reach the cloud must not trigger deletes there). Best-effort: any error
-// here is logged and swallowed so a pruning hiccup never blocks the save
-// the user actually asked for.
 async function _pruneCloudVersions() {
-  if (isLocalhostPreview()) return; // never write to prod from a local preview
+  if (isLocalhostPreview()) return;
   try {
-    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,row_version&order=updated_at.desc&offset=50&limit=1000', {
-      headers: SB_HDR
-    });
-    if (!r.ok) return; // don't throw - pruning failure shouldn't surface as a save error
+    const r = await fetch(SB_URL + '/rest/v1/versions?select=id,row_version&order=updated_at.desc&offset=50&limit=1000', { headers: SB_HDR });
+    if (!r.ok) return;
     const stale = await r.json();
     if (!Array.isArray(stale) || !stale.every(row => row && typeof row.id === 'string' &&
         Number.isSafeInteger(row.row_version) && row.row_version >= 1)) return;
-    for (const row of stale) {
-      if (!await sbDeleteVersion(row.id, row.row_version)) break;
-    }
-  } catch(e) {
-    console.warn('Could not prune old cloud versions:', e.message);
-  }
+    for (const row of stale) if (!await sbDeleteVersion(row.id, row.row_version)) break;
+  } catch (_) { console.warn('Could not prune old cloud versions'); }
 }
 
-// ════════ DAILY AUTO-VERSION SNAPSHOTS ════════
-// Once per calendar day, automatically saves a versioned snapshot named
-// "Auto · YYYY-MM-DD". Uses localStorage to de-dupe so multiple tabs or
-// reloads in the same day don't spam the versions list. Provides 30+
-// days of point-in-time rollback with zero user effort.
 const AUTO_VER_KEY = 'pokeinv_last_auto_version_date';
-async function maybeRunDailyAutoVersion(){
+async function maybeRunDailyAutoVersion() {
   try {
-    // Only run once we actually have data - empty-DB startup snapshots are
-    // noise and could clobber a real snapshot on a different device that
-    // synced first.
-    const hasData = (DB.singles||[]).length || (DB.slabs||[]).length || (DB.sales||[]).length;
-    if (!hasData) return;
-    const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD in UTC
-    const last  = localStorage.getItem(AUTO_VER_KEY);
-    if (last === today) return;
+    await _flushPendingVersionUploads();
+    if (!SYNCED_TABLES.some(table => (DB[_dbKey(table)] || []).length)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (localStorage.getItem(AUTO_VER_KEY) === today) return;
     const name = 'Auto · ' + today;
-    await _saveVersionWithName(name);
+    if (!await _saveVersionWithName(name)) return;
     localStorage.setItem(AUTO_VER_KEY, today);
-    // Quietly log it - no toast (the user didn't trigger this).
     if (typeof clLog === 'function') clLog('snapshot', 'versions', name, 'auto daily snapshot');
-  } catch(e) { console.warn('Auto-version failed:', e); }
+  } catch (_) { console.warn('Auto-version failed'); }
 }
-// Fire on load AND every 6 hours so a long-running tab still triggers.
 document.addEventListener('DOMContentLoaded', () => setTimeout(maybeRunDailyAutoVersion, 3000));
 setInterval(maybeRunDailyAutoVersion, 6 * 60 * 60 * 1000);
 
-// One-time compaction on boot: older installs stored up to 50 full-DB version
-// blobs (~18MB worth) in localStorage, which overflows the quota. Re-write the
-// cached versions through _cacheVersions so only the recent few keep their blob.
 function kjrCompactVersionCache() {
-  try {
-    const raw = localStorage.getItem(VER_KEY);
-    if (!raw) return;
-    const vers = JSON.parse(raw);
-    if (!Array.isArray(vers) || !vers.length) return;
-    const withBlobs = vers.filter(v => v && v.data).length;
-    if (withBlobs > VER_LS_KEEP_FULL) {
-      _cacheVersions(vers); // trims to VER_LS_KEEP_FULL full blobs, frees space
-      console.info('[storage] compacted ' + withBlobs + ' local version snapshots → ' + VER_LS_KEEP_FULL + ' full + metadata');
-    }
-  } catch(e) { /* non-fatal */ }
+  const versions = _readVersionCache();
+  if (versions.length) _cacheVersions(versions);
 }
 document.addEventListener('DOMContentLoaded', () => {
   const gate = document.getElementById('kjr-auth-gate');
   if (!gate || gate.tagName !== 'SECTION') kjrCompactVersionCache();
 });
 
+function _versionRestoreMissingRowsBlocked(currentState, nextState) {
+  return _stateReplacementRestoreBlocked(currentState, nextState, 'Version restore');
+}
+
 async function restoreVersion(id) {
   let versions = loadVersions();
   let ver = versions.find(v => v.id === id);
-  // Missing entirely, OR present but its heavy snapshot blob was trimmed from
-  // localStorage to save space - either way, fetch the full record from cloud.
   if (!ver || !ver.data) {
     versions = await sbFetchVersions();
     _cacheVersions(versions);
     ver = versions.find(v => v.id === id);
   }
   if (!ver) { toast('Version not found'); return; }
-  if (!ver.data) { toast('⚠ This version\'s snapshot is only in the cloud and it could not be reached. Try again when online.'); return; }
-  if (!await kjrConfirm('Restore "' + esc(ver.name) + '"? Current data will be overwritten (a backup version will be saved first).', {ok:'Restore'})) return;
+  if (!ver.data) { toast('This snapshot is only in the cloud and could not be reached. Try again when online.'); return; }
+  if (!await kjrConfirm('Restore "' + esc(ver.name) + '"? Current data will be overwritten (a backup version will be saved first).', { ok: 'Restore' })) return;
   let restored;
   try {
     restored = JSON.parse(ver.data);
-  } catch(e) {
-    toast('⚠ This version\'s snapshot is unreadable - restore cancelled');
-    return;
+    if (!restored || typeof restored !== 'object' || Array.isArray(restored)) throw new Error('invalid_snapshot');
+    for (const table of SYNCED_TABLES) {
+      const rows = restored[_dbKey(table)];
+      if (rows === undefined) continue;
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+          typeof row.id !== 'string' || !row.id || row.id.length > 256) ||
+          new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('invalid_snapshot_rows');
+    }
+  } catch (_) { toast('This version\'s snapshot is unreadable - restore cancelled'); return; }
+  const before = { singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
+    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases };
+  if (_kjrDealerStateReplacementBlocked(before, restored, 'restore')) {
+    toastError('Version restore stopped because Dealer-controlled rows must be changed from Dealer Desk'); return;
   }
-  const beforeRestoreState = {
-    singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs,
-    boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases,
-  };
-  if (_kjrDealerStateReplacementBlocked(beforeRestoreState, restored, 'restore')) {
-    toastError('Version restore stopped because Dealer-controlled rows must be changed from Dealer Desk');
-    return;
+  if (_stateReplacementMutationBlocked(before, restored, 'Version restore') || _versionRestoreMissingRowsBlocked(before, restored)) return;
+  const review = _captureStateReplacementReview(before);
+  _rebaseStateReplacementRows(before, restored);
+  if (!await _saveVersionWithName('Auto-backup before restore')) {
+    toastError('Version restore stopped because its safety backup could not be saved. No inventory was changed.'); return;
   }
-  // Auto-save current state before restoring
-  const backup = {
-    id: genId('v'),
-    name: 'Auto-backup before restore',
-    ts: Date.now(),
-    data: JSON.stringify({ singles: DB.singles, slabs: DB.slabs, sales: DB.sales, etbs: DB.etbs, boosterBoxes: DB.boosterBoxes, boosterPacks: DB.boosterPacks, ebayPurchases: DB.ebayPurchases })
-  };
-  versions.unshift(backup);
-  _cacheVersions(versions);
-  // Merge of wave 1 + wave 2: save the backup to the cloud (returns true on
-  // confirmed success) and prune the cloud versions list to the newest 50,
-  // AND capture id sets BEFORE applying the restore so any row present now
-  // but absent in the restored snapshot gets deleted from Supabase too -
-  // otherwise it re-merges back in on the next load and the restore doesn't
-  // stick (B3).
-  const backupCloudSaved = await sbSaveVersion(backup);
-  if (backupCloudSaved) await _pruneCloudVersions();
-  // Apply the restored snapshot. Restore ALL seven tables that the snapshot
-  // captures - previously only singles/slabs/sales were applied, so the other
-  // four tables stayed at their current state and the version restore was lying.
-  if (!await _prepareExplicitRowRestores(beforeRestoreState, restored, 'additions')) {
-    toastError('Version restore stopped because delete recovery state could not be saved safely');
-    return;
+  const canReplace = () => _stateReplacementReviewUnchanged(review, 'Version restore') &&
+    !_stateReplacementMutationBlocked(before, restored, 'Version restore') && !_versionRestoreMissingRowsBlocked(before, restored);
+  if (!canReplace()) return;
+  const targets = _stateReplacementDeleteTargets(before, restored);
+  if (!await _prepareReplacementSafety(restored, targets, { canReplace, apply: () => {
+    for (const table of SYNCED_TABLES) {
+      const key = _dbKey(table);
+      DB[key] = restored[key] || [];
+      DB[key].forEach(row => markDirty(key, row.id));
+    }
+    return saveData() === true;
+  } })) {
+    toastError('Version restore stopped because inventory changed or its recovery state could not be saved safely'); return;
   }
-  const deleteTargets = _stateReplacementDeleteTargets(beforeRestoreState, restored);
-  if (!await _preflightPendingDeletes(deleteTargets)) {
-    toastError('Version restore stopped because its cloud deletes could not be queued safely');
-    return;
-  }
-  DB.singles       = restored.singles       || [];
-  DB.slabs         = restored.slabs         || [];
-  DB.sales         = restored.sales         || [];
-  DB.etbs          = restored.etbs          || [];
-  DB.boosterBoxes  = restored.boosterBoxes  || [];
-  DB.boosterPacks  = restored.boosterPacks  || [];
-  DB.ebayPurchases = restored.ebayPurchases || [];
-  // Mark all dirty so restored state syncs to Supabase
-  DB.singles.forEach(i       => markDirty('singles',       i.id));
-  DB.slabs.forEach(i         => markDirty('slabs',         i.id));
-  DB.sales.forEach(i         => markDirty('sales',         i.id));
-  DB.etbs.forEach(i          => markDirty('etbs',          i.id));
-  DB.boosterBoxes.forEach(i  => markDirty('boosterBoxes',  i.id));
-  DB.boosterPacks.forEach(i  => markDirty('boosterPacks',  i.id));
-  DB.ebayPurchases.forEach(i => markDirty('ebayPurchases', i.id));
-  saveData();
-  // Delete from Supabase any id that existed before the restore but is gone
-  // afterwards - routed directly through sbDelete (its own retry queue),
-  // NOT through the dirty system, since a removed row has nothing to upload.
-  await _runPreflightedDeletes(deleteTargets);
+  await _runPreflightedDeletes(targets);
   renderSingles(); renderSlabs(); renderSales(); renderDashboard();
   if (typeof renderEtbs === 'function') renderEtbs();
   if (typeof renderBoosterBoxes === 'function') renderBoosterBoxes();
   if (typeof renderBoosterPacks === 'function') renderBoosterPacks();
   if (typeof renderEbayPurchases === 'function') renderEbayPurchases();
   renderVerList();
-  toast('Restored: ' + ver.name);
+  toast('Restored on this device; cloud sync pending: ' + ver.name);
 }
 
 async function deleteVersion(id) {
-  const all = loadVersions();
-  const target = all.find(v => v.id === id);
+  let target = loadVersions().find(v => v.id === id);
   const label = target ? ('"' + esc(target.name || 'Untitled') + '"') : 'this version';
-  if (!await kjrConfirm('Permanently delete ' + label + '?\nThis cannot be undone.', {ok:'Delete', danger:true})) return;
-  if (!isLocalhostPreview() && !await sbDeleteVersion(id, target && target._serverVersion)) {
-    toastError('Version could not be deleted from the cloud. It was kept locally.');
-    return;
+  if (!await kjrConfirm('Permanently delete ' + label + '?\nThis cannot be undone.', { ok: 'Delete', danger: true })) return;
+  // Refresh after confirmation: another tab may have uploaded or deleted it
+  // while this dialog was open. Never turn an old pending flag into a create.
+  target = loadVersions().find(v => v.id === id);
+  const pending = _pendingVersionUploads();
+  if (!pending) { toastError('Version recovery storage needs repair'); return; }
+  const entry = pending.find(item => item.version.id === id);
+  if (entry && !isLocalhostPreview()) {
+    if (!await _sendVersionUpload(entry)) {
+      toastError('Version upload is still pending. Connect and retry before deleting its only backup copy.'); return;
+    }
+    target = loadVersions().find(v => v.id === id);
   }
-  const versions = all.filter(v => v.id !== id);
-  _cacheVersions(versions);
+  if (!target && !entry) { renderVerList(); toast('Version already removed'); return; }
+  if (!isLocalhostPreview() && !await sbDeleteVersion(id, target && target._serverVersion)) {
+    toastError('Version could not be deleted from the cloud. It was kept locally.'); return;
+  }
+  try {
+    // Compare before clearing: never remove a replacement upload entry.
+    const current = localStorage.getItem(VER_PENDING_PREFIX + id);
+    if (current && (!entry || current !== JSON.stringify(entry))) {
+      toastError('Version changed while deleting. Refresh history before retrying.'); return;
+    }
+    localStorage.removeItem(VER_PENDING_PREFIX + id);
+  } catch (_) { toastError('Version cleanup could not be saved on this device'); return; }
+  _cacheVersions(loadVersions().filter(v => v.id !== id), undefined, id);
   renderVerList();
   toast('Version deleted');
 }
@@ -9015,44 +9389,27 @@ async function deleteVersion(id) {
 async function renderVerList() {
   const el = document.getElementById('ver-list');
   if (!el) return;
-  // Show cached immediately, then refresh from Supabase
   const cached = loadVersions();
   _renderVerItems(el, cached);
-  // Async refresh
+  await _flushPendingVersionUploads();
   const fresh = await sbFetchVersions();
-  if (fresh.length > 0 || cached.length === 0) {
-    _cacheVersions(fresh);
-    _renderVerItems(el, fresh);
-  }
+  if (fresh.length > 0 || cached.length === 0) { _cacheVersions(fresh); _renderVerItems(el, fresh); }
 }
 
 function _renderVerItems(el, versions) {
-  if (versions.length === 0) {
+  if (!versions.length) {
     el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">No saved versions yet.<br>Save a version before making big changes.</div>';
     return;
   }
   el.innerHTML = versions.map(v => {
-    const d = new Date(v.ts || v._ts || 0);
-    const dateStr = d.toLocaleString('en-GB', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const dateStr = new Date(v.ts || v._ts || 0).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     let counts = '';
-    try {
-      const parsed = JSON.parse(v.data);
-      counts = parsed.singles.length + ' singles · ' + parsed.slabs.length + ' slabs · ' + parsed.sales.length + ' sales';
-    } catch(e) {
-      // Cosmetic: the version snapshot itself (v.data) is untouched by this,
-      // only the "12 singles · 3 slabs..." summary line fails to render.
-      console.warn('[versions] could not parse snapshot for count display:', v.id, e);
-    }
-    return '<div class="ver-item">' +
-      '<div class="ver-item-info">' +
-        '<div class="ver-item-name">' + esc(v.name||'') + '</div>' +
-        '<div class="ver-item-meta">' + dateStr + (counts ? ' · ' + counts : '') + '</div>' +
-      '</div>' +
-      '<div class="ver-item-actions">' +
-        '<button class="btn btn-sm" onclick="restoreVersion(\'' + esc(v.id) + '\')">↩ Restore</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteVersion(\'' + esc(v.id) + '\')">✕</button>' +
-      '</div>' +
-    '</div>';
+    try { const data = JSON.parse(v.data); counts = (data.singles || []).length + ' singles · ' + (data.slabs || []).length + ' slabs · ' + (data.sales || []).length + ' sales'; } catch (_) {}
+    return '<div class="ver-item"><div class="ver-item-info"><div class="ver-item-name">' + esc(v.name || '') + '</div>' +
+      '<div class="ver-item-meta">' + dateStr + (counts ? ' · ' + counts : '') +
+      (v._pendingUpload ? ' · Cloud upload pending' : !_versionCloudConfirmed(v) ? ' · Cloud copy unverified' : '') + '</div></div>' +
+      '<div class="ver-item-actions"><button class="btn btn-sm" onclick="restoreVersion(' + kjrInlineArg(v.id) + ')">↩ Restore</button>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteVersion(' + kjrInlineArg(v.id) + ')">✕</button></div></div>';
   }).join('');
 }
 
@@ -9141,6 +9498,8 @@ function bestMarketFor(item) {
   return '';
 }
 
+let _quickSellReview = null;
+
 async function markStatus(table, id, status) {
   if (status === 'Sold') {
     // Open quick-sell modal instead of directly marking. Lock onto the
@@ -9148,8 +9507,11 @@ async function markStatus(table, id, status) {
     const arr = DB[table];
     const clicked = arr.find(i => i.id === id);
     if (!clicked) return;
+    _quickSellReview = null;
+    if (!_kjrSaleAvailableQty(table, clicked)) { toast('That item is no longer available'); return; }
     const item = pickHigherCostDuplicate(table, clicked);
-    if (kjrDealerWriteGuard(table, item, 'sell')) return;
+    if (kjrDealerWriteGuard(table, item, 'sell') || _kjrSalePendingChange(table, item)) return;
+    _quickSellReview = { table, id: item.id, snapshot: _kjrSaleRowReview(table, item) };
     const usingDup = item.id !== clicked.id;
     document.getElementById('qs-table').value = table;
     document.getElementById('qs-id').value = item.id;
@@ -9270,11 +9632,17 @@ function confirmQuickSell() {
   if (invalidMoney) { toast(invalidMoney.reason); return; }
   const [total, cost, ship, fees] = money.map(result => result.value);
 
-  const arr  = DB[table];
+  const arr  = DB[table] || [];
   const item = arr.find(i => i.id === id);
-  if (!item) return;
+  if (item && (kjrDealerWriteGuard(table, item, 'sell') || _kjrSalePendingChange(table, item))) return;
+  if (!_quickSellReview || _quickSellReview.table !== table || _quickSellReview.id !== id ||
+      !_kjrSaleAvailableQty(table, item) || _quickSellReview.snapshot !== _kjrSaleRowReview(table, item)) {
+    _quickSellReview = null;
+    toast('This item changed. Close and reopen Quick Sell to review it.');
+    return;
+  }
   const nextItem = JSON.parse(JSON.stringify(item));
-  const curQty = parseInt(item.qty) || 1;
+  const curQty = _kjrSaleAvailableQty(table, item);
   let remainingQty = null;
   if (curQty > 1) {
     nextItem.qty = curQty - 1;
@@ -9321,6 +9689,7 @@ function confirmQuickSell() {
     toastError('Sale stopped because its sync transaction could not be saved safely');
     return;
   }
+  _quickSellReview = null;
   Object.assign(item, nextItem);
   DB.sales.unshift(saleRecord);
   markDirty(table, id);           // item status changed to Sold
@@ -10657,6 +11026,15 @@ function esc(s) {
   if (s === null || s === undefined) return '';
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+// A string argument inside a quoted HTML event attribute has two parsing
+// contexts. Serialize the JavaScript string first, then escape its HTML.
+// esc(value) alone is unsafe here because the browser decodes entities before
+// compiling the handler. Use the returned expression without extra quotes.
+function kjrInlineArg(value) {
+  const literal = JSON.stringify(String(value ?? ''))
+    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  return esc(literal);
+}
 function pnlHtml(cost, market) {
   const c = parseFloat(cost), m = parseFloat(market);
   if (isNaN(c) || isNaN(m) || !c || !m) return '<span style="color:var(--text3)">-</span>';
@@ -11022,10 +11400,10 @@ function renderSingles() {
     const typeBadge = i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>';
     const chk = selectedIds.singles.has(i.id);
     const soldBtn = isSold
-      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'singles\',\'' + i.id + '\',\'Available\')" title="Mark Available">↩ Avail</button>'
-      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'singles\',\'' + i.id + '\',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
+      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'singles\',' + kjrInlineArg(i.id) + ',\'Available\')" title="Mark Available">↩ Avail</button>'
+      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'singles\',' + kjrInlineArg(i.id) + ',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
     const listBtn = !isSold
-      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'singles\',\'' + i.id + '\')" title="Generate listing">📋</button>'
+      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'singles\',' + kjrInlineArg(i.id) + ')" title="Generate listing">📋</button>'
       : '';
     const alertIcon = i.priceAlert && parseFloat(i.marketPrice) >= parseFloat(i.priceAlert)
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
@@ -11036,11 +11414,11 @@ function renderSingles() {
     const safeId = esc(i.id);
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('singles', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
-      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',\'' + safeId + '\',this.checked)"></td>' +
+      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button></td>' +
-      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
       '<td data-col-key="datePurchased" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.datePurchased)||'-') + '</td>' +
@@ -11049,8 +11427,8 @@ function renderSingles() {
         alertIcon + urlIcon +
         soldBtn +
         listBtn +
-        '<button class="btn btn-ghost btn-sm" onclick="openEditSingle(\'' + safeId + '\')" title="Edit">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(\'' + safeId + '\',\'singles\')" title="Delete">✕</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="openEditSingle(' + kjrInlineArg(i.id) + ')" title="Edit">✎</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'singles\')" title="Delete">✕</button>' +
       '</div></td>' +
     '</tr>';
   }
@@ -11673,7 +12051,7 @@ function renderTrash(forcePull) {
       return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
-            <span style="background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 6px;font-size:10px;color:var(--text2);font-weight:500">${tableBadge}</span>
+            <span style="background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 6px;font-size:10px;color:var(--text2);font-weight:500">${esc(tableBadge)}</span>
             <span style="font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
           </div>
           <div style="font-size:11px;color:var(--text3)">${esc(sub)}</div>
@@ -11683,8 +12061,8 @@ function renderTrash(forcePull) {
           <div style="opacity:0.7">${daysLeft}d left</div>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash('${esc(e.id)}')">↻ Restore</button>
-          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { if(await hardDeleteTrashEntry('${esc(e.id)}')) { toast('Permanently deleted'); renderTrash(false); } else toastError('Trash entry could not be deleted. Try again.'); } })()">✕ Delete forever</button>
+          <button class="btn btn-sm btn-primary" style="font-size:11px" onclick="restoreFromTrash(${kjrInlineArg(e.id)})">↻ Restore</button>
+          <button class="btn btn-sm" style="font-size:11px;color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Permanently delete this item? Cannot be undone.', {ok:'Delete forever', danger:true})) { if(await hardDeleteTrashEntry(${kjrInlineArg(e.id)})) { toast('Permanently deleted'); renderTrash(false); } else toastError('Trash entry could not be deleted. Try again.'); } })()">✕ Delete forever</button>
         </div>
       </div>`;
     }).join('');
@@ -12355,10 +12733,10 @@ function renderSlabs() {
       ? '<a href="' + esc(tagUrl) + '" target="_blank" style="text-decoration:none;color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:2px">' + certText + ' <span style="color:var(--text3);font-size:10px">↗</span></a>'
       : '<span style="color:var(--text2);font-size:12px">' + certText + '</span>';
     const soldBtn = isSold
-      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'slabs\',\'' + i.id + '\',\'Available\')" title="Mark Available">↩ Avail</button>'
-      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'slabs\',\'' + i.id + '\',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
+      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Available\')" title="Mark Available">↩ Avail</button>'
+      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
     const listBtn = !isSold
-      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'slabs\',\'' + i.id + '\')" title="Generate listing">📋</button>'
+      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'slabs\',' + kjrInlineArg(i.id) + ')" title="Generate listing">📋</button>'
       : '';
     const alertIcon = i.priceAlert && parseFloat(i.marketPrice) >= parseFloat(i.priceAlert)
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
@@ -12379,22 +12757,22 @@ function renderSlabs() {
     const safeId = esc(i.id);
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('slabs', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
-      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'slabs\',\'' + safeId + '\',this.checked)"></td>' +
+      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'slabs\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:200px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></td>' +
       '<td data-col-key="_grade" style="white-space:nowrap">' + badge + '</td>' +
       '<td data-col-key="certNo" style="white-space:nowrap">' + certHtml + '</td>' +
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '-') + '</td>' +
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'-') + '</td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
-      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',\'' + safeId + '\',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
         soldBtn +
         listBtn +
-        '<button class="btn btn-ghost btn-sm" onclick="openEditSlab(\'' + safeId + '\')" title="Edit">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(\'' + safeId + '\',\'slabs\')" title="Delete">✕</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="openEditSlab(' + kjrInlineArg(i.id) + ')" title="Edit">✎</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'slabs\')" title="Delete">✕</button>' +
       '</div></td>' +
     '</tr>';
   }
@@ -12630,7 +13008,6 @@ function _renderTagRankList() {
     const r = _resolveGrader(i.grader, i.grade, i.notes);
     const pris = r.pristine ? ' <span style="color:#f0b429">★ Pristine</span>' : '';
     const url = 'https://my.taggrading.com/card/' + encodeURIComponent(i.certNo);
-    const safeId = kjrEscape(i.id);
     const lang = i.language ? ' · ' + kjrEscape(i.language) : '';
     // Display the rank as an ordinal (1 → 1st) so a value typed as a bare number
     // and a value stored as "1st" look identical. A filled box gets an accent
@@ -12646,7 +13023,7 @@ function _renderTagRankList() {
       // Text input (not number) so the stored ordinal "1st" actually renders;
       // a number input shows blank for "1st", which made done cards look empty.
       '<input type="text" inputmode="numeric" placeholder="rank" value="' + kjrEscape(ord) + '" ' +
-        'onchange="_setTagRank(\'' + safeId + '\', this)" ' +
+        'onchange="_setTagRank(' + kjrInlineArg(i.id) + ', this)" ' +
         'style="width:74px;text-align:center;padding:6px 8px;background:var(--bg3);border:1px solid ' + rankBorder + ';border-radius:6px;color:var(--text);font-size:13px">' +
     '</div>';
   }).join('');
@@ -12817,17 +13194,15 @@ function renderSales() {
       ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--bg3);border:1px solid var(--border2);font-size:9px;color:var(--text3);font-weight:600;vertical-align:middle;flex-shrink:0" title="' + splitItems.length + ' items">' + splitItems.length + '</span>'
       : '';
     const safeId = esc(i.id);
-    const safeInvId = esc(i.inventoryId || '');
-    const safeInvTbl = esc(i.inventoryTable || '');
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('sales', i.id);
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isRecent ? ' recent-add' : '') + '">' +
-      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.product||'row') + '" onchange="toggleRowSelect(\'sales\',\'' + safeId + '\',this.checked)"></td>' +
+      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.product||'row') + '" onchange="toggleRowSelect(\'sales\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
       '<td data-col-key="dateSold" style="font-size:12px;white-space:nowrap;color:var(--text2)">' + esc(toDateMmmYyyy(i.dateSold)||'-').replace(/ (\d{4})$/, '<span class="sales-yr"> $1</span>') + '</td>' +
       '<td data-col-key="product" style="max-width:220px;font-weight:500;text-align:left">' +
         '<div style="display:flex;align-items:center;gap:5px">' +
           '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative" class="sale-product-cell">' +
             '<span title="' + esc(tooltipLines) + '" style="cursor:default">' + esc(isMulti ? product.split(' | ')[0] + '…' : product) + '</span>' +
-            (i.inventoryId ? ' <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 5px;vertical-align:middle" onclick="viewSourceItem(\'' + safeInvId + '\',\'' + safeInvTbl + '\')" title="View original inventory item">↗</button>' : '') +
+            (i.inventoryId ? ' <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 5px;vertical-align:middle" onclick="viewSourceItem(' + kjrInlineArg(i.inventoryId || '') + ',' + kjrInlineArg(i.inventoryTable || '') + ')" title="View original inventory item">↗</button>' : '') +
           '</div>' +
           multiDot +
         '</div>' +
@@ -12842,8 +13217,8 @@ function renderSales() {
       '<td data-col-key="profit" class="num ' + cls + '" style="font-weight:600">' + (financials.known ? fmtSigned(financials.profit) : 'Unknown') + '</td>' +
       '<td data-col-key="margin" class="num ' + cls + '">' + (financials.known ? esc(i.margin||'-') : 'Unknown') + '</td>' +
       '<td data-col-key="actions" style="white-space:nowrap;text-align:center">' +
-        '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openEditSale(\'' + safeId + '\')" title="Edit sale">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:11px" onclick="deleteItem(\'' + safeId + '\',\'sales\')" title="Delete sale">✕</button>' +
+        '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openEditSale(' + kjrInlineArg(i.id) + ')" title="Edit sale">✎</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:11px" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'sales\')" title="Delete sale">✕</button>' +
       '</td>' +
     '</tr>';
   }).join('');
@@ -17636,16 +18011,128 @@ async function callAI(prompt, webSearch) {
 }
 
 // =========== IMPORT ===========
+// Public fields shared by CSV export and import. Sync, Dealer and listing
+// workflow metadata are deliberately absent from this interchange format.
+const KJR_TABULAR_FIELDS = {
+  singles: ['id','name','set','language','type','condition','qty','listPrice','costPrice','marketPrice','status','datePurchased','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'],
+  slabs: ['id','name','grader','grade','certNo','rank','listPrice','costPrice','marketPrice','datePurchased','dateListed','status','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'],
+  sales: ['id','dateSold','product','buyer','costPrice','totalCollected','shippingCost','fees','profit','margin','inventoryId','inventoryTable','channel','dateAcquired','daysHeld','notes'],
+  etbs: ['id','date','product','status','totalPrice','marketPrice','condition','notes'],
+  boosterBoxes: ['id','date','product','status','unitPrice','qty','totalPrice','marketPrice','notes'],
+  boosterPacks: ['id','date','product','status','unitPrice','qty','totalPrice','marketPrice','notes'],
+  ebayPurchases: ['id','date','status','tracking','declared','product','priceUsd','freightSgd','totalSgd','totalSgdManual','targetTable','receivedAt','notes'],
+};
+function kjrTabularHeader(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function kjrEncodeDelimited(rows, delimiter = ',') {
+  return rows.map(row => row.map(value => {
+    const text = String(value == null ? '' : value);
+    return text.includes(delimiter) || /["\r\n\t]/.test(text) || text.trim() !== text
+      ? '"' + text.replace(/"/g, '""') + '"' : text;
+  }).join(delimiter)).join('\r\n');
+}
+function kjrParseDelimitedTable(raw) {
+  const text = String(raw || '').replace(/^\uFEFF/, '');
+  let quoted = false, tabs = 0, commas = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (quoted && text[i + 1] === '"') { i++; continue; }
+      quoted = !quoted;
+    } else if (!quoted) {
+      if (ch === '\r' || ch === '\n') break;
+      if (ch === '\t') tabs++;
+      if (ch === ',') commas++;
+    }
+  }
+  const delimiter = tabs ? '\t' : commas ? ',' : '\t';
+  const records = [], rowNumbers = [];
+  let row = [], field = '', inQuotes = false, wasQuoted = false, closed = false;
+  let line = 1, rowLine = 1;
+  const finishField = () => {
+    row.push(wasQuoted ? field : field.trim());
+    field = ''; wasQuoted = false; closed = false;
+  };
+  const finishRow = () => {
+    finishField();
+    if (row.some(value => value.trim() !== '')) { records.push(row); rowNumbers.push(rowLine); }
+    row = [];
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; closed = true; }
+      } else {
+        field += ch;
+        if (ch === '\n' || (ch === '\r' && text[i + 1] !== '\n')) line++;
+      }
+      continue;
+    }
+    if (ch === delimiter) { finishField(); continue; }
+    if (ch === '\r' || ch === '\n') {
+      finishRow();
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      line++; rowLine = line;
+      continue;
+    }
+    if (closed) {
+      if (!/\s/.test(ch)) throw new Error('Unexpected text after a quoted field on row ' + rowLine);
+      continue;
+    }
+    if (ch === '"' && field.trim() === '') { field = ''; inQuotes = true; wasQuoted = true; }
+    else field += ch;
+  }
+  if (inQuotes) throw new Error('Unclosed quoted field on row ' + rowLine);
+  finishRow();
+  if (records.length < 2) return null;
+  const tooWide = records.findIndex((record, index) => index > 0 && record.length > records[0].length);
+  if (tooWide !== -1) throw new Error('Too many columns on row ' + rowNumbers[tooWide] + '. Quote values containing separators.');
+  return { headers: records[0].map(kjrTabularHeader), rows: records.slice(1), rowNumbers: rowNumbers.slice(1) };
+}
+function kjrImportRowIdentities(parsed, mode, existingRows, prefix) {
+  const idColumns = parsed.headers.reduce((out, header, index) => header === 'id' ? out.concat(index) : out, []);
+  if (idColumns.length > 1) throw new Error('Duplicate ID columns');
+  const used = new Set(mode === 'replace' ? [] : existingRows.map(row => row.id));
+  return parsed.rows.map((values, index) => {
+    const supplied = idColumns.length ? String(values[idColumns[0]] || '').trim() : '';
+    const id = mode === 'replace' && supplied ? supplied : genId(prefix);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(id)) {
+      throw new Error('Invalid ID on row ' + parsed.rowNumbers[index] + '. Use Append to create a new copy.');
+    }
+    if (used.has(id)) throw new Error('Duplicate ID on row ' + parsed.rowNumbers[index]);
+    used.add(id);
+    const identity = { id };
+    const current = mode === 'replace' && existingRows.find(row => row.id === id);
+    if (current) {
+      for (const key of ['_serverVersion', '_updatedAt', '_restoreToken']) {
+        if (current[key] !== undefined) identity[key] = current[key];
+      }
+    }
+    return identity;
+  });
+}
+function kjrImportReplacementAllowed(review, dbKey, newItems) {
+  const next = { ...DB, [dbKey]: newItems };
+  return _stateReplacementReviewUnchanged(review, 'Replace import') &&
+    !_stateReplacementMutationBlocked(DB, next, 'Replace import') &&
+    !_stateReplacementRestoreBlocked(DB, next, 'Replace import');
+}
 async function importData() {
   const raw = document.getElementById('import-data').value.trim();
   if (!raw) { toast('No data to import'); return; }
   const type = document.getElementById('import-type').value;
   const mode = document.getElementById('import-mode').value;
-  const lines = raw.split('\n').filter(l => l.trim());
-  if (lines.length < 2) { toast('Need header row + at least 1 data row'); return; }
-
-  // Normalise header: lowercase, strip non-alphanumeric
-  const headers = lines[0].split('\t').map(h => h.trim().toLowerCase().replace(/[^a-z0-9]/g,''));
+  if (!['singles', 'slabs', 'sales'].includes(type)) { toastError('Unknown import type'); return; }
+  let parsed, identities;
+  try {
+    parsed = kjrParseDelimitedTable(raw);
+    if (parsed) identities = kjrImportRowIdentities(parsed, mode, DB[type] || [], type === 'sales' ? 'sale' : type === 'slabs' ? 'sl' : 's');
+  } catch (error) { toastError('Import stopped: ' + error.message); return; }
+  if (!parsed) { toast('Need header row + at least 1 data row'); return; }
+  const headers = parsed.headers;
 
   // Order matters - more specific patterns first to avoid false matches
   const HM = [
@@ -17686,10 +18173,12 @@ async function importData() {
   ];
 
   function mapH(h) {
+    const canonical = KJR_TABULAR_FIELDS[type].find(field => kjrTabularHeader(field) === h);
+    if (canonical) return canonical;
     for (const { field, match } of HM) {
-      if (match(h)) return field;
+      if (match(h)) return type === 'sales' && field === 'name' ? 'product' : field;
     }
-    return h; // keep raw header name as fallback
+    return '_ignore';
   }
 
   function cleanLang(v) {
@@ -17709,6 +18198,8 @@ async function importData() {
   }
 
   const fields = headers.map(mapH);
+  const mappedFields = fields.filter(field => field !== '_ignore');
+  if (new Set(mappedFields).size !== mappedFields.length) { toastError('Import stopped: multiple columns map to the same field'); return; }
   let count = 0, skipped = 0;
   let newItems = [];
   const skippedRows = []; // collect raw content of skipped rows
@@ -17730,10 +18221,10 @@ async function importData() {
       '<div class="skipped-rows open">' + skippedRowsHtml() + '</div></div>';
   };
 
-  for (let i = 1; i < lines.length; i++) {
-    const vals = lines[i].split('\t').map(v => v.trim().replace(/^"|"$/g,''));
-    const obj = { id: genId(type === 'sales' ? 'sale' : type === 'slabs' ? 'sl' : 's'), priceHistory: [] };
-    fields.forEach((f, idx) => { if (f !== '_ignore' && vals[idx] !== undefined && vals[idx] !== '') obj[f] = vals[idx]; });
+  for (let i = 0; i < parsed.rows.length; i++) {
+    const vals = parsed.rows[i], rowRaw = vals.join('\t'), lineNum = parsed.rowNumbers[i];
+    const obj = { ...identities[i], priceHistory: [] };
+    fields.forEach((f, idx) => { if (f !== '_ignore' && f !== 'id' && vals[idx] !== undefined && vals[idx] !== '') obj[f] = vals[idx]; });
     ['createdAt', 'createdAtSeq'].forEach(field => {
       if (obj[field] == null || obj[field] === '') return;
       const parsed = Number(obj[field]);
@@ -17756,8 +18247,9 @@ async function importData() {
       parseMoneyField('costPrice', 'Cost price', '');
       parseMoneyField('listPrice', 'List price', 0);
       parseMoneyField('marketPrice', 'Market price', '', true);
-      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
-      if (!obj.name) { skipRow(i + 1, lines[i], 'Name is required'); continue; }
+      if (obj.priceAlert != null) parseMoneyField('priceAlert', 'Price alert', '');
+      if (invalidReason) { skipRow(lineNum, rowRaw, invalidReason); continue; }
+      if (!obj.name) { skipRow(lineNum, rowRaw, 'Name is required'); continue; }
       obj.language  = cleanLang(obj.language);
       obj.qty = qty.value;
       // date fallback: accept datePurchased, dateListed, or any leftover 'date' key
@@ -17773,13 +18265,14 @@ async function importData() {
       parseMoneyField('costPrice', 'Cost price', '');
       parseMoneyField('listPrice', 'List price', 0);
       parseMoneyField('marketPrice', 'Market price', '', true);
+      if (obj.priceAlert != null) parseMoneyField('priceAlert', 'Price alert', '');
       if (obj.unitPrice != null && obj.unitPrice !== '') {
         const fallbackCost = kjrParseNonNegativeNumber(obj.unitPrice, { label: 'Unit price', allowBlank: true, blankValue: '' });
         if (!fallbackCost.ok) invalidReason = fallbackCost.reason;
         else if (obj.costPrice === '') obj.costPrice = fallbackCost.value;
       }
-      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
-      if (!obj.name) { skipRow(i + 1, lines[i], 'Name is required'); continue; }
+      if (invalidReason) { skipRow(lineNum, rowRaw, invalidReason); continue; }
+      if (!obj.name) { skipRow(lineNum, rowRaw, 'Name is required'); continue; }
       obj.type = 'slab';
       // Normalise grader to uppercase so cert links work (TAG, PSA, CGC etc.)
       if (obj.grader) obj.grader = obj.grader.toString().trim().toUpperCase();
@@ -17787,7 +18280,7 @@ async function importData() {
       delete obj.unitPrice;
       // date fallback: accept dateListed or datePurchased (generic 'Date' column)
       if (!obj.dateListed) obj.dateListed = obj.datePurchased || obj.date || '';
-      delete obj.datePurchased; delete obj.date;
+      delete obj.date;
       obj.status    = obj.status || 'Available';
       newItems.push(obj);
 
@@ -17797,8 +18290,14 @@ async function importData() {
       parseMoneyField('shippingCost', 'Shipping cost', 0);
       if (obj.fees != null && obj.fees !== '') parseMoneyField('fees', 'Fees', 0);
       if (obj.profit != null && obj.profit !== '') parseMoneyField('profit', 'Profit', 0, false, { allowNegative: true });
-      if (invalidReason) { skipRow(i + 1, lines[i], invalidReason); continue; }
-      if (!obj.product && !obj.name) { skipRow(i + 1, lines[i], 'Product is required'); continue; }
+      if (obj.daysHeld != null) {
+        parseMoneyField('daysHeld', 'Days held', '');
+        if (!Number.isSafeInteger(obj.daysHeld)) invalidReason = 'Days held must be a whole number at or above 0';
+      }
+      if (obj.inventoryId && !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(obj.inventoryId)) invalidReason = 'Inventory ID is invalid';
+      if (obj.inventoryTable && !['singles','slabs','etbs','boosterBoxes','boosterPacks'].includes(obj.inventoryTable)) invalidReason = 'Inventory table is invalid';
+      if (invalidReason) { skipRow(lineNum, rowRaw, invalidReason); continue; }
+      if (!obj.product && !obj.name) { skipRow(lineNum, rowRaw, 'Product is required'); continue; }
       if (obj.name && !obj.product) obj.product = obj.name;
       if (obj.profit == null || obj.profit === '') obj.profit = obj.totalCollected - obj.costPrice - obj.shippingCost - (obj.fees || 0);
       // Guard against NaN before computing margin - totalCollected or profit
@@ -17814,17 +18313,20 @@ async function importData() {
   let dupCount = 0;
   if (mode === 'append') {
     const existing = type === 'sales' ? DB.sales : DB[type];
+    const certs = new Set(existing.filter(item => item.certNo).map(item => String(item.certNo).trim().toLowerCase()));
     newItems = newItems.filter(item => {
       if (type === 'slabs' && item.certNo) {
         // Slabs: cert number is globally unique - skip exact cert matches only
-        const isDup = existing.some(e => e.certNo && e.certNo.trim().toLowerCase() === item.certNo.trim().toLowerCase());
-        if (isDup) { dupCount++; return false; }
+        const cert = String(item.certNo).trim().toLowerCase();
+        if (certs.has(cert)) { dupCount++; return false; }
+        certs.add(cert);
       }
       // Singles and sales: allow duplicates (same card can appear multiple times)
       return true;
     });
     // No confirm dialog - just proceed silently
   }
+  count = newItems.length;
 
   if (!newItems.length) {
     showOnlyRejectedRows('Nothing imported · ' + skippedRows.length + ' skipped');
@@ -17842,6 +18344,9 @@ async function importData() {
     toastError('Replace stopped because the selected table contains Dealer-controlled rows. Resolve them in Dealer Desk first.');
     return;
   }
+  const replacementReview = mode === 'replace' ? _captureStateReplacementReview(DB) : null;
+  const canReplace = () => kjrImportReplacementAllowed(replacementReview, importDbKey, newItems);
+  if (mode === 'replace' && !canReplace()) return;
 
   // ── Preview / confirm step (both modes) ──────────────────────
   // Show up to 10 parsed rows plus the total count. Nothing is written until
@@ -17868,6 +18373,7 @@ async function importData() {
     toast('Import cancelled');
     return;
   }
+  if (mode === 'replace' && !canReplace()) return;
 
   const _importBtn = document.getElementById('import-btn');
   const _importBtnLabel = _importBtn ? _importBtn.innerHTML : '';
@@ -17888,16 +18394,23 @@ async function importData() {
     // Preflight every restore/delete-state mutation before deleting anything
     // locally or in Supabase. If browser storage cannot preserve the recovery
     // state, the existing table stays byte-for-byte untouched.
-    if (!await _prepareReplacementSafety({ [replaceKey]: newItems }, oldRows)) {
+    if (!await _prepareReplacementSafety({ ...DB, [replaceKey]: newItems }, oldRows, {
+      canReplace,
+      apply: () => {
+        snapshotForUndo();
+        DB[replaceKey] = newItems;
+        newItems.forEach(item => markDirty(replaceKey, item.id));
+        return saveData() === true;
+      },
+    })) {
       toastError('Import stopped because its restore and delete recovery state could not be saved safely');
       return;
     }
-    snapshotForUndo();
     // Capture the old IDs so we can DELETE them from Supabase - otherwise
     // "Replace" leaves orphan rows in the cloud and on the next page load
     // those orphans merge back in, silently un-doing the replacement.
-    // Await all deletes before overwriting local state. If any fail, warn the
-    // user - orphaned cloud rows would otherwise merge back on next load.
+    // The local replacement and durable recovery markers were committed
+    // together. Await remote deletions and leave failures queued for retry.
     if (typeof sbDelete === 'function' && oldRows.length) {
       // sbDelete returns false on failure and auto-queues the ID for retry on
       // next sync, so orphans cannot linger in Supabase across sessions.
@@ -17917,15 +18430,15 @@ async function importData() {
         }
       }
     }
-    DB[replaceKey] = newItems;
   }
   else {
     snapshotForUndo();
     const arr = type === 'sales' ? DB.sales : DB[type];
     newItems.forEach(item => arr.push(item));
+    newItems.forEach(item => markDirty(type, item.id));
+    saveData();
   }
 
-  saveData();
   if (type === 'singles') renderSingles();
   if (type === 'slabs')   renderSlabs();
   if (type === 'sales')   renderSales();
@@ -17942,9 +18455,7 @@ async function importData() {
   }
   el.innerHTML = resultHtml + (dupCount > 0 ? ' · <span style="color:var(--text3)">' + dupCount + ' duplicates skipped</span>' : '');
   toast('Imported ' + count + ' records!');
-  // Mark imported items dirty; let the debounced flush push only those rows.
-  // (Previously this called saveAllToSupabase() which re-uploaded the entire DB.)
-  newItems.forEach(item => markDirty(type === 'sales' ? 'sales' : type, item.id));
+  // Imported rows were marked dirty with their durable local replacement.
   // For replace-mode we already wiped the table locally, but Supabase still has
   // the old rows - kick off a one-shot full sync so deletes propagate. Awaited
   // so a failed sync is surfaced (was fire-and-forget).
@@ -17956,7 +18467,7 @@ async function importData() {
       if (typeof toast === 'function') toast('⚠ Cloud sync failed - local data saved. Refresh to retry.');
     }
   } else {
-    _flushDirtyToSupabase();
+    await _flushDirtyToSupabase();
   }
   clLog('import', type, count + ' records imported' + (skipped ? ', ' + skipped + ' skipped' : ''));
   } finally {
@@ -18006,7 +18517,7 @@ async function importWithAI() {
   // markDirty / clLog / normalization / snake_case mapping / numeric cleaning
   // / Replace-mode cloud cleanup are all inherited from one code path.
   const headers = Object.keys(items.reduce((acc, it) => { Object.keys(it||{}).forEach(k => acc[k]=1); return acc; }, {}));
-  const tsv = [headers.join('\t'), ...items.map(it => headers.map(h => (it[h]==null?'':String(it[h])).replace(/[\t\n]/g,' ')).join('\t'))].join('\n');
+  const tsv = kjrEncodeDelimited([headers, ...items.map(it => headers.map(h => it[h]))], '\t');
   const ta = document.getElementById('import-data');
   const originalPaste = ta.value;
   ta.value = tsv;
@@ -18025,27 +18536,10 @@ async function importWithAI() {
 
 // =========== EXPORT ===========
 function exportCSV(type) {
-  let data, filename, fields;
-  if (type === 'singles') {
-    data = DB.singles; filename = 'singles.csv';
-    // Include datePurchased / priceAlert / ebayUrl / carousellUrl so a CSV
-    // round-trip preserves alerts and listing links. tcgdexId round-trips
-    // the resolved/overridden card id so a re-import skips the resolve step.
-    fields = ['id','name','set','language','type','condition','qty','listPrice','costPrice','marketPrice','status','datePurchased','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
-  } else if (type === 'slabs') {
-    data = DB.slabs; filename = 'slabs.csv';
-    fields = ['id','name','grader','grade','certNo','rank','listPrice','costPrice','marketPrice','dateListed','status','priceAlert','ebayUrl','carousellUrl','tcgdexId','notes'];
-  } else {
-    data = DB.sales; filename = 'sales.csv';
-    // Keep inventoryId/inventoryTable so the "↗ source" link survives an
-    // export → import round-trip.
-    fields = ['id','dateSold','product','buyer','costPrice','totalCollected','shippingCost','profit','margin','inventoryId','inventoryTable'];
-  }
-  const rows = [fields.join(',')];
-  // ?? not || - a genuine 0 (e.g. costPrice/shippingCost) or false is a real
-  // value and must round-trip, only null/undefined should export as empty.
-  data.forEach(item => rows.push(fields.map(f => JSON.stringify(item[f] ?? '')).join(',')));
-  dl(filename, rows.join('\n'), 'text/csv');
+  if (!['singles','slabs','sales'].includes(type)) return;
+  const fields = KJR_TABULAR_FIELDS[type];
+  const rows = [fields, ...DB[type].map(item => fields.map(field => item[field]))];
+  dl(type + '.csv', kjrEncodeDelimited(rows), 'text/csv');
 }
 
 function exportAllJSON() {
@@ -19210,20 +19704,20 @@ function _renderOneSavedChart(config) {
         <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
           <h3 style="font-size:14px;display:flex;align-items:center;gap:6px">
             ${config.pinned ? '<span title="Pinned - protected from delete" style="color:#f59e0b;font-size:13px">📌</span>' : ''}
-            ${config.title}
+            ${esc(config.title)}
           </h3>
           <div style="display:flex;gap:6px;align-items:center">
-            <button class="btn btn-sm" style="font-size:10px" onclick="togglePinChart('${config.id}')" title="${config.pinned ? 'Unpin (allow deletion)' : 'Pin (protect from delete)'}">${config.pinned ? '📌 Pinned' : '📍 Pin'}</button>
-            <button class="btn btn-sm" style="font-size:10px" onclick="_refreshSavedChart('${config.id}')">⟳ Refresh data</button>
-            ${config.pinned ? '' : `<button onclick="deleteSavedChart('${config.id}')" title="Delete chart" style="background:transparent;border:none;color:var(--text3);font-size:14px;line-height:1;padding:2px 6px;cursor:pointer;border-radius:4px;transition:color 0.15s,background 0.15s" onmouseover="this.style.color='var(--red)';this.style.background='rgba(239,68,68,0.08)'" onmouseout="this.style.color='var(--text3)';this.style.background='transparent'">×</button>`}
+            <button class="btn btn-sm" style="font-size:10px" onclick="togglePinChart(${kjrInlineArg(config.id)})" title="${config.pinned ? 'Unpin (allow deletion)' : 'Pin (protect from delete)'}">${config.pinned ? '📌 Pinned' : '📍 Pin'}</button>
+            <button class="btn btn-sm" style="font-size:10px" onclick="_refreshSavedChart(${kjrInlineArg(config.id)})">⟳ Refresh data</button>
+            ${config.pinned ? '' : `<button onclick="deleteSavedChart(${kjrInlineArg(config.id)})" title="Delete chart" style="background:transparent;border:none;color:var(--text3);font-size:14px;line-height:1;padding:2px 6px;cursor:pointer;border-radius:4px;transition:color 0.15s,background 0.15s" onmouseover="this.style.color='var(--red)';this.style.background='rgba(239,68,68,0.08)'" onmouseout="this.style.color='var(--text3)';this.style.background='transparent'">×</button>`}
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text3)">X: ${xLabels} &nbsp;·&nbsp; Y: ${yLabels}</div>
-        <div style="font-size:10px;color:var(--text3);opacity:0.7">${meta}</div>
+        <div style="font-size:11px;color:var(--text3)">X: ${esc(xLabels)} &nbsp;·&nbsp; Y: ${esc(yLabels)}</div>
+        <div style="font-size:10px;color:var(--text3);opacity:0.7">${esc(meta)}</div>
       </div>
       <div class="card-body" style="padding:12px 18px">
-        <div style="height:260px"><canvas id="sc-canvas-${config.id}"></canvas></div>
-        <div id="sc-summary-${config.id}" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:16px;flex-wrap:wrap"></div>
+        <div style="height:260px"><canvas id="sc-canvas-${esc(config.id)}"></canvas></div>
+        <div id="sc-summary-${esc(config.id)}" style="font-size:11px;color:var(--text3);margin-top:8px;display:flex;gap:16px;flex-wrap:wrap"></div>
       </div>
     </div>
     ${config.pinned

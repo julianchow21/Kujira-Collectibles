@@ -72,6 +72,7 @@ test('profit-money: calcQsProfit/calcSaleProfit - zero/empty fields do not throw
 test('profit-money: Quick Sale rejects negative and non-finite raw money before any mutation, while zero and optional blanks remain valid', async () => {
   const loaded = await loadApp({ seed: { singles: [{ id: 'money-quick', name: 'Money card', qty: 1,
     costPrice: 10, status: 'Available', datePurchased: '1 Jan 2025' }], sales: [] } });
+  await loaded.ctx.markStatus('singles', 'money-quick', 'Sold');
   const base = { 'qs-table': 'singles', 'qs-id': 'money-quick', 'qs-total': '25', 'qs-cost': '10',
     'qs-ship': '0', 'qs-fees': '0', 'qs-channel': 'Carousell', 'qs-date': '2026-09-05', 'qs-buyer': '' };
   const beforeDb = JSON.stringify(plain(loaded.grab('DB').DB));

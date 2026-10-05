@@ -148,6 +148,7 @@
             'freightsg','freightcost','handling','handlingfee','postage','postagesgd','shippingcost','freightprice'
         ] },
         { out:'totalSgd',    aliases:['totalsgd','totalpricesgd','totalsgd$','totalcost','totalcostsgd','allin','allinsgd','totalprice','grandtotal','grandtotalsgd'] },
+        { out:'totalSgdManual', aliases:['totalsgdmanual'], valueType:'boolean' },
         { out:'targetTable', aliases:['targettable','target','goesto'] },
         { out:'receivedAt',  aliases:['receivedat','received'] },
       ],
@@ -155,20 +156,15 @@
     },
   };
 
-  function normH(h){ return String(h||'').trim().toLowerCase().replace(/[^a-z0-9]/g,''); }
-  function kjrGenId(p){ return genId(p); }
-
   function parsePastedTable(raw){
-    const lines = raw.split('\n').filter(l => l.trim());
-    if (lines.length < 2) return null;
-    const headers = lines[0].split('\t').map(normH);
-    const rows = lines.slice(1).map(l => l.split('\t').map(v => v.trim().replace(/^"|"$/g,'')));
-    return { headers, rows };
+    return kjrParseDelimitedTable(raw);
   }
 
   function mapFields(schema, headers){
     // For each schema field, find the column index that matches any alias.
-    return schema.fields.map(f => {
+    const extra = KJR_TABULAR_FIELDS[schema.dbKey].filter(key => !schema.fields.some(field => field.out === key))
+      .map(key => ({ out: key, aliases: [kjrTabularHeader(key)] }));
+    return schema.fields.concat(extra).map(f => {
       const idx = headers.findIndex(h => f.aliases.includes(h));
       return { ...f, idx };
     });
@@ -177,13 +173,19 @@
   async function importNewType(type){
     const raw = document.getElementById('import-data').value.trim();
     if (!raw) { toast('No data to import'); return; }
-    const parsed = parsePastedTable(raw);
-    if (!parsed) { toast('Need header row + at least 1 data row'); return; }
     const schema = KJR_IMPORT_SCHEMAS[type];
     if (!schema) { toast('Unknown type: ' + type); return; }
-    const mapping = mapFields(schema, parsed.headers);
-
     const mode = document.getElementById('import-mode').value;
+    let parsed, identities;
+    try {
+      parsed = parsePastedTable(raw);
+      if (parsed) identities = kjrImportRowIdentities(parsed, mode, DB[schema.dbKey] || [], schema.idPrefix);
+    } catch (error) { toastError('Import stopped: ' + error.message); return; }
+    if (!parsed) { toast('Need header row + at least 1 data row'); return; }
+    const mapping = mapFields(schema, parsed.headers);
+    if (mapping.some(field => parsed.headers.filter(header => field.aliases.includes(header)).length > 1)) {
+      toastError('Import stopped: multiple columns map to the same field'); return;
+    }
     const newItems = [];
     const skipped = [];
 
@@ -199,10 +201,17 @@
       kjrEscape(row.raw) + '<span style="display:block;color:var(--red);margin-top:2px">' + kjrEscape(row.reason) + '</span></div>'
     ).join('');
     parsed.rows.forEach((vals, i) => {
-      const obj = { id: kjrGenId(schema.idPrefix), ...schema.defaults };
+      const obj = { ...identities[i], ...schema.defaults };
       let invalidReason = '';
       mapping.forEach(m => {
-        if (m.idx >= 0 && vals[m.idx] !== undefined && vals[m.idx] !== '') {
+        if (m.out !== 'id' && m.idx >= 0 && vals[m.idx] !== undefined && vals[m.idx] !== '') {
+          if (m.valueType === 'boolean') {
+            const value = String(vals[m.idx]).trim().toLowerCase();
+            if (value === '') return; // Older CSVs may omit or leave this optional flag blank.
+            if (value === 'true' || value === 'false') obj[m.out] = value === 'true';
+            else invalidReason = invalidReason || 'Manual SGD total must be true or false';
+            return;
+          }
           if (!NUMERIC.has(m.out)) {
             obj[m.out] = vals[m.idx];
             return;
@@ -246,23 +255,34 @@
       toastError('Replace stopped because the selected table contains Dealer-controlled rows. Resolve them in Dealer Desk first.');
       return;
     }
+    const replacementReview = mode === 'replace' ? _captureStateReplacementReview(DB) : null;
+    const canReplace = () => kjrImportReplacementAllowed(replacementReview, schema.dbKey, newItems);
+    if (mode === 'replace' && !canReplace()) return;
     newItems.forEach(item => kjrStampCreatedMetadata(item, schema.dbKey));
     if (mode === 'replace') {
       if (arr.length && !await kjrConfirm('Replace all ' + arr.length + ' existing ' + esc(type) + ' rows with ' + newItems.length + ' imported? Use Undo (Ctrl+Z) if you change your mind.\n\nCloud-stored rows that no longer exist locally will also be deleted from Supabase.', {ok:'Replace', danger:true})) {
         toast('Import cancelled');
         return;
       }
+      if (!canReplace()) return;
       const sbTable = (typeof _tblName === 'function') ? _tblName(schema.dbKey) : schema.dbKey;
       const replacementIds = new Set(newItems.map(row => row.id));
       const oldOnlyRows = arr
         .filter(row => !replacementIds.has(row.id))
         .map(row => ({ table: sbTable, id: row.id, restoreToken: row._restoreToken || '' }));
       if (typeof _prepareReplacementSafety !== 'function' ||
-          !await _prepareReplacementSafety({ [schema.dbKey]: newItems }, oldOnlyRows)) {
+          !await _prepareReplacementSafety({ ...DB, [schema.dbKey]: newItems }, oldOnlyRows, {
+            canReplace,
+            apply: () => {
+              snapshotForUndo();
+              DB[schema.dbKey] = newItems;
+              newItems.forEach(item => markDirty(schema.dbKey, item.id));
+              return saveData() === true;
+            },
+          })) {
         toastError('Import stopped because its restore and delete recovery state could not be saved safely');
         return;
       }
-      snapshotForUndo && snapshotForUndo();
       // Delete the old IDs in Supabase too - otherwise the cloud keeps the
       // orphans and they merge back in on next load. Awaited (not
       // fire-and-forget) so a failed delete cannot silently resurrect: sbDelete
@@ -289,13 +309,12 @@
           }
         }
       }
-      DB[schema.dbKey] = newItems;
     } else {
       snapshotForUndo && snapshotForUndo();
       newItems.forEach(it => arr.push(it));
+      newItems.forEach(it => markDirty(schema.dbKey, it.id));
+      saveData();
     }
-    newItems.forEach(it => markDirty(schema.dbKey, it.id));
-    saveData();
 
     // Re-render the relevant tab. (Previously booster_packs was missing here,
     // so a pack import succeeded silently but the table wasn't refreshed.)
@@ -326,7 +345,7 @@
         if (typeof toast === 'function') toast('⚠ Cloud sync failed - local data saved. Refresh to retry.');
       }
     } else {
-      _flushDirtyToSupabase();
+      await _flushDirtyToSupabase();
     }
     clLog && clLog('import', type, newItems.length + ' records imported via paste');
   }
@@ -814,17 +833,15 @@ async function kjrDeleteRow(dbKey, id){
 // RFC-style quoting: a field is only wrapped in quotes when it contains a
 // comma, quote or newline, with internal quotes doubled.
 function _kjrCsvField(v){
-  const s = String(v == null ? '' : v);
-  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  return kjrEncodeDelimited([[v]]);
 }
 function kjrExportCsv(dbKey){
   const rows = DB[dbKey] || [];
   if (!rows.length) { toast && toast('Nothing to export'); return; }
-  const cols = rows.reduce((set, r) => { Object.keys(r).forEach(k => k !== 'id' && set.add(k)); return set; }, new Set());
-  const colList = [...cols];
-  const lines = [colList.map(_kjrCsvField).join(',')];
-  rows.forEach(r => lines.push(colList.map(c => _kjrCsvField(r[c])).join(',')));
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const colList = KJR_TABULAR_FIELDS[dbKey];
+  if (!colList) { toast('Unknown export type'); return; }
+  const data = kjrEncodeDelimited([colList, ...rows.map(row => colList.map(key => row[key]))]);
+  const blob = new Blob([data], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = dbKey + '_' + new Date().toISOString().slice(0,10) + '.csv';
@@ -953,13 +970,13 @@ function renderEtbs(){
     // Inline-editable market price. Blur or Enter writes through updateField,
     // which routes through markDirty + price-history + cloud sync. Same UX as
     // the Singles/Slabs tabs.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',\''+kjrEscape(r.id)+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',\''+kjrEscape(r.id)+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="condition">'+kjrEscape(r.condition||'')+'</td>' +
     '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEtbModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'etbs\',\''+kjrEscape(r.id)+'\')">×</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEtbModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'etbs\',' + kjrInlineArg(r.id) + ')">×</button>' +
     '</span></td>' +
     '</tr>';
 
@@ -1055,13 +1072,13 @@ function renderBoosterBoxes(){
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
     // Inline market + carousell price - same UX as Singles/Slabs/ETBs.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',\''+kjrEscape(r.id)+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',\''+kjrEscape(r.id)+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBbModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterBoxes\',\''+kjrEscape(r.id)+'\')">×</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBbModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterBoxes\',' + kjrInlineArg(r.id) + ')">×</button>' +
     '</span></td>' +
     '</tr>';
   let body = active.map(r => rowHtml(r, false)).join('');
@@ -1168,6 +1185,7 @@ function kjrEbayBackfillFreight(){
 function kjrEbayBackfillTotals(){
   let changed = 0;
   (DB.ebayPurchases || []).forEach(r => {
+    if (r.totalSgdManual) return;
     if ((r.totalSgd === '' || r.totalSgd == null || kjrNum(r.totalSgd) === 0) && (kjrNum(r.priceUsd) > 0 || kjrNum(r.freightSgd) > 0)) {
       const calc = kjrEbayComputeSgd(r.priceUsd, r.freightSgd, '');
       r.totalSgd = calc.computed;
@@ -1484,7 +1502,7 @@ function renderEbayPurchases(){
           const cls = i < curIdx ? 'eb-tl-done' : (i === curIdx ? 'eb-tl-now' : 'eb-tl-todo');
           const conn = i > 0 ? '<span class="eb-tl-conn ' + (i <= curIdx ? 'eb-tl-conn-done' : '') + '"></span>' : '';
           return conn +
-            '<button class="eb-tl-dot ' + cls + '" onclick="kjrEbaySetStatus(\''+kjrEscape(r.id)+'\',\''+step.replace(/'/g,"\\'")+'\')" title="' + step + '">' +
+            '<button class="eb-tl-dot ' + cls + '" onclick="kjrEbaySetStatus(' + kjrInlineArg(r.id) + ',\''+step.replace(/'/g,"\\'")+'\')" title="' + step + '">' +
               (i === curIdx ? '●' : (i < curIdx ? '✓' : '')) +
             '</button>';
         }).join('') +
@@ -1519,31 +1537,31 @@ function renderEbayPurchases(){
     // Declared on Buyandship cell - clickable to cycle Yes → No → N/A → Yes.
     const declVal = (r.declared || '').trim();
     const declCol = declVal === 'No' ? 'var(--amber)' : (declVal === 'Yes' ? 'var(--text2)' : 'var(--text3)');
-    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + '"><button type="button" class="eb-declared-button" title="Toggle declared status" onclick="kjrToggleDeclared(\'' + kjrEscape(r.id) + '\')">' + kjrEscape(declVal || '-') + '</button></td>';
+    const declaredCell = '<td data-col-key="declared" style="text-align:center;font-size:11px;color:' + declCol + '"><button type="button" class="eb-declared-button" title="Toggle declared status" onclick="kjrToggleDeclared(' + kjrInlineArg(r.id) + ')">' + kjrEscape(declVal || '-') + '</button></td>';
 
     const isSel = _kjrEbaySel.has(r.id);
     return '<tr data-id="' + kjrEscape(r.id) + '"' + (sold ? ' class="sold-row"' : '') + (isSel ? ' style="background:var(--accent-soft)"' : '') + '>' +
-      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (isSel ? 'checked' : '') + ' onchange="kjrEbayToggleRow(\''+kjrEscape(r.id)+'\',this.checked)"></td>' +
+      '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (isSel ? 'checked' : '') + ' onchange="kjrEbayToggleRow(' + kjrInlineArg(r.id) + ',this.checked)"></td>' +
       '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
       '<td data-col-key="product">' +
         kjrEscape(r.product||'') +
         '<div class="eb-mobile-meta">' +
-          (r.tracking ? '<button class="eb-meta-track-chip" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy: '+kjrEscape(r.tracking)+'">#'+kjrEscape(String(r.tracking).slice(-4))+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="10" height="10" style="opacity:0.6;margin-left:2px;flex-shrink:0"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : '') +
-          '<button class="eb-meta-decl-pill" style="color:'+declCol+';border-color:'+(declVal==='No'?'var(--amber)':declVal==='Yes'?'var(--green)':'var(--border)')+'" onclick="kjrToggleDeclared(\''+kjrEscape(r.id)+'\')">'+kjrEscape(declVal||'-')+'</button>' +
+          (r.tracking ? '<button class="eb-meta-track-chip" onclick="kjrCopyTracking(this,' + kjrInlineArg(r.tracking) + ')" title="Copy: '+kjrEscape(r.tracking)+'">#'+kjrEscape(String(r.tracking).slice(-4))+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="10" height="10" style="opacity:0.6;margin-left:2px;flex-shrink:0"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : '') +
+          '<button class="eb-meta-decl-pill" style="color:'+declCol+';border-color:'+(declVal==='No'?'var(--amber)':declVal==='Yes'?'var(--green)':'var(--border)')+'" onclick="kjrToggleDeclared(' + kjrInlineArg(r.id) + ')">'+kjrEscape(declVal||'-')+'</button>' +
         '</div>' +
       '</td>' +
       '<td data-col-key="status" style="min-width:260px">'+timeline+'</td>' +
-      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">' + (r.tracking ? '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap">' + kjrEscape(r.tracking) + '<button class="btn-copy-track" onclick="kjrCopyTracking(this,\''+kjrEscape(r.tracking).replace(/'/g,'&#39;')+'\')" title="Copy tracking number"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span>' : '') + '</td>' +
+      '<td class="num" data-col-key="tracking" style="font-size:11px;color:var(--text3)">' + (r.tracking ? '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap">' + kjrEscape(r.tracking) + '<button class="btn-copy-track" onclick="kjrCopyTracking(this,' + kjrInlineArg(r.tracking) + ')" title="Copy tracking number"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span>' : '') + '</td>' +
       declaredCell +
       '<td class="num" data-col-key="priceUsd">'+fmtUsd(r.priceUsd)+'</td>' +
       '<td class="num" data-col-key="freightSgd">' +
-        '<input class="kjr-inline-input" type="number" step="0.01" min="0" value="' + (kjrNum(r.freightSgd) > 0 ? Math.round(kjrNum(r.freightSgd)) : '') + '" placeholder="-" onchange="kjrEbayInlineEdit(\''+kjrEscape(r.id)+'\',\'freightSgd\',this.value)">' +
+        '<input class="kjr-inline-input" type="number" step="0.01" min="0" value="' + (kjrNum(r.freightSgd) > 0 ? Math.round(kjrNum(r.freightSgd)) : '') + '" placeholder="-" onchange="kjrEbayInlineEdit(' + kjrInlineArg(r.id) + ',\'freightSgd\',this.value)">' +
       '</td>' +
       sgdCell +
       updatedCell +
       '<td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px">' +
-        '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'ebayPurchases\',\''+kjrEscape(r.id)+'\')">×</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'ebayPurchases\',' + kjrInlineArg(r.id) + ')">×</button>' +
       '</span></td>' +
       '</tr>';
   };
@@ -1697,23 +1715,60 @@ function kjrEbayInlineEdit(id, field, value){
   const p = (DB.ebayPurchases || []).find(r => r.id === id);
   if (!p) return;
   if (typeof kjrDealerWriteGuard === 'function' && kjrDealerWriteGuard('ebayPurchases', p, 'edit')) return;
-  if (typeof snapshotForUndo === 'function') snapshotForUndo();
-  const v = parseFloat(value);
-  p[field] = isNaN(v) ? '' : v;
+  const labels = { freightSgd: 'Freight', priceUsd: 'USD price', totalSgd: 'Total SGD' };
+  if (!Object.prototype.hasOwnProperty.call(labels, field)) return false;
+  // A cleared optional amount remains blank, as before. Every nonblank input
+  // must parse in full; an explicit zero is a real amount, not a missing value.
+  const parsed = kjrParseNonNegativeNumber(value, { label: labels[field], allowBlank: true, blankValue: '' });
+  if (!parsed.ok) { toast(parsed.reason); return false; }
+  const next = { ...p, [field]: parsed.value };
   // If the user is editing the total SGD field directly inline, that's an
   // explicit manual override - flag it so freight/price edits stop clobbering it.
-  if (field === 'totalSgd') p.totalSgdManual = true;
+  if (field === 'totalSgd') next.totalSgdManual = true;
   // Auto-recompute totalSgd from priceUsd + new freight, but never when the
   // user has set totalSgd manually (modal or inline), and never from a blank
-  // freight (parseFloat('') is NaN, which would otherwise wipe the total).
-  if (field === 'freightSgd' && !p.totalSgdManual && value !== '' && typeof kjrEbayComputeSgd === 'function') {
-    const c = kjrEbayComputeSgd(p.priceUsd, p.freightSgd, '');
-    if (c.computed > 0) p.totalSgd = c.computed;
+  // freight, which would otherwise wipe the total.
+  if (field === 'freightSgd' && !next.totalSgdManual && !parsed.blank && typeof kjrEbayComputeSgd === 'function') {
+    const c = kjrEbayComputeSgd(next.priceUsd, next.freightSgd, '');
+    if (!Number.isFinite(c.computed) || c.computed < 0) {
+      toast('Total SGD must be a finite number at or above 0');
+      return false;
+    }
+    next.totalSgd = c.computed;
   }
-  p.lastUpdated = Date.now();
-  markDirty('ebayPurchases', p.id);
-  saveData();
+  const before = _captureModalSaveState();
+  if (!before) { toast('This edit could not be saved safely. Try again.', 6000, true); return false; }
+  next.lastUpdated = Date.now();
+  const cachePayload = {};
+  for (const key of _MODAL_CACHE_KEYS) {
+    cachePayload[key] = key === 'ebayPurchases'
+      ? DB[key].map(row => row.id === id ? next : row)
+      : DB[key];
+  }
+  let saved = false;
+  try {
+    snapshotForUndo();
+    Object.assign(p, next);
+    markDirty('ebayPurchases', p.id);
+    const token = _dirtyRevisions.ebayPurchases.get(p.id);
+    const durableEdit = _readDirtyV2Markers().some(marker => marker.table === 'ebayPurchases' &&
+      marker.id === p.id && marker.token === token && marker.rowJson === JSON.stringify(p));
+    saved = durableEdit && saveData({ cachePayload }) &&
+      localStorage.getItem(STORAGE_KEY) === JSON.stringify(cachePayload);
+  } catch (_) { saved = false; }
+  if (!saved) {
+    _restoreModalSaveState(before, cachePayload);
+    // markDirty may have retired this tab's previous recovery marker. Restore
+    // its exact bytes when rolling back, without replacing another tab's data.
+    for (const [key, raw] of before.dirtyMarkerRaws) {
+      if (!key.startsWith(DIRTY_V2_PREFIX + _dirtyTabId + ':')) continue;
+      try { if (localStorage.getItem(key) === null) localStorage.setItem(key, raw); } catch (_) {}
+    }
+    toast('This edit could not be saved locally. Free storage and try again.', 6000, true);
+    return false;
+  }
   renderEbayPurchases();
+  return true;
 }
 
 // Column visibility - persisted to localStorage so it survives reloads.
@@ -2076,6 +2131,43 @@ function _pinRecentsToTop(items, table){
 // for now; bulk completion calls this once per row.
 let _kjrCompleteCtx = null;
 
+function _kjrCompletionWriteBlocked(p) {
+  if (!p) { toast('This purchase was removed. Close this form and check Trash.'); return true; }
+  if (p.status === 'Completed') { toast('This purchase is already completed. No more inventory was created.'); return true; }
+  if (kjrDealerWriteGuard('ebayPurchases', p, 'complete')) return true;
+  const pending = _pendingMutationRowKeys();
+  if (pending === null) {
+    toastError('Completion is paused until the pending sync queue is repaired.');
+    return true;
+  }
+  if (pending.has('ebay_purchases/' + p.id)) {
+    toast('This purchase has a pending sync transaction. Sync it before completing it.');
+    return true;
+  }
+  return false;
+}
+
+// Keep the purchase reviewed at open time pinned across storage events and
+// confirmation dialogs. Adopting a newer CAS version here could complete the
+// same physical purchase twice, even though both writes pass server CAS.
+function _kjrReviewedCompletionRow(ctx) {
+  if (ctx !== _kjrCompleteCtx) return null;
+  const p = DB.ebayPurchases.find(r => r.id === ctx.rowId);
+  if (_kjrCompletionWriteBlocked(p)) return null;
+  const cache = _readModalCache();
+  if (!cache) {
+    toastError('This purchase could not be verified from local storage. Your allocation remains in this form. Try again after storage is available.');
+    return null;
+  }
+  const cached = cache.ebayPurchases.find(r => r.id === ctx.rowId);
+  if (!_modalEditRowMatchesContext(p, ctx.review, ctx.rowId) ||
+      !_modalEditRowMatchesContext(cached, ctx.review, ctx.rowId)) {
+    toast('This purchase changed after you opened it. Your allocation remains in this form. Close and reopen it to review the latest purchase before completing it.', 6000, true);
+    return null;
+  }
+  return p;
+}
+
 function kjrEbayPipelineIndex(status){
   return KJR_EBAY_PIPELINE.indexOf(status);
 }
@@ -2136,9 +2228,11 @@ function kjrEbayBulkAdvance(ids){
 //     Completed and saves.
 function kjrOpenCompleteModal(id){
   const p = DB.ebayPurchases.find(r => r.id === id);
-  if (!p) { toast && toast('Row not found'); return; }
+  if (_kjrCompletionWriteBlocked(p)) return;
   // Authoritative SGD cost for this transaction
-  const sgdCost = kjrNum(p.totalSgd) || (usdToSgd(kjrNum(p.priceUsd)) + kjrNum(p.freightSgd));
+  const enteredTotal = kjrParseNonNegativeNumber(p.totalSgd, { allowBlank: true });
+  const sgdCost = enteredTotal.ok && !enteredTotal.blank ? enteredTotal.value
+    : (usdToSgd(kjrNum(p.priceUsd)) + kjrNum(p.freightSgd));
   const productRaw = p.product || '';
 
   // ── Multi-item detection ────────────────────────────────────────────────
@@ -2188,7 +2282,11 @@ function kjrOpenCompleteModal(id){
     }];
   }
 
-  _kjrCompleteCtx = { rowId: id, sgdCost, items };
+  _kjrCompleteCtx = { rowId: id, sgdCost, items, review: {
+    id: p.id,
+    expectedVersion: Number.isSafeInteger(p._serverVersion) ? p._serverVersion : 0,
+    fingerprint: _modalEditFingerprint(p),
+  } };
   _renderCompleteModal();
   // The queue-advance logic runs as kjrModalCtrl's onClose hook, so ESC,
   // backdrop click AND the explicit close/cancel button (which all route
@@ -2413,123 +2511,136 @@ function _renderCompleteModal(){
 }
 
 async function kjrConfirmCompletion(){
-  if (!_kjrCompleteCtx) return;
   const ctx = _kjrCompleteCtx;
-  const p = DB.ebayPurchases.find(r => r.id === ctx.rowId);
-  if (!p) { toast && toast('Row not found'); return; }
-  // Validate: every item needs a name, total should be in the same ballpark
-  for (const it of ctx.items) {
-    if (!String(it.name||'').trim()) { toast && toast('Every item needs a name'); return; }
-  }
-  const allocated = ctx.items.reduce((s,i) => s + (parseFloat(i.cost)||0), 0);
-  if (Math.abs(allocated - ctx.sgdCost) > 0.5) {
-    if (!await kjrConfirm('Allocated S$' + Math.round(allocated) + ' but transaction total is S$' + Math.round(ctx.sgdCost) + '. Continue anyway?', {ok:'Continue'})) return;
-  }
-  const today = new Date().toISOString().slice(0,10);
-  const norm = (table, raw) => (typeof normalizeRecord === 'function') ? normalizeRecord(table, raw) : raw;
-  const newIds = [];
-  const stagedInventory = [];
-  ctx.items.forEach(it => {
-    const cost = parseFloat(it.cost)||0;
-    const rawName = String(it.name).trim();
-    const note = '';
-    // Reuse the Quick Entry parser so a raw eBay product line like
-    // "Serperior ex 164 tag 10 Z4006099" is split into clean name + grader +
-    // grade + cert# (slab) or name + language + condition + set (single).
-    // Without this, the entire raw line lands in the Card column. Only the
-    // singles/slabs paths benefit - ETB / booster boxes / packs use the
-    // product string verbatim.
-    const parsed = (typeof parseSmartLine === 'function') ? parseSmartLine(rawName) : null;
-    const cleanName = (parsed && parsed.name && parsed.name !== '(unnamed)') ? parsed.name : rawName;
-    if (it.table === 'singles') {
-      // Explicit fields typed in the modal win; parseSmartLine fills the rest.
-      const lang = it.language || (parsed && parsed.language) || 'EN';
-      const cond = it.condition || (parsed && parsed.condition) || 'Near Mint';
-      const typ  = (parsed && parsed.type === 'slab') ? 'raw' : ((parsed && parsed.type) || 'raw');
-      const item = norm('singles', {
-        id: kjrId('s'),
-        name: cleanName,
-        language: lang,
-        type: typ,
-        condition: cond,
-        set: (parsed && parsed.set) || '',
-        status: 'Available',
-        costPrice: cost,
-        datePurchased: today,
-        notes: note,
-        priceHistory: []
-      });
-      stagedInventory.push({ table: 'singles', item }); newIds.push({table:'singles', id:item.id});
-    } else if (it.table === 'slabs') {
-      // Explicit language typed in the modal wins; parseSmartLine fills the rest.
-      const lang = it.language || (parsed && parsed.language) || 'EN';
-      const item = norm('slabs', {
-        id: kjrId('sl'),
-        name: cleanName,
-        type: 'slab',
-        language: lang,
-        grader: (parsed && parsed.grader) || '',
-        grade:  (parsed && parsed.grade)  || '',
-        certNo: (parsed && parsed.certNo) || '',
-        rank:   (parsed && parsed.rank)   || '',
-        status: 'Available',
-        costPrice: cost,
-        dateListed: today,
-        notes: note,
-        priceHistory: []
-      });
-      stagedInventory.push({ table: 'slabs', item }); newIds.push({table:'slabs', id:item.id});
-    } else if (it.table === 'etbs') {
-      const item = norm('etbs', { id: kjrId('etb'), product: cleanName, status:'In Stock', totalPrice: cost, condition:'Mint', date: today });
-      stagedInventory.push({ table: 'etbs', item }); newIds.push({table:'etbs', id:item.id});
-    } else if (it.table === 'boosterBoxes') {
-      const item = norm('boosterBoxes', { id: kjrId('bb'), product: cleanName, status:'Unopened Stock', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
-      stagedInventory.push({ table: 'boosterBoxes', item }); newIds.push({table:'boosterBoxes', id:item.id});
-    } else if (it.table === 'boosterPacks') {
-      const item = norm('boosterPacks', { id: kjrId('bp'), product: cleanName, status:'Sealed', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
-      stagedInventory.push({ table: 'boosterPacks', item }); newIds.push({table:'boosterPacks', id:item.id});
+  if (!ctx || ctx.confirming) return;
+  ctx.confirming = true;
+  try {
+    let p = _kjrReviewedCompletionRow(ctx);
+    if (!p) return;
+    // Validate: every item needs a name, total should be in the same ballpark
+    for (const it of ctx.items) {
+      if (!String(it.name||'').trim()) { toast && toast('Every item needs a name'); return; }
     }
-  });
-  stagedInventory.forEach(({ table, item }) => kjrStampCreatedMetadata(item, table));
-  const nextPurchase = {
-    ...JSON.parse(JSON.stringify(p)),
-    status: 'Completed',
-    completedAt: today,
-    lastUpdated: Date.now(),
-    _linkedInventory: newIds
-  };
-  const operations = [
-    ...stagedInventory.map(entry => _upsertOperation(_tblName(entry.table), entry.item)),
-    _upsertOperation('ebay_purchases', nextPurchase)
-  ];
-  if (!isLocalhostPreview() && !_queueMutationGroup(operations)) {
-    toastError('Completion stopped because its sync transaction could not be saved safely');
-    return;
+    const allocationReview = JSON.stringify([ctx.sgdCost, ctx.items]);
+    const allocated = ctx.items.reduce((s,i) => s + (parseFloat(i.cost)||0), 0);
+    if (Math.abs(allocated - ctx.sgdCost) > 0.5) {
+      if (!await kjrConfirm('Allocated S$' + Math.round(allocated) + ' but transaction total is S$' + Math.round(ctx.sgdCost) + '. Continue anyway?', {ok:'Continue'})) return;
+    }
+    if (ctx !== _kjrCompleteCtx) return;
+    if (JSON.stringify([ctx.sgdCost, ctx.items]) !== allocationReview) {
+      toast('Your allocation changed while confirmation was open. Review it and confirm again.');
+      return;
+    }
+    p = _kjrReviewedCompletionRow(ctx);
+    if (!p) return;
+    const today = new Date().toISOString().slice(0,10);
+    const norm = (table, raw) => (typeof normalizeRecord === 'function') ? normalizeRecord(table, raw) : raw;
+    const newIds = [];
+    const stagedInventory = [];
+    ctx.items.forEach(it => {
+      const cost = parseFloat(it.cost)||0;
+      const rawName = String(it.name).trim();
+      const note = '';
+      // Reuse the Quick Entry parser so a raw eBay product line like
+      // "Serperior ex 164 tag 10 Z4006099" is split into clean name + grader +
+      // grade + cert# (slab) or name + language + condition + set (single).
+      // Without this, the entire raw line lands in the Card column. Only the
+      // singles/slabs paths benefit - ETB / booster boxes / packs use the
+      // product string verbatim.
+      const parsed = (typeof parseSmartLine === 'function') ? parseSmartLine(rawName) : null;
+      const cleanName = (parsed && parsed.name && parsed.name !== '(unnamed)') ? parsed.name : rawName;
+      if (it.table === 'singles') {
+        // Explicit fields typed in the modal win; parseSmartLine fills the rest.
+        const lang = it.language || (parsed && parsed.language) || 'EN';
+        const cond = it.condition || (parsed && parsed.condition) || 'Near Mint';
+        const typ  = (parsed && parsed.type === 'slab') ? 'raw' : ((parsed && parsed.type) || 'raw');
+        const item = norm('singles', {
+          id: kjrId('s'),
+          name: cleanName,
+          language: lang,
+          type: typ,
+          condition: cond,
+          set: (parsed && parsed.set) || '',
+          status: 'Available',
+          costPrice: cost,
+          datePurchased: today,
+          notes: note,
+          priceHistory: []
+        });
+        stagedInventory.push({ table: 'singles', item }); newIds.push({table:'singles', id:item.id});
+      } else if (it.table === 'slabs') {
+        // Explicit language typed in the modal wins; parseSmartLine fills the rest.
+        const lang = it.language || (parsed && parsed.language) || 'EN';
+        const item = norm('slabs', {
+          id: kjrId('sl'),
+          name: cleanName,
+          type: 'slab',
+          language: lang,
+          grader: (parsed && parsed.grader) || '',
+          grade:  (parsed && parsed.grade)  || '',
+          certNo: (parsed && parsed.certNo) || '',
+          rank:   (parsed && parsed.rank)   || '',
+          status: 'Available',
+          costPrice: cost,
+          dateListed: today,
+          notes: note,
+          priceHistory: []
+        });
+        stagedInventory.push({ table: 'slabs', item }); newIds.push({table:'slabs', id:item.id});
+      } else if (it.table === 'etbs') {
+        const item = norm('etbs', { id: kjrId('etb'), product: cleanName, status:'In Stock', totalPrice: cost, condition:'Mint', date: today });
+        stagedInventory.push({ table: 'etbs', item }); newIds.push({table:'etbs', id:item.id});
+      } else if (it.table === 'boosterBoxes') {
+        const item = norm('boosterBoxes', { id: kjrId('bb'), product: cleanName, status:'Unopened Stock', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
+        stagedInventory.push({ table: 'boosterBoxes', item }); newIds.push({table:'boosterBoxes', id:item.id});
+      } else if (it.table === 'boosterPacks') {
+        const item = norm('boosterPacks', { id: kjrId('bp'), product: cleanName, status:'Sealed', qty:1, unitPrice: cost, totalPrice: cost, date: today, notes: note });
+        stagedInventory.push({ table: 'boosterPacks', item }); newIds.push({table:'boosterPacks', id:item.id});
+      }
+    });
+    stagedInventory.forEach(({ table, item }) => kjrStampCreatedMetadata(item, table));
+    const nextPurchase = {
+      ...JSON.parse(JSON.stringify(p)),
+      status: 'Completed',
+      completedAt: today,
+      lastUpdated: Date.now(),
+      _linkedInventory: newIds
+    };
+    const operations = [
+      ...stagedInventory.map(entry => _upsertOperation(_tblName(entry.table), entry.item)),
+      _upsertOperation('ebay_purchases', nextPurchase)
+    ];
+    if (!isLocalhostPreview() && !_queueMutationGroup(operations)) {
+      toastError('Completion stopped because its sync transaction could not be saved safely');
+      return;
+    }
+    snapshotForUndo();
+    stagedInventory.forEach(({ table, item }) => {
+      DB[table] = DB[table] || [];
+      DB[table].push(item);
+      markDirty(table, item.id);
+    });
+    Object.assign(p, nextPurchase);
+    markDirty('ebayPurchases', p.id);
+    saveData();
+    // Notify the recent-add pinning helper so new rows surface at the top of
+    // their tables. Cosmetic: the row itself is already saved above, this only
+    // affects sort position on the next render.
+    newIds.forEach(({table, id}) => { try { _pinRecentlyAdded(table, id); } catch(e) { console.warn('[pin] _pinRecentlyAdded failed for ' + table + '/' + id + ':', e); } });
+    // Refresh every affected tab
+    renderEbayPurchases();
+    if (typeof renderSingles === 'function')        renderSingles();
+    if (typeof renderSlabs === 'function')          renderSlabs();
+    if (typeof renderEtbs === 'function')           renderEtbs();
+    if (typeof renderBoosterBoxes === 'function')   renderBoosterBoxes();
+    if (typeof renderBoosterPacks === 'function')   renderBoosterPacks();
+    if (typeof renderDashboard === 'function')      renderDashboard();
+    clLog && clLog('complete', 'ebayPurchases', p.product||p.tracking||p.id, '→ ' + newIds.length + ' item(s) into inventory');
+    toast && toast('Pushed ' + newIds.length + ' item(s) into inventory');
+    kjrCloseCompleteModal();
+  } finally {
+    ctx.confirming = false;
   }
-  snapshotForUndo();
-  stagedInventory.forEach(({ table, item }) => {
-    DB[table] = DB[table] || [];
-    DB[table].push(item);
-    markDirty(table, item.id);
-  });
-  Object.assign(p, nextPurchase);
-  markDirty('ebayPurchases', p.id);
-  saveData();
-  // Notify the recent-add pinning helper so new rows surface at the top of
-  // their tables. Cosmetic: the row itself is already saved above, this only
-  // affects sort position on the next render.
-  newIds.forEach(({table, id}) => { try { _pinRecentlyAdded(table, id); } catch(e) { console.warn('[pin] _pinRecentlyAdded failed for ' + table + '/' + id + ':', e); } });
-  // Refresh every affected tab
-  renderEbayPurchases();
-  if (typeof renderSingles === 'function')        renderSingles();
-  if (typeof renderSlabs === 'function')          renderSlabs();
-  if (typeof renderEtbs === 'function')           renderEtbs();
-  if (typeof renderBoosterBoxes === 'function')   renderBoosterBoxes();
-  if (typeof renderBoosterPacks === 'function')   renderBoosterPacks();
-  if (typeof renderDashboard === 'function')      renderDashboard();
-  clLog && clLog('complete', 'ebayPurchases', p.product||p.tracking||p.id, '→ ' + newIds.length + ' item(s) into inventory');
-  toast && toast('Pushed ' + newIds.length + ' item(s) into inventory');
-  kjrCloseCompleteModal();
 }
 
 // Legacy entry point kept for any cached HTML out there (the inline "Mark
@@ -2605,13 +2716,13 @@ function renderBoosterPacks(){
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
     // Inline market + carousell price - same UX as Singles/Slabs/Booster Boxes.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',\''+kjrEscape(r.id)+'\',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',\''+kjrEscape(r.id)+'\',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
-      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBpModal(\''+kjrEscape(r.id)+'\')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterPacks\',\''+kjrEscape(r.id)+'\')">×</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBpModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterPacks\',' + kjrInlineArg(r.id) + ')">×</button>' +
     '</span></td>' +
     '</tr>';
   let body = active.map(r => rowHtml(r, false)).join('');

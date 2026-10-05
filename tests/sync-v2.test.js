@@ -117,6 +117,7 @@ test('sync-v2: Quick Sale queues one atomic mutation group with inventory update
   const { ctx, document, localStorage, grab } = await loadApp({
     seed: { singles: [{ id: 'sell-one', name: 'Pikachu', qty: 2, costPrice: 10, status: 'Available', _serverVersion: 4 }] },
   });
+  await ctx.markStatus('singles', 'sell-one', 'Sold');
   const values = { 'qs-table': 'singles', 'qs-id': 'sell-one', 'qs-total': '25', 'qs-cost': '10',
     'qs-ship': '2', 'qs-fees': '1', 'qs-channel': 'Carousell', 'qs-date': '2026-09-04', 'qs-buyer': 'Test buyer' };
   for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
@@ -142,6 +143,7 @@ test('sync-v2: Command Sell groups repeated inventory targets into one atomic tr
     { id: 'line-a', _table: 'singles', name: item.name, groupKey, qty: 1, price: 25 },
     { id: 'line-b', _table: 'singles', name: item.name, groupKey, qty: 1, price: 30 },
   ];
+  loaded.ctx.cmdSellCart.forEach(line => { line._reviewSnapshot = loaded.ctx._cmdSellReviewSnapshot(line); });
   const values = { 'cmd-sell-ship': '0', 'cmd-sell-fees': '0', 'cmd-sell-channel': 'Carousell',
     'cmd-sell-buyer': 'Test buyer', 'cmd-sell-date': '2026-09-05' };
   for (const [id, value] of Object.entries(values)) loaded.document.getElementById(id).value = value;
@@ -175,6 +177,7 @@ test('sync-v2: Command Sell blocks a mixed cart before any optimistic change or 
     { id: 'line-generic', _table: 'singles', name: generic.name, groupKey, qty: 1, price: 25 },
     { id: dealer.id, _table: 'slabs', name: dealer.name, grader: dealer.grader, grade: dealer.grade, certNo: dealer.certNo, qty: 1, price: 40 },
   ];
+  loaded.ctx.cmdSellCart.forEach(line => { line._reviewSnapshot = loaded.ctx._cmdSellReviewSnapshot(line); });
   for (const [id, value] of Object.entries({ 'cmd-sell-ship': '0', 'cmd-sell-fees': '0',
     'cmd-sell-channel': 'Carousell', 'cmd-sell-buyer': 'Test buyer', 'cmd-sell-date': '2026-09-05' })) {
     loaded.document.getElementById(id).value = value;
@@ -200,6 +203,7 @@ test('sync-v2: transaction queue failure leaves Command Sell and eBay completion
   const command = await loadApp({ seed: { singles: [commandItem], sales: [] } });
   command.ctx.cmdSellCart = [{ id: 'line', _table: 'singles', name: commandItem.name,
     groupKey: command.ctx.cmdSingleGroupKey(commandItem), qty: 1, price: 25 }];
+  command.ctx.cmdSellCart.forEach(line => { line._reviewSnapshot = command.ctx._cmdSellReviewSnapshot(line); });
   for (const [id, value] of Object.entries({ 'cmd-sell-ship': '0', 'cmd-sell-fees': '0',
     'cmd-sell-channel': 'Carousell', 'cmd-sell-buyer': '', 'cmd-sell-date': '2026-09-05' })) {
     command.document.getElementById(id).value = value;
@@ -219,8 +223,8 @@ test('sync-v2: transaction queue failure leaves Command Sell and eBay completion
   const purchase = { id: 'ebay-queue-fail', product: 'Queue purchase', status: 'Released', totalSgd: 40, _serverVersion: 3 };
   const ebay = await loadApp({ seed: { ebayPurchases: [purchase], singles: [{ id: 'ebay-queue-gate', name: 'Gate', status: 'Available' }] } });
   assert.strictEqual(ebay.grab('DB').DB.ebayPurchases.length, 1);
-  ebay.ctx._kjrCompleteCtx = { rowId: purchase.id, sgdCost: 40,
-    items: [{ table: 'singles', name: 'Queued card', cost: 40 }] };
+  ebay.ctx.kjrOpenCompleteModal(purchase.id);
+  ebay.ctx._kjrCompleteCtx.items = [{ table: 'singles', name: 'Queued card', cost: 40 }];
   const ebayDbBefore = JSON.stringify(plain(ebay.grab('DB').DB));
   const ebayCacheBefore = ebay.localStorage.getItem('pokeinventory_v3');
   const ebaySet = ebay.localStorage.setItem.bind(ebay.localStorage);
@@ -240,8 +244,8 @@ test('sync-v2: eBay completion conflict removes companion stock and one retry cr
   const loaded = await loadApp({ seed: { ebayPurchases: [purchase], singles: [{ id: 'ebay-conflict-gate', name: 'Gate', status: 'Available' }] } });
   authorise(loaded.ctx);
   const completion = () => {
-    loaded.ctx._kjrCompleteCtx = { rowId: purchase.id, sgdCost: 100,
-      items: [{ table: 'singles', name: 'Conflict-created card', cost: 100 }] };
+    loaded.ctx.kjrOpenCompleteModal(purchase.id);
+    loaded.ctx._kjrCompleteCtx.items = [{ table: 'singles', name: 'Conflict-created card', cost: 100 }];
     return loaded.ctx.kjrConfirmCompletion();
   };
   await completion();

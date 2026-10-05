@@ -1118,26 +1118,22 @@ test('trash-lifecycle: pending legacy mirror failure cannot invalidate an author
   assert.ok(getDeleteStateV2(localStorage).pending.some(item => item.table === 'slabs' && item.id === 'mirror_pending_1'));
 });
 
-test('trash-lifecycle: undoing a delete writes a fresh restore token before the row becomes dirty', async () => {
+test('trash-lifecycle: Undo of a deleted id keeps recovery markers and directs recovery through Trash', async () => {
   const { ctx, grab, localStorage } = await loadApp();
   const original = grab('DB').DB.singles[0];
-  ctx.snapshotForUndo();
-  grab('DB').DB.singles = [];
-  setDeleteStateV2(localStorage, [], [{
-    table: 'singles', id: original.id, ts: Date.now(), restoreToken: original._restoreToken || '', state: 'deleted',
-  }]);
-  ctx.saveData();
-
-  await ctx.undoLast();
-  const restored = grab('DB').DB.singles.find(row => row.id === original.id);
-  assert.ok(restored);
-  assert.match(restored._restoreToken, /^restore_/);
-  const marker = getDeleteStateV2(localStorage).confirmed[0];
-  assert.strictEqual(marker.state, 'restored');
-  assert.strictEqual(marker.restoreToken, restored._restoreToken);
+  const messages = []; ctx.toastError = message => messages.push(message);
+  ctx.snapshotForUndo(); grab('DB').DB.singles = [];
+  setDeleteStateV2(localStorage, [], [{ table: 'singles', id: original.id, ts: Date.now(), restoreToken: original._restoreToken || '', state: 'deleted' }]);
+  ctx.saveData(); const before = localStorage.getItem('_kjrDeleteStateV2');
+  assert.strictEqual(await ctx.undoLast(), false);
+  assert.strictEqual(grab('DB').DB.singles.length, 0);
+  assert.strictEqual(localStorage.getItem('_kjrDeleteStateV2'), before);
+  assert.strictEqual(grab('undoStack').undoStack.length, 1);
+  assert.strictEqual(grab('redoStack').redoStack.length, 0);
+  assert.ok(messages.some(message => message.includes('Trash')));
 });
 
-test('trash-lifecycle: version restore of a deleted id writes a fresh restore token', async () => {
+test('trash-lifecycle: version restore of a deleted id requires explicit Trash recovery', async () => {
   const deleted = { id: 'version_deleted_1', name: 'Version recovery', status: 'Available' };
   const snapshot = { singles: [deleted], slabs: [], sales: [], etbs: [], boosterBoxes: [], boosterPacks: [], ebayPurchases: [] };
   const { ctx, grab, localStorage, fetchMock } = await loadApp({ seed: { singles: [] } });
@@ -1149,19 +1145,21 @@ test('trash-lifecycle: version restore of a deleted id writes a fresh restore to
     table: 'singles', id: deleted.id, ts: Date.now(), restoreToken: '', state: 'deleted',
   }]);
   ctx.kjrConfirm = async () => true;
+  const messages = [];
+  ctx.toastError = message => messages.push(message);
+  const beforeMarker = JSON.stringify(getDeleteStateV2(localStorage));
   fetchMock.calls.length = 0;
   fetchMock.route('/sync/v2/mutate', () => jsonResponse({ ok: false, code: 'offline_for_backup' }, 503));
 
   await ctx.restoreVersion('version_restore_test');
   const restored = grab('DB').DB.singles.find(row => row.id === deleted.id);
-  assert.ok(restored);
-  assert.match(restored._restoreToken, /^restore_/);
-  const marker = getDeleteStateV2(localStorage).confirmed[0];
-  assert.strictEqual(marker.state, 'restored');
-  assert.strictEqual(marker.restoreToken, restored._restoreToken);
+  assert.strictEqual(restored, undefined);
+  assert.strictEqual(JSON.stringify(getDeleteStateV2(localStorage)), beforeMarker);
+  assert.ok(messages.some(message => message.includes('Trash')));
+  assert.strictEqual(syncOperations(fetchMock).length, 0);
 });
 
-test('trash-lifecycle: same-id version restore replaces a mismatched allowed restore token', async () => {
+test('trash-lifecycle: same-id version restore preserves the current allowed restore token', async () => {
   const id = 'version_same_id_1';
   const current = { id, name: 'Current row', status: 'Available', _restoreToken: 'restore_current' };
   const older = { id, name: 'Older snapshot', status: 'Available', _restoreToken: 'restore_snapshot_old' };
@@ -1186,7 +1184,7 @@ test('trash-lifecycle: same-id version restore replaces a mismatched allowed res
   assert.ok(restored);
   assert.strictEqual(restored.name, 'Older snapshot');
   assert.match(restored._restoreToken, /^restore_/);
-  assert.notStrictEqual(restored._restoreToken, current._restoreToken);
+  assert.strictEqual(restored._restoreToken, current._restoreToken);
   assert.notStrictEqual(restored._restoreToken, older._restoreToken);
   const marker = JSON.parse(localStorage.getItem('_kjrConfirmedCloudDeletes'))[0];
   assert.strictEqual(marker.state, 'restored');
@@ -1515,18 +1513,15 @@ test('trash-lifecycle: Replace aborts byte-for-byte when its first Trash snapsho
   assert.strictEqual(syncCalls(fetchMock).length, 0);
 });
 
-test('trash-lifecycle: Replace import upserts reused ids without DELETE and deletes old-only ids', async () => {
+test('trash-lifecycle: Replace import upserts live reused ids at the current revision and deletes old-only ids', async () => {
   const existingId = 'replace_reused_1';
   const oldOnlyId = 'replace_old_only_1';
   const { ctx, grab, localStorage, fetchMock } = await loadApp({
     seed: { singles: [
-      { id: existingId, name: 'Old import row', status: 'Available' },
+      { id: existingId, name: 'Old import row', status: 'Available', _serverVersion: 3 },
       { id: oldOnlyId, name: 'Remove me', status: 'Available' },
     ] },
   });
-  setDeleteStateV2(localStorage, [], [{
-    table: 'singles', id: existingId, ts: Date.now(), restoreToken: '', state: 'deleted',
-  }]);
   ctx.kjrConfirm = async () => true;
   const realGenId = ctx.genId;
   ctx.genId = prefix => prefix === 's' ? existingId : realGenId(prefix);
@@ -1540,13 +1535,9 @@ test('trash-lifecycle: Replace import upserts reused ids without DELETE and dele
   const replacement = grab('DB').DB.singles.find(row => row.id === existingId);
   assert.ok(replacement);
   assert.strictEqual(replacement.name, 'Replacement row');
-  assert.match(replacement._restoreToken, /^restore_/);
-  const marker = getDeleteStateV2(localStorage).confirmed[0];
-  assert.strictEqual(marker.state, 'restored');
-  assert.strictEqual(marker.restoreToken, replacement._restoreToken);
   const operations = syncOperations(fetchMock);
-  assert.ok(operations.some(op => op.type === 'upsert' && op.table === 'singles' && op.id === existingId),
-    'saveAll dispatches the deliberate replacement instead of blocking it as stale');
+  assert.ok(operations.some(op => op.type === 'upsert' && op.table === 'singles' && op.id === existingId && op.expected_version === 3),
+    'the deliberate replacement compares against its current server revision');
   const deletes = operations.filter(op => op.type === 'delete' && op.table === 'singles');
   assert.strictEqual(deletes.length, 1);
   assert.strictEqual(deletes[0].id, oldOnlyId);
@@ -1557,7 +1548,7 @@ test('trash-lifecycle: Replace import upserts reused ids without DELETE and dele
   assert.ok(!deletes.some(op => op.id === existingId), 'the reused primary key is replaced by upsert, never deleted first');
 });
 
-test('trash-lifecycle: Replace import gives a fresh restore token to a deleted id absent from current memory', async () => {
+test('trash-lifecycle: Replace import requires Trash recovery for a deleted id absent from current memory', async () => {
   const deletedId = 'replace_deleted_absent';
   const oldOnlyId = 'replace_old_only_for_absent';
   const { ctx, grab, localStorage, fetchMock } = await loadApp({
@@ -1576,21 +1567,18 @@ test('trash-lifecycle: Replace import gives a fresh restore token to a deleted i
   ctx.document.getElementById('import-mode').value = 'replace';
   fetchMock.calls.length = 0;
   fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
+  const cacheBefore = localStorage.getItem('pokeinventory_v3');
+  const messages = [];
+  ctx.toastError = message => messages.push(message);
 
   await ctx.importData();
   const replacement = grab('DB').DB.singles.find(row => row.id === deletedId);
-  assert.ok(replacement);
-  assert.match(replacement._restoreToken, /^restore_/);
+  assert.strictEqual(replacement, undefined);
   const marker = JSON.parse(localStorage.getItem('_kjrConfirmedCloudDeletes')).find(item => item.id === deletedId);
-  assert.strictEqual(marker.state, 'restored');
-  assert.strictEqual(marker.restoreToken, replacement._restoreToken,
-    'marker preflight covers incoming IDs even when no current row reuses the ID');
-  const deletes = syncOperations(fetchMock).filter(op => op.type === 'delete' && op.table === 'singles');
-  assert.strictEqual(deletes.length, 1);
-  assert.strictEqual(deletes[0].id, oldOnlyId);
-  assert.strictEqual(deletes[0].trash.data.originalId, oldOnlyId);
-  assert.strictEqual(deletes[0].trash.data.item.name, 'Old current row');
-  assert.ok(!deletes.some(op => op.id === deletedId));
+  assert.strictEqual(marker.state, 'deleted');
+  assert.strictEqual(localStorage.getItem('pokeinventory_v3'), cacheBefore);
+  assert.strictEqual(syncOperations(fetchMock).length, 0);
+  assert.ok(messages.some(message => /Trash.*first/.test(message)));
 });
 
 test('trash-lifecycle: main Replace aborts before cloud or local deletion when restore-marker preflight cannot persist', async () => {

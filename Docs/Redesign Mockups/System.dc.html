@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kujira style sheet</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0B0B0E}
+a{color:#C4B8FF;text-decoration:none}a:hover{color:#E4DEFF}
+.tnum{font-variant-numeric:tabular-nums}
+</style>
+</helmet>
+<div style="width: 1200px; height: 1000px; box-sizing: border-box; padding: 48px; display: flex; flex-direction: column; gap: 36px; background: #0B0B0E; color: #F5F5F7; font-family: 'Geist', system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+  <div style="display: flex; align-items: center; gap: 14px">
+    <img src="../../Assets/whale-icon-192.png" alt="" style="width: 48px; height: 48px; object-fit: contain">
+    <div>
+      <h1 style="margin: 0; font-size: 26px; line-height: 32px; font-weight: 600; letter-spacing: -0.02em">Kujira style sheet</h1>
+      <p style="margin: 2px 0 0; color: #8C8C97">Dark first · one accent · Geist with tabular figures · 4 px spacing grid</p>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 40px">
+
+    <section aria-labelledby="sys-colour" style="display: flex; flex-direction: column; gap: 16px">
+      <h2 id="sys-colour" style="margin: 0; font-size: 16px; line-height: 22px; font-weight: 600">Colour</h2>
+      <div style="font-size: 12px; font-weight: 500; color: #8C8C97">Neutrals</div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+        <sc-for list="{{neutrals}}" as="c" hint-placeholder-count="8">
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div style="height: 52px; border-radius: 10px; background: {{c.hex}}; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1)"></div>
+            <div style="font-size: 13px; font-weight: 500">{{c.name}}</div>
+            <div style="font-family: 'Geist Mono', monospace; font-size: 12px; color: #8C8C97">{{c.hex}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size: 12px; font-weight: 500; color: #8C8C97; margin-top: 4px">Signal, used sparingly</div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+        <sc-for list="{{signals}}" as="c" hint-placeholder-count="4">
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div style="height: 52px; border-radius: 10px; background: {{c.hex}}"></div>
+            <div style="font-size: 13px; font-weight: 500">{{c.name}}</div>
+            <div style="font-family: 'Geist Mono', monospace; font-size: 12px; color: #8C8C97">{{c.hex}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size: 12px; font-weight: 500; color: #8C8C97; margin-top: 4px">Light theme, same accent family</div>
+      <div style="display: flex; gap: 10px; padding: 14px; border-radius: 14px; background: #F6F6F7">
+        <sc-for list="{{light}}" as="c" hint-placeholder-count="5">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
+            <div style="height: 36px; border-radius: 8px; background: {{c.hex}}; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08)"></div>
+            <div style="font-size: 12px; font-weight: 500; color: #0B0B0E">{{c.name}}</div>
+            <div style="font-family: 'Geist Mono', monospace; font-size: 11px; color: #55555F">{{c.hex}}</div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section aria-labelledby="sys-type" style="display: flex; flex-direction: column; gap: 16px">
+      <h2 id="sys-type" style="margin: 0; font-size: 16px; line-height: 22px; font-weight: 600">Type</h2>
+      <div style="display: flex; flex-direction: column; border: 1px solid #1F1F25; border-radius: 14px; background: #111115">
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 16px 18px; border-bottom: 1px solid #1F1F25">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Display<br>52 / 600</span>
+          <span class="tnum" style="font-size: 52px; line-height: 58px; font-weight: 600; letter-spacing: -0.035em">S$6,016</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #1F1F25">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Title<br>26 / 600</span>
+          <span style="font-size: 26px; line-height: 32px; font-weight: 600; letter-spacing: -0.02em">Overview</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #1F1F25">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Section<br>16 / 600</span>
+          <span style="font-size: 16px; line-height: 22px; font-weight: 600">Top of the collection</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #1F1F25">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Body<br>14 / 400</span>
+          <span>Umbreon VMAX, Evolving Skies 215/203</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #1F1F25">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Caption<br>12 / 500</span>
+          <span style="font-size: 12px; font-weight: 500; color: #8C8C97">Market value · checked today</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 16px; padding: 14px 18px">
+          <span style="width: 92px; flex: none; font-size: 12px; color: #8C8C97">Mono<br>12 / 400</span>
+          <span style="font-family: 'Geist Mono', monospace; font-size: 12px; color: #B4B4BE">CERT 90876543 · EN · 215/203</span>
+        </div>
+      </div>
+      <div style="font-size: 13px; color: #8C8C97">Five sizes replace the current nineteen. Sentence case labels, no all-caps tracking.</div>
+    </section>
+  </div>
+
+  <section aria-labelledby="sys-comp" style="display: flex; flex-direction: column; gap: 16px">
+    <h2 id="sys-comp" style="margin: 0; font-size: 16px; line-height: 22px; font-weight: 600">Components</h2>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px">
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background: #131317; border: 1px solid #1F1F25">
+        <div style="font-size: 12px; font-weight: 500; color: #8C8C97">Buttons</div>
+        <button type="button" style="height: 40px; border-radius: 10px; border: 0; background: #9F8CFF; color: #0B0B0E; font: inherit; font-weight: 600">Mark as sold</button>
+        <button type="button" style="height: 40px; border-radius: 10px; border: 1px solid #26262E; background: #18181D; color: #F5F5F7; font: inherit; font-weight: 500">List on eBay</button>
+        <button type="button" style="height: 40px; border-radius: 10px; border: 0; background: transparent; color: #C4B8FF; font: inherit; font-weight: 500">View all</button>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background: #131317; border: 1px solid #1F1F25">
+        <div style="font-size: 12px; font-weight: 500; color: #8C8C97">Grade labels</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px">
+          <span style="display: inline-flex; height: 26px; border-radius: 7px; overflow: hidden; font-size: 12px; font-weight: 700"><span style="display: flex; align-items: center; padding: 0 8px; background: #C9353B; color: #FFFFFF">PSA</span><span class="tnum" style="display: flex; align-items: center; padding: 0 8px; background: #2A1518; color: #FFC2C5">10</span></span>
+          <span style="display: inline-flex; height: 26px; border-radius: 7px; overflow: hidden; font-size: 12px; font-weight: 700"><span style="display: flex; align-items: center; padding: 0 8px; background: #2459D6; color: #FFFFFF">CGC</span><span class="tnum" style="display: flex; align-items: center; padding: 0 8px; background: #15203A; color: #C3D4FF">8.5</span></span>
+          <span style="display: inline-flex; height: 26px; border-radius: 7px; overflow: hidden; font-size: 12px; font-weight: 700"><span style="display: flex; align-items: center; padding: 0 8px; background: #C9A227; color: #1A1405">BGS</span><span class="tnum" style="display: flex; align-items: center; padding: 0 8px; background: #2A230F; color: #F1D98A">9.5</span></span>
+          <span style="display: inline-flex; height: 26px; border-radius: 7px; overflow: hidden; font-size: 12px; font-weight: 700"><span style="display: flex; align-items: center; padding: 0 8px; background: #F5F5F7; color: #0B0B0E">TAG</span><span class="tnum" style="display: flex; align-items: center; padding: 0 8px; background: #1B1B21; color: #F5F5F7">10</span></span>
+        </div>
+        <div style="font-size: 12px; color: #8C8C97">Grader colour on the left, grade on the right. Reads like the real slab label.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background: #131317; border: 1px solid #1F1F25">
+        <div style="font-size: 12px; font-weight: 500; color: #8C8C97">Change and status</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px">
+          <span class="tnum" style="display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 999px; background: #10261D; color: #34D399; font-size: 13px; font-weight: 600">▲ 22.2%</span>
+          <span class="tnum" style="display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 999px; background: #2A1419; color: #FB7185; font-size: 13px; font-weight: 600">▼ 6.5%</span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px">
+          <span style="height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #1B1B21; font-size: 12px; color: #B4B4BE"><span style="width: 6px; height: 6px; border-radius: 50%; background: #34D399"></span>In stock</span>
+          <span style="height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #1B1B21; font-size: 12px; color: #B4B4BE"><span style="width: 6px; height: 6px; border-radius: 50%; background: #9F8CFF"></span>Listed</span>
+          <span style="height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #1B1B21; font-size: 12px; color: #B4B4BE"><span style="width: 6px; height: 6px; border-radius: 50%; background: #6B6B76"></span>Sold</span>
+          <span style="height: 26px; display: inline-flex; align-items: center; padding: 0 9px; border-radius: 7px; border: 1px solid #34343D; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B4B4BE">JP</span>
+        </div>
+        <div style="font-size: 12px; color: #8C8C97">Colour lives on numbers and dots, never on whole pills.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background: #131317; border: 1px solid #1F1F25">
+        <div style="font-size: 12px; font-weight: 500; color: #8C8C97">Shape and motion</div>
+        <div style="display: flex; gap: 10px; align-items: flex-end">
+          <span style="width: 44px; height: 44px; border-radius: 16px; background: #1B1B21; border: 1px solid #34343D"></span>
+          <span style="width: 44px; height: 44px; border-radius: 10px; background: #1B1B21; border: 1px solid #34343D"></span>
+          <span style="width: 44px; height: 26px; border-radius: 999px; background: #1B1B21; border: 1px solid #34343D"></span>
+        </div>
+        <div style="font-size: 12px; color: #B4B4BE; line-height: 18px">
+          Cards 16 · controls 10 · chips full<br>
+          Hover and press 160 ms, ease out<br>
+          Values roll digit by digit on change<br>
+          Skeletons, never spinners, while loading
+        </div>
+      </div>
+
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1200,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      neutrals: [
+        { name: 'Ground', hex: '#0B0B0E' }, { name: 'Sidebar', hex: '#0E0E12' },
+        { name: 'Surface', hex: '#131317' }, { name: 'Raised', hex: '#1B1B21' },
+        { name: 'Hairline', hex: '#26262E' }, { name: 'Text', hex: '#F5F5F7' },
+        { name: 'Text 2', hex: '#B4B4BE' }, { name: 'Text 3', hex: '#8C8C97' }
+      ],
+      signals: [
+        { name: 'Accent', hex: '#9F8CFF' }, { name: 'Gain', hex: '#34D399' },
+        { name: 'Loss', hex: '#FB7185' }, { name: 'Attention', hex: '#F5C25B' }
+      ],
+      light: [
+        { name: 'Ground', hex: '#F6F6F7' }, { name: 'Surface', hex: '#FFFFFF' },
+        { name: 'Text', hex: '#0B0B0E' }, { name: 'Accent', hex: '#5B4BD1' },
+        { name: 'Gain', hex: '#0F7A55' }, { name: 'Loss', hex: '#C7334A' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

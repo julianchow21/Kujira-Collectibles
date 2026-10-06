@@ -1,0 +1,19 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-06T13:40:00Z"},
+  "title": "Kujira Redesign",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 1440, "h": 1300, "title": "Overview, desktop", "expand": "fill", "is_interactive": true},
+    "Collection.dc.html": {"x": 1520, "y": 0, "w": 1440, "h": 1300, "title": "Singles, grid and list", "expand": "fill", "is_interactive": true},
+    "Detail.dc.html": {"x": 0, "y": 1420, "w": 1440, "h": 1000, "title": "Card inspector", "expand": "fill"},
+    "Mobile.dc.html": {"x": 1520, "y": 1420, "w": 390, "h": 844, "title": "Mobile home"},
+    "System.dc.html": {"x": 1990, "y": 1420, "w": 1200, "h": 1000, "title": "Style sheet"}
+  },
+  "order": ["Main.dc.html", "Collection.dc.html", "Detail.dc.html", "Mobile.dc.html", "System.dc.html"],
+  "notes": {
+    "heading": {"x": 0, "y": -300, "text": "Kujira Collectibles, redesign concept", "kind": "title1", "maxW": 3190}
+  },
+  "designSystems": []
+}

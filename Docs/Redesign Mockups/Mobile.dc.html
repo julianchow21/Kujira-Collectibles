@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kujira mobile home</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0B0B0E}
+a{color:#C4B8FF;text-decoration:none}a:hover{color:#E4DEFF}
+.tnum{font-variant-numeric:tabular-nums}
+button:focus-visible,a:focus-visible{outline:2px solid #9F8CFF;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; box-sizing: border-box; background: #0B0B0E; color: #F5F5F7; font-family: 'Geist', system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+  <header style="display: flex; align-items: center; gap: 10px; padding: 14px 12px 6px 16px">
+    <img src="../../Assets/whale-icon-192.png" alt="" style="width: 34px; height: 34px; object-fit: contain">
+    <span style="font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin-right: auto">Kujira</span>
+    <button type="button" aria-label="Search" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 0; background: #131317; color: #F5F5F7; cursor: pointer">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+    </button>
+    <button type="button" aria-label="Sync and settings, synced 2 minutes ago" style="position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 0; background: #131317; color: #F5F5F7; cursor: pointer">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"></path><circle cx="15" cy="6" r="2"></circle><circle cx="9" cy="12" r="2"></circle><circle cx="17" cy="18" r="2"></circle></svg>
+      <span style="position: absolute; top: 9px; right: 9px; width: 8px; height: 8px; border-radius: 50%; background: #34D399; box-shadow: 0 0 0 2px #131317"></span>
+    </button>
+  </header>
+
+  <section aria-label="Collection value" style="padding: 10px 20px 0">
+    <div style="font-size: 13px; font-weight: 500; color: #8C8C97">Collection value</div>
+    <div class="tnum" style="font-size: 44px; line-height: 50px; font-weight: 600; letter-spacing: -0.035em; margin-top: 2px">S$6,016</div>
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px">
+      <span class="tnum" style="display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 999px; background: #10261D; color: #34D399; font-size: 13px; font-weight: 600">▲ S$1,091 · 22.2%</span>
+      <span style="font-size: 13px; color: #8C8C97">unrealised</span>
+    </div>
+    <svg viewBox="0 0 760 200" preserveAspectRatio="none" role="img" aria-label="Market value over the last 3 months" style="display: block; width: 100%; height: 76px; margin-top: 14px">
+      <defs>
+        <linearGradient id="km-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#9F8CFF" stop-opacity="0.3"></stop>
+          <stop offset="1" stop-color="#9F8CFF" stop-opacity="0"></stop>
+        </linearGradient>
+      </defs>
+      <path d="M8 152 L24 146 L41 146 L57 148 L74 138 L90 142 L107 140 L123 139 L140 138 L156 139 L173 139 L189 132 L206 137 L222 134 L239 130 L256 127 L272 105 L289 108 L305 105 L322 98 L338 98 L355 98 L371 97 L388 99 L404 97 L421 90 L437 98 L454 95 L470 67 L487 64 L504 71 L520 65 L537 58 L553 61 L570 65 L586 58 L603 29 L619 36 L636 27 L652 37 L669 27 L685 24 L702 21 L718 28 L735 29 L752 23 L752 200 L8 200 Z" fill="url(#km-fill)"></path>
+      <path d="M8 152 L24 146 L41 146 L57 148 L74 138 L90 142 L107 140 L123 139 L140 138 L156 139 L173 139 L189 132 L206 137 L222 134 L239 130 L256 127 L272 105 L289 108 L305 105 L322 98 L338 98 L355 98 L371 97 L388 99 L404 97 L421 90 L437 98 L454 95 L470 67 L487 64 L504 71 L520 65 L537 58 L553 61 L570 65 L586 58 L603 29 L619 36 L636 27 L652 37 L669 27 L685 24 L702 21 L718 28 L735 29 L752 23" fill="none" stroke="#B3A5FF" stroke-width="2.25" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+    </svg>
+    <div role="group" aria-label="Chart period" style="display: flex; gap: 2px; margin-top: 12px; padding: 3px; background: #131317; border: 1px solid #1F1F25; border-radius: 12px">
+      <button type="button" aria-pressed="false" style="flex: 1; height: 38px; border-radius: 9px; border: 0; background: transparent; color: #8C8C97; font: inherit; font-size: 13px; font-weight: 500">1M</button>
+      <button type="button" aria-pressed="true" style="flex: 1; height: 38px; border-radius: 9px; border: 0; background: #26243A; color: #F5F5F7; font: inherit; font-size: 13px; font-weight: 600">3M</button>
+      <button type="button" aria-pressed="false" style="flex: 1; height: 38px; border-radius: 9px; border: 0; background: transparent; color: #8C8C97; font: inherit; font-size: 13px; font-weight: 500">1Y</button>
+      <button type="button" aria-pressed="false" style="flex: 1; height: 38px; border-radius: 9px; border: 0; background: transparent; color: #8C8C97; font: inherit; font-size: 13px; font-weight: 500">All</button>
+    </div>
+  </section>
+
+  <section aria-labelledby="m-top-h" style="margin-top: 24px">
+    <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 0 20px">
+      <h2 id="m-top-h" style="margin: 0; font-size: 16px; line-height: 22px; font-weight: 600">Top of the collection</h2>
+      <a href="#" style="font-size: 13px; font-weight: 500">See all</a>
+    </div>
+    <div style="display: flex; gap: 12px; overflow-x: auto; padding: 12px 20px 4px">
+      <sc-for list="{{tiles}}" as="t" hint-placeholder-count="3">
+        <a href="#" style="flex: none; width: 132px; display: flex; flex-direction: column; color: #F5F5F7">
+          <div style="aspect-ratio: 1 / 1.12; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid #1F1F25; background: radial-gradient(120% 80% at 50% 0%, #1E1E26 0%, #111115 70%)">
+            <sc-if value="{{t.slab}}" hint-placeholder-val="{{false}}">
+              <div style="width: 62%; aspect-ratio: 0.62; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 4px; border-radius: 7px; border: 1px solid #3A3A44; background: linear-gradient(180deg, #2C2C33, #1B1B21); box-shadow: 0 10px 22px rgba(0,0,0,0.55)">
+                <div style="height: 16%; display: flex; align-items: center; justify-content: space-between; padding: 0 5px; border-radius: 3px; background: {{t.gc}}; color: #FFFFFF; font-size: 8px; font-weight: 700; letter-spacing: 0.06em"><span>{{t.grader}}</span><span style="font-size: 10px">{{t.grade}}</span></div>
+                <div style="flex: 1; border-radius: 3px; background: {{t.bg}}"></div>
+              </div>
+            </sc-if>
+            <sc-if value="{{t.raw}}" hint-placeholder-val="{{true}}">
+              <div style="width: 70%; aspect-ratio: 63 / 88; border-radius: 6px; background: {{t.bg}}; box-shadow: 0 10px 22px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.1)"></div>
+            </sc-if>
+          </div>
+          <div style="padding: 8px 2px 0; display: flex; flex-direction: column; gap: 1px">
+            <span style="font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.name}}</span>
+            <span style="display: flex; align-items: baseline; gap: 6px">
+              <span class="tnum" style="font-weight: 600">{{t.value}}</span>
+              <span class="tnum" style="font-size: 12px; font-weight: 600; color: #34D399">{{t.delta}}</span>
+            </span>
+          </div>
+        </a>
+      </sc-for>
+    </div>
+  </section>
+
+  <section aria-labelledby="m-hold-h" style="margin-top: 20px; padding: 0 20px">
+    <div style="display: flex; align-items: baseline; justify-content: space-between">
+      <h2 id="m-hold-h" style="margin: 0; font-size: 16px; line-height: 22px; font-weight: 600">Holdings</h2>
+      <a href="#" style="font-size: 13px; font-weight: 500">Sort by value</a>
+    </div>
+    <div style="display: flex; flex-direction: column; margin-top: 6px">
+      <sc-for list="{{rows}}" as="r" hint-placeholder-count="4">
+        <a href="#" style="display: flex; align-items: center; gap: 12px; min-height: 60px; border-bottom: 1px solid #1A1A20; color: #F5F5F7">
+          <span style="flex: none; width: 32px; aspect-ratio: 63 / 88; border-radius: 4px; background: {{r.bg}}; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12)"></span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+            <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span>
+            <span style="font-size: 12px; color: #8C8C97">{{r.sub}}</span>
+          </span>
+          <span style="display: flex; flex-direction: column; align-items: flex-end">
+            <span class="tnum" style="font-weight: 600">{{r.value}}</span>
+            <span class="tnum" style="font-size: 12px; font-weight: 600; color: {{r.dc}}">{{r.delta}}</span>
+          </span>
+        </a>
+      </sc-for>
+    </div>
+  </section>
+
+  <nav aria-label="Main" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding: 6px 8px 22px; display: flex; align-items: center; justify-content: space-around; background: rgba(14,14,18,0.94); border-top: 1px solid #1F1F25">
+    <a href="#" aria-current="page" style="width: 64px; height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #C4B8FF; font-size: 11px; font-weight: 600">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
+      Home
+    </a>
+    <a href="#" style="width: 64px; height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #8C8C97; font-size: 11px; font-weight: 500">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 7h6"></path></svg>
+      Collection
+    </a>
+    <button type="button" aria-label="Add item" style="width: 54px; height: 54px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 0; background: #9F8CFF; color: #0B0B0E; box-shadow: 0 8px 24px rgba(159,140,255,0.35); cursor: pointer">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+    </button>
+    <a href="#" style="width: 64px; height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #8C8C97; font-size: 11px; font-weight: 500">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"></path><path d="M15 7h6v6"></path></svg>
+      Sales
+    </a>
+    <a href="#" style="width: 64px; height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #8C8C97; font-size: 11px; font-weight: 500">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="19" cy="12" r="1.9"></circle></svg>
+      More
+    </a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var GAIN = '#34D399', LOSS = '#FB7185';
+    return {
+      tiles: [
+        { name: 'Charizard 4/102', value: 'S$1,720', delta: '▲ 18.6%', slab: true, raw: false, grader: 'PSA', grade: '9', gc: '#C9353B', bg: 'linear-gradient(160deg,#F2994A,#B33A2B 55%,#3A1414)' },
+        { name: 'Umbreon VMAX', value: 'S$1,380', delta: '▲ 25.5%', slab: true, raw: false, grader: 'PSA', grade: '10', gc: '#C9353B', bg: 'linear-gradient(160deg,#3D5494,#151A33 55%,#0A0C16)' },
+        { name: 'Umbreon VMAX', value: 'S$610', delta: '▲ 17.3%', slab: false, raw: true, bg: 'linear-gradient(160deg,#3D5494,#151A33 55%,#0A0C16)' },
+        { name: 'Pikachu Grey Felt Hat', value: 'S$410', delta: '▲ 28.1%', slab: true, raw: false, grader: 'CGC', grade: '8.5', gc: '#2459D6', bg: 'linear-gradient(160deg,#F7D154,#D69A1E 55%,#5A3A0A)' }
+      ],
+      rows: [
+        { name: 'Rayquaza VMAX 218/203', sub: 'Evolving Skies · EN', value: 'S$395', delta: '▲ 27.4%', dc: GAIN, bg: 'linear-gradient(160deg,#3FB68B,#1D5E4E 55%,#0B221C)' },
+        { name: 'Lugia V Alt Art · TAG 10', sub: 'Silver Tempest · EN', value: 'S$300', delta: '▲ 15.4%', dc: GAIN, bg: 'linear-gradient(160deg,#C9D6E8,#6E86A8 55%,#22304A)' },
+        { name: 'Giratina V 186/196', sub: 'Lost Origin · EN', value: 'S$280', delta: '▲ 16.7%', dc: GAIN, bg: 'linear-gradient(160deg,#C8A44A,#5A3A22 55%,#1A0F0A)' },
+        { name: 'Gengar VMAX 271/264', sub: 'Fusion Strike · EN', value: 'S$240', delta: '▲ 26.3%', dc: GAIN, bg: 'linear-gradient(160deg,#9C6ADE,#4A2A7A 55%,#1B1030)' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -11384,6 +11384,32 @@ function renderSingles() {
 
   applySortHeaders('singles-table', 'singles');
 
+  // Empty-state copy, shared by the list row and the grid block so the two views say the same thing.
+  const emptyOpts = {
+    filtered: DB.singles.length > 0,
+    icon: '🃏',
+    title: 'No singles yet',
+    sub: 'Track your ungraded cards here. Add your first one to get started.',
+    ctaLabel: '+ Add your first card'
+  };
+
+  // Grid view (v3.69): the same filtered, sorted rows as the list below, drawn as tiles. The table
+  // is not built while the grid shows, switching back re-renders it. Pref: kjr_view_singles.
+  if (typeof kjrViewApply === 'function' && kjrViewApply('singles') === 'grid') {
+    kjrRenderGrid('singles', {
+      main: displayItems, mainSold: showSoldMain,
+      inline: statusFilter === 'all' ? sold : [],
+      alt: altItems, altSold: !showSoldMain, altLabel: showSoldMain ? 'Available' : 'Sold',
+      showAlt: statusFilter !== 'all' && altItems.length > 0,
+      altOpen: document.getElementById('singles-sold-divider').dataset.open === '1',
+      empty: emptyOpts
+    });
+    if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
+    updateClearFiltersBtn('singles');
+    _updateUnresolvedFilterChip();
+    return;
+  }
+
   function buildRow(i, isSold) {
     const mp = parseFloat(i.marketPrice)||0;
     // Effective market value shown in the cell: real marketPrice, else a
@@ -11413,9 +11439,12 @@ function renderSingles() {
     // in esc() before being concatenated into HTML, to defeat XSS via malicious values.
     const safeId = esc(i.id);
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('singles', i.id);
+    // Card art (v3.69): thumbnail inside the name cell, set underneath. No new column, no handlers.
+    const thumb = typeof kjrThumbHtml === 'function' ? kjrThumbHtml(i, 'singles') : '';
+    const setLine = i.set ? '<div class="kjr-name-set" title="' + esc(i.set) + '">' + esc(i.set) + '</div>' : '';
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button></td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:258px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button>' + setLine + '</div></div></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
@@ -11435,15 +11464,7 @@ function renderSingles() {
 
   const tbody = document.getElementById('singles-body');
   tbody.innerHTML = displayItems.length === 0
-    ? kjrInvEmptyRow({
-        colspan: 12,
-        filtered: DB.singles.length > 0,
-        icon: '🃏',
-        title: 'No singles yet',
-        sub: 'Track your ungraded cards here. Add your first one to get started.',
-        ctaLabel: '+ Add your first card',
-        ctaAction: 'openAddSingle()'
-      })
+    ? kjrInvEmptyRow(Object.assign({ colspan: 12, ctaAction: 'openAddSingle()' }, emptyOpts))
     : displayItems.map(i => buildRow(i, showSoldMain)).join('');
 
   // Secondary section (the "other" status) - always in the collapsible toggle
@@ -11480,6 +11501,8 @@ function renderSingles() {
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
   updateClearFiltersBtn('singles');
   _updateUnresolvedFilterChip();
+  // Rows on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
+  if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-inventory'), 'singles');
 }
 
 // =========== FIELD VALIDATION (F5) ===========
@@ -12720,6 +12743,30 @@ function renderSlabs() {
 
   applySortHeaders('slabs-table', 'slabs');
 
+  // Empty-state copy, shared by the list row and the grid block so the two views say the same thing.
+  const emptyOpts = {
+    filtered: DB.slabs.length > 0,
+    icon: '🏆',
+    title: 'No slabs yet',
+    sub: 'Track your graded cards (PSA, CGC, TAG) here. Add your first slab to get started.',
+    ctaLabel: '+ Add your first card'
+  };
+
+  // Grid view (v3.69): the same filtered, sorted rows as the list below, drawn as slabs. The table
+  // is not built while the grid shows, switching back re-renders it. Pref: kjr_view_slabs.
+  if (typeof kjrViewApply === 'function' && kjrViewApply('slabs') === 'grid') {
+    kjrRenderGrid('slabs', {
+      main: available, mainSold: false, inline: [],
+      alt: sold, altSold: true, altLabel: 'Sold',
+      showAlt: sold.length > 0,
+      altOpen: document.getElementById('slabs-sold-divider').dataset.open === '1',
+      empty: emptyOpts
+    });
+    if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
+    updateClearFiltersBtn('slabs');
+    return;
+  }
+
   function buildRow(i, isSold) {
     const _gd = (i.grader || '').toString().trim().toUpperCase();
     const _gr = (i.grade  || '').toString().trim().toUpperCase();
@@ -12729,9 +12776,10 @@ function renderSlabs() {
     // Grade badge (separate column) + cert number (separate column with TAG link).
     const badge = graderGradeBadge(i.grader, i.grade, i.notes, i.name);
     const certText = i.certNo ? esc(i.certNo) : '-';
+    // .cert-no sets the mono face (v3.69). The TAG link behaviour is unchanged.
     const certHtml = tagUrl
-      ? '<a href="' + esc(tagUrl) + '" target="_blank" style="text-decoration:none;color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:2px">' + certText + ' <span style="color:var(--text3);font-size:10px">↗</span></a>'
-      : '<span style="color:var(--text2);font-size:12px">' + certText + '</span>';
+      ? '<a href="' + esc(tagUrl) + '" target="_blank" class="cert-no" style="text-decoration:none;color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:2px">' + certText + ' <span style="color:var(--text3);font-size:10px">↗</span></a>'
+      : '<span class="cert-no" style="color:var(--text2);font-size:12px">' + certText + '</span>';
     const soldBtn = isSold
       ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Available\')" title="Mark Available">↩ Avail</button>'
       : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
@@ -12756,9 +12804,11 @@ function renderSlabs() {
       : '';
     const safeId = esc(i.id);
     const isRecent = typeof _isRecentlyAdded === 'function' && _isRecentlyAdded('slabs', i.id);
+    // Card art (v3.69): thumbnail with a grader-colour bar inside the name cell. No new column, no handlers.
+    const thumb = typeof kjrThumbHtml === 'function' ? kjrThumbHtml(i, 'slabs') : '';
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'slabs\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:200px;text-align:left"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:238px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></div></div></td>' +
       '<td data-col-key="_grade" style="white-space:nowrap">' + badge + '</td>' +
       '<td data-col-key="certNo" style="white-space:nowrap">' + certHtml + '</td>' +
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '-') + '</td>' +
@@ -12779,15 +12829,7 @@ function renderSlabs() {
 
   const tbody = document.getElementById('slabs-body');
   tbody.innerHTML = available.length === 0
-    ? kjrInvEmptyRow({
-        colspan: 12,
-        filtered: DB.slabs.length > 0,
-        icon: '🏆',
-        title: 'No slabs yet',
-        sub: 'Track your graded cards (PSA, CGC, TAG) here. Add your first slab to get started.',
-        ctaLabel: '+ Add your first card',
-        ctaAction: 'openAddSlab()'
-      })
+    ? kjrInvEmptyRow(Object.assign({ colspan: 12, ctaAction: 'openAddSlab()' }, emptyOpts))
     : available.map(i => buildRow(i, false)).join('');
 
   // Sold section
@@ -12813,6 +12855,8 @@ function renderSlabs() {
   attachHeaderDrag('slabs');
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
   updateClearFiltersBtn('slabs');
+  // Slabs on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
+  if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-slabs'), 'slabs');
 }
 
 function openAddSlab() {
@@ -15795,6 +15839,10 @@ async function fetchPriceFromTcgdex(item) {
     if (r.status === 404) return { error: 'not found' };
     if (!r.ok) return { error: 'HTTP ' + r.status };
     const data = await r.json();
+    // Card art cache (v3.69): the card object already carries its image base, so keep it for the
+    // Singles/Slabs thumbnails at no extra request. Local map only (kjr_card_images), never a data
+    // row, never markDirty. Wrapped so it can never change what this function returns.
+    try { if (data && data.image && typeof kjrRememberCardImage === 'function') kjrRememberCardImage(id, data.image, lang); } catch (_) { /* art cache only */ }
     if (!data || !data.pricing) return { error: 'not found' };
     const pricing = data.pricing;
 
@@ -17580,9 +17628,10 @@ function viewSourceItem(id, table) {
     // Escape the id for use inside a CSS attribute selector.
     const sel = '[data-id="' + (id || '').replace(/"/g, '\\"') + '"]';
     // Look in BOTH the available and the sold tbodies for this table.
+    // v3.69: in Grid view the card is a tile (also carries data-id) inside the grid containers.
     const bodyIds = table === 'singles'
-      ? ['singles-body', 'singles-sold-body']
-      : ['slabs-body', 'slabs-sold-body'];
+      ? ['singles-body', 'singles-sold-body', 'singles-grid', 'singles-grid-alt']
+      : ['slabs-body', 'slabs-sold-body', 'slabs-grid', 'slabs-grid-alt'];
     let el = null;
     for (const bid of bodyIds) {
       const root = document.getElementById(bid);
@@ -19378,8 +19427,8 @@ function renderCustomChart() {
   if (dual && cbState.y.length > 1) {
     scales.y2 = {
       position: 'right', grid:{display:false},
-      ticks: { color: CB_PALETTE[1], font:{size:10}, callback: v => _cbFmtAxis(v, yKey2) },
-      title: { display:true, text:CB_FIELDS[yKey2]?.label||'', color:CB_PALETTE[1], font:{size:10} }
+      ticks: { color: axisColor, font:{size:10}, callback: v => _cbFmtAxis(v, yKey2) },
+      title: { display:true, text:CB_FIELDS[yKey2]?.label||'', color:axisColor, font:{size:10} }
     };
   }
 
@@ -19426,7 +19475,8 @@ function renderCustomChart() {
     const color   = CB_PALETTE[cbState.y.indexOf(yKey)];
     const fmt     = (v) => _cbFmtMeasure(v, yKey);
     const isAvg   = f.agg === 'avg';
-    return `<span><strong style="color:${color}">${f.label}</strong>` +
+    // The palette colour marks the series with a small swatch, the label itself stays in the text colour.
+    return `<span><span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px;vertical-align:1px"></span><strong style="color:var(--text)">${f.label}</strong>` +
            (isAvg ? '' : ` · Total: ${fmt(total)}`) +
            ` · Avg: ${fmt(avg)} · Min: ${fmt(min)} · Max: ${fmt(max)}</span>`;
   });
@@ -19797,7 +19847,7 @@ function _drawSavedChart(config) {
     y: { ticks:{color:axisColor,font:{size:10},callback:v=>_cbFmtAxis(v, yKey1)}, grid:{color:gridColor}, title:{display:true,text:CB_FIELDS[yKey1]?.label||'',color:axisColor,font:{size:10}} }
   };
   if (config.dualAxis && config.yFields.length > 1) {
-    scales.y2 = { position:'right', grid:{display:false}, ticks:{color:pal[1],font:{size:10},callback:v=>_cbFmtAxis(v, yKey2)}, title:{display:true,text:CB_FIELDS[yKey2]?.label||'',color:pal[1],font:{size:10}} };
+    scales.y2 = { position:'right', grid:{display:false}, ticks:{color:axisColor,font:{size:10},callback:v=>_cbFmtAxis(v, yKey2)}, title:{display:true,text:CB_FIELDS[yKey2]?.label||'',color:axisColor,font:{size:10}} };
   }
 
   window._savedChartInstances[config.id] = new Chart(canvas.getContext('2d'), {
@@ -19831,7 +19881,7 @@ function _drawSavedChart(config) {
       const min   = vals.length ? Math.min(...vals) : 0;
       const isAvg = f.agg === 'avg';
       const fmt   = (v) => _cbFmtMeasure(v, yKey);
-      return `<span><strong style="color:${pal[yi%pal.length]}">${f.label}</strong>` +
+      return `<span><span aria-hidden="true" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${pal[yi%pal.length]};margin-right:6px;vertical-align:1px"></span><strong style="color:var(--text)">${f.label}</strong>` +
              (isAvg ? '' : ` · Total: ${fmt(tot)}`) +
              ` · Avg: ${fmt(avg)} · Min: ${fmt(min)} · Max: ${fmt(max)}</span>`;
     });

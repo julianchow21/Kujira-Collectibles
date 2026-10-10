@@ -85,7 +85,11 @@ What the audit found wrong (the reasons behind the changes):
 5. **Card inspector** side panel.
 6. **Sidebar nav, mobile Holdings rows and tab bar,** then the signature details.
 
-## 3. Open question for Julian, ask before Step 3
+## 3. Step 3 decision (answered 10/10/2026)
+
+Julian said skip the chart. Build the Overview hero WITHOUT the value-over-time chart. That means the value, gain chip and side stats only, with no 1M/3M/1Y/All control. Following the fallback below, drop "Held N days" from the inspector too unless Julian asks for it.
+
+### Original question
 
 On 04/07/2026 `CLAUDE.md` recorded that Julian dropped a set of financial modules, including "mark-to-market history" and "inventory ageing". The Overview's value-over-time chart (market value against a stepped cost-basis line, 1M/3M/1Y/All, built from each item's `priceHistory` and `datePurchased`) and the inspector's "Held N days" overlap with those. Ask whether he wants them. If not, ship the hero without the chart (value, gain chip and side stats) and drop "Held".
 
@@ -134,6 +138,28 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - Geist is not self-hosted
   - cert numbers are not mono yet
   - the listing description textarea is still mono
+
+Step 2 shipped on `redesign` as v3.69 on 10/10/2026: card art, Grid/List and drawn slabs.
+
+**Image storage (local only, never synced)**
+- `kjr_card_images` in localStorage maps a `tcgdexId` (Japanese keys `ja:<id>`) to an image base, or a 7-day miss
+- `kjr_slab_card_ids` links a slab to a card id. Slabs resolve read-only through `resolveTcgdexId` on a copy of the row
+
+**How images get filled**
+- `fetchPriceFromTcgdex` stores the image base as a side effect, wrapped so the price result can't change
+- A lazy queue in features.js fills the rest: IntersectionObserver, 3 at once, 150 ms gap, waits while offline, pauses after 3 failures in a row, and no-ops without an observer
+
+**Grid**
+- Grid tiles are buttons with one delegated click per grid
+- Grid/List prefs are `kjr_view_singles` and `kjr_view_slabs`, default list
+- No selection or bulk actions in grid, the Columns button is hidden, and the grid follows the list's sort
+
+**Tests:** tests/card-art.test.js has 33 tests.
+
+**Open from Step 2**
+- Dealer `focusCoreRow` doesn't highlight a card in grid view
+- Slab art can pick another printing that shares the name and number
+- Tested on 30 sample rows, not the live 788 singles and 159 slabs
 
 Step 1 was paused on 09/10/2026 before any repo file changed. The baseline is `./qc.sh` PASS and `node --test` 807 tests, 801 pass, 0 fail, 6 skipped. The analysis below is done, so apply it rather than redoing it. The ratios were computed on draft values, so re-verify them against the real `styles.css`.
 

@@ -3486,6 +3486,610 @@ async function exportXlsx() {
   }
 }
 
+// ═════════════ Card art cache, Grid view and drawn slabs (v3.69) ═════════════
+// Redesign Step 2. Card images come from TCGdex: every card object carries an `image`
+// base URL and `<base>/low.webp` is a small thumbnail. The base is kept in a LOCAL map
+// (localStorage `kjr_card_images`: tcgdexId -> base URL, or {miss:'YYYY-MM-DD'}), never on
+// a synced row and never with markDirty, so phantom sync conflicts cannot come back
+// (see the v3.26 note in CLAUDE.md). Bases arrive two ways, both free:
+//   1. piggyback: fetchPriceFromTcgdex and the launch intro already fetch /cards/{id},
+//      they hand us data.image
+//   2. lazy backfill: for rows ON SCREEN with no base yet, an IntersectionObserver queues
+//      a lookup, at most 3 at once and about 150ms apart, skipped offline
+// Rendering itself never fetches. Slabs carry no tcgdexId, so an English slab with a card
+// number is resolved on a SHALLOW COPY (resolveTcgdexId writes onto what it is given) and
+// the link is kept in `kjr_slab_card_ids`. A row with no id, a miss (retried after 7 days)
+// or an image that fails to load shows the neutral placeholder. Nothing here guesses.
+var KJR_IMG_KEY = 'kjr_card_images';
+var KJR_SLAB_LINK_KEY = 'kjr_slab_card_ids';
+var KJR_IMG_HOST = 'https://assets.tcgdex.net/';
+var KJR_IMG_MISS_DAYS = 7;
+var KJR_IMG_MAX_ENTRIES = 4000;
+var KJR_IMG_CONCURRENCY = 3;
+var KJR_IMG_GAP_MS = 150;
+var KJR_IMG_COOL_MS = 60000;   // a failed lookup is not retried for a minute (this session only)
+var KJR_IMG_PAUSE_MS = 30000;  // three failures in a row pause the whole queue for 30 seconds
+
+var _kjrImgMem = null;        // parsed kjr_card_images, loaded on first use
+var _kjrSlabMem = null;       // parsed kjr_slab_card_ids, loaded on first use
+var _kjrImgBroken = Object.create(null); // session only: image URLs that failed to load
+var _kjrImgCool = Object.create(null);   // session only: job key -> do not retry before this time
+var _kjrImgIO = Object.create(null);     // table -> IntersectionObserver
+var _kjrImgQ = { jobs: [], byKey: Object.create(null), active: 0, lastStart: 0, timer: 0, pauseUntil: 0, fails: 0 };
+
+function kjrOnline() { return typeof navigator === 'undefined' || navigator.onLine !== false; }
+function kjrImgToday() { return new Date().toISOString().slice(0, 10); }
+// A miss counts for 7 days from its stamp. A stamp that is malformed or more than a day
+// ahead of the clock counts as expired, so a bad value can never block a lookup for good.
+function kjrImgMissFresh(stamp) {
+  if (typeof stamp !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(stamp)) return false;
+  var t = Date.parse(stamp + 'T00:00:00Z');
+  if (!isFinite(t)) return false;
+  var age = Date.now() - t;
+  return age > -86400000 && age < KJR_IMG_MISS_DAYS * 86400000;
+}
+// English ids are stored bare, the way the pricing code holds them ("swsh7-215"). Other
+// languages get a prefix ("ja:SV2a-001"), so two printings that share an id never swap art.
+function kjrCardImageKey(tcgdexId, lang) {
+  var id = String(tcgdexId == null ? '' : tcgdexId).trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(id)) return '';
+  var l = lang ? String(lang) : 'en';
+  return l === 'en' ? id : l + ':' + id;
+}
+function kjrImgMapLoad() {
+  if (_kjrImgMem) return _kjrImgMem;
+  var m = {};
+  try {
+    var raw = localStorage.getItem(KJR_IMG_KEY);
+    var parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed;
+  } catch (e) { m = {}; }
+  _kjrImgMem = m;
+  return m;
+}
+function kjrImgMapSave() {
+  // Cache only. If storage is blocked or full the map still serves this session from memory.
+  try { localStorage.setItem(KJR_IMG_KEY, JSON.stringify(_kjrImgMem || {})); return true; } catch (e) { return false; }
+}
+function kjrImgRoom(m, key) {
+  if (Object.prototype.hasOwnProperty.call(m, key)) return true;
+  var keys = Object.keys(m);
+  if (keys.length < KJR_IMG_MAX_ENTRIES) return true;
+  var dropped = 0;
+  keys.forEach(function (k) {
+    var v = m[k];
+    if (v && typeof v === 'object' && !kjrImgMissFresh(v.miss)) { delete m[k]; dropped++; }
+  });
+  return keys.length - dropped < KJR_IMG_MAX_ENTRIES;
+}
+// Only an https URL on the TCGdex asset host is ever stored or used as an <img> source.
+function kjrCleanImageBase(v) {
+  if (typeof v !== 'string') return '';
+  var s = v.trim().replace(/\/+$/, '');
+  if (s.length > 200) return '';
+  return /^https:\/\/assets\.tcgdex\.net\/[A-Za-z0-9._\/-]+$/.test(s) ? s : '';
+}
+function kjrCardImageBase(tcgdexId, lang) {
+  var key = kjrCardImageKey(tcgdexId, lang);
+  if (!key) return '';
+  var m = kjrImgMapLoad();
+  if (!Object.prototype.hasOwnProperty.call(m, key)) return '';
+  return kjrCleanImageBase(m[key]);
+}
+function kjrCardImageMissed(tcgdexId, lang) {
+  var key = kjrCardImageKey(tcgdexId, lang);
+  if (!key) return false;
+  var m = kjrImgMapLoad();
+  if (!Object.prototype.hasOwnProperty.call(m, key)) return false;
+  var v = m[key];
+  return !!(v && typeof v === 'object' && kjrImgMissFresh(v.miss));
+}
+function kjrCardImageUrl(base, size) { return base + '/' + (size === 'high' ? 'high' : 'low') + '.webp'; }
+function kjrRememberCardImage(tcgdexId, imageBase, lang) {
+  try {
+    var key = kjrCardImageKey(tcgdexId, lang);
+    var base = kjrCleanImageBase(imageBase);
+    if (!key || !base) return false;
+    var m = kjrImgMapLoad();
+    if (m[key] === base) return true;
+    if (!kjrImgRoom(m, key)) return false;
+    m[key] = base;
+    kjrImgMapSave();
+    kjrApplyArt([key]); // draw it on any placeholder already on the page
+    return true;
+  } catch (e) { return false; }
+}
+function kjrRememberCardImageMiss(tcgdexId, lang) {
+  try {
+    var key = kjrCardImageKey(tcgdexId, lang);
+    if (!key) return false;
+    var m = kjrImgMapLoad();
+    if (kjrCleanImageBase(m[key])) return false; // never replace a known image with a miss
+    if (!kjrImgRoom(m, key)) return false;
+    m[key] = { miss: kjrImgToday() };
+    kjrImgMapSave();
+    return true;
+  } catch (e) { return false; }
+}
+
+// ── Slab -> card link (kjr_slab_card_ids). Slab rows have no tcgdexId, so the id found by
+// resolveTcgdexId on a copy is remembered here: slabId -> {id, n} or {miss, n}, where n is
+// the name and language it was resolved for. A renamed slab no longer matches and resolves again.
+function kjrSlabMapLoad() {
+  if (_kjrSlabMem) return _kjrSlabMem;
+  var m = {};
+  try {
+    var raw = localStorage.getItem(KJR_SLAB_LINK_KEY);
+    var parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed;
+  } catch (e) { m = {}; }
+  _kjrSlabMem = m;
+  return m;
+}
+function kjrSlabMapSave() {
+  try { localStorage.setItem(KJR_SLAB_LINK_KEY, JSON.stringify(_kjrSlabMem || {})); return true; } catch (e) { return false; }
+}
+function kjrSlabSig(slab) {
+  var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab && slab.language) : 'en';
+  return String(slab && slab.name || '').trim() + '|' + lang;
+}
+function kjrSlabLinkState(slab) {
+  if (!slab || slab.id == null) return { state: 'none' };
+  var m = kjrSlabMapLoad(), sid = String(slab.id);
+  if (!Object.prototype.hasOwnProperty.call(m, sid)) return { state: 'none' };
+  var v = m[sid];
+  if (!v || typeof v !== 'object' || v.n !== kjrSlabSig(slab)) return { state: 'none' };
+  if (typeof v.id === 'string' && kjrCardImageKey(v.id, 'en')) return { state: 'id', id: v.id };
+  if (kjrImgMissFresh(v.miss)) return { state: 'miss' };
+  return { state: 'none' };
+}
+function kjrSlabLinkSet(slabId, sig, tcgdexId) {
+  try {
+    var sid = String(slabId == null ? '' : slabId);
+    if (!sid || sid === '__proto__' || sid.length > 80) return false;
+    var m = kjrSlabMapLoad();
+    if (!Object.prototype.hasOwnProperty.call(m, sid) && Object.keys(m).length >= KJR_IMG_MAX_ENTRIES) {
+      // full: forget links for slabs that no longer exist, then give up quietly if still full
+      var live = {};
+      ((typeof DB !== 'undefined' && DB && DB.slabs) || []).forEach(function (r) { if (r) live[String(r.id)] = 1; });
+      Object.keys(m).forEach(function (k) { if (!live[k]) delete m[k]; });
+      if (Object.keys(m).length >= KJR_IMG_MAX_ENTRIES) return false;
+    }
+    m[sid] = tcgdexId ? { id: String(tcgdexId), n: sig } : { miss: kjrImgToday(), n: sig };
+    kjrSlabMapSave();
+    return true;
+  } catch (e) { return false; }
+}
+// An identical slab (same name and language) that already resolved saves a request.
+function kjrSlabLinkBySig(sig) {
+  var m = kjrSlabMapLoad();
+  var ids = Object.keys(m);
+  for (var i = 0; i < ids.length; i++) {
+    var v = m[ids[i]];
+    if (v && typeof v === 'object' && v.n === sig && typeof v.id === 'string' && kjrCardImageKey(v.id, 'en')) return v.id;
+  }
+  return '';
+}
+
+// ── What does this row show? 'hit' (a base is known), 'need' (a lookup may find one) or 'none'.
+function kjrArtState(item, table) {
+  var none = { state: 'none' };
+  if (!item) return none;
+  var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(item.language) : 'en';
+  var id = String(item.tcgdexId == null ? '' : item.tcgdexId).trim();
+  if (!id && table === 'slabs' && lang === 'en' && item.id != null) {
+    var link = kjrSlabLinkState(item);
+    if (link.state === 'id') { id = link.id; }
+    else if (link.state === 'miss') { return none; }
+    else {
+      // No id yet. Only a name with a card number can resolve (the same test the price lane uses).
+      var resolvable = typeof _baseCardName === 'function' && typeof _tcgdexNumber === 'function' &&
+        !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+      return resolvable ? { state: 'need', key: 'slab:' + item.id, slab: String(item.id), lang: 'en' } : none;
+    }
+  }
+  var key = kjrCardImageKey(id, lang);
+  if (!key) return none;
+  var base = kjrCardImageBase(id, lang);
+  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? none : { state: 'hit', base: base, key: key };
+  if (kjrCardImageMissed(id, lang)) return none;
+  return { state: 'need', key: key, tcg: id, lang: lang };
+}
+// The same question for a placeholder already on the page, from its data attributes alone.
+function kjrSlotState(el) {
+  var tcg = el.getAttribute('data-tcg') || '';
+  var lang = el.getAttribute('data-lg') || 'en';
+  var sid = el.getAttribute('data-slab') || '';
+  if (!tcg && sid) {
+    var m = kjrSlabMapLoad();
+    var v = Object.prototype.hasOwnProperty.call(m, sid) ? m[sid] : null;
+    if (v && typeof v.id === 'string') { tcg = v.id; lang = 'en'; }
+    else if (v && kjrImgMissFresh(v.miss)) return { state: 'none' };
+    else return { state: 'need' };
+  }
+  if (!tcg) return { state: 'none' };
+  var base = kjrCardImageBase(tcg, lang);
+  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? { state: 'none' } : { state: 'hit', base: base };
+  return kjrCardImageMissed(tcg, lang) ? { state: 'none' } : { state: 'need' };
+}
+function kjrImgTag(base, sz) {
+  var w = sz === 'c' ? 245 : 28, h = sz === 'c' ? 337 : 39;
+  return '<img class="kjr-card-img" src="' + kjrEscape(kjrCardImageUrl(base, 'low')) + '" width="' + w + '" height="' + h +
+    '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">';
+}
+// One art slot: the picture when a base is known, else the neutral placeholder. A placeholder
+// that a lookup could still fill carries data-need plus what the lookup needs.
+function kjrArtSlot(st, sz, cls) {
+  var c = 'kjr-art ' + cls;
+  if (st.state === 'hit') return '<span class="' + c + '" data-sz="' + sz + '">' + kjrImgTag(st.base, sz) + '</span>';
+  var attrs = '';
+  if (st.state === 'need') {
+    attrs = ' data-need="1" data-ik="' + kjrEscape(st.key) + '" data-lg="' + kjrEscape(st.lang) + '"' +
+      (st.tcg ? ' data-tcg="' + kjrEscape(st.tcg) + '"' : '') + (st.slab ? ' data-slab="' + kjrEscape(st.slab) + '"' : '');
+  }
+  return '<span class="' + c + ' kjr-art-ph" data-sz="' + sz + '"' + attrs + '></span>';
+}
+function kjrSlabMeta(item) {
+  var r = typeof _resolveGrader === 'function'
+    ? _resolveGrader(item.grader, item.grade, item.notes, item.name)
+    : { grader: '', grade: '', pristine: false };
+  var grader = r.grader || String(item.grader || '').trim().toUpperCase() || '?';
+  var grade = r.grade || String(item.grade || '').trim() || '?';
+  var key = r.grader === 'PSA' ? 'psa' : r.grader === 'CGC' ? 'cgc' : r.grader === 'BGS' ? 'bgs' : r.grader === 'TAG' ? 'tag' : 'other';
+  return { grader: grader, grade: grade + (r.pristine ? ' ★' : ''), key: key, pristine: !!r.pristine };
+}
+// Drawn slab: grey case, grader-coloured label bar (grader left, grade right), card art inset below.
+// size 'tile' is the full slab for the grid, size 'thumb' is the list thumbnail with its grader bar.
+// graderGradeBadge() is untouched, the table keeps its badge column.
+function kjrSlabArtHtml(item, size) {
+  var meta = kjrSlabMeta(item);
+  var st = kjrArtState(item, 'slabs');
+  if (size === 'thumb') return kjrArtSlot(st, 't', 'kjr-thumb kjr-thumb-slab kjr-g-' + meta.key);
+  return '<span class="kjr-slab" aria-hidden="true">' +
+    '<span class="kjr-slab-label kjr-g-' + meta.key + '"><span>' + kjrEscape(meta.grader) + '</span><span>' + kjrEscape(meta.grade) + '</span></span>' +
+    kjrArtSlot(st, 'c', 'kjr-slab-art') + '</span>';
+}
+function kjrThumbHtml(item, table) {
+  if (table === 'slabs') return kjrSlabArtHtml(item, 'thumb');
+  return kjrArtSlot(kjrArtState(item, table), 't', 'kjr-thumb');
+}
+
+// ── Draw a freshly learned image on every matching placeholder in place.
+function kjrApplyArt(keys) {
+  if (typeof document === 'undefined' || !document.querySelectorAll) return 0;
+  var slots = document.querySelectorAll('.kjr-art[data-need]');
+  var drawn = 0;
+  for (var i = 0; i < slots.length; i++) {
+    var el = slots[i];
+    if (keys && keys.indexOf(el.getAttribute('data-ik')) < 0) continue;
+    var st = kjrSlotState(el);
+    if (st.state === 'need') continue;
+    el.removeAttribute('data-need');
+    if (st.state === 'hit') {
+      el.classList.remove('kjr-art-ph');
+      el.insertAdjacentHTML('afterbegin', kjrImgTag(st.base, el.getAttribute('data-sz')));
+      drawn++;
+    }
+  }
+  return drawn;
+}
+// One delegated capture-phase listener: an image that fails to load drops back to the placeholder.
+// The failed URL is remembered for this session only, so a flaky moment never costs a week.
+function kjrImgOnError(e) {
+  var img = e && e.target;
+  if (!img || img.tagName !== 'IMG' || !img.classList || !img.classList.contains('kjr-card-img')) return;
+  if (kjrOnline()) _kjrImgBroken[img.getAttribute('src') || ''] = true;
+  var slot = img.parentNode;
+  img.remove();
+  if (slot && slot.classList) slot.classList.add('kjr-art-ph');
+}
+document.addEventListener('error', kjrImgOnError, true);
+window.addEventListener('storage', function (e) {
+  if (e && e.key === KJR_IMG_KEY) _kjrImgMem = null;
+  if (e && e.key === KJR_SLAB_LINK_KEY) _kjrSlabMem = null;
+});
+window.addEventListener('online', function () { kjrImgPump(); });
+
+// ── Lazy backfill. Only rows on screen are looked up, at most KJR_IMG_CONCURRENCY at once and
+// KJR_IMG_GAP_MS apart. No IntersectionObserver (the test sandbox) means no lookups at all.
+function kjrImgJobFromEl(el) {
+  return {
+    key: el.getAttribute('data-ik') || '', tcg: el.getAttribute('data-tcg') || '',
+    slab: el.getAttribute('data-slab') || '', lang: el.getAttribute('data-lg') || 'en'
+  };
+}
+function kjrImgOnIntersect(entries) {
+  for (var i = 0; i < entries.length; i++) {
+    var el = entries[i].target;
+    el._kjrVis = !!entries[i].isIntersecting;
+    if (el._kjrVis && el.hasAttribute('data-need')) kjrQueueCardImage(kjrImgJobFromEl(el), el);
+  }
+}
+function kjrObserveCardImages(root, table) {
+  if (typeof IntersectionObserver !== 'function') return 0;
+  if (!root || typeof root.querySelectorAll !== 'function') return 0;
+  var io = _kjrImgIO[table];
+  if (io) { try { io.disconnect(); } catch (e) { /* observer already gone */ } }
+  var slots = root.querySelectorAll('.kjr-art[data-need]');
+  if (!slots.length) return 0;
+  if (!io) io = _kjrImgIO[table] = new IntersectionObserver(kjrImgOnIntersect, { rootMargin: '240px 0px' });
+  for (var i = 0; i < slots.length; i++) io.observe(slots[i]);
+  return slots.length;
+}
+// Is the answer already on file (another tab, the price lane, an identical card)?
+function kjrJobSettled(job) {
+  if (job.tcg) return !!(kjrCardImageBase(job.tcg, job.lang) || kjrCardImageMissed(job.tcg, job.lang));
+  var m = kjrSlabMapLoad();
+  var v = Object.prototype.hasOwnProperty.call(m, job.slab) ? m[job.slab] : null;
+  if (v && typeof v.id === 'string') return !!(kjrCardImageBase(v.id, 'en') || kjrCardImageMissed(v.id, 'en'));
+  return !!(v && kjrImgMissFresh(v.miss));
+}
+function kjrQueueCardImage(job, el) {
+  if (!job || !job.key) return false;
+  var q = _kjrImgQ;
+  var queued = q.byKey[job.key];
+  if (queued) { if (el && queued.els.indexOf(el) < 0) queued.els.push(el); return false; }
+  var cool = _kjrImgCool[job.key];
+  if (cool && cool > Date.now()) return false;
+  if (kjrJobSettled(job)) { kjrApplyArt([job.key]); return false; }
+  job.els = el ? [el] : [];
+  job.viewport = !!el; // a lookup that came from the viewport is dropped if its row scrolls away first
+  q.byKey[job.key] = job;
+  q.jobs.push(job);
+  kjrImgPump();
+  return true;
+}
+function kjrImgJobVisible(job) {
+  if (!job.els || !job.els.length) return true;
+  for (var i = 0; i < job.els.length; i++) {
+    var el = job.els[i];
+    if (el && el._kjrVis !== false && el.isConnected !== false) return true;
+  }
+  return false;
+}
+function kjrImgPump() {
+  var q = _kjrImgQ;
+  if (q.timer) return;
+  while (q.jobs.length && q.active < KJR_IMG_CONCURRENCY) {
+    if (!kjrOnline()) return; // the 'online' event pumps again
+    var now = Date.now();
+    var wait = Math.max(q.pauseUntil - now, q.lastStart + KJR_IMG_GAP_MS - now);
+    if (wait > 0) {
+      q.timer = setTimeout(function () { q.timer = 0; kjrImgPump(); }, wait);
+      return;
+    }
+    var job = q.jobs.shift();
+    if (job.viewport && !kjrImgJobVisible(job)) { delete q.byKey[job.key]; continue; }
+    kjrImgStart(job);
+  }
+}
+function kjrImgStart(job) {
+  var q = _kjrImgQ;
+  var keys = [job.key];
+  q.active++;
+  q.lastStart = Date.now();
+  kjrImgRun(job, keys).catch(function () { /* kjrImgRun handles its own failures */ }).then(function () {
+    q.active--;
+    delete q.byKey[job.key];
+    try { kjrApplyArt(keys); } catch (e) { /* drawing is cosmetic */ }
+    kjrImgPump();
+  });
+}
+function kjrImgCoolDown(key) {
+  var q = _kjrImgQ;
+  _kjrImgCool[key] = Date.now() + KJR_IMG_COOL_MS;
+  q.fails++;
+  if (q.fails >= 3) { q.pauseUntil = Date.now() + KJR_IMG_PAUSE_MS; q.fails = 0; }
+}
+async function kjrImgRun(job, keys) {
+  var q = _kjrImgQ;
+  var lang = job.lang || 'en';
+  var id = job.tcg || '';
+  try {
+    if (!id) {
+      // A slab: find the card first. resolveTcgdexId WRITES tcgdexId onto the object it is given,
+      // so it gets a shallow copy and the slab row is never touched, never marked dirty.
+      var slab = (typeof DB !== 'undefined' && DB && Array.isArray(DB.slabs))
+        ? DB.slabs.find(function (r) { return r && String(r.id) === job.slab; }) : null;
+      if (!slab || slab.tcgdexId) return; // deleted meanwhile, or it carries an id of its own now
+      var sig = kjrSlabSig(slab);
+      id = kjrSlabLinkBySig(sig);
+      if (!id) {
+        id = await resolveTcgdexId(Object.assign({}, slab));
+        if (!id) {
+          // resolveTcgdexId swallows its own network errors, so offline is the one failure we can tell apart
+          if (kjrOnline()) { kjrSlabLinkSet(slab.id, sig, null); q.fails = 0; } else { kjrImgCoolDown(job.key); }
+          return;
+        }
+      }
+      kjrSlabLinkSet(slab.id, sig, id);
+      keys.push(kjrCardImageKey(id, 'en'));
+      lang = 'en';
+    }
+    if (kjrCardImageBase(id, lang) || kjrCardImageMissed(id, lang)) return; // learned while queued
+    var api = typeof TCGDEX_BASE === 'string' ? TCGDEX_BASE : 'https://api.tcgdex.net/v2';
+    var res = await fetch(api + '/' + lang + '/cards/' + encodeURIComponent(id));
+    if (res.status === 404) { kjrRememberCardImageMiss(id, lang); q.fails = 0; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    q.fails = 0;
+    if (data && kjrRememberCardImage(id, data.image, lang)) return;
+    kjrRememberCardImageMiss(id, lang); // the card exists but has no usable image
+  } catch (e) {
+    kjrImgCoolDown(job.key);
+  }
+}
+
+// ── Tiles. A tile is one <button>, the grid container has ONE delegated click listener.
+function kjrTileMoney(n) {
+  var v = Number(n);
+  if (!isFinite(v) || v <= 0) return '';
+  var whole = Math.round(v);
+  return whole < 1 ? '<S$1' : 'S$' + whole.toLocaleString('en-SG');
+}
+// Gain or loss against cost, with an arrow AND a sign so colour is never the only signal.
+function kjrTilePct(market, cost) {
+  if (!(market > 0) || !(cost > 0)) return null;
+  var p = (market - cost) / cost * 100;
+  var a = Math.abs(p);
+  var txt = a.toFixed(a >= 100 ? 0 : 1);
+  if (Number(txt) === 0) return { cls: '', text: '0%' };
+  return p > 0 ? { cls: 'pos', text: '▲ +' + txt + '%' } : { cls: 'neg', text: '▼ -' + txt + '%' };
+}
+function kjrTileHtml(item, table, isSold) {
+  var isSlab = table === 'slabs';
+  var name = String(item.name || '-');
+  var qty = isSlab ? 1 : (parseInt(item.qty, 10) || 1);
+  var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN'; // blank has always meant EN in this app
+  var mi = effectiveMarketInfo(item);
+  var cost = parseFloat(item.costPrice) || 0;
+  var price = mi.value > 0 ? (mi.isEstimate ? '~' : '') + kjrTileMoney(mi.value) : '-';
+  var pct = mi.isEstimate ? null : kjrTilePct(mi.value, cost); // an estimate from cost has no gain to show
+  var askN = parseFloat(item.listPrice);
+  var ask = askN > 0 ? kjrTileMoney(askN) + (qty > 1 ? ' each' : '') : '';
+  var manual = !isSlab && lang !== 'EN'; // non-English raw singles are priced by hand
+  // One short line each, so a narrow tile never has to cut "Manual price" and the asking price into one clipped line.
+  // With nothing to say the line stays as an empty row so tiles in a grid row keep their rhythm.
+  var notes = [manual ? 'Manual price' : '', ask ? 'Asking ' + ask : ''].filter(Boolean);
+  if (!notes.length) notes.push('');
+  var sub, meta = null;
+  if (isSlab) {
+    meta = kjrSlabMeta(item);
+    sub = meta.grader + ' ' + meta.grade + (item.certNo ? ' · ' + item.certNo : '');
+  } else {
+    sub = [item.set, item.type === 'sealed' ? 'Sealed' : ''].filter(Boolean).join(' · ');
+  }
+  var art = isSlab ? kjrSlabArtHtml(item, 'tile') : kjrArtSlot(kjrArtState(item, table), 'c', 'kjr-tile-art');
+  // The accessible name is the card name. A slab adds its grade (the drawn label is decorative) and a sold
+  // tile says so, because the Sold tag and the dimmed art are only visual.
+  var spoken = name + (isSlab ? ', ' + meta.grader + ' ' + meta.grade.replace(' \u2605', ' pristine') : '') + (isSold ? ', sold' : '');
+  return '<button type="button" class="kjr-tile' + (isSold ? ' is-sold' : '') + '" data-id="' + kjrEscape(item.id) + '" aria-label="' + kjrEscape(spoken) + '">' +
+    '<span class="kjr-tile-stage">' + art +
+      (qty > 1 ? '<span class="kjr-tile-qty">×' + qty + '</span>' : '') +
+      '<span class="kjr-tile-lang">' + kjrEscape(lang) + '</span>' +
+      (isSold ? '<span class="kjr-tile-soldtag">Sold</span>' : '') +
+    '</span>' +
+    '<span class="kjr-tile-body">' +
+      '<span class="kjr-tile-name" title="' + kjrEscape(name) + '">' + kjrEscape(name) + '</span>' +
+      '<span class="kjr-tile-set">' + kjrEscape(sub) + '</span>' +
+      '<span class="kjr-tile-val"><span class="kjr-tile-price">' + kjrEscape(price) + '</span>' +
+        (pct ? '<span class="kjr-tile-pct ' + pct.cls + '">' + pct.text + '</span>' : '') + '</span>' +
+      notes.map(function (n) { return '<span class="kjr-tile-note">' + kjrEscape(n) + '</span>'; }).join('') +
+    '</span></button>';
+}
+// Same two messages as kjrInvEmptyRow, as a block instead of a table row.
+function kjrInvEmptyGrid(opts) {
+  opts = opts || {};
+  if (opts.filtered) {
+    return '<div class="hig-empty kjr-grid-empty"><div class="hig-empty-icon">🔍</div>' +
+      '<div class="hig-empty-title">No matches</div>' +
+      '<div class="hig-empty-sub">Nothing matches the current search or filters. Clear them to see everything.</div></div>';
+  }
+  return '<div class="hig-empty kjr-grid-empty"><div class="hig-empty-icon">' + opts.icon + '</div>' +
+    '<div class="hig-empty-title">' + opts.title + '</div>' +
+    '<div class="hig-empty-sub">' + opts.sub + '</div>' +
+    '<div class="hig-empty-action"><button type="button" class="btn btn-primary" data-kjr-act="add">' + opts.ctaLabel + '</button></div></div>';
+}
+function kjrGridClick(table, e) {
+  var t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-kjr-act], .kjr-tile') : null;
+  if (!t) return;
+  var act = t.getAttribute('data-kjr-act');
+  if (act === 'alt') { toggleSoldSection(table); return; }
+  if (act === 'add') { if (table === 'singles') openAddSingle(); else openAddSlab(); return; }
+  var id = t.getAttribute('data-id');
+  if (id == null) return;
+  if (table === 'singles') openEditSingle(id); else openEditSlab(id);
+}
+function kjrGridBind(table) {
+  var wrap = document.getElementById(table + '-grid-wrap');
+  if (!wrap || wrap._kjrGridBound) return;
+  wrap._kjrGridBound = true;
+  wrap.addEventListener('click', function (e) { kjrGridClick(table, e); });
+}
+function kjrGridClear(table) {
+  var grid = document.getElementById(table + '-grid');
+  var alt = document.getElementById(table + '-grid-alt');
+  if (grid && grid.innerHTML) grid.innerHTML = '';
+  if (alt && alt.innerHTML) alt.innerHTML = '';
+}
+// o: { main, mainSold, inline, alt, altSold, altLabel, showAlt, altOpen, empty }. The rows are the
+// ones the list would show, already filtered and sorted by renderSingles / renderSlabs.
+function kjrRenderGrid(table, o) {
+  var grid = document.getElementById(table + '-grid');
+  var alt = document.getElementById(table + '-grid-alt');
+  if (!grid) return false;
+  kjrGridBind(table);
+  // A re-render replaces every tile. Keep keyboard focus on the same card (the edit dialog hands
+  // focus back to its tile, and saving re-renders right after).
+  var focusId = null;
+  try {
+    var ae = document.activeElement;
+    if (ae && ae.classList && ae.classList.contains('kjr-tile') && (grid.contains(ae) || (alt && alt.contains(ae)))) focusId = ae.getAttribute('data-id');
+  } catch (e) { focusId = null; }
+  var tiles = o.main.map(function (i) { return kjrTileHtml(i, table, !!o.mainSold); }).join('') +
+    (o.inline || []).map(function (i) { return kjrTileHtml(i, table, true); }).join('');
+  grid.innerHTML = tiles || kjrInvEmptyGrid(o.empty);
+  if (alt) {
+    alt.innerHTML = o.showAlt
+      ? '<button type="button" class="sold-section-toggle" data-kjr-act="alt" aria-expanded="' + (o.altOpen ? 'true' : 'false') + '">' +
+          '<span aria-hidden="true">' + (o.altOpen ? '▼' : '▶') + '</span><span>' + (o.altOpen ? 'Hide ' : 'Show ') + kjrEscape(o.altLabel) + '</span>' +
+          '<span class="sold-count-badge">' + o.alt.length + '</span></button>' +
+        (o.altOpen ? '<div class="kjr-grid">' + o.alt.map(function (i) { return kjrTileHtml(i, table, !!o.altSold); }).join('') + '</div>' : '')
+      : '';
+  }
+  if (focusId !== null) {
+    var tilesNow = (grid.querySelectorAll ? Array.prototype.slice.call(grid.querySelectorAll('.kjr-tile')) : [])
+      .concat(alt && alt.querySelectorAll ? Array.prototype.slice.call(alt.querySelectorAll('.kjr-tile')) : []);
+    for (var k = 0; k < tilesNow.length; k++) {
+      if (tilesNow[k].getAttribute('data-id') === focusId) { try { tilesNow[k].focus({ preventScroll: true }); } catch (e2) { /* focus is a nicety */ } break; }
+    }
+  }
+  kjrObserveCardImages(document.getElementById(table === 'singles' ? 'page-inventory' : 'page-slabs'), table);
+  return true;
+}
+
+// ── Grid / List preference, per tab, on this device. Default is the list, so nothing changes
+// until the grid is picked.
+var KJR_VIEW_KEYS = { singles: 'kjr_view_singles', slabs: 'kjr_view_slabs' };
+var _kjrViewMem = {};
+function kjrViewMode(table) {
+  if (!KJR_VIEW_KEYS[table]) return 'list';
+  if (_kjrViewMem[table]) return _kjrViewMem[table];
+  try { return localStorage.getItem(KJR_VIEW_KEYS[table]) === 'grid' ? 'grid' : 'list'; } catch (e) { return 'list'; }
+}
+// Keeps the page class and the two buttons in step with the preference. Returns the mode.
+function kjrViewApply(table) {
+  var mode = kjrViewMode(table);
+  if (mode === 'grid' && !document.getElementById(table + '-grid')) mode = 'list'; // no grid markup (stale page): stay on the table
+  var page = document.getElementById(table === 'singles' ? 'page-inventory' : 'page-slabs');
+  if (page && page.classList) page.classList.toggle('kjr-view-grid', mode === 'grid');
+  var toggle = document.getElementById('vt-' + table);
+  if (toggle && toggle.querySelectorAll) {
+    Array.prototype.forEach.call(toggle.querySelectorAll('[data-view]'), function (b) {
+      b.setAttribute('aria-pressed', b.getAttribute('data-view') === mode ? 'true' : 'false');
+    });
+  }
+  if (mode !== 'grid') kjrGridClear(table);
+  return mode;
+}
+function kjrSetView(table, mode) {
+  if (!KJR_VIEW_KEYS[table]) return;
+  mode = mode === 'grid' ? 'grid' : 'list';
+  // A preference, not data. If storage is blocked the choice still holds for this session (the
+  // in-memory copy), otherwise localStorage alone is the source, so another tab's pick is honoured.
+  try { localStorage.setItem(KJR_VIEW_KEYS[table], mode); delete _kjrViewMem[table]; } catch (e) { _kjrViewMem[table] = mode; }
+  // The grid has no checkboxes yet, so a selection made in the list would be invisible and still
+  // reachable from the bulk bar. Clear it on the way in.
+  if (mode === 'grid' && typeof selectedIds === 'object' && selectedIds[table] && selectedIds[table].size) {
+    selectedIds[table].clear();
+    var allCb = document.getElementById('cb-all-' + table);
+    if (allCb) { allCb.checked = false; allCb.indeterminate = false; }
+    if (typeof updateBulkBar === 'function') updateBulkBar(table);
+    if (typeof toast === 'function') toast('Selection cleared, the grid has no bulk select yet');
+  }
+  if (table === 'singles') renderSingles(); else renderSlabs();
+}
+
 /* ===== Launch intro (v3.25) =====
    Self-contained IIFE, does not touch app.js. Plays a Three.js booster-pack
    rip on every launch while initDB() and cloud sync run behind it (never
@@ -3890,6 +4494,9 @@ async function exportXlsx() {
     if (!res.ok) return null;
     var data = await res.json();
     if (!data || !data.image) return null;
+    // Card art cache (v3.69): this fetch already returned the image base, keep it for the list thumbnails.
+    // Local map only, never a data row. kjrRememberCardImage swallows its own errors.
+    if (typeof kjrRememberCardImage === 'function') kjrRememberCardImage(entry.id, data.image, lang);
     var objUrl = await kjrIntroCachedImage(data.image + '/high.webp');
     var tex = await kjrIntroLoadTexture(THREE, objUrl);
     return tex || null;

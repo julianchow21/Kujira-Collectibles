@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.68',
+    release: 'kujira-collectibles@3.69',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
-<link rel="stylesheet" href="styles.css?v=3.68">
+<link rel="stylesheet" href="styles.css?v=3.69">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span class="logo-title">Kujira</span>
       <span class="logo-sub">Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.68 (10 Oct)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.69 (10 Oct)</span>
     </div>
   </button>
   <nav class="nav">
@@ -370,6 +370,10 @@
         <div class="col-toggle-divider"></div>
       </div>
     </div>
+    <div class="kjr-view-toggle" id="vt-singles" role="group" aria-label="Singles layout">
+      <button type="button" class="kjr-view-btn" data-view="grid" aria-pressed="false" onclick="kjrSetView('singles','grid')">Grid</button>
+      <button type="button" class="kjr-view-btn" data-view="list" aria-pressed="true" onclick="kjrSetView('singles','list')">List</button>
+    </div>
   </div>
   <div class="bulk-bar" id="bulk-bar-singles">
     <span class="bulk-bar-count" id="bulk-count-singles">0 selected</span>
@@ -422,6 +426,10 @@
       </table>
     </div>
   </div>
+  <div class="kjr-grid-wrap" id="singles-grid-wrap">
+    <div class="kjr-grid" id="singles-grid" role="group" aria-label="Singles as a grid"></div>
+    <div class="kjr-grid-alt" id="singles-grid-alt"></div>
+  </div>
 </div>
 
 <!-- SLABS PAGE -->
@@ -472,6 +480,10 @@
         </div>
         <div class="col-toggle-divider"></div>
       </div>
+    </div>
+    <div class="kjr-view-toggle" id="vt-slabs" role="group" aria-label="Slabs layout">
+      <button type="button" class="kjr-view-btn" data-view="grid" aria-pressed="false" onclick="kjrSetView('slabs','grid')">Grid</button>
+      <button type="button" class="kjr-view-btn" data-view="list" aria-pressed="true" onclick="kjrSetView('slabs','list')">List</button>
     </div>
   </div>
   <div class="bulk-bar" id="bulk-bar-slabs">
@@ -528,6 +540,10 @@
         <tbody id="slabs-sold-body" style="display:none"></tbody>
       </table>
     </div>
+  </div>
+  <div class="kjr-grid-wrap" id="slabs-grid-wrap">
+    <div class="kjr-grid" id="slabs-grid" role="group" aria-label="Slabs as a grid"></div>
+    <div class="kjr-grid-alt" id="slabs-grid-alt"></div>
   </div>
 </div>
 
@@ -1954,12 +1970,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.68"></script>
-<script src="features.js?v=3.68"></script>
-<script src="dealer-money.js?v=3.68"></script>
-<script src="dealer-desk.js?v=3.68"></script>
-<script src="dealer-ui.js?v=3.68"></script>
-<script src="dealer-store.js?v=3.68"></script>
-<script src="dealer-production-ui.js?v=3.68"></script>
+<script src="app.js?v=3.69"></script>
+<script src="features.js?v=3.69"></script>
+<script src="dealer-money.js?v=3.69"></script>
+<script src="dealer-desk.js?v=3.69"></script>
+<script src="dealer-ui.js?v=3.69"></script>
+<script src="dealer-store.js?v=3.69"></script>
+<script src="dealer-production-ui.js?v=3.69"></script>
 </body>
 </html>

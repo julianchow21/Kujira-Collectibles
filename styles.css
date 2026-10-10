@@ -53,6 +53,13 @@ button,input,select,textarea{font-family:inherit;font-variant-numeric:inherit}
   --shadow-lg:0 8px 32px rgba(0,0,0,0.55);
   /* Category tokens (dark), exposure/split bar segments. Lightness steps of the accent, white text clears 4.5:1 on all three. */
   --cat1:#6E5FD9;--cat2:#4F43A8;--cat3:#3A3170;
+  /* Card art tokens (redesign Step 2, v3.69). Grader label colours are brand colours and
+     stay the same in both themes, the label text is white on PSA and CGC, near-black on BGS and TAG.
+     The slab case and the control border are the only theme-dependent ones. */
+  --grader-psa:#C9353B;--grader-cgc:#2459D6;--grader-bgs:#C9A227;--grader-tag:#F5F5F7;
+  --grader-fg-light:#FFFFFF;--grader-fg-dark:#0B0B0E;
+  --control-border:#34343D;
+  --slab-case-top:#2C2C33;--slab-case-bot:#1B1B21;--slab-case-bd:#3A3A44;
 }
 html.light{
   /* Light gallery palette (redesign Step 1, v3.68): same violet accent family as dark, teal retired. */
@@ -89,6 +96,9 @@ html.light{
   --shadow-lg:0 8px 32px rgba(0,0,0,0.14);
   /* Category tokens (light), exposure/split bar segments */
   --cat1:#5B4BD1;--cat2:#4535A8;--cat3:#2E2475;
+  /* Card art tokens (light): only the control border and the slab case change */
+  --control-border:#CFCFD6;
+  --slab-case-top:#FFFFFF;--slab-case-bot:#E8E8EC;--slab-case-bd:#C4C4CC;
 }
 body{font-family:var(--font-sans);font-variant-numeric:tabular-nums;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.5;transition:background 0.2s,color 0.2s}
 /* Light-theme iOS standalone PWA: the status-bar clock/battery render dark on
@@ -760,9 +770,15 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
   /* pin the Card column */
   body:not(.force-tables) #page-inventory .tbl-wrap [data-col-key="name"],
   body:not(.force-tables) #page-slabs .tbl-wrap [data-col-key="name"]{
-    position:sticky;left:0;max-width:128px}
+    position:sticky;left:0;max-width:158px}
+  /* v3.69: the 20px card thumbnail and its 6px gap now sit inside this cell, so the
+     wrapper cap below grows by 26px (118 to 144) and the name text keeps 118px (the
+     pinned column goes from 128 to 158 to match). The td carries an inline max-width,
+     so it is the wrapper cap, not this td rule, that fixes the width. Singles names are
+     a button that this cap never reached before, so on a phone they now share the
+     118px text width the Slabs names always had. */
   body:not(.force-tables) #page-inventory .tbl-wrap td[data-col-key="name"]>div,
-  body:not(.force-tables) #page-slabs .tbl-wrap td[data-col-key="name"]>div{max-width:118px}
+  body:not(.force-tables) #page-slabs .tbl-wrap td[data-col-key="name"]>div{max-width:144px}
   body:not(.force-tables) #page-inventory .tbl-wrap>table>tbody>tr>td[data-col-key="name"],
   body:not(.force-tables) #page-slabs .tbl-wrap>table>tbody>tr>td[data-col-key="name"]{
     z-index:2;background:var(--bg);border-right:1px solid var(--border2)}
@@ -1741,3 +1757,105 @@ html.dealer-preview-only #page-dealer{display:block!important}
   .dealer-production-banner .btn{width:100%;margin-left:0}
   .dealer-production-actions .btn{flex:1 1 auto}
 }
+
+/* ═══════════ Card art, Grid view and drawn slabs (redesign Step 2, v3.69) ═══════════
+   New in this step and last in the file, so the phone overrides come after the base
+   rules. Art comes from TCGdex (features.js, "Card art cache"). A card with no art, a
+   miss, or an image that fails to load shows the neutral placeholder. */
+
+/* Grader colour hooks, shared by the list thumbnail bar and the drawn slab label */
+.kjr-g-psa{--kjr-gc:var(--grader-psa);--kjr-gfg:var(--grader-fg-light)}
+.kjr-g-cgc{--kjr-gc:var(--grader-cgc);--kjr-gfg:var(--grader-fg-light)}
+.kjr-g-bgs{--kjr-gc:var(--grader-bgs);--kjr-gfg:var(--grader-fg-dark)}
+.kjr-g-tag{--kjr-gc:var(--grader-tag);--kjr-gfg:var(--grader-fg-dark)}
+.kjr-g-other{--kjr-gc:var(--text3);--kjr-gfg:var(--bg)}
+
+/* Card image (any size) and its neutral placeholder */
+.kjr-art{position:relative;overflow:hidden}
+.kjr-card-img{display:block;width:100%;height:100%;object-fit:cover;user-select:none;-webkit-user-drag:none}
+.kjr-art-ph{background:linear-gradient(160deg,var(--bg4),var(--bg3))}
+.kjr-art-ph::after{content:"";position:absolute;inset:6px;border:1px solid var(--border2);border-radius:5px;pointer-events:none}
+
+/* List view: the thumbnail lives inside the name cell, there is no extra column */
+.kjr-name-cell{display:flex;align-items:center;gap:10px;min-width:0}
+.kjr-name-body{min-width:0;flex:1 1 auto}
+.kjr-name-set{margin-top:1px;font-size:12px;font-weight:400;line-height:1.35;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kjr-thumb{flex:none;width:28px;height:39px;border-radius:4px;border:1px solid var(--border2);background:var(--bg3)}
+.kjr-thumb.kjr-art-ph{background:var(--bg3)}
+.kjr-thumb.kjr-art-ph::after{inset:3px;border-radius:2px}
+/* Slab thumbnails carry a 4px grader bar along the top edge */
+.kjr-thumb-slab::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;z-index:1;background:var(--kjr-gc,var(--text3))}
+.kjr-thumb-slab.kjr-g-tag::before{box-shadow:0 0 0 1px rgba(11,11,14,0.7)}
+/* Room for the 39px thumbnail without growing the row past about 52px */
+#page-inventory td[data-col-key="name"],#page-slabs td[data-col-key="name"]{padding-top:6px;padding-bottom:6px}
+
+/* Grid / List switch (real buttons, aria-pressed) */
+.kjr-view-toggle{display:inline-flex;gap:2px;padding:2px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius)}
+.kjr-view-btn{border:0;background:transparent;color:var(--text3);font:inherit;font-size:12px;font-weight:500;line-height:1.5;padding:3px 12px;border-radius:calc(var(--radius) - 3px);cursor:pointer;transition:background 0.16s ease-out,color 0.16s ease-out}
+.kjr-view-btn:hover{color:var(--text)}
+.kjr-view-btn[aria-pressed="true"]{background:var(--accent-soft);color:var(--text);box-shadow:inset 0 0 0 1px var(--accent)}
+@media(pointer:coarse){
+  .kjr-view-btn{position:relative}
+  .kjr-view-btn::after{content:"";position:absolute;left:0;right:0;top:-9px;bottom:-9px}
+}
+
+/* Grid view: the table card gives way to the tile grid, the Columns menu is table-only */
+.page .kjr-grid-wrap{display:none}
+.page.kjr-view-grid .kjr-grid-wrap{display:block}
+.page.kjr-view-grid>.card{display:none}
+.page.kjr-view-grid .col-toggle-wrap{display:none}
+.kjr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:24px 16px;margin-bottom:16px}
+.kjr-grid-empty{grid-column:1/-1;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.kjr-grid-alt{margin-top:4px}
+.kjr-grid-alt .sold-section-toggle{border:1px dashed var(--border2);border-radius:var(--radius)}
+.kjr-grid-alt .kjr-grid{margin-top:16px}
+
+/* Tile: art on a soft spotlight stage, then name, set, value and the asking line */
+.kjr-tile{appearance:none;-webkit-appearance:none;display:flex;flex-direction:column;width:100%;min-width:0;margin:0;padding:0;border:0;border-radius:var(--radius-lg);background:none;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.kjr-tile:focus-visible{outline:none}
+.kjr-tile:focus-visible .kjr-tile-stage{outline:2px solid var(--accent);outline-offset:2px}
+.kjr-tile-stage{position:relative;display:flex;align-items:center;justify-content:center;aspect-ratio:1/1.12;border-radius:14px;border:1px solid var(--border);background:radial-gradient(120% 80% at 50% 0%,var(--bg3),var(--bg2) 70%)}
+.kjr-tile-art{width:70%;aspect-ratio:63/88;border-radius:8px;border:1px solid color-mix(in srgb,var(--text) 12%,transparent);box-shadow:var(--shadow-lg);transition:transform 0.16s ease-out}
+.kjr-tile-qty,.kjr-tile-lang,.kjr-tile-soldtag{position:absolute;display:flex;align-items:center;height:22px;border:1px solid var(--control-border);line-height:1}
+.kjr-tile-qty{top:10px;left:10px;padding:0 8px;border-radius:999px;background:var(--bg);color:var(--text);font-size:12px;font-weight:600}
+.kjr-tile-lang{top:10px;right:10px;padding:0 7px;border-radius:6px;background:color-mix(in srgb,var(--bg) 75%,transparent);color:var(--text2);font-family:var(--font-mono);font-size:11px}
+.kjr-tile-soldtag{left:10px;bottom:10px;padding:0 8px;border-radius:999px;background:var(--bg);color:var(--text);font-size:12px;font-weight:600}
+.kjr-tile-body{display:flex;flex-direction:column;gap:2px;min-width:0;padding:12px 2px 0}
+.kjr-tile-name{display:block;font-size:14px;font-weight:500;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kjr-tile-set,.kjr-tile-note{display:block;min-height:16px;font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kjr-tile-val{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 8px;min-width:0;margin-top:6px}
+.kjr-tile-price{font-size:15px;font-weight:600;line-height:20px}
+.kjr-tile-pct{font-size:12px;font-weight:600;line-height:16px}
+/* Sold: the art dims and the name and price step down to the secondary text colour. The words stay at full
+   opacity (dimming them put the set line near 2:1), and the Sold tag on the stage says it in text. */
+.kjr-tile.is-sold .kjr-tile-art,.kjr-tile.is-sold .kjr-slab{opacity:0.55}
+.kjr-tile.is-sold .kjr-tile-name,.kjr-tile.is-sold .kjr-tile-price{color:var(--text2)}
+
+/* Drawn slab: grey case, grader-coloured label bar (grader left, grade right), art inset below */
+.kjr-slab{position:relative;display:flex;flex-direction:column;gap:5px;width:62%;aspect-ratio:0.62;padding:5px;border-radius:9px;border:1px solid var(--slab-case-bd);background:linear-gradient(180deg,var(--slab-case-top),var(--slab-case-bot));box-shadow:var(--shadow-lg);transition:transform 0.16s ease-out}
+.kjr-slab::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(115deg,rgba(255,255,255,0) 35%,rgba(255,255,255,0.10) 48%,rgba(255,255,255,0) 60%);pointer-events:none}
+.kjr-slab-label{flex:none;display:flex;align-items:center;justify-content:space-between;gap:4px;height:16%;padding:0 7px;border-radius:4px;background:var(--kjr-gc,var(--text3));color:var(--kjr-gfg,var(--bg));font-size:10px;font-weight:700;letter-spacing:0.06em;white-space:nowrap;overflow:hidden}
+.kjr-slab-label>span:last-child{font-size:13px;letter-spacing:0}
+.kjr-slab-label.kjr-g-tag{box-shadow:inset 0 0 0 1px rgba(11,11,14,0.6)}
+.kjr-slab-art{flex:1 1 0;min-height:0;border-radius:4px}
+.kjr-slab-art.kjr-art-ph::after{inset:4px;border-radius:3px}
+
+@media(hover:hover){
+  .kjr-tile:hover .kjr-tile-art,.kjr-tile:hover .kjr-slab{transform:translateY(-4px)}
+}
+@media(prefers-reduced-motion:reduce){
+  .kjr-tile-art,.kjr-slab,.kjr-view-btn{transition:none}
+  .kjr-tile:hover .kjr-tile-art,.kjr-tile:hover .kjr-slab{transform:none}
+}
+
+/* Phones: 20x28 thumbnails, two-up tiles, the set line gives way to keep rows compact */
+@media(max-width:600px){
+  .kjr-name-cell{gap:6px}
+  .kjr-thumb{width:20px;height:28px;border-radius:3px}
+  .kjr-name-set{display:none}
+  .kjr-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:20px 12px}
+  .kjr-tile-name{font-size:13px}
+}
+
+/* Slab cert numbers read as codes, in the mono face */
+.cert-no{font-family:var(--font-mono)}

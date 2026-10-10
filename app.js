@@ -8714,7 +8714,7 @@ function renderChangelog() {
         '<div class="cl-action">' + (actionLabel[e.action]||e.action) + (tbl ? ' · <span style="color:var(--text3)">' + tbl + '</span>' : '') + '</div>' +
         '<div class="cl-detail">' + detailEsc + '</div>' +
         (extraEsc
-          ? '<div class="cl-extra" style="font-size:11px;color:var(--text3);margin-top:3px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;word-break:break-word">' + extraEsc + '</div>'
+          ? '<div class="cl-extra" style="font-size:11px;color:var(--text3);margin-top:3px;line-height:1.5;font-family:var(--font-mono);word-break:break-word">' + extraEsc + '</div>'
           : '') +
       '</div>' +
       '<div class="cl-time">' + timeStr + '</div>' +
@@ -10168,7 +10168,7 @@ function _renderHealthResults(findings){
   let cardIdx = 0;
   const renderGroup = (group, label, color) => {
     if (group.length === 0) return '';
-    return `<div style="margin-top:16px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:${color};margin-bottom:6px">${label} (${group.length})</div>` +
+    return `<div style="margin-top:16px"><div style="font-size:12px;font-weight:600;color:${color};margin-bottom:6px">${label} (${group.length})</div>` +
       group.map(f => {
         const idx = cardIdx++;
         const hasDetails = f.details && f.details.length > 0;
@@ -11416,9 +11416,9 @@ function renderSingles() {
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
       '<td data-col-key="name" style="font-weight:500;max-width:220px;text-align:left"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button></td>' +
-      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
       '<td data-col-key="datePurchased" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.datePurchased)||'-') + '</td>' +
@@ -12764,9 +12764,9 @@ function renderSlabs() {
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '-') + '</td>' +
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'-') + '</td>' +
       '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
-      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
-      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
+      '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
+      '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
         alertIcon + urlIcon +
         soldBtn +
@@ -13894,9 +13894,9 @@ function renderDashboard() {
     } else {
       const sealedCount = etbInStock.length + bbInStock.length + bpInStock.length;
       const segments = [
-        { key:'singles', label:'Singles', count: singlesAvail, amt: invCostSingles, cls: 'exp-seg-singles', color: 'color-mix(in srgb,var(--cat1) 82%,black)' },
-        { key:'slabs',   label:'Slabs',   count: slabsAvail,   amt: invCostSlabs,   cls: 'exp-seg-slabs',   color: 'color-mix(in srgb,var(--cat2) 90%,black)' },
-        { key:'sealed',  label:'Sealed',  count: sealedCount,  amt: invCostSealed,  cls: 'exp-seg-sealed',  color: 'color-mix(in srgb,var(--cat3) 65%,black)',
+        { key:'singles', label:'Singles', count: singlesAvail, amt: invCostSingles, cls: 'exp-seg-singles', color: 'var(--cat1)' },
+        { key:'slabs',   label:'Slabs',   count: slabsAvail,   amt: invCostSlabs,   cls: 'exp-seg-slabs',   color: 'var(--cat2)' },
+        { key:'sealed',  label:'Sealed',  count: sealedCount,  amt: invCostSealed,  cls: 'exp-seg-sealed',  color: 'var(--cat3)',
           // Per-sub-table breakdown rendered as a collapsible dropdown under
           // the Sealed row. Uses the same "Label $amount (N units)" pattern.
           subRows: [
@@ -14442,7 +14442,7 @@ function renderAiChart(cd) {
   content.innerHTML = '<canvas id="ai-chart" style="max-height:280px"></canvas>';
   // Cosmetic: chart may already be destroyed, nothing to recover.
   if (dashCharts.aiChart) { try { dashCharts.aiChart.destroy(); } catch(e) {} }
-  const palette = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80'];
+  const palette = ['#9F8CFF','#F0C551','#D04A6D','#5EC6B6','#2A6CC9','#FC9252','#3A8F4C','#EDA4CC','#4CAAD7','#C5DF66'];
   const colors = cd.colors?.length ? cd.colors : cd.labels.map((_,i) => palette[i%palette.length]);
   const ctx = document.getElementById('ai-chart').getContext('2d');
   // Read theme tokens at call time (same pattern as _drawSavedChart) so axis
@@ -15871,8 +15871,8 @@ function openApiSettings() {
           </div>
 
           <div>
-            <label for="ppt-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">PokemonPriceTracker API Key</label>
-            <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:monospace;font-size:12px">
+            <label for="ppt-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">PokemonPriceTracker API Key</label>
+            <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
               <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free lookups/day
             </div>
@@ -15882,7 +15882,7 @@ function openApiSettings() {
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">🤖 AI Analyst &amp; Import</div>
             <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.6">Pick any one provider. Free options work great for casual analysis. Keys stored only in this browser.</div>
 
-            <label for="ai-provider-select" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">Preferred Provider</label>
+            <label for="ai-provider-select" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">Preferred Provider</label>
             <select id="ai-provider-select" class="fi" style="margin-bottom:16px">
               <option value="auto" ${getAIProvider()==='auto'?'selected':''}>Auto - pick best free key available</option>
               <option value="gemini" ${getAIProvider()==='gemini'?'selected':''}>Google Gemini (free · recommended)</option>
@@ -15891,34 +15891,34 @@ function openApiSettings() {
               <option value="anthropic" ${getAIProvider()==='anthropic'?'selected':''}>Anthropic Claude (paid)</option>
             </select>
 
-            <label for="gemini-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="gemini-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">
               Google Gemini Key <span style="color:var(--green);text-transform:none;letter-spacing:0;font-weight:400">- free, 15 req/min</span>
             </label>
-            <input type="password" id="gemini-key-input" class="fi" placeholder="AIzaSy..." value="${getGeminiKey()}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="gemini-key-input" class="fi" placeholder="AIzaSy..." value="${getGeminiKey()}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/app/apikey</a> - no credit card required.
             </div>
 
-            <label for="groq-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="groq-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">
               Groq Key <span style="color:var(--green);text-transform:none;letter-spacing:0;font-weight:400">- free, 30 req/min, ultra fast</span>
             </label>
-            <input type="password" id="groq-key-input" class="fi" placeholder="gsk_..." value="${getGroqKey()}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="groq-key-input" class="fi" placeholder="gsk_..." value="${getGroqKey()}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent)">console.groq.com/keys</a>.
             </div>
 
-            <label for="openrouter-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="openrouter-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">
               OpenRouter Key <span style="color:var(--text3);text-transform:none;letter-spacing:0;font-weight:400">- free tier + paid models</span>
             </label>
-            <input type="password" id="openrouter-key-input" class="fi" placeholder="sk-or-..." value="${getOpenRouterKey()}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="openrouter-key-input" class="fi" placeholder="sk-or-..." value="${getOpenRouterKey()}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:12px">
               Get one at <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">openrouter.ai/keys</a>.
             </div>
 
-            <label for="anthropic-key-input" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;font-weight:600;margin-bottom:6px">
+            <label for="anthropic-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">
               Anthropic Key <span style="color:var(--amber);text-transform:none;letter-spacing:0;font-weight:400">- paid, best quality</span>
             </label>
-            <input type="password" id="anthropic-key-input" class="fi" placeholder="sk-ant-..." value="${anth}" style="font-family:monospace;font-size:12px">
+            <input type="password" id="anthropic-key-input" class="fi" placeholder="sk-ant-..." value="${anth}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--amber);margin-top:6px;line-height:1.5">
               ⚠ Keys are stored in your browser only. For production, proxy AI calls through a backend you control.
             </div>
@@ -17664,7 +17664,7 @@ async function searchEbay() {
     outEl.innerHTML = `
       <div style="font-size:11px;color:var(--text3);margin-bottom:10px">📈 ${rateNote} (live)</div>
       <div style="padding:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:6px">
-        <div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px">Market Price (${esc(r.source||'')})</div>
+        <div style="font-size:12px;font-weight:500;color:var(--accent)">Market Price (${esc(r.source||'')})</div>
         <div style="font-size:24px;font-weight:600;margin-top:4px">S$${r.maxSgd.toFixed(0)}</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">${usdOrEur} · Confidence: ${r.confidence}</div>
         ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Low confidence - card matched on name only, manually verify</div>' : ''}
@@ -18364,7 +18364,7 @@ async function importData() {
     const cells = _previewCols.map(([k]) => '<td style="padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis">' + esc(it[k] != null && it[k] !== '' ? it[k] : '-') + '</td>').join('');
     return '<tr>' + cells + '</tr>';
   }).join('');
-  const _previewHead = _previewCols.map(([,label]) => '<th style="padding:4px 8px;text-align:left;color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border2)">' + label + '</th>').join('');
+  const _previewHead = _previewCols.map(([,label]) => '<th style="padding:4px 8px;text-align:left;color:var(--text3);font-size:12px;font-weight:500;border-bottom:1px solid var(--border2)">' + label + '</th>').join('');
   const existingArrForPreview = (type === 'sales' ? DB.sales : DB[type]);
   const _modeNote = (mode === 'replace' && existingArrForPreview.length)
     ? '<div style="margin-top:10px;font-size:12px;color:var(--amber)">⚠ Replace mode: this removes all ' + existingArrForPreview.length + ' existing ' + esc(type) + ' record' + (existingArrForPreview.length===1?'':'s') + ' first (cloud rows included). Undo with Ctrl+Z.</div>'
@@ -18591,10 +18591,10 @@ function applyTheme(mode) {
     document.getElementById('theme-icon-light').style.display = 'none';
   }
   // Keep the browser chrome (status bar / task switcher) in step with the
-  // active theme. Light hex is the actual html.light --bg token (v3.0
-  // palette, #F6F4EE); dark matches the html:not(.light) --bg token (#12101F).
+  // active theme. Light hex is the actual html.light --bg token (#F6F6F7);
+  // dark matches the :root --bg token (#0B0B0E).
   const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.content = isLight ? '#F6F4EE' : '#12101F';
+  if (themeMeta) themeMeta.content = isLight ? '#F6F6F7' : '#0B0B0E';
 }
 
 function toggleTheme() {
@@ -18781,7 +18781,7 @@ function _saveCbState() {
 }
 let cbState = _loadCbState();
 let _cbChart = null;
-const CB_PALETTE = ['#a78bfa','#2dd4bf','#f59e0b','#f87171','#60a5fa','#34d399','#fb923c','#c084fc','#38bdf8','#4ade80','#facc15','#e879f9'];
+const CB_PALETTE = ['#9F8CFF','#F0C551','#D04A6D','#5EC6B6','#2A6CC9','#FC9252','#3A8F4C','#EDA4CC','#4CAAD7','#C5DF66','#9F4CB1','#71CFD9'];
 
 function cbFilterPalette(q) {
   document.querySelectorAll('#cb-field-palette .cb-field-pill').forEach(el => {
@@ -18948,7 +18948,7 @@ function initCustomChartBuilder() {
     if (!fields.length) return;
 
     const hd = document.createElement('div');
-    hd.style.cssText = 'font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-top:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px';
+    hd.style.cssText = 'font-size:12px;color:var(--text3);font-weight:500;margin-top:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px';
     hd.innerHTML = heading;
     palette.appendChild(hd);
 
@@ -19346,7 +19346,7 @@ function renderCustomChart() {
       label: f.label,
       data: values,
       backgroundColor: isRound ? entries.map((_,i) => CB_PALETTE[i % CB_PALETTE.length]) : color + '55',
-      borderColor: isRound ? '#161616' : color,
+      borderColor: isRound ? '#131317' : color,
       borderWidth: isRound ? 2 : 1.5,
       borderRadius: ctype === 'bar' ? 4 : 0,
       fill: ctype === 'line',
@@ -19518,9 +19518,9 @@ function kjrConfirm(msg, opts) {
   okBtn.textContent = opts.ok || 'OK';
   cancelBtn.textContent = opts.cancel || 'Cancel';
   okBtn.classList.toggle('btn-primary', !opts.danger);
-  okBtn.style.background = opts.danger ? 'var(--red)' : '';
-  okBtn.style.color = opts.danger ? '#fff' : '';
-  okBtn.style.borderColor = opts.danger ? 'var(--red)' : '';
+  okBtn.style.background = opts.danger ? 'var(--danger)' : '';
+  okBtn.style.color = opts.danger ? 'var(--danger-fg)' : '';
+  okBtn.style.borderColor = opts.danger ? 'var(--danger)' : '';
 
   return new Promise(resolve => {
     let settled = false;
@@ -19575,7 +19575,7 @@ async function deleteSavedChart(id) {
   toast('"' + (config.title||'Chart') + '" moved to trash', 5000);
   // Append an Undo button inside the message span (safe - config.title is escaped above via textContent first)
   const _msgEl = document.getElementById('toast-msg');
-  if (_msgEl) _msgEl.insertAdjacentHTML('beforeend', ' &nbsp;<button onclick="(function(){window._undoDeleteChart&&window._undoDeleteChart()})()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;vertical-align:middle">Undo</button>');
+  if (_msgEl) _msgEl.insertAdjacentHTML('beforeend', ' &nbsp;<button onclick="(function(){window._undoDeleteChart&&window._undoDeleteChart()})()" style="background:var(--accent);color:var(--accent-fg);border:none;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;vertical-align:middle">Undo</button>');
   clearTimeout(window._toastTimer);
 
   window._undoDeleteChart = function() {
@@ -19770,7 +19770,7 @@ function _drawSavedChart(config) {
   const axisColor = _cs.getPropertyValue('--text3').trim() || '#666';
   const gridColor = _cs.getPropertyValue('--border').trim() || '#2a2a2a';
   const legendColor = _cs.getPropertyValue('--text2').trim() || '#999';
-  const cardBgColor = _cs.getPropertyValue('--bg2').trim() || '#161616';
+  const cardBgColor = _cs.getPropertyValue('--bg2').trim() || '#131317';
 
   const datasets = config.yFields.map((yKey, yi) => {
     const f     = CB_FIELDS[yKey];

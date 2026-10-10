@@ -126,7 +126,7 @@ test('Dealer UI keeps Release 0 money and identity decisions explicit', () => {
   assert.match(src, /protocol === 'http:' \|\| protocol === 'https:'/);
   assert.doesNotMatch(src, /hostname === '0\.0\.0\.0'/);
   assert.doesNotMatch(src, /\.local\$\/\.test\(hostname\)/);
-  assert.match(html, /release:\s*'kujira-collectibles@3\.67'/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.68'/);
   assert.doesNotMatch(html, /release:\s*'kujira-collectibles@3\.61'/);
 });
 

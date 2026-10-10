@@ -970,8 +970,8 @@ function renderEtbs(){
     // Inline-editable market price. Blur or Enter writes through updateField,
     // which routes through markDirty + price-history + cloud sync. Same UX as
     // the Singles/Slabs tabs.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'etbs\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="condition">'+kjrEscape(r.condition||'')+'</td>' +
     '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -1072,8 +1072,8 @@ function renderBoosterBoxes(){
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
     // Inline market + carousell price - same UX as Singles/Slabs/ETBs.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterBoxes\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -1467,7 +1467,7 @@ function renderEbayPurchases(){
     const active = cnt > 0;
     const bg    = active ? 'var(--accent)' : 'transparent';
     const border= active ? 'var(--accent)' : 'var(--border2)';
-    const txtCol= active ? '#fff' : 'var(--text3)';
+    const txtCol= active ? 'var(--accent-fg)' : 'var(--text3)';
     const conn  = i > 0 ? `<div style="flex:1;height:2px;background:${allActive.filter(r=>KJR_EBAY_PIPELINE.indexOf(r.status)>=i).length>0&&allActive.filter(r=>KJR_EBAY_PIPELINE.indexOf(r.status)>=i-1).length>0?'var(--accent)':'var(--border2)'};margin-bottom:18px;min-width:6px"></div>` : '';
     const dot   = `<div style="width:24px;height:24px;border-radius:50%;background:${bg};border:2px solid ${border};color:${txtCol};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">${active ? cnt : ''}</div>`;
     const lbl   = `<div style="font-size:11px;color:${active?'var(--text2)':'var(--text3)'};text-align:center;white-space:nowrap;margin-top:4px;font-weight:${active?600:400}">${SHORT_LABELS[step]||step}</div>`;
@@ -1616,7 +1616,7 @@ function kjrToggleDeclared(id) {
     .eb-tl{display:inline-flex;align-items:center;gap:0}
     .eb-tl-dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);background:var(--bg2);color:transparent;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:10px;line-height:1;padding:0;transition:transform 0.1s,background 0.15s,border-color 0.15s,color 0.15s}
     .eb-tl-dot:hover{transform:scale(1.18)}
-    .eb-tl-dot.eb-tl-done{background:var(--accent);border-color:var(--accent);color:#fff}
+    .eb-tl-dot.eb-tl-done{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
     .eb-tl-dot.eb-tl-now{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
     .eb-tl-dot.eb-tl-todo{background:var(--bg3);border-color:var(--border2);color:transparent}
     .eb-tl-conn{display:inline-block;width:14px;height:2px;background:var(--border2);margin:0}
@@ -2096,7 +2096,7 @@ function _kjrEbayAttachHeaderDrag(){
   if (document.getElementById('kjr-inline-style')) return;
   const s = document.createElement('style');
   s.id = 'kjr-inline-style';
-  s.textContent = '.kjr-inline-input{width:70px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:center;padding:2px 4px;border-radius:3px}.kjr-inline-input:focus{outline:none;background:var(--bg3);border:1px solid var(--accent)}.kjr-inline-input::-webkit-outer-spin-button,.kjr-inline-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.kjr-inline-input[type=number]{-moz-appearance:textfield}';
+  s.textContent = '.kjr-inline-input{width:70px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:center;padding:2px 4px;border-radius:3px}.kjr-inline-input:focus{outline:none;background:var(--bg3);border:1px solid var(--accent)}.kjr-inline-input::-webkit-outer-spin-button,.kjr-inline-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.kjr-inline-input[type=number]{-moz-appearance:textfield}';
   document.head.appendChild(s);
 })();
 
@@ -2416,7 +2416,7 @@ function _renderCompletePreview(idx){
     if (parsed.set)       chips.push(kjrEscape(parsed.set));
   }
   if (chips.length <= 1) { el.innerHTML = ''; return; }
-  el.innerHTML = '<span style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-right:6px">Will save as</span>' +
+  el.innerHTML = '<span style="color:var(--text3);font-size:12px;font-weight:500;margin-right:6px">Will save as</span>' +
     chips.join('<span style="color:var(--text3);margin:0 6px">·</span>');
 }
 
@@ -2490,7 +2490,7 @@ function _renderCompleteModal(){
   `).join('');
   document.getElementById('kjr-complete-body').innerHTML = `
     <div class="kjr-complete-header">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:6px">Transaction</div>
+      <div style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">Transaction</div>
       <div style="font-size:13px;color:var(--text);line-height:1.6">
         <strong>${kjrEscape(p.product || '(no product)')}</strong><br>
         <span style="color:var(--text3);font-size:11px">
@@ -2499,7 +2499,7 @@ function _renderCompleteModal(){
       </div>
     </div>
     <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Items to push into inventory</div>
+      <div style="font-size:12px;color:var(--text3);font-weight:500">Items to push into inventory</div>
       <button class="btn btn-sm" onclick="kjrCompleteAddItem()">+ Add another item</button>
     </div>
     <div class="kjr-complete-items">${itemsHtml}</div>
@@ -2716,8 +2716,8 @@ function renderBoosterPacks(){
     '<td data-col-key="qty" class="num">'+kjrEscape(r.qty||'')+'</td>' +
     '<td data-col-key="totalPrice" class="num">'+kjrFmt(r.totalPrice)+'</td>' +
     // Inline market + carousell price - same UX as Singles/Slabs/Booster Boxes.
-    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
-    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:monospace;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="marketPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.marketPrice) > 0 ? '$'+Math.round(kjrNum(r.marketPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'marketPrice\',kjrMoneyStr(this.value))"></td>' +
+    '<td data-col-key="carousellPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px;text-align:right" value="'+kjrEscape(kjrNum(r.carousellPrice) > 0 ? '$'+Math.round(kjrNum(r.carousellPrice)) : '')+'" placeholder="-" onchange="updateField(\'boosterPacks\',' + kjrInlineArg(r.id) + ',\'carousellPrice\',kjrMoneyStr(this.value))"></td>' +
     '<td data-col-key="status">'+kjrPill(r.status)+'</td>' +
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
@@ -3093,7 +3093,7 @@ document.addEventListener('DOMContentLoaded', () => {
           '<p style="margin-bottom:6px">Connect your Sentry account to view errors here.</p>' +
           '<p style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.6">Generate an auth token at <a href="https://sentry.io/settings/account/api/auth-tokens/" target="_blank" style="color:var(--accent)">sentry.io → Auth Tokens</a> with <strong style="color:var(--text)">project:read</strong> and <strong style="color:var(--text)">org:read</strong> scopes.</p>' +
           '<div style="display:flex;gap:8px">' +
-            '<input id="sentry-token-input" type="password" class="fi" placeholder="sntrys_..." style="flex:1;font-size:12px;font-family:monospace">' +
+            '<input id="sentry-token-input" type="password" class="fi" placeholder="sntrys_..." style="flex:1;font-size:12px;font-family:var(--font-mono)">' +
             '<button class="btn btn-primary btn-sm" onclick="kjrSentrySaveToken()">Connect</button>' +
           '</div>' +
         '</div>';
@@ -3966,7 +3966,7 @@ async function exportXlsx() {
     ctx.moveTo(r, 3); ctx.arcTo(w - 3, 3, w - 3, h - 3, r); ctx.arcTo(w - 3, h - 3, 3, h - 3, r);
     ctx.arcTo(3, h - 3, 3, 3, r); ctx.arcTo(3, 3, w - 3, 3, r); ctx.closePath(); ctx.stroke();
     ctx.fillStyle = 'rgba(234,231,245,0.85)';
-    ctx.font = '700 26px Lexend, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '700 26px Geist, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('K', w / 2, h / 2);
     return new THREE.CanvasTexture(c);
   }

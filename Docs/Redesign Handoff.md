@@ -117,3 +117,130 @@ On 04/07/2026 `CLAUDE.md` recorded that Julian dropped a set of financial module
   - Don't change any of this.
 - **Preview guard.** A write skipped by `isLocalhostPreview()` must not clear dirty flags. Local previews never write to production.
 - **Dropped modules.** Julian dropped financial modules M1 to M12 on 04/07/2026: monthly P&L, margin integrity, FX line, inventory ageing and velocity, capital in transit, repricing worklist, mark-to-market history, grading pipeline and EV, buyer analytics, concentration risk, restock quadrant and tax export. Don't rebuild them (see section 3).
+
+## 5. Step 1 notes (done 10/10/2026 as v3.68)
+
+Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the record of the decisions.
+- Extra changes beyond them:
+  - form controls inherit the font and tabular figures
+  - the active nav tab and the More trigger use `--accent-soft` with an accent icon
+  - inline price inputs use Geist, not mono
+  - light `--blue` is `#1868CC`
+  - the sync pill tint is 8 to 10%
+- Open from Step 1:
+  - light hover-only pairs at 4.29 and 4.31
+  - Chart Builder labels drawn in palette colours
+  - Chart.js canvas font
+  - Geist is not self-hosted
+  - cert numbers are not mono yet
+  - the listing description textarea is still mono
+
+Step 1 was paused on 09/10/2026 before any repo file changed. The baseline is `./qc.sh` PASS and `node --test` 807 tests, 801 pass, 0 fail, 6 skipped. The analysis below is done, so apply it rather than redoing it. The ratios were computed on draft values, so re-verify them against the real `styles.css`.
+
+**Token decisions on top of section 1** (all checked at 4.5:1 or better)
+- Dark tokens stay as section 1, plus:
+  - `--accent2 #B3A5FF` (primary hover)
+  - `--link #C4B8FF`
+  - `--danger #C7334A` with `--danger-fg #FFFFFF` for filled destructive buttons, in both themes
+  - `--font-sans` and `--font-mono` (Geist and Geist Mono stacks)
+  - `--radius 10px`, `--radius-lg 16px`
+  - shadows tinted with pure black
+- Light theme as section 1, with these changes:
+  - `--red-soft #FCECEF` (`#FBE9EC` fails at 4.49)
+  - `--amber #946200` (`#9A6700` fails on its soft fill and on `--bg3`)
+  - `--link #4A3BBF`, `--accent2 #4A3BBF`, `--accent-soft #ECE9FB`
+  - Known weak spot: light `--text3` on `--bg4` is 4.26 (hover fills only)
+- `--split-bar-fg`: dark `#0B0B0E`, light `#FFFFFF`. The `.inv-split-bar` fills are the light badge and grader tokens, and white on them fails in dark
+- Category bars:
+  - Dark `--cat1/2/3` `#6E5FD9`, `#4F43A8`, `#3A3170`. Light `#5B4BD1`, `#4535A8`, `#2E2475`. All pass with white
+  - But `.exp-seg` (styles.css about 1152) and app.js about 13897-13899 darken them further with `color-mix(... black)`, and dark cat3 then renders `#262049`, nearly invisible. Decide in the browser whether to drop the mixes in both places together
+- Dark badges and pills (fg on bg, border):
+  - raw and sold: `#B4B4BE` on `#1B1B21`, `#2E2E36`
+  - sealed and pending: `#F5C25B` on `#2A2312`, `#4D3E1A`
+  - slab and traded: `#C4B8FF` on `#221E3A`, `#3A3360`
+  - pristine: `#F1D98A` on `#2D2610` to `#241E0C`, `#5A4A1A`
+  - stock and received: `#34D399` on `#10261D`, `#1B4A38`
+  - grader tokens:
+    - psa `#FF8F94` on `#2A1518`, `#4A2328`
+    - cgc `#9DB8FF` on `#15203A`, `#24345A`
+    - tag `#E4E4EA` on `#1B1B21`, `#34343D`
+  - complete-summary borders: pos `#1B4A38`, neg `#54272F`, amber `#4D3E1A`
+- Light badges and pills:
+  - grader tokens:
+    - psa `#B42B33` on `#FBE9EA`, `#F0BFC3`
+    - cgc `#1D4FBF` on `#E7EEFC`, `#BCCDF3`
+    - tag `#2E2E36` on `#F1F1F3`, `#CFCFD6`
+  - raw and sold: `#4B4B55` on `#F1F1F3`, `#D4D4D8`
+  - sealed and pending: `#946200` on `#FBF0D9`, `#E1CDA3`
+  - slab and traded: `#4A3BBF` on `#ECE9FB`, `#C4BEEC`
+  - pristine: `#6B4E00` on `#FBF1CF` to `#F5E6B3`, `#BE9A1F`
+  - stock and received: `#0F7A55` on `#E3F4EC`, `#AED6C6`
+  - complete-summary borders: pos `#AED6C6`, neg `#EFBEC6`, amber `#E1CDA3`
+- `--red2` is unused today. If it stays, use dark `#E5485F`, light `#A82A3D`
+
+**Sites to change** (line numbers approximate, from the 09/10 map)
+- Filled destructive buttons to `--danger`: index.html about 379, 482, 559, app.js about 19521 (confirm `danger`), app.js about 19578 (toast Undo)
+- White text on accent to `var(--accent-fg)`:
+  - styles.css about 1289 `.sentry-badge`
+  - features.js about 1470 (pipeline dot)
+  - features.js about 1619 `.eb-tl-done`
+- `a{}` uses `var(--link)`
+- Monospace to `var(--font-mono)`:
+  - styles.css 956, 1213, 1357, 1497, 1501, 1640
+  - index.html 859, 1093, 1298
+  - features.js 973, 974, 1075, 1076, 2099 (JS style string), 2719, 2720, 3096
+  - app.js 8717, 11419-11421, 12767-12769, 15875, 15897, 15905, 15913, 15921
+  - `.num` (styles.css 194) becomes `font-family:inherit`
+- Fonts:
+  - index.html Google Fonts link becomes Geist and Geist Mono, and `body` gets `var(--font-sans)` plus `font-variant-numeric:tabular-nums`
+  - the auth gate (styles.css about 1259) and `#intro-skip` (about 1459) switch to Geist
+  - features.js about 3969 `ctx.font` becomes Geist (the function is synchronous, so only change the string)
+  - leave the ExcelJS `{name:'Lexend'}` alone
+  - Geist loads 400 to 700, so `font-weight:800` renders at 700
+- Logo:
+  - index.html 173-178 has three spans (KUJIRA, Collectibles, `#app-ver`)
+  - remove the gradient text rules (styles.css 91 and 93, including `-webkit-text-fill-color:transparent`)
+  - change the text to `Kujira`
+  - `span:last-child` (styles.css 92) wrongly uppercases `#app-ver`, so give the spans explicit classes
+  - keep `id="app-ver"` on one line with the `>v3.68 (` shape, because qc.sh and misc-consistency parse it
+- Brand chrome to `#0B0B0E` (light `#F6F6F7`):
+  - index.html 14 `meta theme-color`
+  - app.js about 18594-18597 runtime theme-color
+  - manifest `background_color` and `theme_color`
+  - `#intro` gradient (index.html 165 inline, styles.css 1446) to `#0B0B0E` then `#1B1B21`
+  - auth gate fallback
+  - leave the Three.js texture colours in features.js about 3950-4080 alone
+- All-caps labels:
+  - convert these rules to 12px, 500, `var(--text3)`, with no uppercase and no tracking: `th`, `.metric-label`, `.inv-stat-label`, mobile `thead th`, `.kjr-listing-table th`, `label.lbl`, `.kjr-modal .lbl`, `.sell-field label`, `.filters-label`, `.sell-cart-price-lbl`, `.sync-diag-label`, `.nav-dd-section`, `.sheet-section-label`, `.cmd-section-label`, `.guide-toc-title`, `.cmd-mode-tab`
+  - convert the inline label uppercase too:
+    - index.html 213, 649, 661, 671, 681, 766, 773, 849, 856, 1301, 1459
+    - app.js 15874-15918, 18367, 17667, 18951, 10171
+    - features.js 2419, 2493, 2502
+  - make the change in CSS only, with no copy rewrites
+  - leave `#intro-skip`, `.dealer-production-local` and the Sentry level tag as they are
+- Odd font sizes in styles.css: 1203 (11.5 to 12), 1213-1215 (12.5 to 13), 1266 (17 to 16), 1288 (25), 1642 (23) to 22 or 26 by context
+- Chart.js `CB_PALETTE` (app.js about 18784) and `palette` (about 14445) must stay 6-digit hex (fills are `color+'55'`):
+  - Candidate, contrast-checked only: `#9F8CFF #F0C551 #D04A6D #5EC6B6 #2A6CC9 #FC9252 #3A8F4C #EDA4CC #4CAAD7 #C5DF66 #9F4CB1 #71CFD9`
+  - Weak colour-blind pairs: 1-9, 3-7, 5-7, 2-10, 8-12
+  - The AI chart takes the first 10
+  - The `#161616` border fallback (about 19349) becomes `#131317`
+  - Do not rerun a brute-force palette search, it ran past 10 minutes
+
+**Version bump to 3.68** (same edit as the change)
+- index.html 40 (Sentry release), 77 (styles.css tag), 177 (badge `v3.68 (DD Mon)`), 1957-1963 (7 scripts)
+- sw.js 7 (`kujira-v70` to `kujira-v71`) and 13 (`CORE`)
+- Do not touch `three.module.js?v=3.31`
+- Tests pinned to the version that must move with it: tests/sw-update.test.js 8-14 (`v3.67 (5 Oct)`, `kujira-v70`, `?v=3.67`) and tests/dealer-production-preview.test.js 46 and 60 (`?v=3.67`)
+- No test asserts on Lexend, uppercase, old hex values, `--red` or label text
+
+**Browser check**
+- The `collectibles` preview (port 3800) is already in the workspace-root `.claude/launch.json`
+- Confirm the Google Fonts request succeeds in the pane, otherwise Geist rendering is unverified
+
+**Seen outside Step 1, left for later steps**
+- the AI Analyst chip gradient `#7c3aed` to `#4a9eff` (index.html 755)
+- the auth kicker literal `KUJIRA` (index.html 84)
+- inline semantic colours `#f59e0b`, `#22c55e` and `#ef4444` (14 or more app.js sites)
+- the Pristine star `#f0b429` (app.js 13009)
+- the chart legend literal `#999` (app.js 19397)
+- the doughnut border stays near-black in light (app.js 19349)

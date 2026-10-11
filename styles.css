@@ -787,13 +787,6 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
    dropped; tapping the Product cell opens the editor (kjrInstallCompactTapEdit
    clicks the row's hidden Edit button). eBay keeps its pipeline view. */
 @media(max-width:600px){
-  body:not(.force-tables) #page-inventory .kjr-single-name-text{display:none}
-  body:not(.force-tables) #page-inventory .kjr-single-name-edit{display:block;width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font:inherit;color:inherit;background:transparent;border:0;padding:0;cursor:pointer}
-}
-.kjr-single-name-edit{display:none}
-.kjr-single-name-edit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-
-@media(max-width:600px){
   body:not(.force-tables) #page-sales .tbl-wrap,
   body:not(.force-tables) #page-etbs .tbl-wrap,
   body:not(.force-tables) #page-boosterBoxes .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -2106,4 +2099,155 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
 
 @media(prefers-reduced-motion:reduce){
   .kjr-more,.kjr-chip,.kjr-switch-ui,.kjr-switch-ui::after{transition:none}
+}
+
+/* ═══════════ Card inspector (redesign Step 5, v3.72) ═══════════
+   New in this step and last in the file, so the phone overrides come after the base rules. Existing tokens only.
+   At 901px and wider the inspector is a non-modal panel fixed to the right (#kjr-inspector, no scrim, no focus trap),
+   at 900px and narrower the same content sits in a full-height sheet (#kjr-insp-sheet, a dialog opened through
+   kjrModalCtrl). From 1280px the page makes room for the panel while it is open (a split view), below that it
+   overlays the right edge. z-index 120 is above the sticky table head (5) and the topbar (100), below the menus
+   (160, 170), the tab bar (150) and every dialog. The panel never sets a transform at rest: the "…" menu inside it is
+   position:fixed and a transformed ancestor would become its containing block. */
+
+/* The card name in a Singles or Slabs row: a button with no handler, so the row has a keyboard way in */
+.kjr-name-btn{-webkit-appearance:none;appearance:none;display:block;width:100%;min-width:0;margin:0;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.kjr-name-btn:hover{text-decoration:underline;text-decoration-color:var(--text3);text-underline-offset:3px}
+.kjr-name-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Rows open the inspector, so they read as clickable. The checkbox and actions cells keep the default cursor, the
+   inline price fields keep their text cursor. */
+#page-inventory tbody tr[data-id]>td,#page-slabs tbody tr[data-id]>td{cursor:pointer}
+#page-inventory tbody tr[data-id]>td[data-col-key="_cb"],#page-inventory tbody tr[data-id]>td[data-col-key="actions"],
+#page-slabs tbody tr[data-id]>td[data-col-key="_cb"],#page-slabs tbody tr[data-id]>td[data-col-key="actions"]{cursor:default}
+
+/* The row, tile or mover the inspector is showing. Separate from row-selected (the bulk selection), which is the same
+   soft fill without the ring. */
+#page-inventory tbody tr.is-inspected>td,#page-slabs tbody tr.is-inspected>td{background:var(--accent-soft);box-shadow:inset 0 1px 0 var(--b-slab-bd),inset 0 -1px 0 var(--b-slab-bd)}
+#page-inventory tbody tr.is-inspected>td:first-child,#page-slabs tbody tr.is-inspected>td:first-child{box-shadow:inset 1px 0 0 var(--b-slab-bd),inset 0 1px 0 var(--b-slab-bd),inset 0 -1px 0 var(--b-slab-bd)}
+#page-inventory tbody tr.is-inspected>td:last-child,#page-slabs tbody tr.is-inspected>td:last-child{box-shadow:inset -1px 0 0 var(--b-slab-bd),inset 0 1px 0 var(--b-slab-bd),inset 0 -1px 0 var(--b-slab-bd)}
+#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin:120px 0 32px}
+.kjr-tile.is-inspected{scroll-margin:120px 0 32px}
+.kjr-tile.is-inspected .kjr-tile-stage{background:var(--accent-soft);border-color:var(--b-slab-bd);box-shadow:0 0 0 1px var(--b-slab-bd)}
+.ov-mover.is-inspected{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--b-slab-bd)}
+
+/* The panel */
+#kjr-inspector{position:fixed;top:calc(56px + env(safe-area-inset-top));right:0;bottom:0;z-index:120;display:flex;flex-direction:column;width:min(440px,100vw);background:var(--bg2);border-left:1px solid var(--border);box-shadow:var(--shadow-lg);color:var(--text);transition:transform 0.2s ease-out,opacity 0.2s ease-out}
+#kjr-inspector[hidden]{display:none}
+@starting-style{#kjr-inspector:not([hidden]){transform:translateX(24px);opacity:0}}
+.kjr-insp-scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:20px;padding:0 24px calc(24px + env(safe-area-inset-bottom));overflow-y:auto;overscroll-behavior:contain}
+
+/* The sheet (900px and narrower): the Back button, Esc, the backdrop and scroll lock come from kjrModalCtrl */
+.kjr-insp-sheet{display:flex;flex-direction:column;width:100%;max-width:560px;max-height:calc(100vh - env(safe-area-inset-top));max-height:calc(100dvh - env(safe-area-inset-top));background:var(--bg2);border:1px solid var(--border2);border-bottom:none;border-radius:20px 20px 0 0;box-shadow:var(--shadow-lg);overflow:hidden;color:var(--text);transition:transform 0.30s cubic-bezier(0.32,0.72,0,1),opacity 0.22s ease}
+@starting-style{dialog.kjr-insp-overlay[open] .kjr-insp-sheet{transform:translateY(100%);opacity:0.7}}
+.kjr-insp-sheet .sheet-handle{flex:none;margin:10px auto 0}
+.kjr-insp-sheet .kjr-insp-scroll{padding:0 16px calc(20px + env(safe-area-inset-bottom))}
+
+/* Top bar: stays in view while the card scrolls */
+.kjr-insp-top{position:sticky;top:0;z-index:2;flex:none;display:flex;align-items:center;gap:6px;margin:0 -24px -6px;padding:16px 24px 10px;background:var(--bg2)}
+.kjr-insp-sheet .kjr-insp-top{margin:0 -16px -6px;padding:8px 16px 10px}
+.kjr-insp-count{margin-right:auto;font-size:13px;line-height:18px;color:var(--text3);font-variant-numeric:tabular-nums}
+.kjr-insp-ib{flex:none;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer;transition:background 0.16s ease-out,color 0.16s ease-out}
+.kjr-insp-ib[data-insp-act="close"]{border-color:transparent}
+.kjr-insp-ib:hover:not(:disabled){background:var(--bg3);color:var(--text)}
+.kjr-insp-ib:disabled{opacity:0.4;cursor:default}
+
+/* Art stage: a soft spotlight like the grid tile's, the card tilted a few degrees, a faint static sheen on top */
+.kjr-insp-stage{flex:none;display:flex;align-items:center;justify-content:center;aspect-ratio:1/0.92;border-radius:16px;border:1px solid var(--border);background:radial-gradient(90% 70% at 50% 10%,var(--bg4),var(--bg2) 72%);overflow:hidden}
+.kjr-insp-card{position:relative;width:50%;aspect-ratio:63/88;border-radius:12px;overflow:hidden;box-shadow:var(--shadow-lg),0 0 0 1px color-mix(in srgb,var(--text) 12%,transparent);transform:perspective(900px) rotateY(-8deg) rotateX(3deg)}
+.kjr-insp-art{position:absolute;inset:0;border-radius:inherit}
+.kjr-insp-sheen{position:absolute;inset:0;pointer-events:none;background:linear-gradient(115deg,transparent 30%,color-mix(in srgb,var(--accent2) 22%,transparent) 44%,color-mix(in srgb,var(--blue) 14%,transparent) 52%,transparent 64%)}
+.kjr-insp-slabwrap{display:flex;align-items:center;justify-content:center;width:100%;height:100%}
+.kjr-insp-stage .kjr-slab{width:46%}
+.kjr-insp-stage.is-sold .kjr-insp-card,.kjr-insp-stage.is-sold .kjr-slab{opacity:0.55}
+
+/* Title, set line and chips */
+.kjr-insp-head{display:flex;flex-direction:column;gap:10px;min-width:0}
+.kjr-insp-title{margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-0.02em;overflow-wrap:anywhere}
+/* Focus lands here when the card opens, so a screen reader reads the name. It is a heading, not a control, so it
+   takes no ring: after a mouse click on a row a ring around the name only looks like an error. */
+.kjr-insp-title:focus,.kjr-insp-title:focus-visible{outline:none}
+.kjr-insp-set{margin:2px 0 0;font-size:14px;line-height:20px;color:var(--text2);overflow-wrap:anywhere}
+.kjr-insp-mono{font-family:var(--font-mono);font-size:13px;letter-spacing:0}
+.kjr-insp-chips{display:flex;flex-wrap:wrap;gap:6px}
+.kjr-insp-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;background:var(--bg3);color:var(--text2);font-size:12px;line-height:1;white-space:nowrap}
+.kjr-insp-chip.has-dot::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--kjr-chip-dot,var(--text3))}
+.kjr-insp-chip.stock{--kjr-chip-dot:var(--pill-stock-fg)}
+.kjr-insp-chip.sold{--kjr-chip-dot:var(--pill-sold-fg)}
+.kjr-insp-chip.listed{--kjr-chip-dot:var(--accent)}
+.kjr-insp-chips .b-lang{height:26px;padding:0 9px;font-size:12px;border-color:var(--control-border);border-radius:7px}
+
+/* Value block: an inset panel with the number, the gain against cost, the 30-day line and where the price came from */
+.kjr-insp-value{display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:14px;background:var(--bg);border:1px solid var(--border)}
+.kjr-insp-vrow{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+.kjr-insp-vlabel{font-size:13px;line-height:18px;color:var(--text3)}
+.kjr-insp-vnum{font-size:32px;line-height:38px;font-weight:600;letter-spacing:-0.03em;font-variant-numeric:tabular-nums}
+.kjr-insp-vsub{font-size:12px;line-height:16px;color:var(--text3)}
+.kjr-insp-gain{text-align:right}
+.kjr-insp-gain-main{font-weight:600;font-variant-numeric:tabular-nums}
+.kjr-insp-gain.is-up .kjr-insp-gain-main{color:var(--green)}
+.kjr-insp-gain.is-down .kjr-insp-gain-main{color:var(--red)}
+.kjr-insp-gain-sub{font-size:12px;line-height:16px;color:var(--text3);font-variant-numeric:tabular-nums}
+.kjr-insp-chart{display:block;width:100%;height:84px}
+.kjr-insp-area{fill:url(#kjr-insp-fill);stroke:none}
+.kjr-insp-fa{stop-color:var(--accent);stop-opacity:0.28}
+.kjr-insp-fb{stop-color:var(--accent);stop-opacity:0}
+.kjr-insp-line{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.kjr-insp-costline{fill:none;stroke:var(--text3);stroke-width:1.5;stroke-dasharray:4 4}
+.kjr-insp-legend{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:12px;line-height:16px;color:var(--text3)}
+.kjr-insp-key{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.kjr-insp-key i{display:inline-block;width:16px;height:0;border-top:2px solid var(--accent)}
+.kjr-insp-key i.c{border-top:2px dashed var(--text3)}
+.kjr-insp-empty{margin:0;padding:10px 0;border-top:1px dashed var(--border2);border-bottom:1px dashed var(--border2);font-size:13px;line-height:18px;color:var(--text3)}
+.kjr-insp-src{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:16px;color:var(--text3)}
+.kjr-insp-src svg{flex:none;margin-top:1px}
+
+/* Details */
+.kjr-insp-dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 20px;margin:0}
+.kjr-insp-dl>div{min-width:0}
+.kjr-insp-dl dt{font-size:12px;line-height:16px;color:var(--text3)}
+.kjr-insp-dl dd{margin:2px 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.kjr-insp-dl dd.is-empty{color:var(--text3)}
+.kjr-insp-full{grid-column:1/-1}
+.kjr-insp-notes{white-space:pre-wrap;color:var(--text2)}
+
+/* Actions */
+.kjr-insp-actions{flex:none;display:flex;flex-direction:column;gap:8px}
+.kjr-insp-row{display:flex;gap:8px}
+.kjr-insp-primary{height:44px;padding:0 16px;border:0;border-radius:11px;background:var(--accent);color:var(--accent-fg);font:inherit;font-weight:600;cursor:pointer;transition:background 0.16s ease-out}
+.kjr-insp-primary:hover{background:var(--accent2)}
+.kjr-insp-btn{flex:1 1 0;min-width:0;height:40px;padding:0 12px;border-radius:10px;border:1px solid var(--border2);background:var(--bg3);color:var(--text);font:inherit;font-weight:500;white-space:nowrap;cursor:pointer;transition:background 0.16s ease-out}
+.kjr-insp-btn:hover{background:var(--bg4)}
+.kjr-insp-actions .kjr-more{opacity:1;width:40px;height:40px;border-radius:10px;color:var(--text2)}
+.kjr-insp-ib:focus-visible,.kjr-insp-primary:focus-visible,.kjr-insp-btn:focus-visible,.kjr-insp-actions .kjr-more:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kjr-insp-dl a{color:var(--link)}
+.kjr-rowmenu a[role="menuitem"],.kjr-rowmenu a[role="menuitem"]:hover{color:var(--text);text-decoration:none}
+.kjr-rowmenu [aria-disabled="true"],.kjr-rowmenu [aria-disabled="true"]:hover{background:transparent;color:var(--text3);cursor:not-allowed}
+
+/* Split view: from 1280px the page makes room for the panel while it is open, so the list stays fully visible.
+   The padding is the panel width plus 16px, less whatever margin the 1400px page already leaves on the right.
+   The toast and the update pill step left of the panel so they never sit on its buttons. */
+@media(min-width:1280px){
+  body.kjr-insp-open .main:has(.page.active){padding-right:max(24px,calc(456px - max(0px,(100vw - 1400px) / 2)))}
+}
+@media(min-width:901px){
+  body.kjr-insp-open #toast{right:464px}
+  body.kjr-insp-open #kjr-update-pill{right:456px}
+}
+@media(pointer:coarse){
+  .kjr-insp-ib{width:44px;height:44px}
+  .kjr-insp-btn{height:44px}
+  .kjr-insp-actions .kjr-more{width:44px;height:44px}
+}
+@media(prefers-reduced-motion:reduce){
+  #kjr-inspector,.kjr-insp-sheet,.kjr-insp-ib,.kjr-insp-primary,.kjr-insp-btn{transition:none}
+  .kjr-insp-sheen{display:none}
+  .kjr-insp-card{transform:none}
+}
+@media(max-width:600px){
+  .kjr-insp-title{font-size:22px;line-height:28px}
+}
+/* The panel is for wide windows only, a narrow one uses the sheet. (Written with spaces: tests/overview.test.js finds
+   the Overview's 900px block with lastIndexOf on the compact form, so no later block may use it.) */
+@media (max-width: 900px){
+  #kjr-inspector{display:none!important}
 }

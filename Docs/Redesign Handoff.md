@@ -139,6 +139,27 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Step 5 (card inspector, v3.72) was built on 11/10/2026, browser-verified and deployed to `main` (live) on 12/10/2026. `./qc.sh` PASS, `node --test` 948 tests, 942 pass, 0 fail, 6 skipped (37 new in tests/inspector.test.js). The "Before committing" list below is done.
+
+**What it is**
+- `#kjr-inspector` aside at 901px and wider (split view from 1280px via body class `kjr-insp-open`)
+- `#kjr-insp-sheet` dialog at 900px and narrower, through `kjrModalCtrl`
+- API: `kjrInspect`, `kjrInspectClose`, `kjrInspectRefresh` in the features.js section "Card inspector (v3.72)"
+- Order in `_kjrInspectOrder`
+- It opens from grid tiles, Overview tiles and movers, a desktop row click, and the phone tap. The "…" Edit item still edits
+- The Singles name is now `<button class="kjr-name-btn">`, replacing `.kjr-single-name-*`
+- `kjrImgTag` gained size 'h' (high.webp)
+- Refresh price is disabled on localhost
+- The narrow-panel media query is written `@media (max-width: 900px)` with spaces, because overview.test.js finds its own block by the compact form
+
+**Before committing**
+- Finish the browser pass: cache-bust, confirm the title focus ring is gone after a mouse click, check the Slabs and Overview phone taps, and sign off visually in both themes
+- The seed set must be rebuilt. Cover: EN with real tcgdexIds, JP, sealed, qty more than 1, Sold, notes, a carousellUrl, slabs (PSA, CGC, TAG, with and without datePurchased) and sales
+
+**Found, not fixed**
+- `_saveSlabNow` drops a slab's `datePurchased` on edit-save
+- `refreshPrice` needs a local PPT key for slabs (not needed with the Worker), and for singles a TCGdex miss falls back to a fuzzy PPT search (no `tcgdexOnly`)
+
 Step 4 shipped as v3.71 on 11/10/2026, table cleanup. Steps 1 to 4 were deployed to `main` (live) the same day.
 
 **Column filters**

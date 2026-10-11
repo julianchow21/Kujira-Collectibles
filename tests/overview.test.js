@@ -498,13 +498,15 @@ function fakeClick(attrs) {
   return { target: { closest: () => holder } };
 }
 
-test('tiles and rows open the existing edit modal by table, the text buttons go where they say', async () => {
+test('tiles and rows open the card inspector by table, the text buttons go where they say', async () => {
   const { ctx } = await app({ singles: [single({ id: 'one' })], slabs: [slab({ id: 'two' }), slab({ id: 3, name: 'Numeric id' })] });
   const calls = [];
   const toasts = [];
   ctx.toast = msg => toasts.push(msg);
-  ctx.openEditSingle = id => calls.push(['single', id]);
-  ctx.openEditSlab = id => calls.push(['slab', id]);
+  // v3.72: a tile or a mover opens the inspector, Edit is one click further. The row's own id goes through (3, not '3').
+  ctx.kjrInspect = (table, id) => { calls.push(['inspect', table, id]); return true; };
+  ctx.openEditSingle = id => calls.push(['edit-single', id]);
+  ctx.openEditSlab = id => calls.push(['edit-slab', id]);
   ctx.showPage = name => calls.push(['page', name]);
   ctx._kjrShowUnresolvedOnly = () => calls.push(['unresolved']);
   ctx.showMarketValueBreakdown = () => calls.push(['breakdown']);
@@ -519,7 +521,7 @@ test('tiles and rows open the existing edit modal by table, the text buttons go 
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'breakdown' }));
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'add' }));
   assert.deepEqual(calls, [
-    ['single', 'one'], ['slab', 'two'], ['slab', 3], ['page', 'inventory'], ['page', 'sales'], ['unresolved'], ['breakdown'], ['add'],
+    ['inspect', 'singles', 'one'], ['inspect', 'slabs', 'two'], ['inspect', 'slabs', 3], ['page', 'inventory'], ['page', 'sales'], ['unresolved'], ['breakdown'], ['add'],
   ]);
 
   calls.length = 0;

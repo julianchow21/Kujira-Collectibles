@@ -575,7 +575,7 @@ test('card-art: the empty and filtered-empty states in the grid say what the lis
   assert.doesNotMatch(f, /btn-primary/, 'a filtered-empty state has no add-first-card CTA');
 });
 
-test('card-art: one delegated click listener opens the editor with the exact id, for tiles, the sold toggle and the empty CTA', async () => {
+test('card-art: one delegated click listener opens the card inspector with the exact id, for tiles, the sold toggle and the empty CTA', async () => {
   const { ctx, document } = await loadApp({ localStorage: { kjr_view_singles: 'grid', kjr_view_slabs: 'grid' } });
   ctx.renderSingles(); ctx.renderSlabs();
   const wrap = document.getElementById('singles-grid-wrap');
@@ -583,19 +583,29 @@ test('card-art: one delegated click listener opens the editor with the exact id,
   ctx.renderSingles();
   assert.equal(wrap._listeners.get('click').length, 1, 're-rendering does not stack listeners');
 
+  // v3.72: a tile opens the card inspector, not the edit modal (Edit is one click further, inside the inspector)
   const calls = [];
-  ctx.openEditSingle = (id) => calls.push(['single', id]);
-  ctx.openEditSlab = (id) => calls.push(['slab', id]);
+  const openers = [];
+  ctx.kjrInspect = (table, id, opts) => { calls.push(['inspect', table, id]); openers.push(opts && opts.trigger); return true; };
+  ctx.openEditSingle = (id) => calls.push(['edit-single', id]);
+  ctx.openEditSlab = (id) => calls.push(['edit-slab', id]);
   ctx.openAddSingle = () => calls.push(['add-single']);
   ctx.toggleSoldSection = (t) => calls.push(['toggle', t]);
   const weirdId = 'legacy "quoted" \\ <id> & \'x\'';
-  const fire = (table, attrs) => ctx.kjrGridClick(table, { target: { closest: () => ({ getAttribute: (k) => (k in attrs ? attrs[k] : null) }) } });
+  const tiles = [];
+  const fire = (table, attrs) => {
+    const tile = { getAttribute: (k) => (k in attrs ? attrs[k] : null) };
+    tiles.push(tile);
+    ctx.kjrGridClick(table, { target: { closest: () => tile } });
+  };
   fire('singles', { 'data-id': weirdId });
   fire('slabs', { 'data-id': 'slab_9' });
   fire('singles', { 'data-kjr-act': 'alt' });
   fire('singles', { 'data-kjr-act': 'add' });
   ctx.kjrGridClick('singles', { target: { closest: () => null } }); // a click on empty space does nothing
-  assert.deepEqual(plain(calls), [['single', weirdId], ['slab', 'slab_9'], ['toggle', 'singles'], ['add-single']]);
+  assert.deepEqual(plain(calls), [['inspect', 'singles', weirdId], ['inspect', 'slabs', 'slab_9'], ['toggle', 'singles'], ['add-single']]);
+  assert.equal(openers[0], tiles[0], 'the tile is passed as the trigger, so focus goes back to it when the inspector closes');
+  assert.equal(openers[1], tiles[1]);
 });
 
 test('card-art: a data-id with awkward characters round-trips through the tile attribute', async () => {

@@ -3712,9 +3712,12 @@ function kjrSlotState(el) {
   if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? { state: 'none' } : { state: 'hit', base: base };
   return kjrCardImageMissed(tcg, lang) ? { state: 'none' } : { state: 'need' };
 }
+// sz: 't' thumbnail (28x39), 'c' tile (low.webp), 'h' the card inspector's large art (high.webp, v3.72). The late fill
+// in kjrApplyArt reads the size off the slot's data-sz, so a placeholder drawn as 'h' is filled with the large image.
 function kjrImgTag(base, sz) {
-  var w = sz === 'c' ? 245 : 28, h = sz === 'c' ? 337 : 39;
-  return '<img class="kjr-card-img" src="' + kjrEscape(kjrCardImageUrl(base, 'low')) + '" width="' + w + '" height="' + h +
+  var big = sz === 'c' || sz === 'h';
+  var w = big ? 245 : 28, h = big ? 337 : 39;
+  return '<img class="kjr-card-img" src="' + kjrEscape(kjrCardImageUrl(base, sz === 'h' ? 'high' : 'low')) + '" width="' + w + '" height="' + h +
     '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">';
 }
 // One art slot: the picture when a base is known, else the neutral placeholder. A placeholder
@@ -3998,7 +4001,9 @@ function kjrGridClick(table, e) {
   if (act === 'add') { if (table === 'singles') openAddSingle(); else openAddSlab(); return; }
   var id = t.getAttribute('data-id');
   if (id == null) return;
-  if (table === 'singles') openEditSingle(id); else openEditSlab(id);
+  // A tile opens the card inspector (v3.72), the order is the grid's own (renderSingles and renderSlabs keep it).
+  // Edit lives in the inspector now, one click further.
+  kjrInspect(table, id, { trigger: t });
 }
 function kjrGridBind(table) {
   var wrap = document.getElementById(table + '-grid-wrap');
@@ -4089,6 +4094,831 @@ function kjrSetView(table, mode) {
   }
   if (table === 'singles') renderSingles(); else renderSlabs();
 }
+
+// ═════════════ Card inspector (v3.72) ═════════════
+// Redesign Step 5. One panel shows one card or slab. It is a read-and-launch surface: it never writes a row itself.
+// Every change goes through the function the list already uses (markStatus, openEditSingle and openEditSlab,
+// openListingFor, refreshPrice, deleteItem), so undo, the changelog, the sync queue and the Dealer guard behave
+// exactly as they do from a row.
+//   901px and wider  a non-modal panel fixed to the right (#kjr-inspector). Not a focus trap, Esc closes it.
+//   900px and below  the same content in a full-height sheet (#kjr-insp-sheet), a dialog opened through
+//                    kjrModalCtrl, so scroll lock, the Back button, Esc and focus return come for free.
+// Only one of the two hosts holds content at a time, so every id inside the content stays unique.
+// "Card N of M" and the arrow keys follow the list the card was opened from. renderSingles and renderSlabs keep that
+// order in _kjrInspectOrder (app.js), the Overview passes the tiles it drew. While it is open the panel redraws after
+// every list redraw and every dialog close, finding its card again by id.
+var _kjrInsp = null; // { table, id, order, src, trigger, mode, page, deleting, zone, focusKey } while it is open
+var KJR_INSP_ZONES = {
+  singles: ['singles-body', 'singles-sold-body', 'singles-grid', 'singles-grid-alt'],
+  slabs: ['slabs-body', 'slabs-sold-body', 'slabs-grid', 'slabs-grid-alt']
+};
+var KJR_INSP_MQ = '(max-width: 900px)';
+var KJR_INSP_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
+var KJR_INSP_ICON = {
+  prev: KJR_INSP_SVG + '<path d="m15 6-6 6 6 6"/></svg>',
+  next: KJR_INSP_SVG + '<path d="m9 6 6 6-6 6"/></svg>',
+  close: KJR_INSP_SVG + '<path d="M6 6l12 12M18 6 6 18"/></svg>',
+  clock: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
+};
+
+// ── Builders. They read a row and return markup, nothing here touches the page or writes anything.
+
+// Whole dollars with thousands separators, '' for a value that is not a number or is negative.
+function kjrInspectMoney(v) {
+  var n = parseFloat(v);
+  if (!isFinite(n) || n < 0) return '';
+  var whole = Math.round(n);
+  return n > 0 && whole < 1 ? '<S$1' : 'S$' + whole.toLocaleString('en-SG');
+}
+// Only http and https links are ever put in an href, whatever a row holds. '' otherwise.
+function kjrInspectSafeUrl(v) {
+  var s = String(v == null ? '' : v).trim();
+  if (!s || s.length > 500 || /[\s\u0000-\u001f]/.test(s)) return '';
+  try {
+    var u = new URL(s);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname ? u.href : '';
+  } catch (e) { return ''; }
+}
+// The card number for the set line: "215/203" when the name carries both parts, else the number the pricing code reads.
+function kjrInspectCardNumber(name) {
+  var s = String(name == null ? '' : name);
+  var m = s.match(/(?:^|[\s(#])(\d{1,4}\s?\/\s?\d{1,4})(?=$|[\s),])/);
+  if (m) return m[1].replace(/\s+/g, '');
+  return typeof _tcgdexNumber === 'function' ? _tcgdexNumber(s) : '';
+}
+// Where the card is listed. Carousell shows when the row has a Carousell link or the listing workspace marked it
+// listed or reserved, unless the workspace says it came down. eBay shows when the row has an eBay link.
+function kjrInspectListed(item) {
+  var meta = item && item.listingMeta && typeof item.listingMeta === 'object' ? item.listingMeta : null;
+  var status = meta && typeof meta.listingStatus === 'string' ? meta.listingStatus : '';
+  var cText = String(item && item.carousellUrl != null ? item.carousellUrl : '').trim();
+  var eText = String(item && item.ebayUrl != null ? item.ebayUrl : '').trim();
+  var carousell = '';
+  if (status === 'reserved') carousell = 'Reserved on Carousell';
+  else if (status === 'listed' || (cText && status !== 'removed' && status !== 'sold' && status !== 'not_listed')) carousell = 'Listed on Carousell';
+  return { carousell: carousell, ebay: eText ? 'Listed on eBay' : '', carousellUrl: kjrInspectSafeUrl(cText), ebayUrl: kjrInspectSafeUrl(eText) };
+}
+// A price source string in plain words. Anything unknown is shown as stored.
+function kjrInspectSourceText(source) {
+  var s = String(source == null ? '' : source).trim();
+  if (!s) return '';
+  if (/^TCGdex \(TCGplayer\)$/i.test(s)) return 'TCGplayer market via TCGdex';
+  if (/^TCGdex \(Cardmarket\)$/i.test(s)) return 'Cardmarket trend via TCGdex';
+  if (/^manual$/i.test(s)) return 'Manual price';
+  if (/^PPT\b/i.test(s)) return 'eBay sold average via PokemonPriceTracker';
+  return s;
+}
+// The line under the chart: where the price came from and how long ago it was checked. A row with no history says
+// what it can: a non-English single is priced by hand, a price with no record was typed in, an empty one says why.
+function kjrInspectPriceLine(table, item, now) {
+  var hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
+  var last = hist.length ? hist[hist.length - 1] : null;
+  if (last && typeof last === 'object') {
+    var text = kjrInspectSourceText(last.source) || 'Price source not recorded';
+    var d = typeof _parseHistDate === 'function' ? _parseHistDate(last.date) : null;
+    var ago = d && typeof kjrOverviewCheckedText === 'function' ? kjrOverviewCheckedText(d.getTime(), now) : '';
+    return ago ? text + ' · checked ' + ago : text;
+  }
+  var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  if (table !== 'slabs' && lang !== 'EN') return 'Manual price, no free source for this language';
+  if (parseFloat(item.marketPrice) > 0) return 'Manual price';
+  var why = typeof _mktEmptyCellTitle === 'function' ? _mktEmptyCellTitle(item) : '';
+  return why || 'No market price checked yet';
+}
+// The last 30 days of priceHistory: one point per day (a later entry for the same day wins), oldest first. Entries
+// are { date 'YYYY-MM-DD', price in SGD }, a re-price to the same value adds none, so the series can be sparse.
+function kjrInspectSeries(item, now) {
+  var hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
+  var n = new Date(now || Date.now());
+  var end = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  var start = end - 30 * 86400000;
+  var byDay = {};
+  hist.forEach(function (e) {
+    if (!e || typeof e !== 'object') return;
+    var price = parseFloat(e.price);
+    if (!isFinite(price) || price <= 0) return;
+    var d = typeof _parseHistDate === 'function' ? _parseHistDate(e.date) : null;
+    if (!d) return;
+    var t = d.getTime();
+    if (t < start || t > end + 86400000) return; // older than 30 days, or more than a day ahead (a clock that ran fast)
+    byDay[t] = { t: t, price: price };
+  });
+  var points = Object.keys(byDay).map(function (k) { return byDay[k]; }).sort(function (a, b) { return a.t - b.t; });
+  return { points: points, start: start, end: end };
+}
+// The 30-day line, a dashed cost line and a key. Fewer than two points is a one-line empty state. The cost line only
+// joins the scale when it is within a factor of three of the market range, otherwise it would flatten the market line
+// to nothing, so it is left off the drawing and named in the key instead.
+function kjrInspectChartHtml(item, now) {
+  var s = kjrInspectSeries(item, now);
+  var pts = s.points;
+  if (pts.length < 2) return '<p class="kjr-insp-empty">Not enough price history yet</p>';
+  var W = 760, H = 200, PX = 8, PY = 14;
+  var lo = Infinity, hi = -Infinity;
+  pts.forEach(function (p) { if (p.price < lo) lo = p.price; if (p.price > hi) hi = p.price; });
+  var marketLo = lo, marketHi = hi;
+  var cost = parseFloat(item.costPrice);
+  var costOn = false, costOff = '';
+  if (isFinite(cost) && cost > 0) {
+    if (cost >= marketLo / 3 && cost <= marketHi * 3) { costOn = true; lo = Math.min(lo, cost); hi = Math.max(hi, cost); }
+    else costOff = cost > marketHi ? 'above' : 'below';
+  }
+  var pad = (hi - lo) * 0.12;
+  if (!(pad > 0)) pad = Math.max(hi * 0.05, 0.5);
+  lo = Math.max(0, lo - pad);
+  hi = hi + pad;
+  var span = s.end - s.start;
+  var x = function (t) { return PX + Math.min(1, Math.max(0, (t - s.start) / span)) * (W - 2 * PX); };
+  var y = function (p) { return PY + (1 - (p - lo) / (hi - lo)) * (H - 2 * PY); };
+  var r = function (v) { return Math.round(v * 10) / 10; };
+  var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + r(x(p.t)) + ' ' + r(y(p.price)); }).join(' ');
+  var area = line + ' L' + r(x(pts[pts.length - 1].t)) + ' ' + H + ' L' + r(x(pts[0].t)) + ' ' + H + ' Z';
+  var label = 'Market price over the last 30 days, ' + pts.length + ' readings, from ' + kjrInspectMoney(marketLo) + ' to ' + kjrInspectMoney(marketHi) +
+    (costOn ? ', with your cost of ' + kjrInspectMoney(cost) + ' as a dashed line' : '');
+  var key = '<span class="kjr-insp-key"><i class="m" aria-hidden="true"></i>Market</span>';
+  if (costOn) key += '<span class="kjr-insp-key"><i class="c" aria-hidden="true"></i>Cost ' + kjrEscape(kjrInspectMoney(cost)) + '</span>';
+  else if (costOff) key += '<span class="kjr-insp-key">Cost ' + kjrEscape(kjrInspectMoney(cost)) + ', ' + costOff + ' the scale</span>';
+  return '<svg class="kjr-insp-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="' + kjrEscape(label) + '">' +
+      '<defs><linearGradient id="kjr-insp-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="kjr-insp-fa"/><stop offset="1" class="kjr-insp-fb"/></linearGradient></defs>' +
+      '<path class="kjr-insp-area" d="' + area + '"/>' +
+      (costOn ? '<path class="kjr-insp-costline" d="M' + PX + ' ' + r(y(cost)) + ' L' + (W - PX) + ' ' + r(y(cost)) + '" vector-effect="non-scaling-stroke"/>' : '') +
+      '<path class="kjr-insp-line" d="' + line + '" vector-effect="non-scaling-stroke"/>' +
+    '</svg><div class="kjr-insp-legend">' + key + '</div>';
+}
+// Can the price be refreshed from here, and if not, why. Same guards as the queue: a local preview never prices,
+// and a single with no free source (non-English, or no card number) is priced by hand.
+function kjrInspectRefreshInfo(table, item) {
+  if (typeof isLocalhostPreview === 'function' && isLocalhostPreview()) {
+    return { ok: false, why: 'Price refresh is disabled in local preview (sync off). Use the live site.' };
+  }
+  if (table === 'singles' && typeof _queueLaneFor === 'function' && _queueLaneFor(item) === 'manual') {
+    var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+    return { ok: false, why: lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing' };
+  }
+  return { ok: true, why: '' };
+}
+// The art stage. Slabs draw the case with its grader bar (the grid's drawing, scaled up). A single shows the large
+// image when its base is known, else the neutral placeholder (non-English, no id, a miss or a failed load), and a
+// placeholder a lookup can still fill is observed under the key 'inspector'. A large image that failed to load falls
+// back to the small one for as long as that one works.
+function kjrInspectArtHtml(table, item, sold) {
+  var inner;
+  if (table === 'slabs') {
+    inner = '<div class="kjr-insp-slabwrap">' + kjrSlabArtHtml(item, 'tile') + '</div>';
+  } else {
+    var st = kjrArtState(item, 'singles');
+    var sz = st.state === 'hit' && _kjrImgBroken[kjrCardImageUrl(st.base, 'high')] ? 'c' : 'h';
+    inner = '<div class="kjr-insp-card">' + kjrArtSlot(st, sz, 'kjr-insp-art') + '<span class="kjr-insp-sheen" aria-hidden="true"></span></div>';
+  }
+  return '<div class="kjr-insp-stage' + (sold ? ' is-sold' : '') + '" aria-hidden="true">' + inner + '</div>';
+}
+// The whole panel for one row. view: { n, total, hasPrev, hasNext, now }. Every value from the row is escaped.
+function kjrInspectHtml(table, item, view) {
+  view = view || {};
+  var E = kjrEscape;
+  var isSlab = table === 'slabs';
+  var sold = String(item.status || 'Available') === 'Sold';
+  var name = String(item.name || '-');
+  var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  var qty = isSlab ? 1 : (parseInt(item.qty, 10) || 1);
+  var now = view.now || Date.now();
+  var mi = effectiveMarketInfo(item);
+  var cost = parseFloat(item.costPrice);
+  var hasCost = isFinite(cost) && cost > 0;
+  var listed = kjrInspectListed(item);
+
+  // Top bar
+  var ib = function (act, label, icon, disabled, title) {
+    return '<button type="button" class="kjr-insp-ib" data-insp-act="' + act + '" aria-label="' + E(label) + '" title="' + E(title) + '"' + (disabled ? ' disabled' : '') + '>' + icon + '</button>';
+  };
+  var top = '<div class="kjr-insp-top"><span class="kjr-insp-count">Card ' + (view.n || 1) + ' of ' + (view.total || 1) + '</span>' +
+    ib('prev', 'Previous card', KJR_INSP_ICON.prev, !view.hasPrev, 'Previous card (Up arrow or K)') +
+    ib('next', 'Next card', KJR_INSP_ICON.next, !view.hasNext, 'Next card (Down arrow or J)') +
+    ib('close', 'Close card details', KJR_INSP_ICON.close, false, 'Close (Esc)') + '</div>';
+
+  // Title, set line and chips
+  var setLine = '';
+  if (isSlab) {
+    var meta = kjrSlabMeta(item);
+    var bits = [meta.grader + ' ' + meta.grade];
+    if (item.certNo) bits.push(String(item.certNo));
+    setLine = '<p class="kjr-insp-set"><span class="kjr-insp-mono">' + E(bits.join(' · ')) + '</span></p>';
+  } else {
+    var parts = [];
+    if (item.set) parts.push(E(item.set));
+    var num = item.type === 'sealed' ? '' : kjrInspectCardNumber(name); // a sealed product has no card number, "151" in a set name is not one
+    if (num) parts.push('<span class="kjr-insp-mono">' + E(num) + '</span>');
+    if (parts.length) setLine = '<p class="kjr-insp-set">' + parts.join(' · ') + '</p>';
+  }
+  var chips = '<span class="badge b-lang">' + E(lang) + '</span>';
+  if (!isSlab && item.condition) chips += '<span class="kjr-insp-chip">' + E(item.condition) + '</span>';
+  if (!isSlab && item.type === 'sealed') chips += '<span class="kjr-insp-chip">Sealed</span>';
+  chips += '<span class="kjr-insp-chip has-dot ' + (sold ? 'sold' : 'stock') + '">' + (sold ? 'Sold' : 'In stock') + '</span>';
+  if (!sold && listed.carousell) chips += '<span class="kjr-insp-chip has-dot listed">' + E(listed.carousell) + '</span>';
+  if (!sold && listed.ebay) chips += '<span class="kjr-insp-chip has-dot listed">' + E(listed.ebay) + '</span>';
+  var head = '<div class="kjr-insp-head"><div><h2 class="kjr-insp-title" id="kjr-insp-title" tabindex="-1">' + E(name) + '</h2>' + setLine + '</div>' +
+    '<div class="kjr-insp-chips">' + chips + '</div></div>';
+
+  // Value block: the number, the gain against cost, the 30-day line and where the price came from
+  var valueNum = '-', valueSub = [];
+  if (mi.value > 0) {
+    valueNum = (mi.isEstimate ? '~' : '') + kjrInspectMoney(mi.value);
+    if (mi.isEstimate) valueSub.push('Estimate, using cost');
+    if (qty > 1) valueSub.push('each, ' + kjrInspectMoney(mi.value * qty) + ' for ' + qty);
+  } else {
+    valueSub.push('No market price or cost yet');
+  }
+  var gain = '';
+  var pct = !mi.isEstimate && hasCost ? kjrTilePct(mi.value, cost) : null; // an estimate from cost has no gain to show
+  if (pct) {
+    var diff = mi.value - cost;
+    var flat = pct.cls === '';
+    var arrow = flat ? '' : '<span aria-hidden="true">' + (diff > 0 ? '▲' : '▼') + '</span> ';
+    var main = flat ? 'S$0 · 0%' : (diff > 0 ? '+' : '-') + kjrInspectMoney(Math.abs(diff)) + ' · ' + pct.text.replace(/^[▲▼]\s*/, '');
+    gain = '<div class="kjr-insp-gain' + (pct.cls === 'pos' ? ' is-up' : (pct.cls === 'neg' ? ' is-down' : '')) + '"><div class="kjr-insp-gain-main">' + arrow + E(main) + '</div>' +
+      '<div class="kjr-insp-gain-sub">against ' + E(kjrInspectMoney(cost)) + ' cost</div></div>';
+  }
+  var value = '<div class="kjr-insp-value"><div class="kjr-insp-vrow"><div><div class="kjr-insp-vlabel">Market value</div>' +
+    '<div class="kjr-insp-vnum">' + E(valueNum) + '</div>' +
+    (valueSub.length ? '<div class="kjr-insp-vsub">' + E(valueSub.join(' · ')) + '</div>' : '') + '</div>' + gain + '</div>' +
+    kjrInspectChartHtml(item, now) +
+    '<div class="kjr-insp-src">' + KJR_INSP_ICON.clock + '<span>' + E(kjrInspectPriceLine(table, item, now)) + '</span></div></div>';
+
+  // Details. The redesign dropped the row that counted days in stock, so there is none.
+  var rows = '';
+  var dd = function (label, valueHtml, empty) {
+    rows += '<div><dt>' + E(label) + '</dt><dd' + (empty ? ' class="is-empty"' : '') + '>' + valueHtml + '</dd></div>';
+  };
+  var bought = toDateMmmYyyy(item.datePurchased);
+  var listedOn = isSlab ? toDateMmmYyyy(item.dateListed) : '';
+  if (isSlab && !bought && listedOn) dd('Listed', E(listedOn));
+  else dd('Bought', bought ? E(bought) : 'Not recorded', !bought);
+  var costText = isFinite(cost) && cost >= 0 ? kjrInspectMoney(cost) + (qty > 1 ? ' each' : '') : '';
+  dd('Cost', costText ? E(costText) : 'Not set', !costText);
+  if (isSlab) {
+    var cert = String(item.certNo || '').trim();
+    if (!cert) {
+      dd('Cert', 'Not recorded', true);
+    } else {
+      var gd = String(item.grader || '').trim().toUpperCase(), gr = String(item.grade || '').trim().toUpperCase();
+      var isTag = gd === 'TAG' || gr.indexOf('TAG') === 0;
+      dd('Cert', isTag
+        ? '<a class="kjr-insp-mono" href="' + E('https://my.taggrading.com/card/' + encodeURIComponent(cert)) + '" target="_blank" rel="noopener noreferrer">' + E(cert) + ' <span aria-hidden="true">↗</span></a>'
+        : '<span class="kjr-insp-mono">' + E(cert) + '</span>');
+    }
+  }
+  var ask = parseFloat(item.listPrice);
+  var askText = ask > 0 ? kjrInspectMoney(ask) + (qty > 1 ? ' each' : '') + (!sold && listed.carousell ? ' on Carousell' : '') : '';
+  dd('Asking', askText ? E(askText) : 'Not set', !askText);
+  if (!isSlab && qty > 1) dd('Quantity', String(qty));
+  var notes = String(item.notes == null ? '' : item.notes).trim();
+  if (notes) rows += '<div class="kjr-insp-full"><dt>Notes</dt><dd class="kjr-insp-notes">' + E(notes) + '</dd></div>';
+  var details = '<dl class="kjr-insp-dl">' + rows + '</dl>';
+
+  // Actions. The "…" reuses the row menu controller (.kjr-more plus the .kjr-rowmenu right after it).
+  var menu = '';
+  if (listed.ebayUrl) menu += '<a role="menuitem" href="' + E(listed.ebayUrl) + '" target="_blank" rel="noopener noreferrer">Open eBay listing</a>';
+  if (listed.carousellUrl) menu += '<a role="menuitem" href="' + E(listed.carousellUrl) + '" target="_blank" rel="noopener noreferrer">Open Carousell listing</a>';
+  if (!sold) {
+    var rf = kjrInspectRefreshInfo(table, item);
+    menu += '<button type="button" role="menuitem" data-insp-act="refresh"' + (rf.ok ? '' : ' aria-disabled="true" title="' + E(rf.why) + '"') + '>Refresh price</button>';
+  }
+  menu += '<div class="kjr-rowmenu-sep" role="separator"></div><button type="button" role="menuitem" class="is-danger" data-insp-act="delete">Delete</button>';
+  var actions = '<div class="kjr-insp-actions">' +
+    '<button type="button" class="kjr-insp-primary" data-insp-act="status">' + (sold ? 'Mark as available' : 'Mark as sold') + '</button>' +
+    '<div class="kjr-insp-row">' +
+      (sold ? '' : '<button type="button" class="kjr-insp-btn" data-insp-act="listing">Generate listing</button>') +
+      '<button type="button" class="kjr-insp-btn" data-insp-act="edit">Edit</button>' +
+      '<button type="button" class="kjr-more kjr-insp-more" data-insp-act="more" aria-label="More actions for ' + E(name) + '" aria-haspopup="menu" aria-expanded="false" title="More actions">' + KJR_MORE_ICON + '</button>' +
+      '<div class="kjr-rowmenu" role="menu" aria-label="More actions for ' + E(name) + '" hidden>' + menu + '</div>' +
+    '</div></div>';
+
+  return top + kjrInspectArtHtml(table, item, sold) + head + value + details + actions;
+}
+
+// ── State and the page
+
+function kjrInspectFind(table, id) {
+  var rows = (typeof DB !== 'undefined' && DB && DB[table]) || [];
+  var key = String(id);
+  for (var i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === key) return rows[i]; }
+  return null;
+}
+function kjrInspectMode() {
+  try { if (window.matchMedia && window.matchMedia(KJR_INSP_MQ).matches) return 'sheet'; } catch (e) { /* no media query support */ }
+  return 'panel';
+}
+function kjrInspectHost() {
+  var st = _kjrInsp;
+  return st ? document.getElementById(st.mode === 'sheet' ? 'kjr-insp-sheet-body' : 'kjr-insp-body') : null;
+}
+function kjrInspectCurrentPage(table) {
+  var el = typeof document.querySelector === 'function' ? document.querySelector('.page.active') : null;
+  var id = el && el.id ? String(el.id).replace(/^page-/, '') : '';
+  return id || (table === 'slabs' ? 'slabs' : 'inventory');
+}
+// The order to step through: an explicit list (the Overview passes [{table, id}] for the tiles it drew, or bare ids
+// for the card's own table) stays as given, otherwise the list's own order from the last redraw.
+function kjrInspectOrderFrom(table, id, opt) {
+  var out = [];
+  var add = function (t, i) { if ((t === 'singles' || t === 'slabs') && i != null) out.push({ t: t, id: i }); };
+  var src = 'list';
+  if (Array.isArray(opt)) {
+    src = 'fixed';
+    opt.forEach(function (e) { if (e && typeof e === 'object') add(e.table || e.t || table, e.id); else add(table, e); });
+  } else {
+    var live = typeof _kjrInspectOrder === 'object' && _kjrInspectOrder && _kjrInspectOrder[table];
+    (live || []).forEach(function (i) { add(table, i); });
+  }
+  var here = table + '|' + String(id);
+  var found = out.some(function (e) { return e.t + '|' + String(e.id) === here; });
+  return { order: found ? out : [{ t: table, id: id }], src: src };
+}
+// The order now: rows that no longer exist are dropped, and a list-driven order follows the list while the card is
+// still in it (a card that left the list, sold or filtered out, keeps the order it had, so stepping stays steady).
+function kjrInspectOrderNow(st) {
+  if (st.src === 'list') {
+    var live = typeof _kjrInspectOrder === 'object' && _kjrInspectOrder && _kjrInspectOrder[st.table];
+    if (live && live.some(function (i) { return String(i) === String(st.id); })) {
+      st.order = live.map(function (i) { return { t: st.table, id: i }; });
+    }
+  }
+  var out = [], seen = {};
+  (st.order || []).forEach(function (e) {
+    var row = e && kjrInspectFind(e.t, e.id);
+    if (!row) return;
+    var key = e.t + '|' + String(row.id);
+    if (seen[key]) return;
+    seen[key] = 1;
+    out.push({ t: e.t, id: row.id });
+  });
+  if (!seen[st.table + '|' + String(st.id)]) out = [{ t: st.table, id: st.id }];
+  st.order = out;
+  return out;
+}
+function kjrInspectPosition(order, table, id) {
+  for (var i = 0; i < order.length; i++) { if (order[i].t === table && String(order[i].id) === String(id)) return i; }
+  return -1;
+}
+function kjrInspectClearHost(bodyId, liveId) {
+  var body = document.getElementById(bodyId);
+  if (body) { body.innerHTML = ''; body._kjrInspHtml = ''; body._kjrInspCard = ''; }
+  var live = document.getElementById(liveId);
+  if (live) live.textContent = '';
+}
+function kjrInspectControl(host, key) {
+  if (!host || typeof host.querySelectorAll !== 'function') return null;
+  var list = host.querySelectorAll('[data-insp-act]');
+  for (var i = 0; i < list.length; i++) { if (list[i].getAttribute('data-insp-act') === key) return list[i]; }
+  return null;
+}
+function kjrInspectFocusEl(el) {
+  if (!el || typeof el.focus !== 'function') return false;
+  try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) { return false; } }
+  return true;
+}
+// Focus goes back to the control that had it (the panel is redrawn from scratch). A control that cannot take focus,
+// disabled at the end of the list or inside the closed "…" menu, hands it to its neighbour, then to the title.
+function kjrInspectFocusKey(host, key) {
+  var tries = key === 'next' ? ['next', 'prev'] : (key === 'prev' ? ['prev', 'next'] : [key]);
+  for (var i = 0; i < tries.length; i++) {
+    var el = kjrInspectControl(host, tries[i]);
+    var inMenu = el && typeof el.closest === 'function' && el.closest('.kjr-rowmenu');
+    if (el && !el.disabled && !inMenu && kjrInspectFocusEl(el)) return true;
+  }
+  if (key === 'refresh' || key === 'delete') { if (kjrInspectFocusEl(kjrInspectControl(host, 'more'))) return true; }
+  return kjrInspectFocusEl(typeof host.querySelector === 'function' ? host.querySelector('#kjr-insp-title') : null);
+}
+function kjrInspectFocusTitle() {
+  kjrInspectFocusEl(document.getElementById('kjr-insp-title'));
+}
+// Draw the card into the host. Unchanged markup for the same card leaves the page alone (focus, scroll, the image),
+// a changed one keeps keyboard focus on the same control and, for the same card, the scroll position.
+function kjrInspectRender() {
+  var st = _kjrInsp;
+  if (!st) return false;
+  var host = kjrInspectHost();
+  var item = kjrInspectFind(st.table, st.id);
+  if (!host || !item) return false;
+  var order = kjrInspectOrderNow(st);
+  var at = Math.max(0, kjrInspectPosition(order, st.table, item.id));
+  var html = kjrInspectHtml(st.table, item, { n: at + 1, total: order.length, hasPrev: at > 0, hasNext: at < order.length - 1, now: Date.now() });
+  var cardKey = st.table + '|' + String(item.id);
+  var changedCard = host._kjrInspCard !== cardKey;
+  if (host._kjrInspHtml === html && !changedCard) return true;
+  var key = '';
+  try {
+    var ae = document.activeElement;
+    if (ae && ae !== host && typeof host.contains === 'function' && host.contains(ae) && typeof ae.closest === 'function') {
+      var holder = ae.closest('[data-insp-act]');
+      if (holder) key = holder.getAttribute('data-insp-act') || '';
+    }
+  } catch (e) { key = ''; }
+  var scroll = changedCard ? 0 : (host.scrollTop || 0);
+  host.innerHTML = html;
+  host._kjrInspHtml = html;
+  host._kjrInspCard = cardKey;
+  host.scrollTop = scroll;
+  if (key) kjrInspectFocusKey(host, key);
+  if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(host, 'inspector');
+  if (changedCard) {
+    var live = document.getElementById(st.mode === 'sheet' ? 'kjr-insp-sheet-live' : 'kjr-insp-live');
+    if (live) live.textContent = 'Card ' + (at + 1) + ' of ' + order.length + ', ' + String(item.name || '');
+  }
+  return true;
+}
+// The highlight on the inspected row, tile or mover: is-inspected, separate from the bulk selection. It is cleared
+// everywhere first and reapplied by data-id, so every redraw can call this.
+function kjrInspectMark() {
+  if (typeof document.querySelectorAll !== 'function') return;
+  var old = document.querySelectorAll('.is-inspected');
+  for (var i = 0; i < old.length; i++) old[i].classList.remove('is-inspected');
+  var st = _kjrInsp;
+  if (!st) return;
+  var want = String(st.id);
+  (KJR_INSP_ZONES[st.table] || []).forEach(function (zoneId) {
+    var zone = document.getElementById(zoneId);
+    if (!zone || typeof zone.querySelectorAll !== 'function') return;
+    var els = zone.querySelectorAll('[data-id]');
+    for (var j = 0; j < els.length; j++) { if (els[j].getAttribute('data-id') === want) els[j].classList.add('is-inspected'); }
+  });
+  ['dash-top', 'dash-movers'].forEach(function (zoneId) {
+    var zone = document.getElementById(zoneId);
+    if (!zone || typeof zone.querySelectorAll !== 'function') return;
+    var els = zone.querySelectorAll('[data-ov-act="edit"]');
+    for (var j = 0; j < els.length; j++) {
+      if (els[j].getAttribute('data-table') !== st.table || els[j].getAttribute('data-id') !== want) continue;
+      var tile = typeof els[j].querySelector === 'function' ? els[j].querySelector('.kjr-tile') : null;
+      (tile || els[j]).classList.add('is-inspected');
+    }
+  });
+}
+// After a step, bring the highlighted row or tile into view if it is off screen (the split view keeps the list visible).
+function kjrInspectReveal() {
+  if (typeof document.querySelectorAll !== 'function') return;
+  var els = document.querySelectorAll('.is-inspected');
+  var reduce = false;
+  try { reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { reduce = false; }
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    if (el.offsetParent === null || typeof el.scrollIntoView !== 'function') continue; // on a hidden page
+    try { el.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' }); } catch (e2) { /* scrolling is a nicety */ }
+    break;
+  }
+}
+// Where focus goes when the inspector closes: the thing that opened it, else the same card's name button or tile.
+function kjrInspectFocusBack(st) {
+  var el = st.trigger;
+  if (!el || el.isConnected === false) {
+    el = null;
+    var want = String(st.id);
+    (KJR_INSP_ZONES[st.table] || []).concat(['dash-top', 'dash-movers']).some(function (zoneId) {
+      var zone = document.getElementById(zoneId);
+      if (!zone || typeof zone.querySelectorAll !== 'function') return false;
+      var els = zone.querySelectorAll('[data-id]');
+      for (var j = 0; j < els.length; j++) {
+        if (els[j].getAttribute('data-id') !== want) continue;
+        el = typeof els[j].querySelector === 'function' && els[j].querySelector('.kjr-name-btn, button') || (els[j].tagName === 'BUTTON' ? els[j] : null);
+        if (el) return true;
+      }
+      return false;
+    });
+  }
+  return kjrInspectFocusEl(el);
+}
+// Opens the inspector on a row, or moves an open one to it. opts: { trigger (where focus returns to on close),
+// order (see kjrInspectOrderFrom) }. A card that is not in the collection any more says so and opens nothing.
+function kjrInspect(table, id, opts) {
+  opts = opts || {};
+  if (table !== 'singles' && table !== 'slabs') return false;
+  var item = kjrInspectFind(table, id);
+  if (!item) { if (typeof toast === 'function') toast('That card is no longer in your collection'); return false; }
+  if (typeof _kjrDealerPreviewOnly === 'function' && _kjrDealerPreviewOnly()) return false;
+  var mode = kjrInspectMode();
+  var sheet = document.getElementById('kjr-insp-sheet');
+  var panel = document.getElementById('kjr-inspector');
+  if (!(mode === 'sheet' ? sheet : panel)) return false;
+  var o = kjrInspectOrderFrom(table, item.id, opts.order);
+  var ae = document.activeElement;
+  var trigger = opts.trigger || (ae && ae !== document.body ? ae : null);
+  var st = _kjrInsp;
+  if (st) {
+    // already open: move to this card and keep the host. The latest opener is where focus goes back to.
+    if (st.mode !== mode) kjrInspectRehost();
+    st.table = table; st.id = item.id; st.order = o.order; st.src = o.src; st.deleting = null;
+    if (trigger) st.trigger = trigger;
+    kjrInspectRender();
+    kjrInspectMark();
+    kjrInspectFocusTitle();
+    return true;
+  }
+  st = _kjrInsp = { table: table, id: item.id, order: o.order, src: o.src, trigger: trigger, mode: mode, page: kjrInspectCurrentPage(table), deleting: null, zone: 'insp', focusKey: '' };
+  kjrInspectShowHost(st);
+  kjrInspectRender();
+  kjrInspectMark();
+  kjrInspectFocusTitle();
+  return true;
+}
+// Brings the host for st.mode up: the sheet through kjrModalCtrl, the panel by un-hiding it and flagging the body so
+// the page makes room for it (styles.css, 1280px and wider).
+function kjrInspectShowHost(st) {
+  if (st.mode === 'sheet') {
+    var dlg = document.getElementById('kjr-insp-sheet');
+    if (dlg) kjrModalCtrl.open(dlg, { trigger: st.trigger, onClose: kjrInspectSheetClosed });
+  } else {
+    var aside = document.getElementById('kjr-inspector');
+    if (aside) aside.hidden = false;
+    document.body.classList.add('kjr-insp-open');
+  }
+}
+// The sheet was closed by Esc, a tap outside, the Back button or the controller. The state goes, the controller has
+// already done the rest.
+function kjrInspectSheetClosed() {
+  var st = _kjrInsp;
+  if (!st || st.rehosting || st.closing) return;
+  kjrInspectClose({ fromDialog: true });
+}
+function kjrInspectClose(o) {
+  o = o || {};
+  var st = _kjrInsp;
+  if (!st) return false;
+  st.closing = true;
+  _kjrInsp = null;
+  if (st.mode === 'sheet') {
+    var dlg = document.getElementById('kjr-insp-sheet');
+    kjrInspectClearHost('kjr-insp-sheet-body', 'kjr-insp-sheet-live');
+    if (!o.fromDialog && dlg && dlg.open) kjrModalCtrl.close(dlg, true); // the controller puts focus back on the trigger
+  } else {
+    var aside = document.getElementById('kjr-inspector');
+    if (aside) aside.hidden = true;
+    kjrInspectClearHost('kjr-insp-body', 'kjr-insp-live');
+    document.body.classList.remove('kjr-insp-open');
+  }
+  kjrInspectMark();
+  try { if (typeof _kjrImgIO === 'object' && _kjrImgIO.inspector) _kjrImgIO.inspector.disconnect(); } catch (e) { /* the observer is already gone */ }
+  if (!o.noFocus) {
+    if (st.mode === 'sheet') {
+      // the controller restores focus a frame later, this only steps in when the trigger has left the page
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function () { if (!document.activeElement || document.activeElement === document.body) kjrInspectFocusBack(st); });
+    } else {
+      kjrInspectFocusBack(st);
+    }
+  }
+  return true;
+}
+// A resize across 900px moves the open card to the other host.
+function kjrInspectRehost() {
+  var st = _kjrInsp;
+  if (!st) return;
+  var mode = kjrInspectMode();
+  if (mode === st.mode) return;
+  st.rehosting = true;
+  try {
+    if (st.mode === 'sheet') {
+      var dlg = document.getElementById('kjr-insp-sheet');
+      kjrInspectClearHost('kjr-insp-sheet-body', 'kjr-insp-sheet-live');
+      if (dlg && dlg.open) kjrModalCtrl.close(dlg, true);
+    } else {
+      var aside = document.getElementById('kjr-inspector');
+      if (aside) aside.hidden = true;
+      kjrInspectClearHost('kjr-insp-body', 'kjr-insp-live');
+      document.body.classList.remove('kjr-insp-open');
+    }
+    st.mode = mode;
+    kjrInspectShowHost(st);
+  } finally { st.rehosting = false; }
+  kjrInspectRender();
+  kjrInspectMark();
+  kjrInspectFocusTitle();
+}
+// Called after every Singles, Slabs or Overview redraw and after every dialog close: find the card by id again.
+// A card that is gone closes the panel with a note (silently when the panel's own Delete just removed it), a card
+// that became Sold is drawn as Sold, anything else is redrawn only if its markup changed.
+function kjrInspectRefresh() {
+  var st = _kjrInsp;
+  if (!st || st.rehosting) return false;
+  var item = kjrInspectFind(st.table, st.id);
+  if (!item) {
+    var own = st.deleting && st.deleting.table === st.table && String(st.deleting.id) === String(st.id);
+    kjrInspectClose({ noFocus: true });
+    if (!own && typeof toast === 'function') toast('That card is no longer in your collection');
+    return false;
+  }
+  st.id = item.id;
+  kjrInspectRender();
+  kjrInspectMark();
+  return true;
+}
+function kjrInspectOnPage(name) {
+  var st = _kjrInsp;
+  if (st && name !== st.page) kjrInspectClose({ noFocus: true });
+}
+function kjrInspectStep(delta) {
+  var st = _kjrInsp;
+  if (!st) return false;
+  var order = kjrInspectOrderNow(st);
+  var at = kjrInspectPosition(order, st.table, st.id);
+  var to = at + delta;
+  if (at < 0 || to < 0 || to >= order.length) return false;
+  var next = kjrInspectFind(order[to].t, order[to].id);
+  if (!next) return false;
+  st.table = order[to].t;
+  st.id = next.id;
+  st.deleting = null;
+  kjrInspectRender();
+  kjrInspectMark();
+  kjrInspectReveal();
+  return true;
+}
+
+// ── Actions. Each one hands over to the function the list already uses.
+function kjrInspectRun(promise) {
+  if (promise && typeof promise.then === 'function') {
+    promise.then(null, function (err) {
+      console.error('[inspector] action failed:', err);
+      if (typeof toastError === 'function') toastError('That did not complete. Try again.');
+    });
+  }
+}
+function kjrInspectAct(act, st, item) {
+  var table = st.table, id = item.id;
+  try {
+    if (act === 'status') {
+      kjrInspectRun(markStatus(table, id, String(item.status || 'Available') === 'Sold' ? 'Available' : 'Sold'));
+    } else if (act === 'listing') {
+      kjrInspectClose({ noFocus: true }); // the workspace is another page
+      openListingFor(table, id);
+    } else if (act === 'edit') {
+      if (table === 'slabs') openEditSlab(id); else openEditSingle(id);
+    } else if (act === 'refresh') {
+      var info = kjrInspectRefreshInfo(table, item);
+      if (!info.ok) { if (typeof toast === 'function') toast(info.why); return; }
+      if (kjrInspectAct.busy) return;
+      kjrInspectAct.busy = true;
+      var done = function () { kjrInspectAct.busy = false; kjrInspectRefresh(); };
+      kjrInspectRun(Promise.resolve(refreshPrice(id, table)).then(done, function (err) { done(); throw err; }));
+    } else if (act === 'delete') {
+      st.deleting = { table: table, id: id };
+      var clear = function () { if (_kjrInsp) _kjrInsp.deleting = null; };
+      kjrInspectRun(Promise.resolve(deleteItem(id, table)).then(function () {
+        if (_kjrInsp && _kjrInsp.deleting) kjrInspectRefresh(); // the row is gone, this closes the panel
+        clear();
+      }, function (err) { clear(); throw err; }));
+    }
+  } catch (err) {
+    console.error('[inspector] action failed:', err);
+    if (typeof toastError === 'function') toastError('That did not complete. Try again.');
+  }
+}
+function kjrInspectOnClick(e) {
+  var st = _kjrInsp;
+  var t = e && e.target;
+  if (!st || !t || typeof t.closest !== 'function') return;
+  var b = t.closest('[data-insp-act]');
+  if (!b || b.disabled) return;
+  var act = b.getAttribute('data-insp-act');
+  if (act === 'prev') { kjrInspectStep(-1); return; }
+  if (act === 'next') { kjrInspectStep(1); return; }
+  if (act === 'close') { kjrInspectClose(); return; }
+  if (act === 'more') return; // opened by the row menu controller
+  if (b.getAttribute('aria-disabled') === 'true' && act === 'refresh') {
+    var why = b.getAttribute('title');
+    if (why && typeof toast === 'function') toast(why);
+    return;
+  }
+  var item = kjrInspectFind(st.table, st.id);
+  if (!item) { kjrInspectRefresh(); return; }
+  kjrInspectAct(act, st, item);
+}
+
+// ── Keyboard and focus
+function kjrInspectInField(el) {
+  if (!el) return false;
+  var tag = String(el.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!el.isContentEditable;
+}
+// Is something else using the keyboard: the "…" menu, a nav dropdown, the Sentry drawer or any dialog but our own sheet.
+function kjrInspectBlocked() {
+  if (typeof kjrRowMenuCurrent === 'function' && kjrRowMenuCurrent()) return true;
+  if (typeof document.querySelector === 'function' && document.querySelector('.nav-dd.open')) return true;
+  var drawer = document.getElementById('sentry-drawer');
+  if (drawer && drawer.classList && drawer.classList.contains('open')) return true;
+  var dialogs = typeof document.querySelectorAll === 'function' ? document.querySelectorAll('dialog[open]') : [];
+  for (var i = 0; i < dialogs.length; i++) { if (dialogs[i].id !== 'kjr-insp-sheet') return true; }
+  return false;
+}
+// Esc closes the panel, the arrow keys and j / k step through the order. Capture phase, so it sees the page as it was
+// before the other Esc handlers (the "…" menu, the nav dropdown) closed anything.
+function kjrInspectOnKey(e) {
+  var st = _kjrInsp;
+  if (!st || !e || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+  var k = e.key;
+  var step = k === 'ArrowDown' || k === 'j' ? 1 : (k === 'ArrowUp' || k === 'k' ? -1 : 0);
+  if (k !== 'Escape' && !step) return;
+  var target = e.target || document.activeElement;
+  if (kjrInspectInField(target) || kjrInspectBlocked()) return;
+  if (step && target && typeof target.closest === 'function' && target.closest('.kjr-more')) return; // the arrows open its menu
+  if (k === 'Escape') {
+    if (st.mode === 'sheet') return; // the dialog's own Esc closes it
+    e.preventDefault();
+    kjrInspectClose();
+    return;
+  }
+  e.preventDefault();
+  kjrInspectStep(step);
+}
+// Which side of the page has focus, and which control inside the panel had it last. A dialog the panel opens (Edit,
+// Quick Sale) returns focus to its trigger, and the redraw that follows a save or a sale replaces that trigger, so
+// kjrInspectSettleFocus puts focus back on the matching control.
+function kjrInspectOnFocusIn(e) {
+  var st = _kjrInsp;
+  var t = e && e.target;
+  if (!st || !t) return;
+  var host = kjrInspectHost();
+  if (host && typeof host.contains === 'function' && host.contains(t)) {
+    st.zone = 'insp';
+    var h = typeof t.closest === 'function' ? t.closest('[data-insp-act]') : null;
+    if (h) st.focusKey = h.getAttribute('data-insp-act') || '';
+  } else if (typeof t.closest === 'function' && !t.closest('dialog')) {
+    st.zone = 'page';
+  }
+}
+function kjrInspectSettleFocus() {
+  var st = _kjrInsp;
+  if (!st || st.zone !== 'insp' || !st.focusKey) return;
+  var again = function () {
+    if (_kjrInsp !== st) return;
+    var ae = document.activeElement;
+    if (ae && ae !== document.body && ae.isConnected !== false) return; // focus is somewhere real, leave it
+    var host = kjrInspectHost();
+    if (host) kjrInspectFocusKey(host, st.focusKey);
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function () { requestAnimationFrame(again); });
+  else again();
+}
+// Any dialog closing (an edit saved, a sale confirmed, a delete confirmed) redraws the panel from the data. 'close'
+// does not bubble, so this listener is on the capture phase.
+function kjrInspectOnDialogClose(e) {
+  var st = _kjrInsp;
+  if (!st) return;
+  if (e && e.target && e.target.id === 'kjr-insp-sheet') return; // the sheet itself, kjrInspectSheetClosed has it
+  kjrInspectRefresh();
+  kjrInspectSettleFocus();
+}
+
+// ── Row click on Singles and Slabs (desktop and tablet). One delegated listener per tbody, none per row. Clicks on
+// controls, links and labels, on the checkbox and actions cells and on a text selection are left alone. A phone in the
+// compact card view is handled by kjrCompactTapClick (app.js) instead, so one click never opens twice.
+function kjrInspectHasSelection() {
+  try {
+    var s = window.getSelection && window.getSelection();
+    return !!(s && !s.isCollapsed && String(s).length > 0);
+  } catch (e) { return false; }
+}
+function kjrRowClick(table, e) {
+  var t = e && e.target;
+  if (!t || typeof t.closest !== 'function') return false;
+  if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return false;
+  if (typeof _kjrCompactTap === 'function' && _kjrCompactTap()) return false;
+  var control = t.closest('input,select,textarea,a,label,button');
+  if (control && !(control.classList && control.classList.contains('kjr-name-btn'))) return false;
+  var cell = t.closest('td');
+  var colKey = cell && typeof cell.getAttribute === 'function' ? cell.getAttribute('data-col-key') : '';
+  if (colKey === '_cb' || colKey === 'actions') return false;
+  if (kjrInspectHasSelection()) return false;
+  var tr = t.closest('tr');
+  var rowId = tr && typeof tr.getAttribute === 'function' ? tr.getAttribute('data-id') : null;
+  if (rowId == null || rowId === '') return false; // the empty-state row has no id
+  var row = kjrInspectFind(table, rowId);
+  if (!row) return false;
+  return kjrInspect(table, row.id, { trigger: (typeof tr.querySelector === 'function' && tr.querySelector('.kjr-name-btn')) || tr });
+}
+function kjrInspectBindRows() {
+  [['singles', 'singles-body'], ['singles', 'singles-sold-body'], ['slabs', 'slabs-body'], ['slabs', 'slabs-sold-body']].forEach(function (p) {
+    var tbody = document.getElementById(p[1]);
+    if (!tbody || tbody._kjrRowBound) return;
+    tbody._kjrRowBound = true;
+    tbody.addEventListener('click', function (e) { kjrRowClick(p[0], e); });
+  });
+}
+
+(function kjrInspectInstall() {
+  if (typeof document === 'undefined') return;
+  ['kjr-inspector', 'kjr-insp-sheet'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el && !el._kjrInspBound) { el._kjrInspBound = true; el.addEventListener('click', kjrInspectOnClick); }
+  });
+  document.addEventListener('keydown', kjrInspectOnKey, true);
+  document.addEventListener('focusin', kjrInspectOnFocusIn, true);
+  document.addEventListener('close', kjrInspectOnDialogClose, true);
+  try {
+    var mq = window.matchMedia(KJR_INSP_MQ);
+    var onChange = function () { kjrInspectRehost(); };
+    if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+    else if (mq && typeof mq.addListener === 'function') mq.addListener(onChange);
+  } catch (e) { /* no media query support, the host is picked each time it opens */ }
+  kjrInspectBindRows();
+})();
 
 /* ===== Launch intro (v3.25) =====
    Self-contained IIFE, does not touch app.js. Plays a Three.js booster-pack

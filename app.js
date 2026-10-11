@@ -10496,6 +10496,12 @@ function kjrRowMenuOnScroll(e) {
 document.addEventListener('scroll', kjrRowMenuOnScroll, true);
 window.addEventListener('resize', function () { kjrRowMenuClose(false); });
 
+// The card inspector's order (redesign Step 5, v3.72). renderSingles and renderSlabs store the ids of the rows they
+// draw, in the order they draw them: the main section, then the inline Sold rows (status "all") or the collapsed
+// section while it is open. features.js (kjrInspect) reads this for "Card N of M" and the arrow keys. Plain ids in
+// memory, never saved and never synced.
+const _kjrInspectOrder = { singles: [], slabs: [] };
+
 // =========== SORT STATE ===========
 const sortState = {
   singles: { col: null, dir: 1 },
@@ -10847,6 +10853,8 @@ function showPage(name) {
   // Leaving Singles for any other tab drops the session-only unresolved
   // filter, so it can never sit silently active after a tab change.
   if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
+  // The card inspector belongs to the page it was opened on (v3.72): another page closes it, the same page keeps it.
+  if (typeof kjrInspectOnPage === 'function') kjrInspectOnPage(name);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const desktopButtons = document.querySelectorAll('.nav-btn');
   const bottomButtons = document.querySelectorAll('.btb-item');
@@ -11009,26 +11017,43 @@ function kjrToggleTableMode() {
   localStorage.setItem(KJR_TABLEMODE_KEY, force ? '0' : '1');
   kjrApplyTableMode();
 }
-// Tap a row's title cell to edit - only in the phone compact-table view, where
-// the per-row action buttons are hidden. One delegated listener serves every
-// tab by reusing the row's own Edit button (which already opens the correct
-// modal), so there is no per-table wiring. No-ops on desktop and in full-table
-// mode, and ignores taps on inputs / links inside the cell.
+// Tap a row's title cell - only in the phone compact-table view, where the per-row action buttons are hidden.
+// One delegated listener serves every tab. Singles and Slabs (v3.72) open the card inspector sheet, every other
+// table keeps reusing the row's own Edit button, which already opens the correct modal, so there is no per-table
+// wiring for those. No-ops on desktop and in full-table mode (the row listener in features.js, kjrRowClick, takes
+// the click there), and ignores taps on inputs and links inside the cell. The card name on Singles and Slabs is
+// a button with no handler of its own (.kjr-name-btn), its tap lands here too.
+function _kjrCompactTap() {
+  return !!window.matchMedia && matchMedia('(max-width:600px)').matches && !document.body.classList.contains('force-tables');
+}
+function kjrCompactTapClick(e) {
+  if (!_kjrCompactTap()) return;
+  const target = e && e.target;
+  if (!target || typeof target.closest !== 'function') return;
+  const cell = target.closest('td[data-col-key="name"], td[data-col-key="product"]');
+  if (!cell || !cell.closest('.page .tbl-wrap')) return;
+  const blocker = target.closest('input,button,a,select,textarea,label');
+  if (blocker && !(blocker.classList && blocker.classList.contains('kjr-name-btn'))) return;
+  const tr = cell.closest('tr');
+  if (!tr) return;
+  const inspectTable = cell.closest('#page-inventory') ? 'singles' : (cell.closest('#page-slabs') ? 'slabs' : '');
+  if (inspectTable && typeof kjrInspect === 'function') {
+    const rowId = tr.getAttribute('data-id');
+    const row = rowId == null ? null : (DB[inspectTable] || []).find(r => r && String(r.id) === String(rowId));
+    if (row) {
+      e.preventDefault();
+      kjrInspect(inspectTable, row.id, { trigger: (typeof tr.querySelector === 'function' && tr.querySelector('.kjr-name-btn')) || cell });
+      return;
+    }
+  }
+  const editBtn = [...tr.querySelectorAll('td[data-col-key="actions"] button')]
+    .find(b => /edit/i.test(b.getAttribute('title') || '') || /edit/i.test(b.textContent || ''));
+  if (editBtn) { e.preventDefault(); editBtn.click(); }
+}
 (function kjrInstallCompactTapEdit() {
   if (window._kjrTapEditInstalled) return;
   window._kjrTapEditInstalled = true;
-  document.addEventListener('click', function (e) {
-    if (!window.matchMedia || !matchMedia('(max-width:600px)').matches) return;
-    if (document.body.classList.contains('force-tables')) return;
-    const cell = e.target.closest('td[data-col-key="name"], td[data-col-key="product"]');
-    if (!cell || !cell.closest('.page .tbl-wrap')) return;
-    if (e.target.closest('input,button,a,select,textarea,label')) return;
-    const tr = cell.closest('tr');
-    if (!tr) return;
-    const editBtn = [...tr.querySelectorAll('td[data-col-key="actions"] button')]
-      .find(b => /edit/i.test(b.getAttribute('title') || '') || /edit/i.test(b.textContent || ''));
-    if (editBtn) { e.preventDefault(); editBtn.click(); }
-  });
+  document.addEventListener('click', kjrCompactTapClick);
 })();
 // Turn a short <select> into a mobile segmented control. The select stays as
 // the value holder (hidden on mobile); the buttons proxy to it and fire the
@@ -11397,6 +11422,13 @@ function kjrRowMenuHtml(table, item, isSold) {
     '</div>';
 }
 
+// The card name in a Singles or Slabs row (redesign Step 5, v3.72): a button so the row has a keyboard-reachable way
+// to open the card inspector, with NO handler of its own. Its click (and Enter or Space) bubbles to the one
+// delegated row listener (kjrRowClick in features.js) on desktop, and to kjrCompactTapClick on a phone.
+function kjrNameBtnHtml(item) {
+  return '<button type="button" class="kjr-name-btn" title="' + esc(item.name || '') + '" aria-label="Open details for ' + esc(item.name || 'row') + '">' + esc(item.name || '-') + '</button>';
+}
+
 // Summary strip (redesign Step 4, v3.71), shared by Singles and Slabs: one card, four regions with hairline
 // dividers (a 2x2 grid on phones) in place of the four stat tiles. The numbers are the post-filter Available
 // rows, so the strip follows every search and filter, and it is drawn before the grid early return, so Grid
@@ -11721,6 +11753,12 @@ function renderSingles() {
   const displayItems  = showSoldMain ? sold : available;
   const altItems      = showSoldMain ? available : sold;
 
+  // The order the card inspector steps through (v3.72): the rows as drawn, the main section, then the inline Sold
+  // rows (status "all") or the other section while it is open. Stored before the grid early return, so both views set it.
+  _kjrInspectOrder.singles = displayItems.map(i => i.id).concat(
+    statusFilter === 'all' ? sold.map(i => i.id)
+      : (altItems.length > 0 && document.getElementById('singles-sold-divider').dataset.open === '1' ? altItems.map(i => i.id) : []));
+
   const totalCost   = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0)*(parseInt(i.qty)||1), 0);
   const totalValue  = available.reduce((s,i) => s + effectiveMarketInfo(i).value*(parseInt(i.qty)||1), 0);
   const totalQty    = available.reduce((s,i) => s + (parseInt(i.qty)||1), 0);
@@ -11758,6 +11796,7 @@ function renderSingles() {
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
     updateClearFiltersBtn('singles');
     _updateUnresolvedFilterChip();
+    if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
     return;
   }
 
@@ -11789,7 +11828,7 @@ function renderSingles() {
     const setLine = i.set ? '<div class="kjr-name-set" title="' + esc(i.set) + '">' + esc(i.set) + '</div>' : '';
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'singles\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:258px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body"><div class="kjr-single-name-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div><button type="button" class="kjr-single-name-edit" onclick="openEditSingle(this.closest(\'tr\').dataset.id)" aria-label="Edit ' + esc(i.name||'row') + '">' + esc(i.name||'-') + '</button>' + setLine + '</div></div></td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:258px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body">' + kjrNameBtnHtml(i) + setLine + '</div></div></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
@@ -11846,6 +11885,7 @@ function renderSingles() {
   _updateUnresolvedFilterChip();
   // Rows on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
   if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-inventory'), 'singles');
+  if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
 }
 
 // =========== FIELD VALIDATION (F5) ===========
@@ -13022,6 +13062,11 @@ function renderSlabs() {
   const available = _pinRecentsToTop(sortItems(DB.slabs.filter(i => (i.status||'Available') === 'Available' && passesFilters(i)), 'slabs'), 'slabs');
   const sold      = sortItems(DB.slabs.filter(i => (i.status||'Available') === 'Sold' && passesFilters(i)), 'slabs');
 
+  // The order the card inspector steps through (v3.72): the Available rows, then the Sold rows while that section is
+  // open. Stored before the grid early return, so both views set it.
+  _kjrInspectOrder.slabs = available.map(i => i.id).concat(
+    sold.length > 0 && document.getElementById('slabs-sold-divider').dataset.open === '1' ? sold.map(i => i.id) : []);
+
   const totalCostSlabs  = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
   const totalValueSlabs = available.reduce((s,i) => s + effectiveMarketInfo(i).value, 0);
 
@@ -13055,6 +13100,7 @@ function renderSlabs() {
     });
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
     updateClearFiltersBtn('slabs');
+    if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
     return;
   }
 
@@ -13093,7 +13139,7 @@ function renderSlabs() {
     const thumb = typeof kjrThumbHtml === 'function' ? kjrThumbHtml(i, 'slabs') : '';
     return '<tr data-id="' + safeId + '" class="' + (chk ? 'row-selected' : '') + (isSold ? ' sold-row' : '') + (isRecent ? ' recent-add' : '') + '">' +
       '<td data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" ' + (chk ? 'checked' : '') + ' aria-label="Select ' + esc(i.name||'row') + '" onchange="toggleRowSelect(\'slabs\',' + kjrInlineArg(i.id) + ',this.checked)"></td>' +
-      '<td data-col-key="name" style="font-weight:500;max-width:238px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(i.name||'') + '">' + esc(i.name||'-') + '</div></div></div></td>' +
+      '<td data-col-key="name" style="font-weight:500;max-width:238px;text-align:left"><div class="kjr-name-cell">' + thumb + '<div class="kjr-name-body">' + kjrNameBtnHtml(i) + '</div></div></td>' +
       '<td data-col-key="_grade" style="white-space:nowrap">' + badge + '</td>' +
       '<td data-col-key="certNo" style="white-space:nowrap">' + certHtml + '</td>' +
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '-') + '</td>' +
@@ -13140,6 +13186,7 @@ function renderSlabs() {
   updateClearFiltersBtn('slabs');
   // Slabs on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
   if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-slabs'), 'slabs');
+  if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
 }
 
 function openAddSlab() {
@@ -14307,20 +14354,33 @@ function _kjrOvSet(id, html) {
   return el;
 }
 
-function _kjrOvEdit(table, id) {
+// Opens the card inspector (v3.72) for a tile or a mover. The act is still called "edit" in the markup, the tests pin
+// that. holder is the element carrying data-ov-act. The inspector steps through the list the card was clicked in,
+// the top tiles or the movers, so the order is read off that container, in the order drawn. Without a container
+// (a holder that cannot say) kjrInspect falls back to the list order of the card's own table.
+function _kjrOvEdit(table, id, holder) {
   if (id == null) return;
   const rows = table === 'slabs' ? DB.slabs : (table === 'singles' ? DB.singles : null);
   const row = rows && rows.find(r => r && String(r.id) === String(id));
   if (!row) { toast('That item is no longer in your collection'); return; }
-  if (table === 'slabs') openEditSlab(row.id); else openEditSingle(row.id);
+  if (typeof kjrInspect !== 'function') { if (table === 'slabs') openEditSlab(row.id); else openEditSingle(row.id); return; }
+  let order, trigger = null;
+  try {
+    const list = holder && typeof holder.closest === 'function' ? holder.closest('#dash-top, #dash-movers') : null;
+    if (list && typeof list.querySelectorAll === 'function') {
+      order = Array.from(list.querySelectorAll('[data-ov-act="edit"]')).map(el => ({ table: el.getAttribute('data-table'), id: el.getAttribute('data-id') }));
+    }
+    if (holder) trigger = holder.tagName === 'BUTTON' ? holder : (typeof holder.querySelector === 'function' ? holder.querySelector('button') : null);
+  } catch (e) { order = undefined; }
+  kjrInspect(table, row.id, { order, trigger });
 }
-// One delegated click for the whole Overview: tiles and rows open the existing edit modal, the text
+// One delegated click for the whole Overview: tiles and rows open the card inspector, the text
 // buttons go where their label says.
 function _kjrOvClick(e) {
   const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-ov-act]') : null;
   if (!t) return;
   const act = t.getAttribute('data-ov-act');
-  if (act === 'edit') _kjrOvEdit(t.getAttribute('data-table'), t.getAttribute('data-id'));
+  if (act === 'edit') _kjrOvEdit(t.getAttribute('data-table'), t.getAttribute('data-id'), t);
   else if (act === 'breakdown') showMarketValueBreakdown();
   else if (act === 'singles') showPage('inventory');
   else if (act === 'unresolved') _kjrShowUnresolvedOnly();
@@ -14521,6 +14581,8 @@ function renderDashboard() {
   }
   // Tiles and thumbnails with no card image yet are looked up lazily while they are on screen (Step 2).
   if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-dashboard'), 'overview');
+  // The tile or mover the card inspector is showing keeps its highlight across a redraw (v3.72).
+  if (typeof kjrInspectMark === 'function') kjrInspectMark();
 }
 
 // =========== AI ANALYST ===========

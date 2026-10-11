@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.71',
+    release: 'kujira-collectibles@3.72',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
-<link rel="stylesheet" href="styles.css?v=3.71">
+<link rel="stylesheet" href="styles.css?v=3.72">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span class="logo-title">Kujira</span>
       <span class="logo-sub">Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.71 (11 Oct)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.72 (11 Oct)</span>
     </div>
   </button>
   <nav class="nav">
@@ -1665,6 +1665,21 @@
   </div>
 </dialog>
 
+<!-- CARD INSPECTOR (v3.72). One panel for a single, a slab or an Overview tile. At 901px and wider it is the
+     non-modal side panel, at 900px and narrower the same content is drawn into the sheet below, a modal dialog opened
+     through kjrModalCtrl. Only one of the two ever holds content (features.js, kjrInspect). -->
+<aside id="kjr-inspector" class="kjr-insp" aria-labelledby="kjr-insp-title" hidden>
+  <div class="sr-only" id="kjr-insp-live" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div class="kjr-insp-scroll" id="kjr-insp-body"></div>
+</aside>
+<dialog class="sheet-overlay kjr-insp-overlay" id="kjr-insp-sheet" aria-labelledby="kjr-insp-title">
+  <div class="kjr-insp-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sr-only" id="kjr-insp-sheet-live" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="kjr-insp-scroll" id="kjr-insp-sheet-body"></div>
+  </div>
+</dialog>
+
 
 <!-- ═══════════════════════════════════════════════════════════
      STALE-SHELL DETECTION - the PWA can sit suspended in the
@@ -2007,7 +2022,8 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 
 - **Quick Entry** - press the **+** button (or **Cmd/Ctrl + K**) to add inventory or log a sale from one search box.
 - **Add a card** - type name, set, language, price, e.g. `Charizard ex 223 EN $108`. Slabs: `PSA 10 Eevee 173 #cert`.
-- **Edit** - desktop: the row's edit button. Mobile: tap the card / product cell.
+- **Card details** - click a Singles or Slabs row, a grid tile or an Overview card (on a phone, tap the card name) to open the card inspector. **Up** and **Down**, or **J** and **K**, move to the next card, **Esc** closes it.
+- **Edit** - Singles and Slabs: **Edit** in the card inspector, or in the row's **...** menu. Other tables: the row's edit button, or on a phone tap the product cell.
 - **Log a sale** - Quick Entry, "Log Sale" tab: search items (Singles, Slabs, ETBs, Booster Boxes, Packs) into the cart, set buyer, date and shipping, then Confirm.
 - **Delete** - goes to **Trash** (restore within 30 days), never a hard delete.
 - **Listings** - builds a Carousell title and description and pulls the market price.
@@ -2042,12 +2058,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.71"></script>
-<script src="features.js?v=3.71"></script>
-<script src="dealer-money.js?v=3.71"></script>
-<script src="dealer-desk.js?v=3.71"></script>
-<script src="dealer-ui.js?v=3.71"></script>
-<script src="dealer-store.js?v=3.71"></script>
-<script src="dealer-production-ui.js?v=3.71"></script>
+<script src="app.js?v=3.72"></script>
+<script src="features.js?v=3.72"></script>
+<script src="dealer-money.js?v=3.72"></script>
+<script src="dealer-desk.js?v=3.72"></script>
+<script src="dealer-ui.js?v=3.72"></script>
+<script src="dealer-store.js?v=3.72"></script>
+<script src="dealer-production-ui.js?v=3.72"></script>
 </body>
 </html>

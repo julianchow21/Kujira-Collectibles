@@ -139,6 +139,30 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Step 4 shipped as v3.71 on 11/10/2026, table cleanup. Steps 1 to 4 were deployed to `main` (live) the same day.
+
+**Column filters**
+- Filter rows are hidden by default
+- `kjrColFilters*` handles them, with the preference stored as `kjr_colfilters_<table>`
+- The switch lives in the Filters popovers on Singles, Slabs and Sales. Sealed and eBay get a "Column filters" toolbar button
+- A typed filter locks the row open, and the Filters badge counts column filters
+
+**Row menu and tags**
+- The "…" row menu on Singles and Slabs (`kjrRowMenuHtml` plus one capture-phase controller) keeps the inline handlers the tests pin
+- Language and type are quiet tags, grader badges are dot chips, and the `kjrPill` statuses are dot plus word
+- `kjr-del-x` is a neutral delete ×
+
+**Strip and chips**
+- `kjrSummaryStripHtml` replaces the stat tiles, so the Raw vs Sealed and Grader split bars are gone
+- Language chips on Singles drive `#singles-lang`
+
+**Tests:** tests/table-cleanup.test.js has 33 tests.
+
+**Open from Step 4**
+- BGS shows a grey dot (`_graderClass` maps it to `b-slab`)
+- The CGC dot is 2.85:1 as a graphic
+- The topbar spills about 21px at 800px wide with the Sync error pill (fix in Step 6)
+
 Step 3 shipped on `redesign` as v3.70 on 10/10/2026: the Overview and the Reports page.
 
 **Overview (still `#page-dashboard`)**

@@ -976,7 +976,7 @@ function renderEtbs(){
     '<td data-col-key="date">'+kjrEscape(toDateMmmYyyy(r.date)||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
       '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEtbModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'etbs\',' + kjrInlineArg(r.id) + ')">×</button>' +
+      '<button class="btn btn-ghost btn-sm kjr-del-x" onclick="kjrDeleteRow(\'etbs\',' + kjrInlineArg(r.id) + ')" title="Delete" aria-label="Delete">×</button>' +
     '</span></td>' +
     '</tr>';
 
@@ -1078,7 +1078,7 @@ function renderBoosterBoxes(){
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
       '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBbModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterBoxes\',' + kjrInlineArg(r.id) + ')">×</button>' +
+      '<button class="btn btn-ghost btn-sm kjr-del-x" onclick="kjrDeleteRow(\'boosterBoxes\',' + kjrInlineArg(r.id) + ')" title="Delete" aria-label="Delete">×</button>' +
     '</span></td>' +
     '</tr>';
   let body = active.map(r => rowHtml(r, false)).join('');
@@ -1561,7 +1561,7 @@ function renderEbayPurchases(){
       updatedCell +
       '<td data-col-key="actions" style="white-space:nowrap"><span class="kjr-row-actions" style="display:inline-flex;align-items:center;gap:4px">' +
         '<button class="btn btn-ghost btn-sm" onclick="kjrOpenEbayModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'ebayPurchases\',' + kjrInlineArg(r.id) + ')">×</button>' +
+        '<button class="btn btn-ghost btn-sm kjr-del-x" onclick="kjrDeleteRow(\'ebayPurchases\',' + kjrInlineArg(r.id) + ')" title="Delete" aria-label="Delete">×</button>' +
       '</span></td>' +
       '</tr>';
   };
@@ -2722,7 +2722,7 @@ function renderBoosterPacks(){
     '<td data-col-key="notes" style="text-align:left;color:var(--text2);font-size:12px">'+kjrEscape(r.notes||'')+'</td>' +
     '<td data-col-key="actions"><span class="kjr-row-actions">' +
       '<button class="btn btn-ghost btn-sm" onclick="kjrOpenBpModal(' + kjrInlineArg(r.id) + ')">Edit</button>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="kjrDeleteRow(\'boosterPacks\',' + kjrInlineArg(r.id) + ')">×</button>' +
+      '<button class="btn btn-ghost btn-sm kjr-del-x" onclick="kjrDeleteRow(\'boosterPacks\',' + kjrInlineArg(r.id) + ')" title="Delete" aria-label="Delete">×</button>' +
     '</span></td>' +
     '</tr>';
   let body = active.map(r => rowHtml(r, false)).join('');

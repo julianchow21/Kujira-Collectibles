@@ -37,7 +37,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.70',
+    release: 'kujira-collectibles@3.71',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -74,7 +74,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
-<link rel="stylesheet" href="styles.css?v=3.70">
+<link rel="stylesheet" href="styles.css?v=3.71">
 </head>
 <body>
 
@@ -174,7 +174,7 @@
     <div class="logo-name">
       <span class="logo-title">Kujira</span>
       <span class="logo-sub">Collectibles</span>
-      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.70 (10 Oct)</span>
+      <span id="app-ver" style="font-size:11px;font-weight:400;letter-spacing:0.3px;color:var(--text3)" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.71 (11 Oct)</span>
     </div>
   </button>
   <nav class="nav">
@@ -326,12 +326,21 @@
     <span id="singles-unresolved-text" role="button" tabindex="0" style="cursor:pointer;text-decoration:underline dotted" title="Click to filter Singles to just these cards" onclick="_kjrShowUnresolvedOnly()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_kjrShowUnresolvedOnly()}"></span>
     <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="_dismissUnresolvedBanner()" aria-label="Dismiss">✕</button>
   </div>
-  <div class="inv-stats" id="singles-stats"></div>
+  <div class="inv-strip-host" id="singles-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="singles-search" aria-label="Search singles inventory" oninput="renderSingles()" title='Search across name, set, language, type, condition, status, notes, dates. Numbers match ±$1 on any price; use &gt;50, &lt;100, &gt;=20 for ranges.'>
+    <div class="kjr-chips" id="singles-lang-chips" role="group" aria-label="Language" hidden></div>
     <div class="filters-wrap" id="fw-singles">
-      <button class="btn btn-sm" onclick="toggleFiltersMenu('singles')" title="Filter by language, type and status">⚲ Filters<span class="filters-badge" id="filters-badge-singles"></span></button>
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('singles')" title="Column filters, language, type and status">⚲ Filters<span class="filters-badge" id="filters-badge-singles"></span></button>
       <div class="filters-dropdown" id="fd-singles">
+        <div class="filters-row filters-switch">
+          <label class="kjr-switch" for="cf-switch-singles">
+            <input type="checkbox" role="switch" id="cf-switch-singles" aria-describedby="cf-hint-singles" onchange="kjrColFiltersShow('singles',this.checked)">
+            <span class="kjr-switch-ui" aria-hidden="true"></span>
+            <span class="kjr-switch-text">Column filters</span>
+          </label>
+          <span class="kjr-switch-hint" id="cf-hint-singles">Numbers take &gt;50 or 100-200</span>
+        </div>
         <div class="filters-row">
           <label class="filters-label">Language</label>
           <select class="fi filters-sel" id="singles-lang" onchange="renderSingles()">
@@ -439,12 +448,20 @@
 <!-- SLABS PAGE -->
 <div id="page-slabs" class="page">
   <div class="section-title">Graded Slabs</div>
-  <div class="inv-stats" id="slabs-stats"></div>
+  <div class="inv-strip-host" id="slabs-stats"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="slabs-search" aria-label="Search graded slabs" oninput="renderSlabs()" title='Search across name, grader, grade, cert, rank, notes. Numbers match ±$1 on any price; use &gt;100 / &lt;500 / &gt;=20 for ranges.'>
     <div class="filters-wrap" id="fw-slabs">
-      <button class="btn btn-sm" onclick="toggleFiltersMenu('slabs')" title="Filter by grader and grade">⚲ Filters<span class="filters-badge" id="filters-badge-slabs"></span></button>
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('slabs')" title="Column filters, grader and grade">⚲ Filters<span class="filters-badge" id="filters-badge-slabs"></span></button>
       <div class="filters-dropdown" id="fd-slabs">
+        <div class="filters-row filters-switch">
+          <label class="kjr-switch" for="cf-switch-slabs">
+            <input type="checkbox" role="switch" id="cf-switch-slabs" aria-describedby="cf-hint-slabs" onchange="kjrColFiltersShow('slabs',this.checked)">
+            <span class="kjr-switch-ui" aria-hidden="true"></span>
+            <span class="kjr-switch-text">Column filters</span>
+          </label>
+          <span class="kjr-switch-hint" id="cf-hint-slabs">Numbers take &gt;50 or 100-200</span>
+        </div>
         <div class="filters-row">
           <label class="filters-label">Grader</label>
           <select class="fi filters-sel" id="slabs-grader" onchange="renderSlabs()">
@@ -558,6 +575,19 @@
   <div class="metrics" id="sales-metrics"></div>
   <div class="toolbar">
     <input class="search-input" type="text" placeholder="Search" id="sales-search" aria-label="Search sales history" oninput="renderSales()" title='Search across product, buyer, dates. Numbers match ±$1 on cost/revenue/profit; use &lt;0 to find losses or &gt;100 for big sales.'>
+    <div class="filters-wrap" id="fw-sales">
+      <button class="btn btn-sm" onclick="toggleFiltersMenu('sales')" title="Show the column filters">⚲ Filters<span class="filters-badge" id="filters-badge-sales"></span></button>
+      <div class="filters-dropdown" id="fd-sales">
+        <div class="filters-row filters-switch">
+          <label class="kjr-switch" for="cf-switch-sales">
+            <input type="checkbox" role="switch" id="cf-switch-sales" aria-describedby="cf-hint-sales" onchange="kjrColFiltersShow('sales',this.checked)">
+            <span class="kjr-switch-ui" aria-hidden="true"></span>
+            <span class="kjr-switch-text">Column filters</span>
+          </label>
+          <span class="kjr-switch-hint" id="cf-hint-sales">Numbers take &gt;50 or 100-200</span>
+        </div>
+      </div>
+    </div>
     <button class="btn btn-sm" id="clear-filters-sales" style="display:none" onclick="clearAllFilters('sales')" title="Clear search and column filters">✕ Clear all filters</button>
     <button class="btn btn-sm" onclick="exportCSV('sales')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-sales">
@@ -581,7 +611,7 @@
   </div>
   <div class="card">
     <div class="tbl-wrap">
-      <table>
+      <table id="sales-table">
         <thead>
           <tr>
             <th data-col-key="_cb" class="cb-col"><input type="checkbox" class="row-cb" id="cb-all-sales" onchange="toggleSelectAll('sales',this.checked)" title="Select all" aria-label="Select all sales"></th>
@@ -1684,6 +1714,7 @@
         <div class="filters-foot"><button type="button" onclick="resetFilters('etbs')">Reset filters</button></div>
       </div>
     </div>
+    <button type="button" class="btn btn-sm kjr-cf-toggle" id="cf-toggle-etbs" aria-pressed="false" onclick="kjrColFiltersToggle('etbs')" title="Show or hide the filter row under the column headers">Column filters</button>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenEtbModal()">+ Add ETB</button>
     <button class="btn btn-sm" onclick="kjrExportCsv('etbs')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-etbs">
@@ -1749,6 +1780,7 @@
         <div class="filters-foot"><button type="button" onclick="resetFilters('boosterBoxes')">Reset filters</button></div>
       </div>
     </div>
+    <button type="button" class="btn btn-sm kjr-cf-toggle" id="cf-toggle-boosterBoxes" aria-pressed="false" onclick="kjrColFiltersToggle('boosterBoxes')" title="Show or hide the filter row under the column headers">Column filters</button>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBbModal()">+ Add Booster Box</button>
     <button class="btn btn-sm" onclick="kjrExportCsv('boosterBoxes')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-boosterBoxes">
@@ -1805,6 +1837,7 @@
         <div class="filters-foot"><button type="button" onclick="resetFilters('boosterPacks')">Reset filters</button></div>
       </div>
     </div>
+    <button type="button" class="btn btn-sm kjr-cf-toggle" id="cf-toggle-boosterPacks" aria-pressed="false" onclick="kjrColFiltersToggle('boosterPacks')" title="Show or hide the filter row under the column headers">Column filters</button>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenBpModal()">+ Add Pack</button>
     <button class="btn btn-sm" onclick="kjrExportCsv('boosterPacks')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="kjr-ctw-boosterPacks">
@@ -1865,6 +1898,7 @@
         <div class="filters-foot"><button type="button" onclick="resetFilters('ebay')">Reset filters</button></div>
       </div>
     </div>
+    <button type="button" class="btn btn-sm kjr-cf-toggle" id="cf-toggle-ebay" aria-pressed="false" onclick="kjrColFiltersToggle('ebay')" title="Show or hide the filter row under the column headers">Column filters</button>
     <button class="btn btn-primary btn-sm" onclick="kjrOpenEbayModal()">+ Add Purchase</button>
     <button class="btn btn-sm" onclick="kjrExportCsv('ebayPurchases')">↓ Export CSV</button>
     <div class="col-toggle-wrap" id="ctw-ebay">
@@ -2008,12 +2042,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.70"></script>
-<script src="features.js?v=3.70"></script>
-<script src="dealer-money.js?v=3.70"></script>
-<script src="dealer-desk.js?v=3.70"></script>
-<script src="dealer-ui.js?v=3.70"></script>
-<script src="dealer-store.js?v=3.70"></script>
-<script src="dealer-production-ui.js?v=3.70"></script>
+<script src="app.js?v=3.71"></script>
+<script src="features.js?v=3.71"></script>
+<script src="dealer-money.js?v=3.71"></script>
+<script src="dealer-desk.js?v=3.71"></script>
+<script src="dealer-ui.js?v=3.71"></script>
+<script src="dealer-store.js?v=3.71"></script>
+<script src="dealer-production-ui.js?v=3.71"></script>
 </body>
 </html>

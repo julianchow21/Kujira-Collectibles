@@ -7100,17 +7100,93 @@ function toggleFiltersMenu(table) {
 const _FILTERS_POPOVER = {
   singles:      [{ id: 'singles-lang', def: '' }, { id: 'singles-type', def: '' }, { id: 'singles-status-filter', def: 'available' }],
   slabs:        [{ id: 'slabs-grader', def: '' }, { id: 'slabs-grade', def: '' }],
+  sales:        [], // v3.71: no dropdowns, its popover holds the Column filters switch and a badge
   etbs:         [{ id: 'kjr-etb-status', def: '' }, { id: 'kjr-etb-cond', def: '' }],
   boosterBoxes: [{ id: 'kjr-bb-status', def: '' }],
   boosterPacks: [{ id: 'kjr-bp-status', def: '' }],
   ebay:         [{ id: 'kjr-ebay-status', def: '' }]
 };
 
+// ── Column filters (redesign Step 4, v3.71) ──────────────────────────
+// The per-column filter row under each table header is hidden until asked for. One preference per table
+// (localStorage kjr_colfilters_<table>, default off), one class on the table (.cf-on) that the CSS keys off,
+// and one rule: a row that holds a typed filter is never hidden, whatever the preference says. The inputs keep
+// their ids and their oninput handlers, so how rows are matched does not change (kjrMatchNumFilter included).
+// Singles, Slabs and Sales put the switch at the top of their Filters popover (#cf-switch-<table>), the Sealed
+// tables and eBay have a toolbar toggle (#cf-toggle-<table>, aria-pressed). Phones (600px or less, cards layout)
+// keep their own rule that hides the row and both controls.
+const KJR_COLFILTERS = {
+  singles:      { tableId: 'singles-table',  ids: ['sf-name', 'sf-cost', 'sf-mkt', 'sf-list', 'sf-lang', 'sf-type', 'sf-date'] },
+  slabs:        { tableId: 'slabs-table',    ids: ['slbf-name', 'slbf-grade', 'slbf-cert', 'slbf-rank', 'slbf-date', 'slbf-lang', 'slbf-cost', 'slbf-mkt', 'slbf-list'] },
+  sales:        { tableId: 'sales-table',    ids: ['slf-date', 'slf-product', 'slf-buyer', 'slf-cost', 'slf-revenue', 'slf-shipping', 'slf-fees', 'slf-channel', 'slf-days', 'slf-profit', 'slf-margin'] },
+  etbs:         { tableId: 'kjr-etb-table',  ids: ['kjr-etb-cf-product', 'kjr-etb-cf-cost', 'kjr-etb-cf-mkt', 'kjr-etb-cf-list', 'kjr-etb-cf-cond', 'kjr-etb-cf-date'] },
+  boosterBoxes: { tableId: 'kjr-bb-table',   ids: ['kjr-bb-cf-date', 'kjr-bb-cf-product', 'kjr-bb-cf-unit', 'kjr-bb-cf-qty', 'kjr-bb-cf-total', 'kjr-bb-cf-mkt', 'kjr-bb-cf-list', 'kjr-bb-cf-notes'] },
+  boosterPacks: { tableId: 'kjr-bp-table',   ids: ['kjr-bp-cf-date', 'kjr-bp-cf-product', 'kjr-bp-cf-unit', 'kjr-bp-cf-qty', 'kjr-bp-cf-total', 'kjr-bp-cf-mkt', 'kjr-bp-cf-list', 'kjr-bp-cf-notes'] },
+  ebay:         { tableId: 'kjr-ebay-table', ids: ['kjr-ebay-cf-date', 'kjr-ebay-cf-product', 'kjr-ebay-cf-tracking', 'kjr-ebay-cf-declared', 'kjr-ebay-cf-usd', 'kjr-ebay-cf-freight', 'kjr-ebay-cf-sgd'] }
+};
+const KJR_CF_HINT = 'Numbers take >50 or 100-200';
+const KJR_CF_HINT_ACTIVE = 'Open while a filter is in use';
+const _kjrCfMem = {}; // the preference for this session when localStorage is blocked
+
+function kjrColFiltersPref(table) {
+  if (!KJR_COLFILTERS[table]) return false;
+  if (Object.prototype.hasOwnProperty.call(_kjrCfMem, table)) return !!_kjrCfMem[table];
+  try { return localStorage.getItem('kjr_colfilters_' + table) === '1'; } catch (e) { return false; }
+}
+// How many of this table's column filters hold a value (a Sales Channel of "All" is empty).
+function kjrColFilterCount(table) {
+  const cfg = KJR_COLFILTERS[table];
+  if (!cfg) return 0;
+  let n = 0;
+  cfg.ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && String(el.value == null ? '' : el.value).trim() !== '') n++;
+  });
+  return n;
+}
+// Puts the table, the switch and the toggle button in step with the preference and the inputs. Returns
+// whether the row is showing. A table with a typed filter shows its row regardless, and its control is
+// locked on (disabled switch, aria-disabled button) with the reason beside it, so it never looks dead.
+function kjrColFiltersSync(table) {
+  const cfg = KJR_COLFILTERS[table];
+  if (!cfg) return false;
+  const active = kjrColFilterCount(table) > 0;
+  const show = active || kjrColFiltersPref(table);
+  const tbl = document.getElementById(cfg.tableId);
+  if (tbl && tbl.classList) tbl.classList.toggle('cf-on', show);
+  const sw = document.getElementById('cf-switch-' + table);
+  if (sw) { sw.checked = show; sw.disabled = active; }
+  const hint = document.getElementById('cf-hint-' + table);
+  if (hint) hint.textContent = active ? KJR_CF_HINT_ACTIVE : KJR_CF_HINT;
+  const btn = document.getElementById('cf-toggle-' + table);
+  if (btn) {
+    btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    btn.setAttribute('aria-disabled', active ? 'true' : 'false');
+    btn.title = active ? 'A column filter is in use, clear it to hide the row' : 'Show or hide the filter row under the column headers';
+  }
+  return show;
+}
+function kjrColFiltersShow(table, on) {
+  if (!KJR_COLFILTERS[table]) return false;
+  const want = !!on;
+  // A preference, not data. Blocked storage still holds the choice for this session.
+  try { localStorage.setItem('kjr_colfilters_' + table, want ? '1' : '0'); delete _kjrCfMem[table]; } catch (e) { _kjrCfMem[table] = want; }
+  return kjrColFiltersSync(table);
+}
+function kjrColFiltersToggle(table) {
+  if (!KJR_COLFILTERS[table]) return false;
+  if (kjrColFilterCount(table) > 0) return kjrColFiltersSync(table); // an active filter keeps the row open
+  return kjrColFiltersShow(table, !kjrColFiltersPref(table));
+}
+function kjrColFiltersInit() {
+  Object.keys(KJR_COLFILTERS).forEach(kjrColFiltersSync);
+}
+
 // Show a count of active filters on the Filters button (each select's
 // configured default, e.g. status 'available', doesn't count as active).
+// v3.71: typed column filters count too, and every render ends here, so this is also where the
+// filter row and its control are brought back in step with the inputs.
 function updateFiltersBadge(table) {
-  const badge = document.getElementById('filters-badge-' + table);
-  if (!badge) return;
   const cfg = _FILTERS_POPOVER[table] || [];
   let n = 0;
   cfg.forEach(f => {
@@ -7118,7 +7194,10 @@ function updateFiltersBadge(table) {
     const val = el ? el.value : '';
     if (val && val !== f.def) n++;
   });
-  badge.textContent = n ? String(n) : '';
+  n += kjrColFilterCount(table);
+  const badge = document.getElementById('filters-badge-' + table);
+  if (badge) badge.textContent = n ? String(n) : '';
+  kjrColFiltersSync(table);
 }
 
 // Generic "Reset filters" for any table's Filters popover: restores every
@@ -10258,6 +10337,8 @@ function _renderHealthResults(findings){
 // =========== NAV DROPDOWN ===========
 function toggleNavDD(name, ev) {
   if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  // this click never reaches the document, so the row menu has to be told here (one popover at a time)
+  kjrRowMenuClose(false);
   document.querySelectorAll('.nav-dd').forEach(d => {
     if (d.dataset.dd === name) d.classList.toggle('open');
     else d.classList.remove('open');
@@ -10270,6 +10351,150 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.nav-dd')) closeNavDD();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeNavDD(); });
+
+// =========== ROW ACTION MENU ===========
+// The "…" button on Singles and Slabs rows (redesign Step 4, v3.71). Every row carries its own hidden
+// <div role="menu"> right after the button, holding the items with the same inline handlers the old row
+// buttons had, so the id arguments keep their exact positions (tests/review-inline-handlers.test.js pins
+// them). This is the one controller for all of them: delegated listeners on the document, nothing inline on
+// the "…" button. Opening positions the menu with position:fixed from the button rect (the table card
+// clips its overflow, so an absolute menu would be cut off on the last rows), flips it up near the bottom
+// of the viewport, and closes the Filters, Columns and nav popovers. Only one menu is open at a time.
+// Closing: Esc (focus goes back to the "…"), Tab (same, then Tab carries on from the button), an outside
+// click, choosing an item (focus goes back to the "…" first, so a dialog the item opens returns focus to a
+// visible button), a scroll, a resize or a re-render of the table.
+let _kjrRowMenu = null; // { btn, menu, top, left } while a menu is open (top and left: where the "…" sat when it opened)
+
+function kjrRowMenuOf(btn) {
+  const m = btn && btn.nextElementSibling;
+  return m && m.classList && m.classList.contains('kjr-rowmenu') ? m : null;
+}
+// The open menu, or null. A re-render replaces the rows under an open menu, so a button that is no
+// longer in the page means the menu is gone and the state is dropped.
+function kjrRowMenuCurrent() {
+  const cur = _kjrRowMenu;
+  if (cur && cur.btn && cur.btn.isConnected === false) { _kjrRowMenu = null; return null; }
+  return cur;
+}
+function kjrRowMenuItems(menu) {
+  return menu && typeof menu.querySelectorAll === 'function' ? Array.prototype.slice.call(menu.querySelectorAll('[role="menuitem"]')) : [];
+}
+function kjrRowMenuFocus(el) {
+  if (!el || typeof el.focus !== 'function') return;
+  try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+}
+// Right edges line up (the "…" sits in the last column), 4px under the button, flipped above it when it
+// would run past the bottom of the viewport (or past the phone tab bar) and there is room above. Returns
+// true when it flipped up.
+function kjrRowMenuPlace(btn, menu) {
+  const vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+  const gap = 4, edge = 8;
+  const r = btn.getBoundingClientRect();
+  const w = menu.offsetWidth || 0, h = menu.offsetHeight || 0;
+  let floor = vh - edge;
+  const bar = typeof document.querySelector === 'function' ? document.querySelector('.bottom-tab-bar') : null;
+  if (bar && typeof bar.getBoundingClientRect === 'function') {
+    const br = bar.getBoundingClientRect();
+    if (br.height > 0 && br.top < vh) floor = Math.min(floor, br.top - edge);
+  }
+  let top = r.bottom + gap;
+  let up = false;
+  if (top + h > floor && r.top - gap - h >= edge) { top = r.top - gap - h; up = true; }
+  top = Math.max(edge, Math.min(top, floor - h));
+  const left = Math.max(edge, Math.min(r.right - w, vw - w - edge));
+  menu.style.top = Math.round(top) + 'px';
+  menu.style.left = Math.round(left) + 'px';
+  menu.setAttribute('data-place', up ? 'up' : 'down');
+  return up;
+}
+function kjrRowMenuClose(returnFocus) {
+  const cur = _kjrRowMenu;
+  if (!cur) return false;
+  _kjrRowMenu = null;
+  cur.menu.hidden = true;
+  cur.menu.style.top = '';
+  cur.menu.style.left = '';
+  cur.btn.setAttribute('aria-expanded', 'false');
+  if (returnFocus && cur.btn.isConnected !== false) kjrRowMenuFocus(cur.btn);
+  return true;
+}
+// which: 'first' (default) or 'last', the item that takes focus
+function kjrRowMenuOpen(btn, which) {
+  const menu = kjrRowMenuOf(btn);
+  if (!menu) return false;
+  kjrRowMenuClose(false);
+  document.querySelectorAll('.col-toggle-wrap.open, .filters-wrap.open').forEach(w => w.classList.remove('open'));
+  closeNavDD();
+  menu.style.visibility = 'hidden'; // measured before it is seen, so it never flashes in the wrong place
+  menu.hidden = false;
+  kjrRowMenuPlace(btn, menu);
+  menu.style.visibility = '';
+  btn.setAttribute('aria-expanded', 'true');
+  const at = btn.getBoundingClientRect();
+  _kjrRowMenu = { btn, menu, top: at.top, left: at.left };
+  const items = kjrRowMenuItems(menu);
+  kjrRowMenuFocus(which === 'last' ? items[items.length - 1] : items[0]);
+  return true;
+}
+function kjrRowMenuOnClick(e) {
+  const t = e && e.target;
+  if (!t || typeof t.closest !== 'function') return;
+  const cur = kjrRowMenuCurrent();
+  const btn = t.closest('.kjr-more');
+  if (btn) {
+    if (cur && cur.btn === btn) kjrRowMenuClose(true); // the same button again closes it
+    else kjrRowMenuOpen(btn, 'first');
+    return;
+  }
+  if (!cur) return;
+  if (t.closest('.kjr-rowmenu') === cur.menu) {
+    // Choosing an item closes the menu and puts focus back on the "…" BEFORE the item's own onclick runs (this
+    // listener is on the capture phase). A dialog the item opens then remembers the visible "…" as the element
+    // to give focus back to, where it would otherwise remember the menu item, which is hidden by then, and
+    // focus would be lost. Clicks on the padding or the divider leave the menu open.
+    if (t.closest('[role="menuitem"]')) kjrRowMenuClose(true);
+    return;
+  }
+  kjrRowMenuClose(false); // anywhere else
+}
+function kjrRowMenuOnKey(e) {
+  if (!e) return;
+  const k = e.key;
+  const cur = kjrRowMenuCurrent();
+  if (!cur) {
+    // closed: Arrow Down / Up on the "…" button open it on the first / last item
+    const btn = e.target && typeof e.target.closest === 'function' ? e.target.closest('.kjr-more') : null;
+    if (btn && (k === 'ArrowDown' || k === 'ArrowUp')) { e.preventDefault(); kjrRowMenuOpen(btn, k === 'ArrowUp' ? 'last' : 'first'); }
+    return;
+  }
+  if (k === 'Escape') { e.preventDefault(); kjrRowMenuClose(true); return; }
+  if (k === 'Tab') { kjrRowMenuClose(true); return; } // focus goes back to the "…" and the Tab carries on from it
+  const items = kjrRowMenuItems(cur.menu);
+  if (!items.length) return;
+  const i = items.indexOf(document.activeElement);
+  let next = -1;
+  if (k === 'ArrowDown') next = i < 0 ? 0 : (i + 1) % items.length;
+  else if (k === 'ArrowUp') next = i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length;
+  else if (k === 'Home') next = 0;
+  else if (k === 'End') next = items.length - 1;
+  else return;
+  e.preventDefault();
+  kjrRowMenuFocus(items[next]);
+}
+document.addEventListener('click', kjrRowMenuOnClick, true); // capture: see the item branch above
+document.addEventListener('keydown', kjrRowMenuOnKey);
+// A fixed menu would drift away from its row, so it closes when the "…" has moved (any scroll that carried it
+// off, wherever the scrolling happens) and on any resize. A scroll that left the button where it was does not
+// matter, which also keeps a late scroll event from the moment before the click from closing it.
+function kjrRowMenuOnScroll(e) {
+  const cur = kjrRowMenuCurrent();
+  if (!cur) return;
+  if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.kjr-rowmenu') === cur.menu) return;
+  const r = cur.btn.getBoundingClientRect();
+  if (Math.abs(r.top - cur.top) > 1 || Math.abs(r.left - cur.left) > 1) kjrRowMenuClose(false);
+}
+document.addEventListener('scroll', kjrRowMenuOnScroll, true);
+window.addEventListener('resize', function () { kjrRowMenuClose(false); });
 
 // =========== SORT STATE ===========
 const sortState = {
@@ -10913,6 +11138,8 @@ function kjrInitMobileShell() {
   // months" etc.) overflow a single-row segmented control on phones.
   ['singles-lang', 'singles-status-filter', 'singles-type', 'slabs-grader'].forEach(kjrSegmentize);
   kjrInitTouchTips();
+  // v3.71: put every table's filter row, switch and toggle in step with the saved preference
+  kjrColFiltersInit();
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', kjrInitMobileShell);
@@ -11145,6 +11372,139 @@ function graderGradeBadge(grader, grade, notes, name) {
     esc(displayGrader) + ' ' + esc(displayGrade) + pristineMark + '</span>';
 }
 
+// Row actions (redesign Step 4, v3.71), shared by Singles and Slabs: one "…" button and, right after it, the
+// row's own hidden menu. The items keep the handlers and id positions the old row buttons had (markStatus 1,
+// openListingFor 1, openEditSingle/openEditSlab 0, deleteItem 0). Edit stays a button inside the actions
+// cell with "Edit" in its text and title, because the phone tap-to-edit (kjrInstallCompactTapEdit) finds it
+// that way and clicks it even while the cell is hidden. The "…" itself has no handler: the delegated
+// controller (ROW ACTION MENU) opens it. The price-alert and link indicators stay beside it in the cell.
+const KJR_MORE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>';
+function kjrRowMenuHtml(table, item, isSold) {
+  const arg = kjrInlineArg(item.id);
+  const tbl = "'" + table + "'";
+  const name = esc(item.name || 'row');
+  const edit = table === 'slabs' ? 'openEditSlab' : 'openEditSingle';
+  const mi = (js, text, extra) => '<button type="button" role="menuitem"' + (extra || '') + ' onclick="' + js + '">' + text + '</button>';
+  return '<button type="button" class="kjr-more" aria-label="More actions for ' + name + '" aria-haspopup="menu" aria-expanded="false" title="More actions">' + KJR_MORE_ICON + '</button>' +
+    '<div class="kjr-rowmenu" role="menu" aria-label="Actions for ' + name + '" hidden>' +
+      (isSold
+        ? mi('markStatus(' + tbl + ',' + arg + ',\'Available\')', 'Mark as available')
+        : mi('markStatus(' + tbl + ',' + arg + ',\'Sold\')', 'Mark as sold')) +
+      (isSold ? '' : mi('openListingFor(' + tbl + ',' + arg + ')', 'Generate listing')) +
+      mi(edit + '(' + arg + ')', 'Edit', ' title="Edit"') +
+      '<div class="kjr-rowmenu-sep" role="separator"></div>' +
+      mi('deleteItem(' + arg + ',' + tbl + ')', 'Delete', ' class="is-danger"') +
+    '</div>';
+}
+
+// Summary strip (redesign Step 4, v3.71), shared by Singles and Slabs: one card, four regions with hairline
+// dividers (a 2x2 grid on phones) in place of the four stat tiles. The numbers are the post-filter Available
+// rows, so the strip follows every search and filter, and it is drawn before the grid early return, so Grid
+// view shows it too. o: { label, rows, cost, value, units (Singles only), fresh (the price age dot html) }.
+// Unrealised uses the Overview's arrow, sign and rounding: a loss or gain always carries ▲ or ▼ and a sign.
+function kjrSummaryStripHtml(o) {
+  o = o || {};
+  const rows = Math.max(0, Math.floor(Number(o.rows) || 0));
+  const cost = Number(o.cost) || 0, value = Number(o.value) || 0;
+  const money = n => 'S$' + Math.round(Math.abs(n)).toLocaleString('en-SG');
+  const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+  const main = (t, arrow) => '<span class="inv-strip-main">' + (arrow ? '<span aria-hidden="true">' + arrow + '</span> ' : '') + esc(t) + '</span>';
+  const sub = t => ' <span class="inv-strip-sub"><span class="inv-strip-dot" aria-hidden="true">· </span>' + esc(t) + '</span>';
+  let gain = main('-'), gcls = '';
+  if (rows > 0 && (cost > 0 || value > 0)) {
+    const pl = value - cost;
+    if (cost > 0) {
+      const a = Math.abs(pl / cost * 100);
+      const pct = a.toFixed(a >= 100 ? 0 : 1);
+      if (Number(pct) === 0) gain = main('S$0') + sub('0%');
+      else if (pl > 0) { gcls = ' pos'; gain = main('+' + money(pl), '▲') + sub('+' + pct + '%'); }
+      else { gcls = ' neg'; gain = main('-' + money(pl), '▼') + sub('-' + pct + '%'); }
+    } else if (Math.abs(pl) >= 0.5) {
+      gcls = pl > 0 ? ' pos' : ' neg';
+      gain = pl > 0 ? main('+' + money(pl), '▲') : main('-' + money(pl), '▼');
+    } else {
+      gain = main('S$0');
+    }
+  }
+  const showing = o.units == null
+    ? main(plural(rows, 'slab', 'slabs'))
+    : main(plural(rows, 'card', 'cards')) + sub(plural(Math.max(0, Math.floor(Number(o.units) || 0)), 'unit', 'units'));
+  const cell = (key, label, tip, valueHtml, cls) =>
+    '<div class="inv-strip-cell" data-strip="' + key + '"><div class="inv-strip-label" title="' + esc(tip) + '">' + label + '</div>' +
+    '<div class="inv-strip-value' + (cls || '') + '">' + valueHtml + '</div></div>';
+  return '<div class="inv-strip" role="group" aria-label="' + esc(o.label || 'Summary') + '">' +
+    cell('value', 'Market value' + (o.fresh || ''), 'Market price of the Available cards shown. A card with no price yet counts at cost.', main(value > 0 ? money(value) : '-')) +
+    cell('cost', 'Cost basis', 'What you paid for the Available cards shown.', main(rows > 0 ? money(cost) : '-')) +
+    cell('gain', 'Unrealised', 'Market value minus cost basis, before any sale.', gain, gcls) +
+    cell('showing', 'Showing', 'Available cards that match the search and filters.', showing) +
+  '</div>';
+}
+
+// Language chips (redesign Step 4, v3.71), Singles only: "All N" and one chip per language that exists in the
+// data, in the toolbar after the search box. Each count is the rows that match every OTHER current filter
+// (and the Status choice), so a chip says what picking it would show. The chips are real buttons with
+// aria-pressed that drive the existing #singles-lang select (value + a bubbling change event), so the render,
+// the Filters badge and the phone segmented mirror all follow the select exactly as if it had been changed
+// in the popover. The select stays the one source of truth: renderSingles redraws the chips from it.
+const KJR_LANG_CHIPS = [['EN', 'English'], ['JP', 'Japanese'], ['CN', 'Chinese'], ['ID', 'Indonesian']];
+// rows: DB.singles. passesOther: the row test with the language test left out. current: the select's value.
+function kjrLangChipData(rows, passesOther, statusFilter, current) {
+  const list = Array.isArray(rows) ? rows : [];
+  const st = r => (r && r.status) || 'Available';
+  const shown = r => statusFilter === 'all' ? (st(r) === 'Available' || st(r) === 'Sold') : (statusFilter === 'sold' ? st(r) === 'Sold' : st(r) === 'Available');
+  const present = Object.create(null), counts = Object.create(null);
+  let all = 0;
+  list.forEach(r => {
+    if (!r) return;
+    if (r.language) present[r.language] = true;
+    if (!shown(r) || !passesOther(r)) return;
+    all++;
+    if (r.language) counts[r.language] = (counts[r.language] || 0) + 1;
+  });
+  if (current) present[current] = true; // a chip for the language being filtered on is always there to un-pick
+  return {
+    empty: list.length === 0,
+    all: all,
+    allOn: !current,
+    chips: KJR_LANG_CHIPS.filter(c => present[c[0]]).map(c => ({ code: c[0], label: c[1], count: counts[c[0]] || 0, on: current === c[0] }))
+  };
+}
+function kjrLangChipsHtml(d) {
+  const chip = (code, label, count, on) => '<button type="button" class="kjr-chip" data-lang="' + code + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
+    '<span>' + label + '</span><span class="kjr-chip-n">' + count + '</span></button>';
+  return chip('', 'All', d.all, d.allOn) + d.chips.map(c => chip(c.code, c.label, c.count, c.on)).join('');
+}
+function kjrLangChipClick(e) {
+  const b = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-lang]') : null;
+  if (!b) return false;
+  const sel = document.getElementById('singles-lang');
+  if (!sel) return false;
+  const code = b.getAttribute('data-lang') || '';
+  if (sel.value === code) return false;
+  sel.value = code;
+  sel.dispatchEvent(new Event('change', { bubbles: true })); // renders, updates the badge, rebuilds the phone mirror
+  return true;
+}
+function kjrRenderLangChips(current, rows, passesOther, statusFilter) {
+  const host = document.getElementById('singles-lang-chips');
+  if (!host) return;
+  if (!host._kjrBound) { host._kjrBound = true; host.addEventListener('click', kjrLangChipClick); }
+  const d = kjrLangChipData(rows, passesOther, statusFilter, current);
+  host.hidden = d.empty; // nothing to filter on yet
+  if (d.empty) { host.innerHTML = ''; return; }
+  // Keep keyboard focus on the same chip across the redraw.
+  let focusCode = null;
+  try {
+    const ae = document.activeElement;
+    if (ae && ae.classList && ae.classList.contains('kjr-chip') && host.contains(ae)) focusCode = ae.getAttribute('data-lang');
+  } catch (err) { focusCode = null; }
+  host.innerHTML = kjrLangChipsHtml(d);
+  if (focusCode !== null) {
+    const again = host.querySelector('[data-lang="' + focusCode + '"]');
+    if (again && typeof again.focus === 'function') { try { again.focus({ preventScroll: true }); } catch (err) { again.focus(); } }
+  }
+}
+
 // =========== SINGLES ===========
 function _parseHistDate(dateStr) {
   if (typeof dateStr !== 'string') return null;
@@ -11309,6 +11669,7 @@ function _updateUnresolvedFilterChip() {
 
 function renderSingles() {
   _renderUnresolvedBanner();
+  kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
   const lang = document.getElementById('singles-lang').value;
   const type = document.getElementById('singles-type').value;
@@ -11331,9 +11692,10 @@ function renderSingles() {
     ? new Set(_kjrUnresolvedSingles().map(i => i.id))
     : null;
 
-  const passesFilters = i => {
+  // Every test except the language one. The language chips count against this, so each chip says what
+  // picking it would show (v3.71). passesFilters below is exactly the old test, language included.
+  const passesOther = i => {
     if (unresolvedIds && !unresolvedIds.has(i.id)) return false;
-    if (lang && i.language !== lang) return false;
     if (type && i.type !== type) return false;
     // Universal search: text fields + numeric ranges + "raw", "near mint",
     // "psa 10", ">50", "may 2025", etc.
@@ -11347,6 +11709,7 @@ function renderSingles() {
     if (fList && !kjrMatchNumFilter(fList, i.listPrice))   return false;
     return true;
   };
+  const passesFilters = i => (!lang || i.language === lang) && passesOther(i);
 
   const isSt = s => (s||'Available');
   const available = _pinRecentsToTop(sortItems(DB.singles.filter(i => isSt(i.status) === 'Available' && passesFilters(i)), 'singles'), 'singles');
@@ -11361,41 +11724,14 @@ function renderSingles() {
   const totalCost   = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0)*(parseInt(i.qty)||1), 0);
   const totalValue  = available.reduce((s,i) => s + effectiveMarketInfo(i).value*(parseInt(i.qty)||1), 0);
   const totalQty    = available.reduce((s,i) => s + (parseInt(i.qty)||1), 0);
-  const unrealised  = totalValue - totalCost;
 
-  // Info buttons removed - labels and values are self-explanatory at this point.
-  function statCard(label, value, tooltip, cls) {
-    return '<div class="inv-stat"' + (tooltip ? ' title="' + esc(tooltip) + '"' : '') + '>' +
-      '<div class="inv-stat-label">' + label + '</div>' +
-      '<div class="inv-stat-value' + (cls ? ' ' + cls : '') + '">' + value + '</div>' +
-    '</div>';
-  }
-
-  // Raw vs Sealed split - used in the breakdown card below.
-  const rawCount    = available.filter(i => i.type !== 'sealed').length;
-  const sealedCount = available.filter(i => i.type === 'sealed').length;
-  const splitTotal  = rawCount + sealedCount;
-  const rawPct      = splitTotal > 0 ? Math.round((rawCount / splitTotal) * 100) : 0;
-  const sealedPct   = 100 - rawPct;
-  const splitCard   = splitTotal === 0
-    ? statCard('Type Split', '-', 'No available singles to split')
-    : `<div class="inv-stat" title="Raw vs Sealed split of available singles">
-        <div class="inv-stat-label">Raw vs Sealed</div>
-        <div class="inv-split-bar">
-          ${rawCount > 0 ? `<div class="inv-split-raw" style="width:${rawPct}%" title="Raw · ${rawCount} (${rawPct}%)">${rawPct >= 35 ? 'Raw ' + rawPct + '%' : rawPct >= 10 ? rawPct + '%' : ''}</div>` : ''}
-          ${sealedCount > 0 ? `<div class="inv-split-sealed" style="width:${sealedPct}%" title="Sealed · ${sealedCount} (${sealedPct}%)">${sealedPct >= 35 ? 'Sealed ' + sealedPct + '%' : sealedPct >= 10 ? sealedPct + '%' : ''}</div>` : ''}
-        </div>
-        <div class="inv-split-legend">
-          <span><span class="inv-split-dot inv-split-dot-raw"></span>Raw ${rawCount}</span>
-          <span><span class="inv-split-dot inv-split-dot-sealed"></span>Sealed ${sealedCount}</span>
-        </div>
-      </div>`;
-
-  document.getElementById('singles-stats').innerHTML =
-    statCard('Total Cost', 'S$' + Math.round(totalCost).toLocaleString('en-SG')) +
-    statCard('Market Price', (totalValue > 0 ? 'S$' + Math.round(totalValue).toLocaleString('en-SG') : '-') + _statMktFreshDot(available)) +
-    statCard('Available', available.length) +
-    splitCard;
+  // Language chips and the summary strip (v3.71). Both are drawn before the grid early return, so Grid view
+  // has them too. The Raw vs Sealed split that used to sit in the tiles is no longer on this page.
+  kjrRenderLangChips(lang, DB.singles, passesOther, statusFilter);
+  document.getElementById('singles-stats').innerHTML = kjrSummaryStripHtml({
+    label: 'Singles summary', rows: available.length, units: totalQty, cost: totalCost, value: totalValue,
+    fresh: _statMktFreshDot(available)
+  });
 
   applySortHeaders('singles-table', 'singles');
 
@@ -11440,12 +11776,6 @@ function renderSingles() {
       : '';
     const typeBadge = i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>';
     const chk = selectedIds.singles.has(i.id);
-    const soldBtn = isSold
-      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'singles\',' + kjrInlineArg(i.id) + ',\'Available\')" title="Mark Available">↩ Avail</button>'
-      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'singles\',' + kjrInlineArg(i.id) + ',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
-    const listBtn = !isSold
-      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'singles\',' + kjrInlineArg(i.id) + ')" title="Generate listing">📋</button>'
-      : '';
     const alertIcon = i.priceAlert && parseFloat(i.marketPrice) >= parseFloat(i.priceAlert)
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
     const urlIcon = i.ebayUrl || i.carousellUrl
@@ -11463,16 +11793,14 @@ function renderSingles() {
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mktDisplay) + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'singles\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
+      '<td data-col-key="language"><span class="badge b-lang">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="type">' + typeBadge + '</td>' +
       '<td data-col-key="datePurchased" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.datePurchased)||'-') + '</td>' +
 
-      '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
+      // v3.71: the indicators stay, the four row buttons became one "…" menu
+      '<td data-col-key="actions"><div class="kjr-actions">' +
         alertIcon + urlIcon +
-        soldBtn +
-        listBtn +
-        '<button class="btn btn-ghost btn-sm" onclick="openEditSingle(' + kjrInlineArg(i.id) + ')" title="Edit">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'singles\')" title="Delete">✕</button>' +
+        kjrRowMenuHtml('singles', i, isSold) +
       '</div></td>' +
     '</tr>';
   }
@@ -12639,6 +12967,7 @@ function _saveSingleNow(id) {
 
 // =========== SLABS ===========
 function renderSlabs() {
+  kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
   const q = (document.getElementById('slabs-search').value||'').toLowerCase();
   const grader = document.getElementById('slabs-grader').value;
   const grade = document.getElementById('slabs-grade').value;
@@ -12695,66 +13024,13 @@ function renderSlabs() {
 
   const totalCostSlabs  = available.reduce((s,i) => s + (parseFloat(i.costPrice)||0), 0);
   const totalValueSlabs = available.reduce((s,i) => s + effectiveMarketInfo(i).value, 0);
-  const unrealisedSlabs = totalValueSlabs - totalCostSlabs;
 
-  function statCard(label, value, tooltip, cls) {
-    return '<div class="inv-stat"' + (tooltip ? ' title="' + esc(tooltip) + '"' : '') + '>' +
-      '<div class="inv-stat-label">' + label + '</div>' +
-      '<div class="inv-stat-value' + (cls ? ' ' + cls : '') + '">' + value + '</div>' +
-    '</div>';
-  }
-
-  // Grader split - PSA / CGC / TAG / Other. Use substring matching across the
-  // grader AND grade fields so stored values like "PSA 10", "psa ", or even
-  // a grade column with "PSA 10" stuffed into it all classify correctly.
-  // Also falls back to the rendered badge (when graderGradeBadge embeds the
-  // grader in the badge text) so visual matches the legend.
-  // Use the unified _resolveGrader so the Grader Split card buckets rows the
-  // exact same way the badge classifies them. Anything we can't classify
-  // ends up in "Other".
-  const _classifyGrader = (i) => _resolveGrader(i.grader, i.grade).grader || 'Other';
-  const bucketCounts = available.reduce((acc, i) => {
-    const b = _classifyGrader(i);
-    acc[b] = (acc[b]||0) + 1;
-    return acc;
-  }, { PSA: 0, CGC: 0, TAG: 0, Other: 0 });
-  const psaCount   = bucketCounts.PSA;
-  const cgcCount   = bucketCounts.CGC;
-  const tagCount   = bucketCounts.TAG;
-  const otherCount = bucketCounts.Other;
-  const splitTotal = available.length;
-  const splitPct = n => splitTotal > 0 ? Math.round((n / splitTotal) * 100) : 0;
-  const seg = (count, cls, label) => {
-    if (!count) return '';
-    const pct = splitPct(count);
-    // Show full label only when there's room (≥30%). Between 10–30 show just
-    // the %. Below 10 show nothing - legend below carries the name.
-    const text = pct >= 30 ? label + ' ' + pct + '%' : pct >= 10 ? pct + '%' : '';
-    return `<div class="inv-split-${cls}" style="width:${pct}%" title="${label} · ${count} (${pct}%)">${text}</div>`;
-  };
-  const splitCard = splitTotal === 0
-    ? statCard('Grader Split', '-')
-    : `<div class="inv-stat" title="PSA / CGC / TAG split of available slabs">
-        <div class="inv-stat-label">Grader Split</div>
-        <div class="inv-split-bar">
-          ${seg(tagCount, 'tag', 'TAG')}
-          ${seg(psaCount, 'psa', 'PSA')}
-          ${seg(cgcCount, 'cgc', 'CGC')}
-          ${seg(otherCount, 'other', 'Other')}
-        </div>
-        <div class="inv-split-legend">
-          ${tagCount   ? '<span><span class="inv-split-dot inv-split-dot-tag"></span>TAG ' + tagCount + '</span>' : ''}
-          ${psaCount   ? '<span><span class="inv-split-dot inv-split-dot-psa"></span>PSA ' + psaCount + '</span>' : ''}
-          ${cgcCount   ? '<span><span class="inv-split-dot inv-split-dot-cgc"></span>CGC ' + cgcCount + '</span>' : ''}
-          ${otherCount ? '<span><span class="inv-split-dot" style="background:var(--text3)"></span>Other ' + otherCount + '</span>' : ''}
-        </div>
-      </div>`;
-
-  document.getElementById('slabs-stats').innerHTML =
-    statCard('Total Cost', 'S$' + Math.round(totalCostSlabs).toLocaleString('en-SG')) +
-    statCard('Market Price', (totalValueSlabs > 0 ? 'S$' + Math.round(totalValueSlabs).toLocaleString('en-SG') : '-') + _statMktFreshDot(available)) +
-    statCard('Available', available.length) +
-    splitCard;
+  // The summary strip (v3.71), drawn before the grid early return so Grid view has it too. The Grader Split
+  // that used to sit in the tiles is no longer on this page.
+  document.getElementById('slabs-stats').innerHTML = kjrSummaryStripHtml({
+    label: 'Slabs summary', rows: available.length, cost: totalCostSlabs, value: totalValueSlabs,
+    fresh: _statMktFreshDot(available)
+  });
 
   applySortHeaders('slabs-table', 'slabs');
 
@@ -12795,12 +13071,6 @@ function renderSlabs() {
     const certHtml = tagUrl
       ? '<a href="' + esc(tagUrl) + '" target="_blank" class="cert-no" style="text-decoration:none;color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:2px">' + certText + ' <span style="color:var(--text3);font-size:10px">↗</span></a>'
       : '<span class="cert-no" style="color:var(--text2);font-size:12px">' + certText + '</span>';
-    const soldBtn = isSold
-      ? '<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Available\')" title="Mark Available">↩ Avail</button>'
-      : '<button class="btn btn-ghost btn-sm" style="color:var(--text3);font-size:11px" onclick="markStatus(\'slabs\',' + kjrInlineArg(i.id) + ',\'Sold\')" title="Mark as Sold">✓ Sold</button>';
-    const listBtn = !isSold
-      ? '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openListingFor(\'slabs\',' + kjrInlineArg(i.id) + ')" title="Generate listing">📋</button>'
-      : '';
     const alertIcon = i.priceAlert && parseFloat(i.marketPrice) >= parseFloat(i.priceAlert)
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
     const urlIcon = i.ebayUrl || i.carousellUrl
@@ -12828,16 +13098,14 @@ function renderSlabs() {
       '<td data-col-key="certNo" style="white-space:nowrap">' + certHtml + '</td>' +
       '<td data-col-key="rank" style="font-size:12px;color:var(--text2)">' + esc(_ordinalRank(i.rank) || i.rank || '-') + '</td>' +
       '<td data-col-key="dateListed" style="font-size:12px;color:var(--text2);white-space:nowrap">' + esc(toDateMmmYyyy(i.dateListed)||'-') + '</td>' +
-      '<td data-col-key="language"><span class="badge" style="background:var(--bg3);border:1px solid var(--border)">' + esc(i.language||'-') + '</span></td>' +
+      '<td data-col-key="language"><span class="badge b-lang">' + esc(i.language||'-') + '</span></td>' +
       '<td data-col-key="costPrice" class="num"><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.costPrice ? '$' + Math.round(parseFloat(i.costPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'costPrice\',kjrMoneyStr(this.value))"></td>' +
       '<td data-col-key="marketPrice" class="num" style="white-space:nowrap"' + (mktCellTitle ? ' title="' + esc(mktCellTitle) + '"' : '') + '><input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(mpDisplay) + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'marketPrice\',kjrMoneyStr(this.value))">' + _mktFreshDot(i) + '</td>' +
       '<td data-col-key="listPrice" class="num"><input class="kjr-inline" style="width:80px;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:12px" value="' + esc(i.listPrice ? '$' + Math.round(parseFloat(i.listPrice)) : '') + '" placeholder="-" onchange="updateField(\'slabs\',' + kjrInlineArg(i.id) + ',\'listPrice\',kjrMoneyStr(this.value))"></td>' +
-      '<td data-col-key="actions"><div style="display:flex;gap:4px;justify-content:center;align-items:center">' +
+      // v3.71: the indicators stay, the four row buttons became one "…" menu
+      '<td data-col-key="actions"><div class="kjr-actions">' +
         alertIcon + urlIcon +
-        soldBtn +
-        listBtn +
-        '<button class="btn btn-ghost btn-sm" onclick="openEditSlab(' + kjrInlineArg(i.id) + ')" title="Edit">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'slabs\')" title="Delete">✕</button>' +
+        kjrRowMenuHtml('slabs', i, isSold) +
       '</div></td>' +
     '</tr>';
   }
@@ -13220,6 +13488,7 @@ function renderSales() {
     applyColOrder('sales');
     applyColVisibility('sales');
     attachHeaderDrag('sales');
+    updateFiltersBadge('sales');
     updateClearFiltersBtn('sales');
     return;
   }
@@ -13277,13 +13546,14 @@ function renderSales() {
       '<td data-col-key="margin" class="num ' + cls + '">' + (financials.known ? esc(i.margin||'-') : 'Unknown') + '</td>' +
       '<td data-col-key="actions" style="white-space:nowrap;text-align:center">' +
         '<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="openEditSale(' + kjrInlineArg(i.id) + ')" title="Edit sale">✎</button>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:11px" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'sales\')" title="Delete sale">✕</button>' +
+        '<button class="btn btn-ghost btn-sm kjr-del-x" style="font-size:11px" onclick="deleteItem(' + kjrInlineArg(i.id) + ',\'sales\')" title="Delete sale">✕</button>' +
       '</td>' +
     '</tr>';
   }).join('');
   applyColOrder('sales');
   applyColVisibility('sales');
   attachHeaderDrag('sales');
+  updateFiltersBadge('sales');
   updateClearFiltersBtn('sales');
 }
 

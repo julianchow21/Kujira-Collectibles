@@ -252,18 +252,23 @@ th[data-col-key="listPrice"] input,th[data-col-key="totalCollected"] input,
 th[data-col-key="shippingCost"] input,th[data-col-key="fees"] input,
 th[data-col-key="profit"] input,th[data-col-key="qty"] input{text-align:right}
 
-/* BADGES */
+/* BADGES (quiet tags, redesign Step 4, v3.71). Colour lives on small dots, never on whole pills.
+   Language, Raw and Sealed are outline tags with no fill. Grader badges are one neutral chip with a leading
+   8px dot in the grader colour, so graderGradeBadge() keeps its exact output (its inline 13px size and
+   padding still apply). The old per-badge fills and their tokens (--b-*, --psa-bg ...) are no longer used here. */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px}
-.b-raw{background:var(--b-raw-bg);color:var(--b-raw-fg);border:1px solid var(--b-raw-bd)}
-.b-sealed{background:var(--b-sealed-bg);color:var(--b-sealed-fg);border:1px solid var(--b-sealed-bd)}
-.b-slab{background:var(--b-slab-bg);color:var(--b-slab-fg);border:1px solid var(--b-slab-bd)}
-.b-tag{background:var(--tag-bg);color:var(--tag);border:1px solid var(--tag-border)}
-.b-psa{background:var(--psa-bg);color:var(--psa);border:1px solid var(--psa-border)}
-.b-cgc{background:var(--cgc-bg);color:var(--cgc);border:1px solid var(--cgc-border)}
-/* Pristine - PSA's top-pop subgrade. Gold accent + subtle inner glow to
-   make Pristine 10s instantly distinguishable from regular PSA 10s in the
-   badge column. Adapts to light/dark via the badge tokens. */
-.b-pristine{background:linear-gradient(135deg,var(--b-pristine-bg1),var(--b-pristine-bg2));color:var(--b-pristine-fg);border:1px solid var(--b-pristine-bd);box-shadow:inset 0 0 0 1px rgba(252,211,77,0.25),0 0 8px rgba(250,204,21,0.18)}
+.b-lang,.b-raw,.b-sealed{background:transparent;color:var(--text2);border:1px solid var(--border2);border-radius:6px;padding:1px 7px;letter-spacing:0}
+.b-lang{font-family:var(--font-mono);font-weight:400}
+.b-raw,.b-sealed{font-family:var(--font-sans);font-weight:500}
+.badge.b-psa,.badge.b-cgc,.badge.b-tag,.badge.b-slab,.badge.b-pristine{gap:6px;background:var(--bg3);color:var(--text);border:1px solid var(--border2);box-shadow:none}
+.badge.b-psa::before,.badge.b-cgc::before,.badge.b-tag::before,.badge.b-slab::before,.badge.b-pristine::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--kjr-dot,var(--text3))}
+.badge.b-psa{--kjr-dot:var(--grader-psa)}
+.badge.b-cgc{--kjr-dot:var(--grader-cgc)}
+.badge.b-tag{--kjr-dot:var(--text)}
+.badge.b-slab{--kjr-dot:var(--text3)}
+/* Pristine - the top-pop subgrade. Same neutral chip, kept distinct by a gold dot and a gold hairline
+   (the star stays in the text). Adapts to light/dark via the badge tokens. */
+.badge.b-pristine{--kjr-dot:var(--b-pristine-fg);border-color:var(--b-pristine-bd)}
 
 /* BUTTONS */
 .btn{padding:7px 16px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;font-size:13px;color:var(--text);transition:all 0.15s;display:inline-flex;align-items:center;gap:6px;font-family:inherit;white-space:nowrap}
@@ -1404,12 +1409,15 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
   body:not(.force-tables) #page-listing .kjr-listing-table-wrap>table>tbody>tr>td{
     white-space:normal;overflow:visible;text-overflow:clip}
 }
-  .kjr-status-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px;white-space:nowrap}
-  .kjr-pill-stock{background:var(--pill-stock-bg);color:var(--pill-stock-fg);border:1px solid var(--pill-stock-bd)}
-  .kjr-pill-sold{background:var(--pill-sold-bg);color:var(--pill-sold-fg);border:1px solid var(--pill-sold-bd)}
-  .kjr-pill-traded{background:var(--pill-traded-bg);color:var(--pill-traded-fg);border:1px solid var(--pill-traded-bd)}
-  .kjr-pill-pending{background:var(--pill-pending-bg);color:var(--pill-pending-fg);border:1px solid var(--pill-pending-bd)}
-  .kjr-pill-received{background:var(--pill-received-bg);color:var(--pill-received-fg);border:1px solid var(--pill-received-bd)}
+  /* Status: a 7px dot in the pill colour, then the word in the secondary text colour (redesign Step 4, v3.71).
+     No fill, no border. The word always carries the meaning, the dot only adds to it. */
+  .kjr-status-pill{display:inline-flex;align-items:center;gap:6px;padding:0;border:0;border-radius:0;background:transparent;color:var(--text2);font-size:12px;font-weight:500;letter-spacing:0;white-space:nowrap}
+  .kjr-status-pill::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--kjr-pill-dot,var(--text3))}
+  .kjr-pill-stock{--kjr-pill-dot:var(--pill-stock-fg)}
+  .kjr-pill-sold{--kjr-pill-dot:var(--pill-sold-fg)}
+  .kjr-pill-traded{--kjr-pill-dot:var(--pill-traded-fg)}
+  .kjr-pill-pending{--kjr-pill-dot:var(--pill-pending-fg)}
+  .kjr-pill-received{--kjr-pill-dot:var(--pill-received-fg)}
   .kjr-row-actions{display:inline-flex;gap:4px}
   dialog.kjr-modal-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
   dialog.kjr-modal-back[open]{display:flex}
@@ -1996,4 +2004,106 @@ html.dealer-preview-only #page-dealer{display:block!important}
   .ov-top{display:flex;gap:12px;overflow-x:auto;margin:0 -12px;padding:6px 12px 8px}
   .ov-top-item{flex:0 0 132px}
   .ov-card{padding:16px}
+}
+
+/* ═══════════ Table cleanup (redesign Step 4, v3.71) ═══════════
+   New in this step and last in the file, so the phone overrides come after the base rules. Existing tokens only.
+   Column filters behind a switch, one "…" menu per Singles and Slabs row, language chips and the summary strip.
+   The quiet tags and status dots are edited in place (BADGES near the top, .kjr-status-pill further down). */
+
+/* Column filters: the row under each header stays hidden until asked for. kjrColFiltersSync puts .cf-on on the
+   table when the preference is on or a column filter holds a value. The phone rule that hides the row (Tier 5)
+   is more specific than this one, so on a phone the row stays hidden, and the controls below go with it. */
+.tbl-wrap thead tr.filter-row{display:none}
+.tbl-wrap table.cf-on thead tr.filter-row{display:table-row}
+
+/* The Column filters switch inside a Filters popover: a native checkbox (role switch) over a drawn track */
+.filters-switch{padding-bottom:10px;border-bottom:1px solid var(--border)}
+.filters-switch:last-child{padding-bottom:0;border-bottom:0}
+.kjr-switch{position:relative;display:flex;align-items:center;gap:10px;cursor:pointer;color:var(--text);font-size:13px;font-weight:500;line-height:20px}
+.kjr-switch input{position:absolute;left:0;top:0;width:36px;height:20px;margin:0;opacity:0;cursor:pointer}
+.kjr-switch-ui{position:relative;flex:none;width:36px;height:20px;border-radius:999px;background:var(--bg4);border:1px solid var(--text3);transition:background 0.16s ease-out,border-color 0.16s ease-out}
+.kjr-switch-ui::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--text2);transition:transform 0.16s ease-out,background 0.16s ease-out}
+.kjr-switch input:checked+.kjr-switch-ui{background:var(--accent);border-color:var(--accent)}
+.kjr-switch input:checked+.kjr-switch-ui::after{transform:translateX(16px);background:var(--accent-fg)}
+.kjr-switch input:focus-visible+.kjr-switch-ui{outline:2px solid var(--accent);outline-offset:2px}
+.kjr-switch input:disabled,.kjr-switch input:disabled~.kjr-switch-text{cursor:not-allowed}
+.kjr-switch input:disabled+.kjr-switch-ui{opacity:0.6}
+.kjr-switch-hint{font-size:12px;line-height:16px;color:var(--text3)}
+/* The toolbar toggle on the Sealed tables and eBay (aria-pressed) */
+.kjr-cf-toggle[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+.kjr-cf-toggle[aria-disabled="true"]{cursor:not-allowed}
+@media(max-width:600px){
+  body:not(.force-tables) .kjr-cf-toggle,
+  body:not(.force-tables) .filters-switch,
+  body:not(.force-tables) #fw-sales{display:none}
+}
+
+/* Row actions: the price-alert and link indicators, then the "…" button. Resting at about half strength on a
+   mouse (the icon is --text so it still clears 3:1 against the row in both themes at that strength), full
+   strength on row hover or focus, and always full strength on touch (44px there). */
+.kjr-actions{display:flex;gap:4px;justify-content:center;align-items:center}
+.kjr-more{flex:none;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border-radius:9px;border:1px solid var(--border2);background:var(--bg3);color:var(--text);cursor:pointer;opacity:0.55;transition:opacity 0.16s ease-out,background 0.16s ease-out,color 0.16s ease-out}
+.kjr-more:hover{background:var(--bg4)}
+tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[aria-expanded="true"]{opacity:1}
+@media(pointer:coarse){.kjr-more{opacity:1;width:44px;height:44px}}
+/* The menu is position:fixed and placed by kjrRowMenuPlace, so the card's clipping cannot cut it off. A Sold row
+   dims its cells with opacity, which would dim a menu inside them too, so the actions cell on Singles and Slabs
+   is exempt and only its indicators dim. */
+#page-inventory tr.sold-row td[data-col-key="actions"],
+#page-slabs tr.sold-row td[data-col-key="actions"]{opacity:1}
+#page-inventory tr.sold-row td[data-col-key="actions"] .kjr-actions>span,
+#page-slabs tr.sold-row td[data-col-key="actions"] .kjr-actions>span{opacity:0.55}
+.kjr-rowmenu{position:fixed;z-index:170;display:flex;flex-direction:column;gap:1px;min-width:184px;max-width:calc(100vw - 16px);padding:4px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;box-shadow:var(--shadow-md);text-align:left}
+.kjr-rowmenu[hidden]{display:none}
+.kjr-rowmenu [role="menuitem"]{display:flex;align-items:center;width:100%;min-height:36px;padding:8px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);font:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer}
+.kjr-rowmenu [role="menuitem"]:hover{background:var(--bg3)}
+.kjr-rowmenu [role="menuitem"]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--bg3)}
+.kjr-rowmenu .is-danger{color:var(--red)}
+.kjr-rowmenu .is-danger:hover{background:var(--red-soft)}
+.kjr-rowmenu-sep{height:1px;margin:4px 6px;background:var(--border)}
+@media(pointer:coarse){.kjr-rowmenu [role="menuitem"]{min-height:44px}}
+/* The Sales, Sealed and eBay row delete: neutral until it is pointed at, so red stops shouting on every row */
+.kjr-del-x{color:var(--text3)}
+.kjr-del-x:hover,.kjr-del-x:focus-visible{color:var(--red)}
+
+/* Summary strip (Singles and Slabs): one card, four regions, hairline dividers. 2x2 on narrow windows. */
+.inv-strip-host{margin-bottom:16px}
+.inv-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.inv-strip-cell{min-width:0;padding:16px 20px;border-left:1px solid var(--border)}
+.inv-strip-cell:first-child{border-left:0}
+.inv-strip-label{font-size:13px;line-height:18px;color:var(--text3)}
+.inv-strip-value{margin-top:2px;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-0.01em;color:var(--text);font-variant-numeric:tabular-nums}
+.inv-strip-value.pos{color:var(--green)}
+.inv-strip-value.neg{color:var(--red)}
+.inv-strip-main,.inv-strip-sub{white-space:nowrap}
+@media(max-width:1100px){
+  .inv-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inv-strip-cell:nth-child(odd){border-left:0}
+  .inv-strip-cell:nth-child(n+3){border-top:1px solid var(--border)}
+}
+@media(max-width:600px){
+  .inv-strip-cell{padding:12px 14px}
+  .inv-strip-label{font-size:12px;line-height:16px}
+  .inv-strip-value{font-size:18px;line-height:24px}
+  .inv-strip-sub{display:block;font-size:14px;line-height:18px;font-weight:500}
+  .inv-strip-dot{display:none}
+}
+
+/* Language chips (Singles toolbar). On phones the segmented language control in the Filters popover does this job. */
+.kjr-chips{display:flex;flex-wrap:wrap;gap:6px}
+.kjr-chips[hidden]{display:none}
+.kjr-chip{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border:1px solid var(--border2);border-radius:999px;background:transparent;color:var(--text2);font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;transition:border-color 0.16s ease-out,background 0.16s ease-out,color 0.16s ease-out}
+.kjr-chip:hover{color:var(--text);border-color:var(--control-border)}
+.kjr-chip-n{color:var(--text3);font-variant-numeric:tabular-nums}
+.kjr-chip[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.kjr-chip[aria-pressed="true"] .kjr-chip-n{color:var(--link)}
+@media(pointer:coarse){
+  .kjr-chip{position:relative}
+  .kjr-chip::after{content:"";position:absolute;left:0;right:0;top:-5px;bottom:-5px}
+}
+@media(max-width:600px){.kjr-chips{display:none}}
+
+@media(prefers-reduced-motion:reduce){
+  .kjr-more,.kjr-chip,.kjr-switch-ui,.kjr-switch-ui::after{transition:none}
 }

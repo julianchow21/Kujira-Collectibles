@@ -677,7 +677,12 @@ test('the AI input bar lets the field shrink so Send and Clear chat never clip, 
   assert.match(css, /\.ai-input-wrap\{flex:1 1 0;min-width:0;/, 'the field can shrink below its content width');
   assert.match(css, /\.ai-input-wrap input\{[^}]*min-width:0;width:100%/);
   assert.match(css, /\.ai-input-bar \.btn\{flex:none\}/, 'the buttons keep their width');
-  const phone = css.slice(css.lastIndexOf('@media(max-width:600px){'));
+  // Step 3's phone block, which ends where Step 4's section (Table cleanup, v3.71) begins
+  const phoneStart = css.indexOf('/* Phones: the hero stats go two-up');
+  const phoneEnd = css.indexOf('/* ═══════════ Table cleanup', phoneStart);
+  assert.ok(phoneStart > 0, 'the Step 3 phone block is still in the file');
+  const phoneEndAt = phoneEnd > 0 ? phoneEnd : css.length;
+  const phone = css.slice(css.lastIndexOf('@media(max-width:600px){', phoneEndAt), phoneEndAt);
   assert.match(phone, /\.ai-input-bar\{flex-wrap:wrap\}/);
   assert.match(phone, /\.ai-input-wrap\{flex:1 1 100%;min-height:44px\}/);
   assert.match(phone, /\.ai-input-bar \.btn\{min-height:44px/);

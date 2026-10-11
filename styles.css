@@ -377,22 +377,11 @@ html.auth-gated #kjr-update-pill{z-index:200001}
 .hig-empty-title{font-size:15px;font-weight:600;color:var(--text);margin-top:4px}
 .hig-empty-sub{font-size:13px;color:var(--text3);max-width:280px;line-height:1.6}
 .hig-empty-action{margin-top:8px}
-.live-indicator{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)}
-.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:live-pulse 2s ease-in-out infinite}
-@keyframes live-pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-.last-updated{font-size:11px;color:var(--text3);margin-left:4px}
 /* Touch tooltip - surfaces a long-pressed element's native title text on
    devices with no hover (iPad / iPhone), where title attributes never show. */
 .touch-tip{position:fixed;z-index:9000;max-width:min(78vw,300px);background:var(--bg4);border:1px solid var(--border2);border-radius:8px;padding:7px 11px;font-size:13px;line-height:1.4;color:var(--text);box-shadow:var(--shadow-md);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;white-space:normal}
 .touch-tip.show{opacity:1;transform:translateY(0)}
 @media (hover:none){[title]{-webkit-touch-callout:none}}
-/* Dashboard header - title on the left, range + refresh on the right. */
-.dash-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
-@media (max-width:600px){
-  /* Stack on phones so the range control never collides with the large title. */
-  .dash-header{flex-direction:column;align-items:stretch;gap:10px}
-  .dash-header #dash-range{flex:1;min-width:0}
-}
 /* Bottom tab bar (mobile) */
 .bottom-tab-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);z-index:150;padding:0;padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
 .bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:56px}
@@ -1187,35 +1176,35 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:#444}
 
-/* Capital exposure bar */
-.exp-bar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:var(--bg3)}
-.exp-seg{display:flex;align-items:center;justify-content:center;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.55);font-size:11px;font-weight:600;letter-spacing:0.2px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 8px;transition:width 0.3s ease}
-.exp-seg:hover{filter:brightness(1.1)}
-/* Segment fills are the raw --cat1/2/3 tokens. They are lightness steps of the
-   accent and clear WCAG AA 4.5:1 against the white (#fff) segment label in both
-   themes (dark cat1 is the lightest, at 4.88:1). The legend-dot swatch (JS,
-   inline style) uses the same raw tokens. */
+/* Where the money sits (Overview, redesign Step 3, v3.70). A thin segmented bar in the --cat tokens, then one
+   legend row per segment: dot, label and count, amount, share. Sealed is the only row that opens (a native
+   button, its ids are pinned by tests). The dots reuse the segment colours. */
+.ov-bar{display:flex;gap:3px;height:10px}
+.ov-seg{flex:1 1 0;min-width:6px;border-radius:999px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 14%,transparent)}
 .exp-seg-singles{background:var(--cat1)}
 .exp-seg-slabs{background:var(--cat2)}
 .exp-seg-sealed{background:var(--cat3)}
-.exp-legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:12px;color:var(--text2)}
-.exp-legend-item{display:flex;align-items:center;gap:6px}
-.exp-legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
-.exp-legend-amt{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
-.exp-empty{padding:20px;text-align:center;color:var(--text3);font-size:13px}
-.exp-row{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--border);font-size:13px;border-radius:4px;transition:background 0.12s}
-.exp-row:last-child{border-bottom:none}
-.exp-row:hover{background:var(--bg3)}
-.exp-main-label{flex:1;color:var(--text);font-weight:600}
-.exp-amt{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;margin-left:4px}
-.exp-sub{padding:4px 0 8px 36px;border-bottom:1px solid var(--border)}
-.exp-sub-row{display:flex;align-items:center;gap:16px;padding:5px 6px;font-size:12px;border-radius:3px}
-.exp-sub-row:hover{background:var(--bg3)}
-.exp-sub-row > span:first-child{min-width:120px}
-.exp-sub-row > span:nth-child(2){min-width:80px;font-variant-numeric:tabular-nums}
-.exp-row.exp-row-open #exp-caret-singles,
-.exp-row.exp-row-open #exp-caret-slabs,
-.exp-row.exp-row-open #exp-caret-sealed{transform:rotate(90deg)}
+.exp-list{display:flex;flex-direction:column;margin-top:14px}
+.exp-empty{padding:12px 0;color:var(--text3);font-size:13px;line-height:18px}
+.exp-row{-webkit-appearance:none;appearance:none;display:grid;grid-template-columns:10px minmax(0,1fr) auto 44px 16px;align-items:center;column-gap:10px;width:100%;margin:0;padding:10px 0;border:0;border-top:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;font-size:14px;line-height:20px;text-align:left}
+.exp-list>.exp-row:first-child{border-top:0}
+.exp-row-toggle{cursor:pointer}
+.exp-row-toggle:hover .exp-caret{color:var(--text)}
+.exp-row-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
+.exp-legend-dot{width:10px;height:10px;border-radius:3px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 14%,transparent)}
+.exp-dot-empty{background:transparent;box-shadow:inset 0 0 0 1px var(--control-border)}
+.exp-main-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exp-count{color:var(--text3)}
+.exp-row-none .exp-main-label{grid-column:2/-1;color:var(--text3)}
+.exp-amt{font-weight:600;font-variant-numeric:tabular-nums}
+.exp-pct{text-align:right;color:var(--text3);font-variant-numeric:tabular-nums}
+.exp-caret{display:inline-flex;align-items:center;justify-content:center;color:var(--text3);transition:transform 0.16s ease-out,color 0.16s ease-out}
+.exp-caret svg{width:16px;height:16px}
+.exp-sub{padding:2px 0 8px 20px}
+.exp-sub-row{display:flex;align-items:baseline;gap:12px;padding:5px 0;font-size:13px;line-height:18px}
+.exp-sub-row>span:first-child{flex:1;min-width:0;color:var(--text2)}
+.exp-sub-row>span:nth-child(2){font-weight:500;font-variant-numeric:tabular-nums}
+.exp-sub-row>span:nth-child(3){min-width:64px;text-align:right;color:var(--text3)}
 
 /* Recently-added row highlight - fades to neutral after a refresh */
 tr.recent-add > td:first-child::before{content:"●";color:var(--accent);font-size:8px;margin-right:4px;vertical-align:middle}
@@ -1339,7 +1328,7 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
   .sheet,.overlay .modal{transition:none!important}
   .page.active{animation:none!important}
   .btn:active,.btb-item:active,.sheet-item:active{transform:none!important}
-  .live-dot,.ai-typing i{animation:none!important}
+  .ai-typing i{animation:none!important}
   .kjr-modal,.kjr-confirm-box{animation:none!important}
   #sentry-drawer{transition:none!important}
   .eb-tl-dot:hover{transform:none!important}
@@ -1579,6 +1568,7 @@ html.dealer-preview-only #sentry-drawer,
 html.dealer-preview-only #sentry-drawer-overlay,
 html.dealer-preview-only #sync-diagnostics-overlay,
 html.dealer-preview-only #page-dashboard,
+html.dealer-preview-only #page-reports,
 html.dealer-preview-only #page-inventory,
 html.dealer-preview-only #page-slabs,
 html.dealer-preview-only #page-sales,
@@ -1859,3 +1849,151 @@ html.dealer-preview-only #page-dealer{display:block!important}
 
 /* Slab cert numbers read as codes, in the mono face */
 .cert-no{font-family:var(--font-mono)}
+
+/* ═══════════ Overview and Reports (redesign Step 3, v3.70) ═══════════
+   New in this step and last in the file, so the phone overrides come after the base rules.
+   Existing tokens only. The Overview is the page with id "dashboard", Reports holds the Chart Builder,
+   saved charts and the AI Portfolio Analyst. */
+
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0}
+
+/* Page header, shared by Overview and Reports */
+.pg-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+.pg-head-text{min-width:0}
+.pg-title{font-size:26px;line-height:32px;font-weight:600;letter-spacing:-0.02em;color:var(--text)}
+.pg-sub{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px;font-size:13px;line-height:18px;color:var(--text3)}
+/* Price coverage dot. Colour is never the only signal: the subtitle states the percentage. */
+.ov-trust{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--amber)}
+.ov-trust.ok{background:var(--green)}
+.ov-trust.warn{background:var(--amber)}
+.ov-trust.bad{background:var(--red)}
+.ov-trust[hidden]{display:none}
+
+.ov{display:flex;flex-direction:column;gap:24px}
+
+/* Hero: one horizontal band. The value block (about two parts) and three stat regions (one part each) are all
+   top-aligned and separated by 1px hairlines, so the card is as tall as its content and has no empty box. */
+.ov-hero{display:flex;align-items:stretch;padding:24px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.ov-hero-main{flex:2 1 320px;min-width:0;display:flex;flex-direction:column;justify-content:flex-start;padding-right:24px}
+.ov-hero-label{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;font-size:13px;line-height:18px;font-weight:500;color:var(--text3)}
+.ov-hero-value{margin-top:4px;font-size:52px;line-height:58px;font-weight:600;letter-spacing:-0.035em;color:var(--text);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ov-hero-gain{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
+.ov-hero-cta{margin-top:16px}
+.ov-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border-radius:999px;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ov-chip.pos{background:var(--green-soft);color:var(--green)}
+.ov-chip.neg{background:var(--red-soft);color:var(--red)}
+.ov-chip.flat{background:var(--bg3);color:var(--text2)}
+.ov-muted{font-size:13px;line-height:18px;color:var(--text3)}
+
+.ov-stats{flex:3 1 540px;min-width:0;display:flex}
+.ov-stat{flex:1 1 180px;min-width:0;padding:0 24px;border-left:1px solid var(--border)}
+.ov-stat:last-child{padding-right:0}
+.ov-stat-label{font-size:13px;line-height:18px;color:var(--text3)}
+.ov-stat-value{margin-top:2px;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-0.01em;color:var(--text);font-variant-numeric:tabular-nums}
+.ov-stat-value.dim{font-weight:500;color:var(--text3)}
+.ov-stat-sub{margin-top:2px;font-size:12px;line-height:16px;color:var(--text3)}
+.ov-att-head{display:flex;align-items:center;gap:8px;font-size:13px;line-height:18px;font-weight:500}
+.ov-att-head.warn{color:var(--amber)}
+.ov-att-head.ok{color:var(--green)}
+.ov-dot{flex:none;width:6px;height:6px;border-radius:50%;background:currentColor}
+.ov-att-list{list-style:none;display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.ov-att-item{display:flex;flex-direction:column;align-items:flex-start;gap:0}
+.ov-att-text{font-size:14px;line-height:20px;color:var(--text)}
+
+/* Text buttons that read as links */
+.ov-link{-webkit-appearance:none;appearance:none;margin:0;padding:0;border:0;background:none;font:inherit;font-size:13px;line-height:18px;font-weight:500;color:var(--link);text-align:left;cursor:pointer}
+.ov-link:hover{text-decoration:underline}
+.ov-link:focus-visible,.ov-mover:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* Sections and cards */
+.ov-sec{display:flex;flex-direction:column;gap:14px}
+.ov-sec[hidden]{display:none}
+.ov-sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.ov-h2{font-size:16px;line-height:22px;font-weight:600;color:var(--text)}
+.ov-top{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
+.ov-top-item{min-width:0;display:flex}
+.ov-top .kjr-tile-note:empty{display:none}
+.ov-row3{display:flex;flex-wrap:wrap;gap:16px}
+.ov-card{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px;padding:20px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.ov-card .ov-sec-head{align-items:baseline}
+.ov-empty{padding:8px 0;font-size:13px;line-height:18px;color:var(--text3)}
+.ov-list{display:flex;flex-direction:column}
+
+/* Best and worst against cost: each row is a button that opens the edit modal */
+.ov-mover{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:12px;width:calc(100% + 16px);margin:0 -8px;padding:7px 8px;border:0;border-radius:var(--radius);background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:background 0.16s ease-out}
+.ov-mover:hover{background:var(--bg3)}
+.ov-mover .kjr-thumb{width:28px;height:39px;border-radius:4px}
+.ov-mover-body{flex:1;min-width:0;display:flex;flex-direction:column}
+.ov-mover-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-mover-sub{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-mover-val{flex:none;display:flex;flex-direction:column;align-items:flex-end}
+.ov-mover-price{font-weight:600}
+.ov-mover-pct{font-size:12px;line-height:16px;font-weight:600}
+
+/* Recent sales */
+.ov-sale{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+.ov-sale:last-child{border-bottom:0}
+.ov-date{flex:none;width:44px;display:flex;flex-direction:column;align-items:center;padding:4px 0;border-radius:8px;background:var(--bg3)}
+.ov-date-day{font-size:15px;line-height:18px;font-weight:600}
+.ov-date-mon{font-size:12px;line-height:14px;color:var(--text3)}
+.ov-sale-body{flex:1;min-width:0;display:flex;flex-direction:column}
+.ov-sale-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-sale-sub{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-sale-profit{flex:none;font-weight:600;font-variant-numeric:tabular-nums}
+.ov-sale-profit.dim{font-weight:500;color:var(--text3)}
+
+/* Reports: the AI Analyst icon chip replaces the old purple-to-blue gradient and robot emoji */
+.ai-icon-chip{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;border-radius:8px;background:var(--accent-soft);color:var(--accent)}
+.ai-icon-chip svg{width:18px;height:18px}
+
+/* AI Analyst: no-key notice (a link-style button opens API settings) and the input bar. The field shrinks, Send and
+   Clear chat never clip; on a phone the field takes its own row and the buttons are 44px tall. */
+.ai-key-notice{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--amber-soft);color:var(--text);font-size:13px;line-height:18px}
+.ai-key-notice[hidden]{display:none}
+.ai-input-bar{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2)}
+.ai-input-wrap{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border2);border-radius:8px;padding:6px 12px}
+.ai-input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+.ai-input-icon{flex:none;font-size:14px;opacity:0.5}
+.ai-input-wrap input{flex:1 1 auto;min-width:0;width:100%;background:transparent;border:none;outline:none;font-size:13px;color:var(--text);font-family:inherit}
+.ai-input-bar .btn{flex:none}
+
+@media(pointer:coarse){
+  .ov-link{position:relative}
+  .ov-link::after{content:"";position:absolute;inset:-10px -8px}
+  .ai-input-bar .btn{min-height:44px;justify-content:center}
+}
+@media(prefers-reduced-motion:reduce){
+  .ov-mover,.exp-caret{transition:none}
+}
+/* Narrow desktop windows and tablets keep five columns, a little tighter. Under about 140px a tile's language
+   tag would sit on the slab's grade, so slab tiles drop it here (the grader, grade and cert stay in the text). */
+@media(max-width:900px){
+  .ov-top{gap:12px}
+  .ov-top .kjr-slab ~ .kjr-tile-lang{display:none}
+  /* Hero: the value block goes full width on top, the three stats sit in a row below it, a horizontal hairline between */
+  .ov-hero{flex-direction:column}
+  .ov-hero-main{flex:none;padding:0 0 20px;border-bottom:1px solid var(--border)}
+  .ov-stats{flex:none;padding-top:20px}
+  .ov-stat:first-child{padding-left:0;border-left:0}
+}
+/* Phones: the hero stats go two-up with needs attention under them, the showcase scrolls sideways, the cards stack */
+@media(max-width:600px){
+  .pg-head{margin-bottom:16px}
+  .ov{gap:20px}
+  .ov-hero{padding:20px}
+  .ov-hero-value{font-size:44px;line-height:50px}
+  /* Stats: cost basis and realised profit side by side, needs attention full width under them */
+  .ov-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ov-stat{padding:0 0 0 16px}
+  .ov-stat:first-child{padding:0 16px 0 0}
+  .ov-stat:last-child{grid-column:1/-1;margin-top:16px;padding:16px 0 0;border-left:0;border-top:1px solid var(--border)}
+  /* AI input bar: the field on its own row, Send and Clear chat under it */
+  .ai-input-bar{flex-wrap:wrap}
+  .ai-input-wrap{flex:1 1 100%;min-height:44px}
+  .ai-input-bar .btn{min-height:44px;justify-content:center}
+  .ai-input-bar #ai-send-btn{flex:1 1 0}
+  .ai-input-bar .ai-clear-btn{min-width:44px}
+  .ov-top{display:flex;gap:12px;overflow-x:auto;margin:0 -12px;padding:6px 12px 8px}
+  .ov-top-item{flex:0 0 132px}
+  .ov-card{padding:16px}
+}

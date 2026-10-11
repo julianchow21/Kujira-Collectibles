@@ -139,6 +139,29 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Step 3 shipped on `redesign` as v3.70 on 10/10/2026: the Overview and the Reports page.
+
+**Overview (still `#page-dashboard`)**
+- `renderDashboard()` is a pure-selector Overview built on `computeDashboardStats()`, whose return shape is unchanged
+- Hero band: value, gain, cost basis, realised profit and Needs attention
+- Below the band: Top of the collection (`kjrTileHtml`), allocation (the exposure markup is kept and test-pinned), best and worst against cost, and recent sales
+- No value chart, per Julian
+- The subtitle uses the newest `priceHistory` date
+- The Overview redraws on any dialog `close` while it is active
+
+**Reports**
+- `#page-reports` (in More) holds the Chart Builder, saved charts and the AI Analyst, with ids unchanged
+- The `showPage('reports')` hook inits them after 150 ms
+- `renderDashboard` no longer touches AI or Chart Builder DOM
+
+**Tests:** tests/overview.test.js has 38 tests.
+
+**Open from Step 3**
+- price-API toasts still say "click 🔑 in top bar" (app.js 16673, 17396, 17398, 17531, 17589, 17653)
+- `kjrToggleTooltip` and the `.metric-trust` CSS are unused
+- the Chart Builder field list uses emoji
+- the 3-item Needs attention band is cramped between 900 and 1000px
+
 Step 2 shipped on `redesign` as v3.69 on 10/10/2026: card art, Grid/List and drawn slabs.
 
 **Image storage (local only, never synced)**

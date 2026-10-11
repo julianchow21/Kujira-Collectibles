@@ -23,7 +23,7 @@ test('static accessibility controls and modal labels', () => {
 
 test('static accessibility: primary navigation and unlabelled searches have stable names', () => {
   for (const [label, action] of [
-    ['Dashboard', "showPage('dashboard')"],
+    ['Overview', "showPage('dashboard')"],
     ['Singles', "showPage('inventory')"],
     ['Slabs', "showPage('slabs')"],
     ['Sales', "showPage('sales')"],

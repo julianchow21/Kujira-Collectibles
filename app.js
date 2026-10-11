@@ -10675,7 +10675,22 @@ function showPage(name) {
   if (name === 'inventory') { renderSingles(); applyColOrder('singles'); applyColVisibility('singles'); attachHeaderDrag('singles'); }
   if (name === 'slabs') { renderSlabs(); applyColOrder('slabs'); applyColVisibility('slabs'); attachHeaderDrag('slabs'); }
   if (name === 'sales') { renderSales(); applyColOrder('sales'); applyColVisibility('sales'); attachHeaderDrag('sales'); }
-  if (name === 'dashboard') { renderDashboard(); setTimeout(() => { initCustomChartBuilder(); renderAllSavedCharts(); }, 150); }
+  if (name === 'dashboard') renderDashboard();
+  if (name === 'reports') {
+    // The builder and the saved charts size themselves from a visible container, so wait for layout (150 ms,
+    // as the Dashboard did before the Reports page existed). Skipped if the page was left again meanwhile.
+    setTimeout(() => {
+      const page = document.getElementById('page-reports');
+      if (page && page.classList && !page.classList.contains('active')) return;
+      initCustomChartBuilder();
+      renderAllSavedCharts();
+      initAiAnalyst();
+      // A saved chart drawn while Reports was hidden (a restore from Trash on another page) is 0 px wide. Draw it
+      // again now that its container is visible, instead of leaving it to pop in a second later.
+      const drawn = window._savedChartInstances || {};
+      loadSavedCharts().forEach(cfg => { if (drawn[cfg.id] && !drawn[cfg.id].width) _drawSavedChart(cfg); });
+    }, 150);
+  }
   if (name === 'etbs'         && typeof renderEtbs === 'function')          renderEtbs();
   if (name === 'boosterBoxes' && typeof renderBoosterBoxes === 'function')  renderBoosterBoxes();
   if (name === 'boosterPacks' && typeof renderBoosterPacks === 'function')  renderBoosterPacks();
@@ -10691,7 +10706,7 @@ function showPage(name) {
 // ── MORE SHEET (mobile nav hub) ──────────────────────────────
 // Pages that live behind the bottom bar's "More" button rather than a
 // dedicated tab. When one of these is active we light up the More item.
-const MORE_PAGES = new Set(['dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide']);
+const MORE_PAGES = new Set(['dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide','reports']);
 function syncMoreActive(name) {
   const moreBtn = document.getElementById('btb-more');
   if (moreBtn) moreBtn.classList.toggle('active', MORE_PAGES.has(name));
@@ -13546,7 +13561,7 @@ function showMarketValueBreakdown() {
   const total = contribs.reduce((s,c) => s + c.contrib, 0);
   const fmt = n => 'S$' + (Math.round(n*100)/100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
   const rows = contribs.length === 0
-    ? '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text3)">No rows have a Market Price set yet. Total Market Value is correctly 0.</td></tr>'
+    ? '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text3)">No rows have a Market Price set yet. Collection value is correctly 0.</td></tr>'
     : contribs.map(c =>
         '<tr>' +
           '<td><span class="badge ' + (c.table==='slabs'?'b-slab':'b-raw') + '">' + (c.table==='slabs'?'SLAB':'SINGLE') + '</span></td>' +
@@ -13563,13 +13578,13 @@ function showMarketValueBreakdown() {
     '<dialog id="mvbreakdown-modal" class="overlay">' +
       '<div class="modal" style="max-width:780px;width:95vw">' +
         '<div class="modal-head">' +
-          '<h3>Total Market Value · breakdown</h3>' +
+          '<h3>Collection value · breakdown</h3>' +
           '<button class="btn btn-ghost btn-sm" aria-label="Close" onclick="kjrModalCtrl.close(document.getElementById(\'mvbreakdown-modal\'), true)">✕</button>' +
         '</div>' +
         '<div class="modal-body" style="max-height:70vh;overflow-y:auto">' +
           '<div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">' +
             'Every Available single + slab whose market price resolves to &gt; 0. Singles multiply by qty.' +
-            ' Total here must equal the dashboard headline: <strong>' + fmt(total) + '</strong>.' +
+            ' Total here must equal Collection value on the Overview: <strong>' + fmt(total) + '</strong>.' +
             (contribs.length ? ' Sorted by contribution descending.' : '') +
           '</div>' +
           '<div class="tbl-wrap"><table style="width:100%;font-size:12px">' +
@@ -13717,40 +13732,362 @@ function computeDashboardStats() {
   };
 }
 
+// =========== OVERVIEW (redesign Step 3, v3.70) ===========
+// renderDashboard() draws the Overview only (page id stays "dashboard"). Syncs, restores and several edit
+// paths call it even while another page is open, so it stays cheap, and it never touches the Reports page
+// (Chart Builder, saved charts, AI Analyst). The selectors below are pure reads of DB, the builders return
+// strings and every dynamic value is escaped. computeDashboardStats() is unchanged, its return shape is
+// pinned by tests.
+
+let _kjrExpSealedOpen = false; // the Sealed disclosure keeps its state when a sync re-renders the card
+let _kjrOvLateRender = false;  // a render that ran before features.js loaded is repeated once every script has run
+
+// Toggle for the Sealed sub-rows (a native button with aria-controls and aria-expanded).
+function _toggleExposureSub(key) {
+  const sub = document.getElementById('exp-sub-' + key);
+  const caret = document.getElementById('exp-caret-' + key);
+  const toggle = document.getElementById('exp-toggle-' + key);
+  if (!sub) return;
+  const open = sub.style.display !== 'none';
+  sub.style.display = open ? 'none' : 'block';
+  if (caret) caret.style.transform = open ? '' : 'rotate(90deg)';
+  if (toggle) toggle.setAttribute('aria-expanded', String(!open));
+  if (key === 'sealed') _kjrExpSealedOpen = !open;
+}
+
+const KJR_OV_TIPS = {
+  value: 'Estimated value of your Available singles and slabs: the live market price where there is one, your cost price for cards not yet priced. Sealed is under Where the money sits.',
+  cost: 'What you paid for your Available singles and slabs. Sealed is under Where the money sits.',
+  profit: 'Confirmed profit across your sales. Dealer sales still awaiting settlement are left out until confirmed. Return is profit divided by the cost of the items sold.',
+  attention: 'Things that stop prices or totals from being exact.'
+};
+
+function _kjrOvMoney(n) { return 'S$' + Math.abs(Math.round(Number(n) || 0)).toLocaleString('en-SG'); }
+function _kjrOvSigned(n) {
+  const v = Number(n) || 0;
+  return (v > 0 ? '+' : (v < 0 ? '-' : '')) + _kjrOvMoney(v);
+}
+function _kjrOvPlural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+// Same arrow, sign and rounding as the Step 2 tiles. kjrTilePct lives in features.js, which loads after
+// app.js, so the first paint of a gate-less preview falls back to the identical local rule.
+function _kjrOvPct(market, cost) {
+  if (typeof kjrTilePct === 'function') return kjrTilePct(market, cost);
+  if (!(market > 0) || !(cost > 0)) return null;
+  const p = (market - cost) / cost * 100;
+  const a = Math.abs(p);
+  const txt = a.toFixed(a >= 100 ? 0 : 1);
+  if (Number(txt) === 0) return { cls: '', text: '0%' };
+  return p > 0 ? { cls: 'pos', text: '▲ +' + txt + '%' } : { cls: 'neg', text: '▼ -' + txt + '%' };
+}
+
+// "today", "yesterday", "3 days ago", then the plain date. ts is the local midnight of a priceHistory date. Those
+// dates are UTC dates (the price code writes toISOString().slice(0,10)), so the age is counted in UTC days,
+// otherwise a price checked an hour ago would read "yesterday" for the first 8 hours of a Singapore morning.
+function kjrOverviewCheckedText(ts, now) {
+  if (!(ts > 0)) return '';
+  const n = new Date(now || Date.now());
+  const d = new Date(ts);
+  const days = Math.round((Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return days + ' days ago';
+  return d.getDate() + ' ' + MONTHS_ABBR[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+// ── Selectors (pure reads of DB) ─────────────────────────────────────
+// Available singles and slabs, the rows every Overview list draws from.
+function _kjrOvInventory() {
+  const out = [];
+  (DB.singles || []).forEach(i => { if (i && (i.status || 'Available') === 'Available') out.push({ item: i, table: 'singles' }); });
+  (DB.slabs || []).forEach(i => { if (i && (i.status || 'Available') === 'Available') out.push({ item: i, table: 'slabs' }); });
+  return out;
+}
+function _kjrOvByName(a, b) {
+  return String(a.item.name || '').localeCompare(String(b.item.name || '')) || String(a.item.id).localeCompare(String(b.item.id));
+}
+// Top of the collection: the highest unit values, the same number the tile shows (market price,
+// else cost as an estimate, exactly like the headline total).
+function kjrOverviewTop(limit) {
+  const n = limit > 0 ? limit : 5;
+  return _kjrOvInventory()
+    .map(r => ({ item: r.item, table: r.table, value: effectiveMarketInfo(r.item).value }))
+    .filter(r => r.value > 0)
+    .sort((a, b) => (b.value - a.value) || (a.table === b.table ? 0 : (a.table === 'singles' ? -1 : 1)) || _kjrOvByName(a, b))
+    .slice(0, n);
+}
+// Best and worst against cost: only rows with a real cost AND a real market price (no cost fallback, an
+// estimate has no gain to show). Up to 3 gains and up to 2 losses, listed best to worst.
+function kjrOverviewMovers() {
+  const rows = [];
+  _kjrOvInventory().forEach(r => {
+    const market = parseFloat(r.item.marketPrice);
+    const cost = parseFloat(r.item.costPrice);
+    if (!(market > 0) || !(cost > 0)) return;
+    const qty = r.table === 'slabs' ? 1 : Math.max(1, parseInt(r.item.qty, 10) || 1);
+    rows.push({ item: r.item, table: r.table, qty, market, cost, pct: (market - cost) / cost * 100 });
+  });
+  const flat = 0.05; // a change that rounds to 0.0% is neither a gain nor a loss
+  const best = rows.filter(r => r.pct >= flat).sort((a, b) => (b.pct - a.pct) || _kjrOvByName(a, b)).slice(0, 3);
+  const worst = rows.filter(r => r.pct <= -flat).sort((a, b) => (a.pct - b.pct) || _kjrOvByName(a, b)).slice(0, 2);
+  return { best, worst, list: best.concat(worst.slice().reverse()) };
+}
+// The newest sales by date sold. dateToMs reads the stored "D Mon YYYY" (sorting the strings would put
+// "9 Oct" after "10 Oct"). Undated rows go last, ties keep array order (new sales are added at the front).
+function kjrOverviewRecentSales(limit) {
+  const n = limit > 0 ? limit : 3;
+  const rows = [];
+  (DB.sales || []).forEach((row, idx) => { if (row) rows.push({ row, idx, ms: dateToMs(row.dateSold) }); });
+  rows.sort((a, b) => {
+    const am = isNaN(a.ms), bm = isNaN(b.ms);
+    if (am !== bm) return am ? 1 : -1;
+    if (!am && a.ms !== b.ms) return b.ms - a.ms;
+    return a.idx - b.idx;
+  });
+  return rows.slice(0, n).map(r => ({ row: r.row, ms: r.ms, financials: kjrDealerSaleFinancials(r.row) }));
+}
+// Needs attention lists only what is non-zero. Pending settlement is a count of Dealer sales: their
+// money stays Unknown until confirmed, so there is no honest S$ amount to show.
+function kjrOverviewAttention(counts) {
+  const c = counts || {};
+  const n = k => Math.max(0, Math.floor(Number(c[k]) || 0));
+  const manual = n('manualLang'), unresolved = n('unresolved'), pending = n('pendingSales');
+  const items = [];
+  if (manual > 0) items.push({ key: 'manual', act: 'singles', link: 'Review prices', text: _kjrOvPlural(manual, 'non-English card', 'non-English cards') + ' on manual prices' });
+  if (unresolved > 0) items.push({ key: 'unresolved', act: 'unresolved', link: 'Add card numbers', text: unresolved + (unresolved === 1 ? ' card needs' : ' cards need') + ' a card number' });
+  if (pending > 0) items.push({ key: 'pending', act: 'sales', link: 'View sales', text: _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement' });
+  return items;
+}
+
+// ── HTML builders ────────────────────────────────────────────────────
+function kjrOvAttentionHtml(items) {
+  if (!items.length) return '<div class="ov-att-head ok"><span class="ov-dot" aria-hidden="true"></span>All caught up</div>';
+  return '<div class="ov-att-head warn"><span class="ov-dot" aria-hidden="true"></span><span title="' + esc(KJR_OV_TIPS.attention) + '">Needs attention</span></div>' +
+    '<ul class="ov-att-list">' + items.map(it =>
+      '<li class="ov-att-item"><span class="ov-att-text">' + esc(it.text) + '</span>' +
+      '<button type="button" class="ov-link" data-ov-act="' + it.act + '">' + esc(it.link) + '</button></li>').join('') + '</ul>';
+}
+
+// s: { invCostSingles, invCostSlabs, totalMktValue, unrealisedPL, singlesAvail, slabsAvail, hasCards,
+//      allTimeSales, allTimeProfit, allTimePendingDealerSales, roiPct, attention }
+function kjrOvHeroHtml(s) {
+  const costBasis = s.invCostSingles + s.invCostSlabs;
+  const pl = s.unrealisedPL;
+  let chip = '', note = '', cta = '';
+  const up = (amt, pct) => '<span class="ov-chip pos"><span aria-hidden="true">▲</span> +' + _kjrOvMoney(amt) + (pct ? ' · +' + pct + '%' : '') + '</span>';
+  const down = (amt, pct) => '<span class="ov-chip neg"><span aria-hidden="true">▼</span> -' + _kjrOvMoney(amt) + (pct ? ' · -' + pct + '%' : '') + '</span>';
+  if (!s.hasCards) {
+    note = 'No singles or slabs yet';
+    cta = '<div class="ov-hero-cta"><button type="button" class="btn btn-primary" data-ov-act="add">Add a card</button></div>';
+  } else if (costBasis > 0) {
+    const a = Math.abs(pl / costBasis * 100);
+    const pct = a.toFixed(a >= 100 ? 0 : 1);
+    if (Number(pct) === 0) chip = '<span class="ov-chip flat">S$0 · 0%</span>';
+    else chip = pl > 0 ? up(pl, pct) : down(pl, pct);
+    note = (pl < 0 && Number(pct) !== 0 ? 'unrealised loss on ' : 'unrealised gain on ') + _kjrOvMoney(costBasis) + ' cost';
+  } else {
+    if (Math.abs(pl) >= 0.5) chip = pl > 0 ? up(pl, '') : down(pl, '');
+    note = 'no cost recorded';
+  }
+
+  // Cost basis, realised profit and needs attention, in the inset panel
+  const sales = s.allTimeSales || [];
+  const pending = s.allTimePendingDealerSales || 0;
+  const known = Math.max(0, sales.length - pending);
+  let rv, rcls = '', rsub = '';
+  if (sales.length === 0) { rv = 'None yet'; rcls = ' dim'; }
+  else if (known === 0) { rv = 'Unknown'; rcls = ' dim'; rsub = _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement'; }
+  else {
+    rv = _kjrOvSigned(s.allTimeProfit);
+    rcls = s.allTimeProfit > 0 ? ' pos' : (s.allTimeProfit < 0 ? ' neg' : '');
+    rsub = (s.roiPct == null ? '' : (s.roiPct < 0 ? '-' : '') + Math.abs(s.roiPct).toFixed(1) + '% return ') + 'across ' + _kjrOvPlural(known, 'sale', 'sales');
+  }
+  const stats =
+    '<div class="ov-stat"><div class="ov-stat-label" title="' + esc(KJR_OV_TIPS.cost) + '">Cost basis</div>' +
+      '<div class="ov-stat-value">' + _kjrOvMoney(costBasis) + '</div>' +
+      '<div class="ov-stat-sub">' + _kjrOvPlural(s.singlesAvail, 'single', 'singles') + ' · ' + _kjrOvPlural(s.slabsAvail, 'slab', 'slabs') + '</div></div>' +
+    '<div class="ov-stat"><div class="ov-stat-label" title="' + esc(KJR_OV_TIPS.profit) + '">Realised profit</div>' +
+      '<div class="ov-stat-value' + rcls + '">' + esc(rv) + '</div>' +
+      (rsub ? '<div class="ov-stat-sub">' + esc(rsub) + '</div>' : '') + '</div>' +
+    '<div class="ov-stat">' + kjrOvAttentionHtml(s.attention || []) + '</div>';
+
+  return '<div class="ov-hero-main">' +
+      '<div class="ov-hero-label"><span title="' + esc(KJR_OV_TIPS.value) + '">Collection value</span>' +
+        (s.hasCards ? '<button type="button" class="ov-link" data-ov-act="breakdown">See breakdown</button>' : '') + '</div>' +
+      '<div class="ov-hero-value">' + _kjrOvMoney(s.totalMktValue) + '</div>' +
+      '<div class="ov-hero-gain">' + chip + (note ? '<span class="ov-muted">' + esc(note) + '</span>' : '') + '</div>' +
+      cta +
+    '</div>' +
+    '<div class="ov-stats">' + stats + '</div>';
+}
+
+// Each tile sits in a wrapper that carries the table and id, so ONE delegated click opens the edit modal.
+function kjrOvTopHtml(rows) {
+  if (typeof kjrTileHtml !== 'function') return '';
+  return rows.map(r => '<div class="ov-top-item" data-ov-act="edit" data-table="' + r.table + '" data-id="' + esc(r.item.id) + '">' +
+    kjrTileHtml(r.item, r.table, false) + '</div>').join('');
+}
+
+function kjrOvMoversHtml(m) {
+  if (!m.list.length) return '<div class="ov-empty">Add market prices to see gains and losses</div>';
+  return '<div class="ov-list">' + m.list.map(r => {
+    const it = r.item;
+    const name = String(it.name || '-') + (r.qty > 1 ? ' ×' + r.qty : '');
+    let sub;
+    if (r.table === 'slabs') {
+      const meta = typeof kjrSlabMeta === 'function' ? kjrSlabMeta(it) : null;
+      sub = meta ? meta.grader + ' ' + meta.grade : [it.grader, it.grade].filter(Boolean).join(' ');
+    } else {
+      sub = String(it.set || '');
+    }
+    sub = (sub ? sub + ' · ' : '') + 'bought ' + _kjrOvMoney(r.cost * r.qty);
+    const pct = _kjrOvPct(r.market, r.cost);
+    const thumb = typeof kjrThumbHtml === 'function' ? kjrThumbHtml(it, r.table) : '';
+    const value = _kjrOvMoney(r.market * r.qty);
+    // The row's spoken name: the same words as the visible text, with the arrow turned into "up" or "down".
+    const gain = pct ? (pct.cls === 'neg' ? 'down ' : (pct.cls === 'pos' ? 'up ' : '')) + pct.text.replace(/^[▲▼]\s*[+-]?/, '') + ' on cost' : '';
+    const spoken = [name, sub.replace(' · ', ', '), value, gain].filter(Boolean).join(', ');
+    return '<button type="button" class="ov-mover" data-ov-act="edit" data-table="' + r.table + '" data-id="' + esc(it.id) + '" aria-label="' + esc(spoken) + '">' + thumb +
+      '<span class="ov-mover-body"><span class="ov-mover-name" title="' + esc(name) + '">' + esc(name) + '</span><span class="ov-mover-sub">' + esc(sub) + '</span></span>' +
+      '<span class="ov-mover-val"><span class="ov-mover-price">' + value + '</span>' +
+        (pct ? '<span class="ov-mover-pct ' + pct.cls + '">' + pct.text + '</span>' : '') + '</span></button>';
+  }).join('') + '</div>';
+}
+
+function kjrOvSalesHtml(rows) {
+  if (!rows.length) return '<div class="ov-empty">No sales yet</div>';
+  return '<div class="ov-list">' + rows.map(r => {
+    const row = r.row, f = r.financials;
+    const full = toDateMmmYyyy(row.dateSold);
+    const dm = String(full || '').match(/^(\d{1,2}) ([A-Za-z]{3}) \d{4}$/);
+    const product = String(row.product || '-');
+    const parts = product.split(' | ').map(p => p.trim()).filter(Boolean);
+    const name = parts.length > 1 ? parts[0] + ' +' + (parts.length - 1) + ' more' : (parts[0] || '-');
+    const channel = String(row.channel || row.platform || '').trim();
+    const sub = [channel, f.known ? 'sold for ' + _kjrOvMoney(f.revenue) : 'awaiting settlement'].filter(Boolean).join(' · ');
+    const profit = !f.known
+      ? '<span class="ov-sale-profit dim">Pending</span>'
+      : '<span class="ov-sale-profit' + (f.profit > 0 ? ' pos' : (f.profit < 0 ? ' neg' : '')) + '">' + _kjrOvSigned(f.profit) + '</span>';
+    return '<div class="ov-sale">' +
+      '<span class="ov-date"' + (dm ? ' title="' + esc(full) + '"' : '') + '><span class="ov-date-day">' + (dm ? dm[1] : '–') + '</span><span class="ov-date-mon">' + (dm ? dm[2] : '') + '</span></span>' +
+      '<span class="ov-sale-body"><span class="ov-sale-name" title="' + esc(product) + '">' + esc(name) + '</span><span class="ov-sale-sub">' + esc(sub) + '</span></span>' +
+      profit + '</div>';
+  }).join('') + '</div>';
+}
+
+// Where the money sits: capital (cost, sealed included). A thin segmented bar in the --cat tokens, then one
+// legend row per segment with count, amount and share. Sealed is the only row that discloses its sub-rows.
+function kjrOvExposureHtml(s) {
+  const total = s.totalInvCost;
+  if (!(total > 0)) return '<div class="exp-empty">Add some inventory to see exposure breakdown.</div>';
+  const sealedCount = s.etbInStock.length + s.bbInStock.length + s.bpInStock.length;
+  const segments = [
+    { key: 'singles', label: 'Singles', count: s.singlesAvail, amt: s.invCostSingles, cls: 'exp-seg-singles', none: 'none' },
+    { key: 'slabs',   label: 'Slabs',   count: s.slabsAvail,   amt: s.invCostSlabs,   cls: 'exp-seg-slabs',   none: 'none' },
+    { key: 'sealed',  label: 'Sealed',  count: sealedCount,    amt: s.invCostSealed,  cls: 'exp-seg-sealed',  none: 'none in stock',
+      subRows: [
+        { label: 'ETBs',          count: s.etbInStock.length, amt: s.invCostEtb },
+        { label: 'Booster Boxes', count: s.bbInStock.length,  amt: s.invCostBb },
+        { label: 'Booster Packs', count: s.bpInStock.length,  amt: s.invCostBp },
+      ] },
+  ];
+  const share = amt => { const p = amt / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
+  const bar = segments.filter(x => x.amt > 0).map(x =>
+    '<span class="ov-seg ' + x.cls + '" style="flex-grow:' + (x.amt / total * 100).toFixed(2) + '" title="' + x.label + ' · ' + _kjrOvMoney(x.amt) + ' (' + _kjrOvPlural(x.count, 'unit', 'units') + ' · ' + share(x.amt) + ')"></span>').join('');
+  const rows = segments.map(x => {
+    if (!(x.amt > 0) && !(x.count > 0)) {
+      return '<div class="exp-row exp-row-none"><span class="exp-legend-dot exp-dot-empty"></span><span class="exp-main-label">' + x.label + '<span class="exp-count"> · ' + x.none + '</span></span></div>';
+    }
+    const cells = '<span class="exp-legend-dot ' + x.cls + '"></span>' +
+      '<span class="exp-main-label">' + x.label + '<span class="exp-count"> · ' + x.count + '</span></span>' +
+      '<span class="exp-amt">' + _kjrOvMoney(x.amt) + '</span><span class="exp-pct">' + share(x.amt) + '</span>';
+    if (!x.subRows) return '<div class="exp-row">' + cells + '<span class="exp-caret-slot"></span></div>';
+    const open = x.key === 'sealed' && _kjrExpSealedOpen;
+    return '<button type="button" class="exp-row exp-row-toggle" id="exp-toggle-' + x.key + '" aria-controls="exp-sub-' + x.key + '" aria-expanded="' + open + '" onclick="_toggleExposureSub(\'' + x.key + '\')">' + cells +
+        '<span class="exp-caret" id="exp-caret-' + x.key + '" aria-hidden="true"' + (open ? ' style="transform:rotate(90deg)"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span></button>' +
+      '<div id="exp-sub-' + x.key + '" class="exp-sub" style="display:' + (open ? 'block' : 'none') + '">' +
+        x.subRows.map(r => '<div class="exp-sub-row"><span>' + r.label + '</span><span>' + _kjrOvMoney(r.amt) + '</span><span>' + _kjrOvPlural(r.count, 'unit', 'units') + '</span></div>').join('') +
+      '</div>';
+  }).join('');
+  return '<div class="ov-bar" role="img" aria-label="Share of capital by type">' + bar + '</div><div class="exp-list">' + rows + '</div>';
+}
+
+// ── Rendering ────────────────────────────────────────────────────────
+// Sets a container's markup only when it changed, so a background sync that finds the same numbers leaves
+// focus, hover and the card images alone. When it does change, keyboard focus returns to the same item.
+function _kjrOvSet(id, html) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  if (el._kjrOvHtml === html && el.firstChild) return el;
+  let keep = null;
+  try {
+    const ae = document.activeElement;
+    if (ae && el.contains && el.contains(ae) && typeof ae.closest === 'function') {
+      const holder = ae.closest('[data-ov-act]');
+      if (holder) keep = { act: holder.getAttribute('data-ov-act'), table: holder.getAttribute('data-table'), id: holder.getAttribute('data-id') };
+    }
+  } catch (e) { keep = null; }
+  el.innerHTML = html;
+  el._kjrOvHtml = html;
+  if (keep && typeof el.querySelectorAll === 'function') {
+    const hit = Array.prototype.slice.call(el.querySelectorAll('[data-ov-act]')).find(h =>
+      h.getAttribute('data-ov-act') === keep.act && h.getAttribute('data-table') === keep.table && h.getAttribute('data-id') === keep.id);
+    const target = hit && (hit.tagName === 'BUTTON' ? hit : hit.querySelector('button'));
+    if (target) { try { target.focus({ preventScroll: true }); } catch (e) { /* focus is a nicety */ } }
+  }
+  return el;
+}
+
+function _kjrOvEdit(table, id) {
+  if (id == null) return;
+  const rows = table === 'slabs' ? DB.slabs : (table === 'singles' ? DB.singles : null);
+  const row = rows && rows.find(r => r && String(r.id) === String(id));
+  if (!row) { toast('That item is no longer in your collection'); return; }
+  if (table === 'slabs') openEditSlab(row.id); else openEditSingle(row.id);
+}
+// One delegated click for the whole Overview: tiles and rows open the existing edit modal, the text
+// buttons go where their label says.
+function _kjrOvClick(e) {
+  const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-ov-act]') : null;
+  if (!t) return;
+  const act = t.getAttribute('data-ov-act');
+  if (act === 'edit') _kjrOvEdit(t.getAttribute('data-table'), t.getAttribute('data-id'));
+  else if (act === 'breakdown') showMarketValueBreakdown();
+  else if (act === 'singles') showPage('inventory');
+  else if (act === 'unresolved') _kjrShowUnresolvedOnly();
+  else if (act === 'sales') showPage('sales');
+  else if (act === 'add') openAddSingle();
+}
+function _kjrOvBind() {
+  const page = document.getElementById('page-dashboard');
+  if (!page || page._kjrOvBound) return;
+  page._kjrOvBound = true;
+  page.addEventListener('click', _kjrOvClick);
+  // Tiles and rows open the edit modal, and a card edit saves and closes WITHOUT redrawing the Overview behind
+  // it (the old Dashboard only redrew when you came back to it). So redraw whenever a dialog closes over the
+  // Overview: an edit, Quick Entry, a sale. 'close' does not bubble, so listen in the capture phase. An
+  // unchanged result leaves the DOM alone, and focus returns to the same item if it was replaced.
+  if (typeof document.addEventListener === 'function') {
+    document.addEventListener('close', () => {
+      const p = document.getElementById('page-dashboard');
+      if (p && p.classList && p.classList.contains('active')) renderDashboard();
+    }, true);
+  }
+}
+
+// renderDashboard() is called from sync and edit paths. The Overview is a read-only surface, so a section
+// that fails to draw is skipped (degraded, nothing lost) instead of throwing into those callers.
+function _kjrOvTry(label, build, fallback) {
+  try { return build(); } catch (e) { console.warn('[overview] ' + label + ' failed to render:', e); return fallback; }
+}
+
 function renderDashboard() {
   const {
     invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
     invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
-    mktSingles, mktSlabs, mktEtb, mktBb, mktBp, mktSealed, totalMktValue, unrealisedPL,
-    cutoff, filteredSales, totalRevenue, totalProfit, avgProfitPerTx,
-    allTimeSales, allTimeRevenue, allTimeProfit, allTimePendingDealerSales, roiPct,
-    singlesAvail, singlesSold, slabsAvail, slabsSold, totalItems,
-    sealedItemCount, grandItemCount,
+    totalMktValue, unrealisedPL,
+    allTimeSales, allTimeProfit, allTimePendingDealerSales, roiPct,
+    singlesAvail, slabsAvail,
   } = computeDashboardStats();
-
-  // Cards show just a centred label + value. The old sub-line is gone; any
-  // useful detail now lives in the (i) tooltip. `trust` is optional: when
-  // present it renders a persistent coloured dot beside the (i) that warns
-  // about data trustability, with its coverage/freshness text shown on hover.
-  function dashMetric(label, value, tooltip, cls, trust) {
-    const trustDot = trust
-      ? '<button class="metric-trust" type="button" aria-label="Data trust" onclick="kjrToggleTooltip(this,event)">' +
-          '<span class="metric-trust-dot" style="background:' + trust.color + '"></span>' +
-          '<span class="inv-stat-tooltip">' + trust.text + '</span>' +
-        '</button>'
-      : '';
-    return '<div class="metric">' +
-      trustDot +
-      '<button class="metric-info" type="button" aria-label="Info" onclick="kjrToggleTooltip(this,event)">i<span class="inv-stat-tooltip">' + tooltip + '</span></button>' +
-      '<div class="metric-label">' + label + '</div>' +
-      '<div class="metric-value' + (cls ? ' ' + cls : '') + '">' + value + '</div>' +
-    '</div>';
-  }
-
-  const rangeLabel = (document.getElementById('dash-range')?.options[document.getElementById('dash-range')?.selectedIndex]?.text || '');
-
-  // sealedItemCount / grandItemCount now come from computeDashboardStats()
-  // (destructured above) - was previously recomputed here (Row 1 KPIs).
 
   // ── Market-value data freshness ─────────────────────────────────────
   // Prices on Singles + Slabs come from the two-lane refresh queue (free
@@ -13763,15 +14100,14 @@ function renderDashboard() {
   // and (4) whether the auto-refresh queue is even running.
   const pricedItems = [];   // items with any market signal
   const allItems    = [];
-  // collect: priced = has a live marketPrice. (table arg kept for call-site
-  // compatibility; no longer used internally now the cache layer is gone.)
-  const collect = (i, w, table) => {
+  // collect: priced = has a live marketPrice.
+  const collect = (i, w) => {
     allItems.push({ item: i, weight: w });
     const m = parseFloat(i.marketPrice);
     if (!isNaN(m) && m > 0) pricedItems.push({ item: i, weight: w });
   };
-  DB.singles.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, parseInt(i.qty)||1, 'singles'));
-  DB.slabs.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, 1, 'slabs'));
+  DB.singles.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, parseInt(i.qty)||1));
+  DB.slabs.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, 1));
   const pricedCount = pricedItems.length;
   const allCount    = allItems.length;
   const coveragePct = allCount > 0 ? Math.round((pricedCount / allCount) * 100) : 0;
@@ -13794,8 +14130,8 @@ function renderDashboard() {
   const _tcgdexTotal = _queueState?.lastTcgdexTotal || 0;
   const _tcgdexDone   = _queueState?.lastTcgdexDone  || 0;
   const _tcgdexRanToday = _queueState?.lastTcgdexPass === _todayStr;
-  // Unresolved / manual-language counts for the tooltip - same definitions
-  // as the Price API Settings panel (_kjrUnresolvedSingles / _kjrManualLangCards).
+  // Unresolved / manual-language counts - same definitions as the Price API
+  // Settings panel (_kjrUnresolvedSingles / _kjrManualLangCards).
   const _unresolvedCount = (typeof _kjrUnresolvedSingles === 'function') ? _kjrUnresolvedSingles().length : 0;
   const _manualLangCount = (typeof _kjrManualLangCards === 'function') ? _kjrManualLangCards().length : 0;
   // A blocked/rate-limited price API stamps lastPausedReason. Surface it so a
@@ -13826,33 +14162,22 @@ function renderDashboard() {
     return Math.floor(days/30) + 'mo ago';
   };
   // Bucket colour: green = mostly fresh; amber = partially stale; red = stale or no data
-  let freshClass = 'neg', freshLabel = 'stale';
-  if (coveragePct >= 80 && freshPct >= 70) { freshClass = 'pos'; freshLabel = 'fresh'; }
-  else if (coveragePct >= 50 && freshPct >= 30) { freshClass = ''; freshLabel = 'mixed'; }
-  const freshSub = totalMktValue > 0
-    ? coveragePct + '% covered · ' + freshPct + '% refreshed ≤7d · last ' + agoFromTs(latestTs)
-    : 'No market prices set yet';
-  // Tooltip explains the chip in full so the user can diagnose why
+  let freshClass = 'neg';
+  if (coveragePct >= 80 && freshPct >= 70) { freshClass = 'pos'; }
+  else if (coveragePct >= 50 && freshPct >= 30) { freshClass = ''; }
+  // Tooltip explains the dot in full so the user can diagnose why
   // "refreshed never" if the queue is stalled. Two lanes now: Exact (TCGdex)
   // is free and runs a full pass once a day; Search (PPT) is capped at
   // DAILY_LIMIT/day and covers slabs plus any TCGdex miss - the per-lane
-  // wording is built into _chipText/_laneNote below (kept as one flowing
-  // sentence rather than a separate paragraph, since the tooltip span this
-  // feeds renders as plain white-space:normal HTML - see the note there).
-  // Appended (not a separate paragraph) to the trust-dot tooltip below -
-  // that tooltip renders as a single raw HTML span with white-space:normal
-  // (see dashMetric()/.inv-stat-tooltip in styles.css), so a literal "\n"
-  // collapses to nothing visible. <br> is used instead where a line break
-  // is genuinely wanted; these two are short enough to just flow as extra
-  // clauses onto the existing one-line chip text.
+  // wording is built into _chipText/_laneNote below, kept as one flowing line.
   const _unresolvedDiag = _unresolvedCount > 0 ? (' · ' + _unresolvedCount + ' unresolved, add the card number for exact pricing') : '';
   const _manualLangDiag = _manualLangCount > 0 ? (' · ' + _manualLangCount + ' non-English card' + (_manualLangCount!==1?'s':'') + ' priced manually') : '';
 
   // Show coverage + queue status WHENEVER there is Singles/Slabs inventory
   // to price - even when nothing is priced yet (totalMktValue == 0). The
-  // chip is most useful precisely in that "0% priced" state, because it
-  // tells the user the auto-refresh is bootstrapping. Only suppress the
-  // chip when there's no inventory at all on Singles/Slabs.
+  // dot is most useful precisely in that "0% priced" state, because it
+  // tells the user the auto-refresh is bootstrapping. Only suppress it
+  // when there's no inventory at all on Singles/Slabs.
   const hasPriceableInventory = allCount > 0;
   // Colour rules:
   //   red    → has inventory but no queue + no manual prices (broken state)
@@ -13866,8 +14191,7 @@ function renderDashboard() {
   } else if (hasPriceableInventory && totalMktValue > 0 && (!_queueExists || (!_queueDone && latestTs === 0))) {
     _chipClass = ''; // amber
   }
-  const freshDot   = _chipClass === 'pos' ? 'var(--green)' : (_chipClass === 'neg' ? 'var(--red)' : 'var(--amber)');
-  // Compact TCGdex-lane note appended to the one-line chip tooltip below.
+  // Compact TCGdex-lane note appended to the one-line tooltip below.
   const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending'));
   const _chipText = (_queuePaused
     ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · ' + (_queueKeyBlocked ? '⚠ price API key blocked' : '⏸ paused, will retry')
@@ -13879,125 +14203,54 @@ function renderDashboard() {
                 ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) ' + _queueToday + '/' + DAILY_LIMIT + ' today, ' + _queueLeft + ' left'
                 : coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · refreshed ' + agoFromTs(latestTs))))
     ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _manualLangDiag;
-  // Drop the leading "+" on profit - the green colour already signals positive.
-  const profitDisplay = allTimeSales.length === 0 ? '-'
-    : (allTimePendingDealerSales > 0 && allTimeRevenue === 0 && allTimeProfit === 0 ? 'Unknown'
-    : (allTimeProfit >= 0 ? 'S$' + Math.round(allTimeProfit).toLocaleString('en-SG') : '-S$' + Math.abs(Math.round(allTimeProfit)).toLocaleString('en-SG')));
-  // roiPct now comes from computeDashboardStats() (destructured above).
-  const roiDisplay = roiPct == null ? '-' : Math.round(roiPct) + '%';
-  // Trust dot for Total Market Value: the dot colour warns at a glance how
-  // trustworthy the figure is (red = low coverage / stale), and the coverage +
-  // freshness line (e.g. "5% priced (35/740) · refreshed yesterday") shows on
-  // hover. Only shown when there is Singles/Slabs inventory to price.
-  const trustMeta = hasPriceableInventory ? { color: freshDot, text: _chipText } : null;
-  document.getElementById('dash-metrics-primary').innerHTML =
-    dashMetric('Total Cost', 'S$' + Math.round(totalInvCost).toLocaleString('en-SG'),
-      'Cost basis across Singles + Slabs + Sealed (ETBs / Booster Boxes / Packs in stock). ' + grandItemCount + ' units in stock.') +
-    dashMetric('Total Market Value',
-      (totalMktValue > 0 ? 'S$' + Math.round(totalMktValue).toLocaleString('en-SG') : '-') +
-        // Tiny "view breakdown" affordance - clicking it lists every
-        // Singles/Slabs row currently contributing to this figure, so the
-        // user can trace S$X back to the exact items that produced it.
-        ' <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 6px;vertical-align:middle;margin-left:4px;color:var(--text3)" onclick="showMarketValueBreakdown()" title="See which rows make up this total">⋯</button>',
-      'Estimated value of Available Singles + Slabs: live market price where we have one, your cost price for items not yet priced. The coloured dot warns how trustworthy this number is right now (hover it for live coverage). Sealed inventory is shown separately in the breakdown card. Click the ⋯ button to see every row contributing to this total.',
-      '',
-      trustMeta) +
-    dashMetric('All-time Profit', profitDisplay,
-      'Confirmed profit across ' + allTimeSales.length + (allTimeSales.length === 1 ? ' sale' : ' sales') + '. Dealer sales with Unknown settlement are excluded until confirmed.' + (allTimePendingDealerSales ? ' Pending Dealer settlements: ' + allTimePendingDealerSales + '.' : ''),
-      profitDisplay === 'Unknown' ? '' : (allTimeProfit >= 0 ? 'pos' : 'neg')) +
-    dashMetric('Pending settlement', String(allTimePendingDealerSales),
-      'Dealer sale records awaiting server-confirmed settlement. Their revenue and profit are shown as Unknown and excluded from realised totals.',
-      allTimePendingDealerSales ? 'neg' : '') +
-    dashMetric('Realised ROI', roiDisplay,
-      'Realised ROI = Profit ÷ Cost basis of sold items × 100. Tells you the multiplier on the money you actually put in. If you bought S$56 of cards and sold them for S$100, profit is S$44 and ROI is 78%.' + (allTimeSales.length === 0 ? ' No sales logged yet.' : ''),
-      (roiPct ?? 0) >= 0 ? 'pos' : 'neg');
 
-  // Toggle handler for the Sealed sub-rows dropdown.
-  window._toggleExposureSub = function(key){
-    const sub = document.getElementById('exp-sub-' + key);
-    const caret = document.getElementById('exp-caret-' + key);
-    const toggle = document.getElementById('exp-toggle-' + key);
-    if (!sub) return;
-    const open = sub.style.display !== 'none';
-    sub.style.display = open ? 'none' : 'block';
-    if (caret) caret.style.transform = open ? '' : 'rotate(90deg)';
-    if (toggle) toggle.setAttribute('aria-expanded', String(!open));
-  };
+  // ── Header: "Prices checked …" and the coverage dot. Colour is never the only signal, the text carries
+  // the percentage and the screen-reader line names the state.
+  const trustCls = _chipClass === 'pos' ? 'ok' : (_chipClass === 'neg' ? 'bad' : 'warn');
+  const trustWord = trustCls === 'ok' ? 'current' : (trustCls === 'bad' ? 'needs attention' : 'partly current');
+  const subText = pricedCount === 0
+    ? 'No prices yet'
+    : (latestTs ? 'Prices checked ' + kjrOverviewCheckedText(latestTs, Date.now()) : 'Price date unknown') + ' · ' + coveragePct + '% priced';
+  const subEl = document.getElementById('dash-last-updated');
+  if (subEl) subEl.textContent = subText;
+  const subWrap = document.getElementById('dash-sub');
+  if (subWrap) subWrap.title = hasPriceableInventory ? _chipText : '';
+  const dot = document.getElementById('dash-trust-dot');
+  if (dot) { dot.className = 'ov-trust ' + trustCls; dot.hidden = !hasPriceableInventory; }
+  const srEl = document.getElementById('dash-trust-sr');
+  if (srEl) srEl.textContent = hasPriceableInventory ? ' Price status: ' + trustWord + '.' : '';
 
-  // ── Capital Exposure + Inventory (merged) ──────────────────────────
-  // One card: stacked bar showing % $ in Singles / Slabs / Sealed, plus a
-  // detail row per segment with count, $, and % of capital. Sealed is
-  // expanded into its three sub-tables (ETBs / Booster Boxes / Packs) so the
-  // user can see the breakdown without leaving the dashboard.
-  const expBody  = document.getElementById('dash-exposure-body');
-  const expTotal = document.getElementById('dash-exposure-total');
-  if (expBody) {
-    if (totalInvCost <= 0) {
-      expBody.innerHTML = '<div class="exp-empty">Add some inventory to see exposure breakdown.</div>';
-      if (expTotal) expTotal.textContent = '';
-    } else {
-      const sealedCount = etbInStock.length + bbInStock.length + bpInStock.length;
-      const segments = [
-        { key:'singles', label:'Singles', count: singlesAvail, amt: invCostSingles, cls: 'exp-seg-singles', color: 'var(--cat1)' },
-        { key:'slabs',   label:'Slabs',   count: slabsAvail,   amt: invCostSlabs,   cls: 'exp-seg-slabs',   color: 'var(--cat2)' },
-        { key:'sealed',  label:'Sealed',  count: sealedCount,  amt: invCostSealed,  cls: 'exp-seg-sealed',  color: 'var(--cat3)',
-          // Per-sub-table breakdown rendered as a collapsible dropdown under
-          // the Sealed row. Uses the same "Label $amount (N units)" pattern.
-          subRows: [
-            { label:'ETBs',          count: etbInStock.length, amt: invCostEtb },
-            { label:'Booster Boxes', count: bbInStock.length,  amt: invCostBb },
-            { label:'Booster Packs', count: bpInStock.length,  amt: invCostBp },
-          ] },
-      ];
-      const visible = segments.filter(s => s.amt > 0);
-      const barHtml = visible.map(s => {
-        const p = (s.amt / totalInvCost) * 100;
-        const label = p >= 9 ? (s.label + ' ' + Math.round(p) + '%') : '';
-        return `<div class="exp-seg ${s.cls}" style="width:${p.toFixed(2)}%" title="${s.label} · S$${Math.round(s.amt)} (${s.count} units · ${Math.round(p)}%)">${label}</div>`;
-      }).join('');
-      // Detail rows: "Singles $8730 (634 units)" - % is already shown in the
-      // bar above so we don't repeat it here. Sealed has a collapsible
-      // dropdown showing the ETB / Booster Box / Pack sub-totals.
-      const detailHtml = segments.map(s => {
-        const hasSub = Array.isArray(s.subRows) && s.subRows.length > 0;
-        const caret = hasSub
-          ? `<span id="exp-caret-${s.key}" style="color:var(--accent);font-size:18px;font-weight:700;width:18px;display:inline-block;text-align:center;line-height:1;transition:transform 0.15s">▸</span>`
-          : '<span style="width:18px;display:inline-block"></span>';
-        const mainRow = hasSub
-          ? `<button type="button" class="exp-row" id="exp-toggle-${s.key}" aria-controls="exp-sub-${s.key}" aria-expanded="false" onclick="_toggleExposureSub('${s.key}')" style="cursor:pointer;border:0;background:transparent;color:inherit;font:inherit;text-align:left;width:100%">
-          ${caret}
-          <span class="exp-legend-dot" style="background:${s.color}"></span>
-          <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt).toLocaleString('en-SG')}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
-        </button>`
-          : `<div class="exp-row" style="cursor:default">
-          ${caret}
-          <span class="exp-legend-dot" style="background:${s.color}"></span>
-          <span class="exp-main-label">${s.label} <span class="exp-amt">S$${Math.round(s.amt).toLocaleString('en-SG')}</span> <span style="color:var(--text3);font-weight:400">(${s.count} units)</span></span>
-        </div>`;
-        const subHtml = hasSub
-          ? `<div id="exp-sub-${s.key}" class="exp-sub" style="display:none">
-              ${s.subRows.map(r => `<div class="exp-sub-row">
-                <span style="color:var(--text2)">${r.label}</span>
-                <span style="color:var(--text);font-weight:500">S$${Math.round(r.amt).toLocaleString('en-SG')}</span>
-                <span style="color:var(--text3);font-size:12px">(${r.count} units)</span>
-              </div>`).join('')}
-            </div>`
-          : '';
-        return mainRow + subHtml;
-      }).join('');
-      expBody.innerHTML = `<div class="exp-bar">${barHtml}</div>
-        <div style="margin-top:16px">${detailHtml}</div>`;
-      if (expTotal) expTotal.textContent = '';
-    }
+  // ── Hero, stats panel and Needs attention
+  const failed = '<div class="ov-empty">Could not draw this section. Reload to try again.</div>';
+  _kjrOvSet('dash-hero', _kjrOvTry('hero', () => kjrOvHeroHtml({
+    invCostSingles, invCostSlabs, totalMktValue, unrealisedPL, singlesAvail, slabsAvail,
+    hasCards: allCount > 0, allTimeSales, allTimeProfit, allTimePendingDealerSales, roiPct,
+    attention: kjrOverviewAttention({ manualLang: _manualLangCount, unresolved: _unresolvedCount, pendingSales: allTimePendingDealerSales }),
+  }), failed));
+
+  // ── Top of the collection (hidden when there is nothing to show)
+  const topHtml = _kjrOvTry('top of the collection', () => kjrOvTopHtml(kjrOverviewTop(5)), '');
+  const topSec = document.getElementById('dash-top-sec');
+  if (topSec) topSec.hidden = !topHtml;
+  _kjrOvSet('dash-top', topHtml);
+
+  // ── Where the money sits, best and worst against cost, recent sales
+  _kjrOvSet('dash-exposure-body', _kjrOvTry('exposure', () => kjrOvExposureHtml({
+    totalInvCost, invCostSingles, invCostSlabs, invCostSealed, invCostEtb, invCostBb, invCostBp,
+    etbInStock, bbInStock, bpInStock, singlesAvail, slabsAvail,
+  }), failed));
+  _kjrOvSet('dash-movers', _kjrOvTry('movers', () => kjrOvMoversHtml(kjrOverviewMovers()), failed));
+  _kjrOvSet('dash-sales', _kjrOvTry('recent sales', () => kjrOvSalesHtml(kjrOverviewRecentSales(3)), failed));
+
+  _kjrOvBind();
+  // features.js (card art, tiles) loads after app.js. A gate-less preview paints from the local cache at load,
+  // before it, so that first render has no tiles or thumbnails: draw again once every script has run.
+  if (typeof kjrTileHtml !== 'function' && document.readyState === 'loading' && !_kjrOvLateRender) {
+    _kjrOvLateRender = true;
+    document.addEventListener('DOMContentLoaded', () => { _kjrOvLateRender = false; renderDashboard(); }, { once: true });
   }
-
-  // Destroy any leftover chart instances. Cosmetic: a chart may already be
-  // destroyed or its canvas already gone, nothing to recover either way.
-  Object.values(dashCharts).forEach(c => { try { c.destroy && c.destroy(); } catch(e) {} });
-  dashCharts = {};
-
-  // Init AI analyst quick chips
-  initAiAnalyst();
+  // Tiles and thumbnails with no card image yet are looked up lazily while they are on screen (Step 2).
+  if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-dashboard'), 'overview');
 }
 
 // =========== AI ANALYST ===========
@@ -14022,15 +14275,18 @@ function initAiAnalyst() {
   syncAiPanelToggle();
   const chips = document.getElementById('ai-quick-chips');
   // Update the subline to show which provider is actually active right now
-  // (e.g. "Using Gemini - free" vs "No key - click 🔑 to add one").
+  // (e.g. "Using Gemini - free" vs "Add an AI key in Settings"). There is no key button in the topbar: keys are
+  // added under Settings (the gear), API settings. The notice in the panel body links straight there.
   const sub = document.getElementById('ai-panel-subline');
   if (sub && typeof _resolveAIProvider === 'function') {
     const p = _resolveAIProvider();
     const labels = { gemini: 'Google Gemini (free)', groq: 'Groq Llama-3 (free)', openrouter: 'OpenRouter', anthropic: 'Anthropic Claude' };
     sub.textContent = p
       ? 'Using ' + (labels[p] || p) + ' · Ask anything about your cards'
-      : 'No AI key set - click 🔑 in topbar (Gemini and Groq are free)';
+      : 'Add an AI key in Settings, API settings';
     sub.style.color = p ? 'var(--text3)' : 'var(--amber)';
+    const notice = document.getElementById('ai-key-notice');
+    if (notice) notice.hidden = !!p;
   }
   if (!chips || chips.dataset.init) return;
   chips.dataset.init = '1';
@@ -14394,7 +14650,7 @@ async function sendAiAnalyst() {
   const provider = (typeof _resolveAIProvider === 'function') ? _resolveAIProvider() : null;
   const sublineEl = document.getElementById('ai-panel-subline');
   if (!provider) {
-    appendAiMessage('assistant', '⚠ No AI key configured. Click 🔑 in the top bar - Gemini is free.');
+    appendAiMessage('assistant', '⚠ No AI key configured. Add one in Settings, API settings - Gemini is free.');
     btn.disabled = false; btn.textContent = 'Ask →';
     return;
   }
@@ -14450,7 +14706,7 @@ async function sendAiAnalyst() {
     const result = await callAI(finalPrompt, false);
     hideAiTyping();
     if (!result || result.startsWith('Error') || result.includes('AI features need')) {
-      appendAiMessage('assistant', '⚠ ' + esc(result || 'Empty response - check 🔑 settings or try again'));
+      appendAiMessage('assistant', '⚠ ' + esc(result || 'Empty response - check your API settings or try again'));
       btn.disabled = false; btn.textContent = 'Ask →';
       return;
     }
@@ -16035,6 +16291,8 @@ function saveApiKeys() {
   const active = _resolveAIProvider();
   document.getElementById('api-key-status').innerHTML = '<span style="color:var(--green)">✓ Saved' + (active ? ' · using ' + active : '') + '</span>';
   toast('API keys saved' + (active ? ' (using ' + active + ')' : ''));
+  // The AI Analyst lives on Reports now and no longer redraws with the Overview, so refresh its sub-line here.
+  if (typeof initAiAnalyst === 'function') initAiAnalyst();
 }
 
 async function testApiKeys() {
@@ -17956,7 +18214,7 @@ async function callAI(prompt, webSearch) {
       '• Anthropic Claude - paid  (best quality, $3/M tokens)',
       '    Get key: https://console.anthropic.com',
       '',
-      'Click 🔑 in the top bar and paste any one of them. Your key is stored only in this browser.'
+      'Open Settings (the gear), then API settings, and paste any one of them. Your key is stored only in this browser.'
     ].join('\n');
   }
   try {
@@ -19530,7 +19788,7 @@ function saveChartToDashboard() {
   charts.push(config);
   persistSavedCharts(charts);
   renderAllSavedCharts();
-  toast('Chart added to dashboard ✓');
+  toast('Chart saved ✓');
 }
 
 // Keep keyboard focus within an open modal: Tab/Shift-Tab cycle its focusable
@@ -19906,16 +20164,6 @@ function _refreshSavedChart(id) {
       const more = document.getElementById('btb-more');
       if (more) more.classList.add('active');
     }
-  };
-})();
-
-// ── HIG: Update "Last updated" timestamp when dashboard renders ──
-(function() {
-  const _orig = window.renderDashboard;
-  window.renderDashboard = function() {
-    if (_orig) _orig();
-    const el = document.getElementById('dash-last-updated');
-    if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   };
 })();
 

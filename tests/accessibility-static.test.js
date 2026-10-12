@@ -28,10 +28,14 @@ test('static accessibility: primary navigation and unlabelled searches have stab
     ['Slabs', "showPage('slabs')"],
     ['Sales', "showPage('sales')"],
     ['eBay', "showPage('ebay')"],
-    ['More', "toggleNavDD('more', event)"],
   ]) {
     assert.match(html, new RegExp(`<button class="nav-btn[^>]*aria-label="${label}"[^>]*onclick="${action.replace(/[()]/g, '\\$&')}"`));
   }
+  // v3.73: the desktop More dropdown is retired (every page is in the sidebar), so the More control with a stable name is the
+  // phone tab bar's, and the sidebar is a named navigation landmark.
+  assert.doesNotMatch(html, /toggleNavDD\('more'/);
+  assert.match(html, /<button class="btb-item" id="btb-more" onclick="openMoreSheet\(\)">[\s\S]*?<\/svg>\s*More\s*<\/button>/);
+  assert.match(html, /<nav class="nav" aria-label="Main">/);
 
   for (const [id, label] of [
     ['singles-search', 'Search singles inventory'],

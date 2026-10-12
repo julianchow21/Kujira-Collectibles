@@ -139,6 +139,26 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Step 6a (navigation and phone layout, v3.73) was built and browser-verified on 12/10/2026, then deployed to `main`. `./qc.sh` PASS, `node --test` 1006 tests, 1000 pass, 0 fail, 6 skipped (58 new in tests/navigation.test.js).
+
+**What it is**
+- The old `<div class="topbar">` is now one shell: a 232px sidebar from 1280px, a 64px icon rail from 601 to 1279px (and from 1280 to 1599px while the inspector is open), and a sticky 56px phone header at 600px and below. There is no desktop top bar, so the sticky thead, inspector, dealer list, guide TOC and sync progress bar sit at top 0 on desktop
+- Sidebar: logo, Search and Add (both `openCmdBar()` until 6b), groups Overview, Collection (Singles, Slabs, ETBs, Boxes & packs, with counts from `kjrNavCounts`), Selling (Listings, eBay, Sales, Dealer Desk), Workspace (Reports, Import, History, Trash, Guide). Items stay `button.nav-btn` with inline `showPage('x')`. `NAV_HELD_BY` lights Boxes & packs for Booster Packs
+- Item height comes from one formula, `clamp(32px, (100dvh - --kjr-k - safe areas) / 14, max)`, and the `nav budget` tests fail if a size changes without `--kjr-k`. The nav gets a scroll shadow when it still overflows (below about 700px tall)
+- Rail tooltips are one fixed JS element (`kjrNavTipInstall`), because the scrolling nav would clip a CSS child
+- Sync: `#sync-indicator` is the footer dot plus "Synced / Syncing… / Sync pending / Sync error / Not synced yet" and "N min ago · " plus `#app-ver`. It is never hidden and always opens the diagnostics. `#sync-live` announces state changes only. On a phone the Settings button carries a mirror dot and its menu starts with "Sync status"
+- Desktop More dropdown retired. `MORE_PAGES` is now the phone set (everything the tab bar lacks)
+- Phone tab bar: Overview, Collection, a raised "+" (`openCmdBar()`), Sales, More
+- Phone Holdings rows (`kjrHoldApply`, `#singles-cards`, `#slabs-cards` and the sold twins) at 600px and below in list view, not `force-tables`. The tables are still built and hidden in CSS, so their pins hold. One delegated click per container opens `kjrInspect`
+- Fixed in passing: the closed Sentry drawer cast its shadow into the right edge
+
+**Open from Step 6a**
+- No sort control on the phone list (the headers are hidden). The mockup shows "Sort by value"
+- No touch long-press labels on the rail (601 to 1279px)
+- Landscape phones get a rail that scrolls
+- Dead `_buildCleanPushHtml` would blank `#sync-indicator` (and `#app-ver`) in a clone, nothing calls it
+- Unverified on real iOS and iPad Safari, with live data, and with real sync states
+
 Step 5 (card inspector, v3.72) was built on 11/10/2026, browser-verified and deployed to `main` (live) on 12/10/2026. `./qc.sh` PASS, `node --test` 948 tests, 942 pass, 0 fail, 6 skipped (37 new in tests/inspector.test.js). The "Before committing" list below is done.
 
 **What it is**

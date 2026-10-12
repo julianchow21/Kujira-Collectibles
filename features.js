@@ -905,6 +905,7 @@ function kjrSoldToggleRow(table, soldCount, colspan){
 }
 
 function renderEtbs(){
+  kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const rows = DB.etbs || [];
   const q = _v('kjr-etb-search'), statF = _v('kjr-etb-status'), condF = _v('kjr-etb-cond');
   const cfProd = _v('kjr-etb-cf-product'), cfCond = _v('kjr-etb-cf-cond'), cfDate = _v('kjr-etb-cf-date');
@@ -1023,6 +1024,7 @@ function kjrOpenBbModal(idOrItem){
   kjrOpenModal({ dbKey:'boosterBoxes', singular:'Booster Box', fields:KJR_BB_FIELDS, item, isNew, after:renderBoosterBoxes });
 }
 function renderBoosterBoxes(){
+  kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const rows = DB.boosterBoxes || [];
   const q = _v('kjr-bb-search'), statF = _v('kjr-bb-status');
   const cfDate = _v('kjr-bb-cf-date'), cfProd = _v('kjr-bb-cf-product'), cfNotes = _v('kjr-bb-cf-notes');
@@ -2687,6 +2689,7 @@ function kjrOpenBpModal(idOrItem){
   kjrOpenModal({ dbKey:'boosterPacks', singular:'Booster Pack', fields:KJR_BP_FIELDS, item, isNew, after:renderBoosterPacks });
 }
 function renderBoosterPacks(){
+  kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const rows = DB.boosterPacks || [];
   const q = _v('kjr-bp-search'), statF = _v('kjr-bp-status');
   const cfDate = _v('kjr-bp-cf-date'), cfProd = _v('kjr-bp-cf-product'), cfNotes = _v('kjr-bp-cf-notes');
@@ -4095,6 +4098,275 @@ function kjrSetView(table, mode) {
   if (table === 'singles') renderSingles(); else renderSlabs();
 }
 
+// ═════════════ Navigation shell and phone Holdings (v3.73) ═════════════
+// Redesign Step 6a. The sidebar, the rail and the phone header are one element, .topbar (index.html, and styles.css
+// "Navigation shell"). This section is the part of them that needs script: the counts beside Singles, Slabs, ETBs and
+// Boxes & packs, the rail's tooltips and the phone's Holdings rows. Everything here reads DB and the page. None of it
+// writes a row, marks one dirty, saves or fetches.
+
+// ── Sidebar counts. The rows you hold in each place, counted the way the page itself counts them: Singles and Slabs by
+// status Available (a row with no status is Available), the Sealed tables by their own "on hand" test
+// (kjrIsActiveStatus: ETBs In Stock, boxes Unopened or Reserved, packs Sealed or Reserved), and Boxes & packs is the
+// boxes and the packs added together. A pure read of db (DB when none is given).
+function kjrNavCounts(db) {
+  var src = db || (typeof DB !== 'undefined' ? DB : null) || {};
+  var rows = function (t) { return Array.isArray(src[t]) ? src[t] : []; };
+  var available = function (t) {
+    var n = 0, list = rows(t);
+    for (var i = 0; i < list.length; i++) { if (list[i] && typeof list[i] === 'object' && String(list[i].status || 'Available') === 'Available') n++; }
+    return n;
+  };
+  var onHand = function (t) {
+    var n = 0, list = rows(t);
+    for (var i = 0; i < list.length; i++) { if (list[i] && typeof list[i] === 'object' && kjrIsActiveStatus(t, list[i].status)) n++; }
+    return n;
+  };
+  return { singles: available('singles'), slabs: available('slabs'), etbs: onHand('etbs'), boxes: onHand('boosterBoxes') + onHand('boosterPacks') };
+}
+// Writes the four counts into the sidebar. Called after the renders that can change them and once at boot. It can never
+// get in the way of a render: a failure here is swallowed, the counts are a nicety.
+function kjrNavCountsRefresh() {
+  try {
+    var c = kjrNavCounts();
+    var put = function (id, n) {
+      var el = document.getElementById(id);
+      var text = Number(n).toLocaleString('en-SG');
+      if (el && el.textContent !== text) el.textContent = text;
+    };
+    put('nav-count-inventory', c.singles);
+    put('nav-count-slabs', c.slabs);
+    put('nav-count-etbs', c.etbs);
+    put('nav-count-boosterBoxes', c.boxes);
+    return c;
+  } catch (e) { return null; }
+}
+
+// ── The rail's tooltips. On the 64px rail the labels are hidden, so a hover or keyboard focus shows the control's name in
+// a bubble to its right. It is one fixed element, not a child of the item: the nav scrolls, and a scroll container clips
+// a child that sticks out of it. The text is the control's data-tip, else its aria-label, plus the count the sidebar shows
+// beside a nav item. A native title is lifted while the bubble shows, so the browser does not draw a second one.
+var KJR_RAIL_MQ = '(min-width: 601px) and (max-width: 1279px)';
+var KJR_RAIL_SPLIT_MQ = '(min-width: 1280px) and (max-width: 1599px)'; // the sidebar is a rail here too while the card inspector is open
+function kjrRailActive() {
+  try {
+    if (!window.matchMedia) return false;
+    if (window.matchMedia(KJR_RAIL_MQ).matches) return true;
+    return window.matchMedia(KJR_RAIL_SPLIT_MQ).matches && !!(document.body && document.body.classList && document.body.classList.contains('kjr-insp-open'));
+  } catch (e) { return false; }
+}
+function kjrNavTipText(el) {
+  if (!el || typeof el.getAttribute !== 'function') return '';
+  var tip = el.getAttribute('data-tip');
+  if (tip) return String(tip);
+  var text = el.getAttribute('aria-label') || '';
+  var n = typeof el.querySelector === 'function' ? el.querySelector('.kjr-nav-count') : null;
+  var count = n ? String(n.textContent || '').trim() : '';
+  return text && count ? text + ' · ' + count : text;
+}
+function kjrNavTipInstall() {
+  if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+  var shell = document.querySelector('.topbar');
+  if (!shell || shell._kjrTipBound || typeof shell.addEventListener !== 'function') return;
+  shell._kjrTipBound = true;
+  var tip = null, current = null, lifted = null;
+  var controlOf = function (e) {
+    var t = e && e.target;
+    return t && typeof t.closest === 'function' ? t.closest('.nav-btn, .kjr-side-search, .kjr-side-add, .logo, #sync-indicator, #settings-btn') : null;
+  };
+  var hide = function () {
+    if (tip) { tip.classList.remove('show'); tip.hidden = true; }
+    if (lifted) { if (!lifted.el.getAttribute('title')) lifted.el.setAttribute('title', lifted.title); lifted = null; } // not over a newer title the sync status set meanwhile
+    current = null;
+  };
+  var show = function (el) {
+    if (!el || !kjrRailActive()) return;
+    var text = kjrNavTipText(el);
+    if (!text) return;
+    if (current === el) return;
+    hide();
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'kjr-tip';
+      tip.hidden = true;
+      tip.setAttribute('role', 'tooltip');
+      tip.setAttribute('aria-hidden', 'true'); // the control already has its name, this is only the sighted copy
+      document.body.appendChild(tip);
+    }
+    var title = el.getAttribute('title');
+    if (title) { el.removeAttribute('title'); lifted = { el: el, title: title }; }
+    tip.textContent = text;
+    tip.hidden = false;
+    var r = el.getBoundingClientRect();
+    var tr = tip.getBoundingClientRect(); // measured while still transparent, so the fade-in has something to start from
+    var top = Math.round(r.top + (r.height - tr.height) / 2);
+    top = Math.max(8, Math.min(top, (window.innerHeight || 0) - tr.height - 8));
+    tip.style.left = Math.round(r.right + 10) + 'px';
+    tip.style.top = top + 'px';
+    tip.classList.add('show');
+    current = el;
+  };
+  shell.addEventListener('mouseover', function (e) { var el = controlOf(e); if (el) show(el); });
+  shell.addEventListener('mouseout', function (e) {
+    var to = e && e.relatedTarget;
+    if (current && to && typeof current.contains === 'function' && current.contains(to)) return;
+    hide();
+  });
+  shell.addEventListener('focusin', function (e) {
+    var el = controlOf(e);
+    var keyboard = true;
+    try { keyboard = !!(el && el.matches(':focus-visible')); } catch (err) { keyboard = true; }
+    if (el && keyboard) show(el);
+  });
+  shell.addEventListener('focusout', hide);
+  shell.addEventListener('click', hide, true); // capture: the Settings button stops its click from bubbling
+  shell.addEventListener('keydown', function (e) { if (e && e.key === 'Escape') hide(); });
+  shell.addEventListener('scroll', hide, true); // the nav scrolling moves the item out from under the bubble
+  window.addEventListener('resize', hide);
+}
+
+// ── Phone Holdings rows. At 600px and below, in the list view and not in the Tables layout, Singles and Slabs show one row
+// per card in place of the squeezed table: art, name, a line under it (set and language, or grader and grade), the value
+// and the gain against cost. The table is still built by renderSingles and renderSlabs and CSS hides it, so nothing
+// about its markup or handlers moves. The rows are built from the same filtered, sorted lists, the same way the grid is
+// (kjrRenderGrid takes the same options), and only when this applies, so a desktop builds none. The page gets .kjr-hold-on
+// once they are drawn, which is what hides the table, so a page that failed to draw them keeps its table.
+function kjrHoldOn() {
+  return typeof _kjrCompactTap === 'function' && _kjrCompactTap();
+}
+// One row. Only strings from the row go through kjrEscape, and the row is a button with no handler of its own: the
+// container's one delegated listener opens the card inspector (kjrInspectBindRows).
+function kjrHoldRowHtml(item, table, isSold) {
+  var E = kjrEscape;
+  var isSlab = table === 'slabs';
+  var name = String(item.name || '-');
+  var qty = isSlab ? 1 : (parseInt(item.qty, 10) || 1);
+  var mi = effectiveMarketInfo(item);
+  var cost = parseFloat(item.costPrice) || 0;
+  var money = mi.value > 0 ? kjrTileMoney(mi.value) : '';
+  var price = money ? (mi.isEstimate ? '~' : '') + money : '-';
+  var pct = mi.isEstimate ? null : kjrTilePct(mi.value, cost); // an estimate from cost has no gain to show
+  var subText, subHtml;
+  if (isSlab) {
+    var meta = kjrSlabMeta(item);
+    subText = meta.grader + ' ' + meta.grade;
+    subHtml = E(subText);
+  } else {
+    var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN'; // blank has always meant EN in this app
+    var set = String(item.set || '').trim();
+    subText = (set ? set + ' · ' : '') + lang;
+    subHtml = (set ? E(set) + ' · ' : '') + '<span class="kjr-hold-lang">' + E(lang) + '</span>';
+  }
+  if (qty > 1) { subText += ' · ×' + qty; subHtml += ' · ×' + qty; }
+  if (isSold) { subText += ' · Sold'; subHtml += ' · Sold'; } // the dimmed art is only visual, the word says it
+  var gainSpoken = pct && pct.cls ? ', ' + (pct.cls === 'pos' ? 'up ' : 'down ') + pct.text.replace(/^[^0-9]*/, '') : '';
+  var spoken = name + ', ' + subText + ', ' + (money ? (mi.isEstimate ? 'estimated ' : '') + money : 'no price') + gainSpoken;
+  return '<button type="button" class="kjr-hold-row' + (isSold ? ' is-sold' : '') + '" data-table="' + table + '" data-id="' + E(item.id) + '" aria-label="' + E(spoken) + '">' +
+    kjrThumbHtml(item, table) +
+    '<span class="kjr-hold-body"><span class="kjr-hold-name">' + E(name) + '</span><span class="kjr-hold-sub">' + subHtml + '</span></span>' +
+    '<span class="kjr-hold-val"><span class="kjr-hold-price">' + E(price) + '</span>' +
+      (pct ? '<span class="kjr-hold-pct ' + pct.cls + '">' + pct.text + '</span>' : '') + '</span>' +
+  '</button>';
+}
+function kjrHoldRowsHtml(rows, table, isSold) {
+  return (rows || []).map(function (i) { return kjrHoldRowHtml(i, table, isSold); }).join('');
+}
+function kjrHoldPage(table) { return document.getElementById(table === 'singles' ? 'page-inventory' : 'page-slabs'); }
+// Which control in the two containers has focus, as a key kjrHoldFocusBack can find again after a redraw.
+function kjrHoldFocusKey(list, alt) {
+  try {
+    var ae = document.activeElement;
+    if (!ae || typeof ae.getAttribute !== 'function') return '';
+    var inside = (list && typeof list.contains === 'function' && list.contains(ae)) || (alt && typeof alt.contains === 'function' && alt.contains(ae));
+    if (!inside) return '';
+    if (ae.getAttribute('data-id') != null) return 'id:' + ae.getAttribute('data-id');
+    if (ae.getAttribute('data-kjr-act')) return 'act:' + ae.getAttribute('data-kjr-act');
+  } catch (e) { /* a focus nicety only */ }
+  return '';
+}
+function kjrHoldFocusBack(key, list, alt) {
+  if (!key) return false;
+  var boxes = [list, alt];
+  for (var b = 0; b < boxes.length; b++) {
+    var els = boxes[b] && typeof boxes[b].querySelectorAll === 'function' ? boxes[b].querySelectorAll('[data-id], [data-kjr-act]') : [];
+    for (var i = 0; i < els.length; i++) {
+      var k = els[i].getAttribute('data-id') != null ? 'id:' + els[i].getAttribute('data-id') : 'act:' + els[i].getAttribute('data-kjr-act');
+      if (k !== key) continue;
+      try { els[i].focus({ preventScroll: true }); } catch (e) { /* focus is a nicety */ }
+      return true;
+    }
+  }
+  return false;
+}
+// o: the options kjrRenderGrid takes ({ main, mainSold, inline, alt, altSold, altLabel, showAlt, altOpen, empty }). The
+// order is the table's: the main list, the inline Sold rows (status "all"), then the other section while it is open, so
+// "Card N of M" in the inspector follows what is on screen (_kjrInspectOrder is set by the render, from the same lists).
+function kjrRenderHoldings(table, o) {
+  var list = document.getElementById(table + '-cards');
+  var alt = document.getElementById(table + '-sold-cards');
+  if (!list || !o) return false;
+  var key = kjrHoldFocusKey(list, alt);
+  var rows = kjrHoldRowsHtml(o.main, table, !!o.mainSold) + kjrHoldRowsHtml(o.inline, table, true);
+  list.innerHTML = rows || kjrInvEmptyGrid(o.empty);
+  if (alt) {
+    alt.innerHTML = o.showAlt
+      ? '<button type="button" class="sold-section-toggle" data-kjr-act="alt" aria-expanded="' + (o.altOpen ? 'true' : 'false') + '">' +
+          '<span aria-hidden="true">' + (o.altOpen ? '▼' : '▶') + '</span><span>' + (o.altOpen ? 'Hide ' : 'Show ') + kjrEscape(o.altLabel) + '</span>' +
+          '<span class="sold-count-badge">' + (o.alt || []).length + '</span></button>' +
+        (o.altOpen ? '<div class="kjr-hold">' + kjrHoldRowsHtml(o.alt, table, !!o.altSold) + '</div>' : '')
+      : '';
+  }
+  var page = kjrHoldPage(table);
+  if (page && page.classList) page.classList.add('kjr-hold-on');
+  kjrHoldFocusBack(key, list, alt);
+  return true;
+}
+// Draws the rows when the phone list view applies, otherwise empties them and gives the page back its table.
+function kjrHoldApply(table, o) {
+  if (!kjrHoldOn()) { kjrHoldClear(table); return false; }
+  return kjrRenderHoldings(table, o);
+}
+function kjrHoldClear(table) {
+  var list = document.getElementById(table + '-cards');
+  var alt = document.getElementById(table + '-sold-cards');
+  if (list && list.innerHTML) list.innerHTML = '';
+  if (alt && alt.innerHTML) alt.innerHTML = '';
+  var page = kjrHoldPage(table);
+  if (page && page.classList) page.classList.remove('kjr-hold-on');
+}
+// The window crossed 600px, or the layout switch (More, Layout) changed: redraw the page that is showing, empty the other.
+function kjrHoldRefresh() {
+  ['singles', 'slabs'].forEach(function (t) {
+    var page = kjrHoldPage(t);
+    var showing = !!(page && page.classList && page.classList.contains('active'));
+    if (!kjrHoldOn()) kjrHoldClear(t);
+    else if (showing) { if (t === 'singles') renderSingles(); else renderSlabs(); }
+  });
+}
+// One delegated click for a container: a row opens the card inspector (the order is the list's own), the Sold toggle and the
+// empty-state button do what they do in the grid.
+function kjrHoldClick(table, e) {
+  var t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-kjr-act], .kjr-hold-row') : null;
+  if (!t) return false;
+  var act = t.getAttribute('data-kjr-act');
+  if (act === 'alt') { toggleSoldSection(table); return true; }
+  if (act === 'add') { if (table === 'singles') openAddSingle(); else openAddSlab(); return true; }
+  var id = t.getAttribute('data-id');
+  if (id == null || id === '') return false;
+  return kjrInspect(table, id, { trigger: t });
+}
+
+(function kjrNavInstall() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  kjrNavTipInstall();
+  kjrNavCountsRefresh(); // the first renders ran before this file loaded, so draw the counts once DB is hydrated
+  try {
+    var mq = window.matchMedia && window.matchMedia('(max-width:600px)');
+    var onChange = function () { kjrHoldRefresh(); };
+    if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+    else if (mq && typeof mq.addListener === 'function') mq.addListener(onChange);
+  } catch (e) { /* no media query support, the rows are drawn by each render */ }
+})();
+
 // ═════════════ Card inspector (v3.72) ═════════════
 // Redesign Step 5. One panel shows one card or slab. It is a read-and-launch surface: it never writes a row itself.
 // Every change goes through the function the list already uses (markStatus, openEditSingle and openEditSlab,
@@ -4109,8 +4381,8 @@ function kjrSetView(table, mode) {
 // every list redraw and every dialog close, finding its card again by id.
 var _kjrInsp = null; // { table, id, order, src, trigger, mode, page, deleting, zone, focusKey } while it is open
 var KJR_INSP_ZONES = {
-  singles: ['singles-body', 'singles-sold-body', 'singles-grid', 'singles-grid-alt'],
-  slabs: ['slabs-body', 'slabs-sold-body', 'slabs-grid', 'slabs-grid-alt']
+  singles: ['singles-body', 'singles-sold-body', 'singles-grid', 'singles-grid-alt', 'singles-cards', 'singles-sold-cards'],
+  slabs: ['slabs-body', 'slabs-sold-body', 'slabs-grid', 'slabs-grid-alt', 'slabs-cards', 'slabs-sold-cards']
 };
 var KJR_INSP_MQ = '(max-width: 900px)';
 var KJR_INSP_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
@@ -4899,6 +5171,13 @@ function kjrInspectBindRows() {
     if (!tbody || tbody._kjrRowBound) return;
     tbody._kjrRowBound = true;
     tbody.addEventListener('click', function (e) { kjrRowClick(p[0], e); });
+  });
+  // The phone Holdings rows (v3.73) are buttons in two containers per list, one delegated listener on each, the same way.
+  [['singles', 'singles-cards'], ['singles', 'singles-sold-cards'], ['slabs', 'slabs-cards'], ['slabs', 'slabs-sold-cards']].forEach(function (p) {
+    var box = document.getElementById(p[1]);
+    if (!box || box._kjrHoldBound) return;
+    box._kjrHoldBound = true;
+    box.addEventListener('click', function (e) { kjrHoldClick(p[0], e); });
   });
 }
 

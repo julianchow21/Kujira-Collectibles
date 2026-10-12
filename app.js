@@ -1972,18 +1972,82 @@ function _syncDiagIndicatorState(requested) {
 }
 
 function _syncDiagStatusCopy(state) {
-  return ({ saving: 'Syncing…', ok: 'Synced', pending: 'Sync pending', error: 'Sync error', idle: '' })[state] || '';
+  return ({ saving: 'Syncing…', ok: 'Synced', pending: 'Sync pending', error: 'Sync error', idle: 'Not synced yet' })[state] || '';
+}
+
+// The sync status in the sidebar footer, the phone's Settings button and its menu (redesign Step 6a, v3.73). It is
+// presentation only: it reads the diagnostics state and never writes it. The status button is no longer a pill and is
+// never hidden, an idle page says "Not synced yet".
+
+// The newest confirmed cloud read or write as a timestamp, 0 until there is one.
+function _syncDiagLatestSuccess() {
+  const s = (_syncDiagnostics && _syncDiagnostics.successes) || {};
+  const t = Math.max(Number.isFinite(s.read) ? s.read : 0, Number.isFinite(s.write) ? s.write : 0);
+  return t > 0 ? t : 0;
+}
+
+// "just now", "N min ago", "N h ago", else the date as DD/MM/YYYY in Singapore time. '' when there is no timestamp.
+// now is only for tests.
+function _syncDiagAgoText(ts, now) {
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const at = Number.isFinite(now) ? now : Date.now();
+  const mins = Math.floor((at - ts) / 60000);
+  if (mins < 1) return 'just now'; // a stamp a little ahead of this clock reads the same
+  if (mins < 60) return mins + ' min ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + ' h ago';
+  try {
+    return new Date(ts).toLocaleDateString('en-SG', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Singapore' });
+  } catch (_) { return ''; }
+}
+
+// One state in words, for the tooltip, the accessible name and the phone's menu: "Synced 2 min ago", "Sync error, last synced
+// 2 min ago", "Not synced yet".
+function _syncDiagStateText(state, ago) {
+  const label = _syncDiagStatusCopy(state);
+  if (!ago) return label;
+  return state === 'ok' ? label + ' ' + ago : label + ', last synced ' + ago;
+}
+
+function _syncDiagSetText(id, text) {
+  const node = document.getElementById(id);
+  if (node && node.textContent !== text) node.textContent = text;
+}
+
+let _syncDiagAnnounced = null; // the state label last said aloud, null until the first draw (a page load says nothing)
+let _syncDiagAgoTimer = null;
+// One interval for the life of the page, so "2 min ago" moves on while nothing else is happening.
+function _syncDiagStartAgoTimer() {
+  if (_syncDiagAgoTimer || typeof setInterval !== 'function') return;
+  _syncDiagAgoTimer = setInterval(() => { try { _syncDiagRenderIndicator(); } catch (_) { /* cosmetic only */ } }, 60000);
 }
 
 function _syncDiagRenderIndicator() {
   const el = document.getElementById('sync-indicator');
   if (!el) return;
   const state = _syncDiagIndicatorState(_syncStatus);
+  const label = _syncDiagStatusCopy(state);
+  const ago = _syncDiagAgoText(_syncDiagLatestSuccess());
+  const words = _syncDiagStateText(state, ago);
   el.dataset.state = state;
-  el.textContent = ({ saving: '⟳ Syncing…', ok: '✓ Synced', pending: '⚠ Sync pending', error: '⚠ Sync error', idle: '' })[state] || '';
+  el.hidden = false;
   el.title = state === 'error' ? 'Open cloud sync diagnostics' : state === 'pending' ? 'Pending work needs attention' : state === 'ok' ? 'Open cloud sync diagnostics' : 'Cloud sync status';
-  el.setAttribute('aria-label', state === 'idle' ? 'Cloud sync status' : _syncDiagStatusCopy(state) + ', open diagnostics');
-  el.hidden = state === 'idle';
+  el.setAttribute('aria-label', words + ', open diagnostics');
+  el.setAttribute('data-tip', ago ? label + ' · ' + ago : label); // the rail's tooltip (features.js, kjrNavTipInstall)
+  // The dots take their colour from data-sync on the shell: the sidebar's, the phone's mirror on the Settings button and the
+  // menu item's. The words are on the sidebar all the time, so the colour is never the only signal.
+  const shell = typeof el.closest === 'function' ? el.closest('.topbar') : null;
+  if (shell && shell.dataset) shell.dataset.sync = state;
+  _syncDiagSetText('sync-label', label);
+  _syncDiagSetText('sync-ago', ago ? ago + ' · ' : '');
+  const settings = document.getElementById('settings-btn');
+  if (settings) settings.title = 'Settings · ' + words;
+  _syncDiagSetText('settings-sync-status', 'Sync status: ' + words);
+  _syncDiagSetText('settings-sync-state', words);
+  // A change of state is announced, the minute-by-minute time is not.
+  if (_syncDiagAnnounced !== null && label !== _syncDiagAnnounced) _syncDiagSetText('sync-live', words);
+  _syncDiagAnnounced = label;
+  _syncDiagStartAgoTimer();
 }
 
 function _syncDiagSetSettledStatus() {
@@ -2386,7 +2450,7 @@ function showSyncProgress(current, total, label) {
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'sync-progress-bar';
-    bar.style.cssText = 'position:fixed;top:calc(56px + env(safe-area-inset-top));left:0;right:0;z-index:110;background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text2);box-shadow:0 4px 12px rgba(0,0,0,0.25)';
+    bar.style.cssText = 'position:fixed;top:var(--kjr-top-off,0px);left:var(--kjr-side-w,0px);right:0;z-index:110;background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text2);box-shadow:0 4px 12px rgba(0,0,0,0.25)';
     document.body.appendChild(bar);
   }
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
@@ -10347,6 +10411,14 @@ function toggleNavDD(name, ev) {
 function closeNavDD() {
   document.querySelectorAll('.nav-dd').forEach(d => d.classList.remove('open'));
 }
+// The phone's Settings menu item for the sync status (redesign Step 6a, v3.73): there is no sidebar footer on a phone, so this is the
+// way to the diagnostics. Focus goes to the Settings button first, so the dialog hands it back there when it closes.
+function kjrOpenSyncStatus() {
+  closeNavDD();
+  const b = document.getElementById('settings-btn');
+  if (b && typeof b.focus === 'function') b.focus();
+  openSyncDiagnostics();
+}
 document.addEventListener('click', e => {
   if (!e.target.closest('.nav-dd')) closeNavDD();
 });
@@ -10865,7 +10937,6 @@ function showPage(name) {
     b.classList.remove('active');
     b.removeAttribute('aria-current');
   });
-  document.querySelectorAll('.nav-dd').forEach(d => d.classList.remove('contains-active'));
   const pageEl = document.getElementById('page-' + name);
   if (pageEl) pageEl.classList.add('active');
   if (name !== _kjrCurrentPage) { window.scrollTo(0, 0); _kjrCurrentPage = name; }
@@ -10878,32 +10949,24 @@ function showPage(name) {
     const oc = b.getAttribute('onclick') || '';
     return oc.indexOf("'" + name + "'") !== -1 || oc.indexOf('"' + name + '"') !== -1;
   };
-  if (MORE_PAGES.has(name)) {
-    // Desktop and mobile are distinct navigation regions. Their More controls
-    // represent the active grouped destination even when there is no exact
-    // child item, such as Booster Packs in the desktop dropdown.
-    desktopButtons.forEach(b => {
-      if (b.classList.contains('nav-dd-trigger')) {
-        markCurrent(b);
-        const parentDD = b.closest('.nav-dd');
-        if (parentDD) parentDD.classList.add('contains-active');
-      }
-    });
-    bottomButtons.forEach(b => {
-      if (b.id === 'btb-more') markCurrent(b);
-    });
-  } else {
-    desktopButtons.forEach(b => { if (matchesPage(b)) markCurrent(b); });
-    bottomButtons.forEach(b => { if (matchesPage(b)) markCurrent(b); });
-  }
-  // Menu items are a third, transient navigation region. Mark the exact page
-  // where it is present without forcing a synthetic item for grouped pages.
+  // The sidebar and the rail are one persistent navigation region (v3.73): the item for the page lights up whatever
+  // MORE_PAGES says, and a page with no item of its own lights the item that holds it (Booster Packs sit under Boxes &
+  // packs). The bottom bar is the phone's region: a page it has no tab for lights More.
+  const heldBy = NAV_HELD_BY[name] || '';
+  const matchesHolder = b => {
+    if (!heldBy) return false;
+    const oc = b.getAttribute('onclick') || '';
+    return oc.indexOf("'" + heldBy + "'") !== -1 || oc.indexOf('"' + heldBy + '"') !== -1;
+  };
+  desktopButtons.forEach(b => { if (matchesPage(b) || matchesHolder(b)) markCurrent(b); });
+  bottomButtons.forEach(b => {
+    if (MORE_PAGES.has(name)) { if (b.id === 'btb-more') markCurrent(b); }
+    else if (matchesPage(b)) markCurrent(b);
+  });
+  // The menu items (Settings, the More sheet) are a third, transient region. Mark the exact page where it is present
+  // without forcing a synthetic item for grouped pages.
   [...dropdownItems, ...sheetItems].forEach(b => {
-    if (matchesPage(b) || b.getAttribute('data-page') === name) {
-      markCurrent(b);
-      const parentDD = b.closest('.nav-dd');
-      if (parentDD) parentDD.classList.add('contains-active');
-    }
+    if (matchesPage(b) || b.getAttribute('data-page') === name) markCurrent(b);
   });
   if (name === 'inventory') { renderSingles(); applyColOrder('singles'); applyColVisibility('singles'); attachHeaderDrag('singles'); }
   if (name === 'slabs') { renderSlabs(); applyColOrder('slabs'); applyColVisibility('slabs'); attachHeaderDrag('slabs'); }
@@ -10934,12 +10997,17 @@ function showPage(name) {
   if (name === 'dealer' && typeof window.renderDealerDesk === 'function') window.renderDealerDesk();
   if (name === 'dealerProduction' && typeof window.renderDealerDeskProduction === 'function') window.renderDealerDeskProduction();
   syncMoreActive(name);
+  if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
 }
 
-// ── MORE SHEET (mobile nav hub) ──────────────────────────────
-// Pages that live behind the bottom bar's "More" button rather than a
-// dedicated tab. When one of these is active we light up the More item.
-const MORE_PAGES = new Set(['dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide','reports']);
+// ── MORE SHEET (phone nav hub) ──────────────────────────────
+// The pages the phone's bottom bar has no tab for, so they are reached from its "More" button. When one of these is
+// active the More tab lights up. The bar carries Overview, Collection (Singles), Add, Sales and More, so everything
+// else is here: Slabs, eBay, Dealer Desk, the Sealed pages, Listings, Reports, Import, History, Trash and the Guide.
+// (v3.73. The desktop has the sidebar and no More dropdown any more, so this set is the phone's only.)
+const MORE_PAGES = new Set(['slabs','ebay','dealerProduction','dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide','reports']);
+// A page with no nav item of its own, and the item that holds it (the sidebar lights that one for it).
+const NAV_HELD_BY = { boosterPacks: 'boosterBoxes' };
 function syncMoreActive(name) {
   const moreBtn = document.getElementById('btb-more');
   if (moreBtn) moreBtn.classList.toggle('active', MORE_PAGES.has(name));
@@ -11016,6 +11084,7 @@ function kjrToggleTableMode() {
   const force = localStorage.getItem(KJR_TABLEMODE_KEY) === '1';
   localStorage.setItem(KJR_TABLEMODE_KEY, force ? '0' : '1');
   kjrApplyTableMode();
+  if (typeof kjrHoldRefresh === 'function') kjrHoldRefresh(); // the phone Holdings rows follow the layout (v3.73)
 }
 // Tap a row's title cell - only in the phone compact-table view, where the per-row action buttons are hidden.
 // One delegated listener serves every tab. Singles and Slabs (v3.72) open the card inspector sheet, every other
@@ -11702,6 +11771,7 @@ function _updateUnresolvedFilterChip() {
 function renderSingles() {
   _renderUnresolvedBanner();
   kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
+  if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
   const lang = document.getElementById('singles-lang').value;
   const type = document.getElementById('singles-type').value;
@@ -11782,17 +11852,21 @@ function renderSingles() {
     ctaLabel: '+ Add your first card'
   };
 
+  // The rows every layout draws, in the order they draw them: the grid (v3.69) and the phone Holdings rows (v3.73).
+  const layoutOpts = {
+    main: displayItems, mainSold: showSoldMain,
+    inline: statusFilter === 'all' ? sold : [],
+    alt: altItems, altSold: !showSoldMain, altLabel: showSoldMain ? 'Available' : 'Sold',
+    showAlt: statusFilter !== 'all' && altItems.length > 0,
+    altOpen: document.getElementById('singles-sold-divider').dataset.open === '1',
+    empty: emptyOpts
+  };
+
   // Grid view (v3.69): the same filtered, sorted rows as the list below, drawn as tiles. The table
   // is not built while the grid shows, switching back re-renders it. Pref: kjr_view_singles.
   if (typeof kjrViewApply === 'function' && kjrViewApply('singles') === 'grid') {
-    kjrRenderGrid('singles', {
-      main: displayItems, mainSold: showSoldMain,
-      inline: statusFilter === 'all' ? sold : [],
-      alt: altItems, altSold: !showSoldMain, altLabel: showSoldMain ? 'Available' : 'Sold',
-      showAlt: statusFilter !== 'all' && altItems.length > 0,
-      altOpen: document.getElementById('singles-sold-divider').dataset.open === '1',
-      empty: emptyOpts
-    });
+    kjrRenderGrid('singles', layoutOpts);
+    if (typeof kjrHoldClear === 'function') kjrHoldClear('singles'); // the grid keeps the grid on a phone too
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
     updateClearFiltersBtn('singles');
     _updateUnresolvedFilterChip();
@@ -11877,6 +11951,9 @@ function renderSingles() {
     soldBody.innerHTML = '';
   }
 
+  // Phone list view (v3.73): the same rows again as Holdings rows. The table above is still built, CSS hides it. Draws nothing
+  // (and clears the rows) when the window is wider than a phone or the Tables layout is on, so a desktop pays nothing.
+  if (typeof kjrHoldApply === 'function') kjrHoldApply('singles', layoutOpts);
   applyColOrder('singles');
   applyColVisibility('singles');
   attachHeaderDrag('singles');
@@ -13008,6 +13085,7 @@ function _saveSingleNow(id) {
 // =========== SLABS ===========
 function renderSlabs() {
   kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
+  if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const q = (document.getElementById('slabs-search').value||'').toLowerCase();
   const grader = document.getElementById('slabs-grader').value;
   const grade = document.getElementById('slabs-grade').value;
@@ -13088,16 +13166,20 @@ function renderSlabs() {
     ctaLabel: '+ Add your first card'
   };
 
+  // The rows every layout draws, in the order they draw them: the grid (v3.69) and the phone Holdings rows (v3.73).
+  const layoutOpts = {
+    main: available, mainSold: false, inline: [],
+    alt: sold, altSold: true, altLabel: 'Sold',
+    showAlt: sold.length > 0,
+    altOpen: document.getElementById('slabs-sold-divider').dataset.open === '1',
+    empty: emptyOpts
+  };
+
   // Grid view (v3.69): the same filtered, sorted rows as the list below, drawn as slabs. The table
   // is not built while the grid shows, switching back re-renders it. Pref: kjr_view_slabs.
   if (typeof kjrViewApply === 'function' && kjrViewApply('slabs') === 'grid') {
-    kjrRenderGrid('slabs', {
-      main: available, mainSold: false, inline: [],
-      alt: sold, altSold: true, altLabel: 'Sold',
-      showAlt: sold.length > 0,
-      altOpen: document.getElementById('slabs-sold-divider').dataset.open === '1',
-      empty: emptyOpts
-    });
+    kjrRenderGrid('slabs', layoutOpts);
+    if (typeof kjrHoldClear === 'function') kjrHoldClear('slabs'); // the grid keeps the grid on a phone too
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
     updateClearFiltersBtn('slabs');
     if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
@@ -13179,6 +13261,8 @@ function renderSlabs() {
     soldBody.innerHTML = '';
   }
 
+  // Phone list view (v3.73): the same rows again as Holdings rows, see renderSingles.
+  if (typeof kjrHoldApply === 'function') kjrHoldApply('slabs', layoutOpts);
   applyColOrder('slabs');
   applyColVisibility('slabs');
   attachHeaderDrag('slabs');
@@ -14411,6 +14495,7 @@ function _kjrOvTry(label, build, fallback) {
 }
 
 function renderDashboard() {
+  if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73): the Overview redraws after a dialog closes, so an add or a sale shows
   const {
     invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
     invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,

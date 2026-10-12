@@ -1148,7 +1148,8 @@ test('css: the Step 5 section uses tokens only, sets the panel geometry from the
   assert.doesNotMatch(sec, /#[0-9a-fA-F]{3,8}\b(?![-\w])/, 'no hex colour, tokens only');
   assert.doesNotMatch(sec.replace(/rgba?\(0,0,0/g, ''), /rgba?\(/, 'and no colour function with a literal');
   const panel = sec.match(/#kjr-inspector\{([^}]*)\}/)[1];
-  assert.match(panel, /position:fixed;top:calc\(56px \+ env\(safe-area-inset-top\)\);right:0;bottom:0;z-index:120;/);
+  // v3.73: there is no top bar any more (a sidebar or a rail sits beside the page), so the panel starts at the top of the window
+  assert.match(panel, /position:fixed;top:env\(safe-area-inset-top\);right:0;bottom:0;z-index:120;/);
   assert.match(panel, /width:min\(440px,100vw\)/);
   assert.match(panel, /background:var\(--bg2\)/);
   assert.match(panel, /border-left:1px solid var\(--border\)/);
@@ -1157,7 +1158,9 @@ test('css: the Step 5 section uses tokens only, sets the panel geometry from the
   assert.doesNotMatch(sec, /will-change/);
   assert.match(sec, /@starting-style\{#kjr-inspector:not\(\[hidden\]\)\{transform:translateX\(24px\);opacity:0\}\}/);
   assert.match(sec, /#kjr-inspector\[hidden\]\{display:none\}/);
-  assert.match(sec, /@media\(min-width:1280px\)\{\s*body\.kjr-insp-open \.main:has\(\.page\.active\)\{padding-right:max\(24px,calc\(456px - max\(0px,\(100vw - 1400px\) \/ 2\)\)\)\}/, 'from 1280px the page makes room: the panel plus 16px, less the margin a 1400px page already leaves');
+  // v3.73: the page sits to the right of the sidebar, so the margin a 1400px page leaves on the right is measured from the width
+  // the sidebar leaves it (--kjr-side-w), not from the whole window
+  assert.match(sec, /@media\(min-width:1280px\)\{\s*body\.kjr-insp-open \.main:has\(\.page\.active\)\{padding-right:max\(24px,calc\(456px - max\(0px,\(100vw - var\(--kjr-side-w\) - 1400px\) \/ 2\)\)\)\}/, 'from 1280px the page makes room: the panel plus 16px, less the margin a 1400px page already leaves beside the sidebar');
   const sheet = sec.match(/\.kjr-insp-sheet\{([^}]*)\}/)[1];
   assert.match(sheet, /max-height:calc\(100dvh - env\(safe-area-inset-top\)\)/);
   assert.match(sheet, /border-radius:20px 20px 0 0/);

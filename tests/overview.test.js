@@ -535,10 +535,12 @@ test('tiles and rows open the card inspector by table, the text buttons go where
 
 // ── Reports ─────────────────────────────────────────────────────────────────
 
-test('Reports is registered with More: the page set, the desktop dropdown, the mobile sheet and the Dealer preview list', async () => {
+test('Reports is registered: the phone More page set and sheet, the sidebar item, and the Dealer preview list', async () => {
   const { ctx } = await loadApp();
   assert.ok(ctx.MORE_PAGES.has('reports'));
-  assert.match(html, /<button class="nav-dd-item" onclick="showPage\('reports'\);closeNavDD\(\)">/);
+  // v3.73: the desktop More dropdown is retired, Reports is a sidebar item (Workspace) in its place
+  assert.match(html, /<button class="nav-btn" aria-label="Reports" onclick="showPage\('reports'\)">/);
+  assert.doesNotMatch(html, /<button class="nav-dd-item" onclick="showPage\('reports'\);closeNavDD\(\)">/);
   assert.match(html, /<button class="sheet-item" data-page="reports" onclick="moreGo\('reports'\)">/);
   assert.match(css, /html\.dealer-preview-only #page-reports,/);
   const guide = html.slice(html.indexOf('id="guide-source"'), html.indexOf('</script>', html.indexOf('id="guide-source"')));

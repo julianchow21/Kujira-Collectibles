@@ -14,44 +14,46 @@ function attribute(tag, name) {
   return match ? match[1] : null;
 }
 
+// v3.73: the desktop is a sidebar of exact items (the More dropdown is retired), the phone has a tab bar with a More tab and the
+// More sheet. The fixture has five sidebar items, the three tab-bar items that matter and the sheet entries for Guide and a stale one.
 function makeNavigationFixture(document) {
   const controls = {
-    desktopDashboard: document.getElementById('desktop-dashboard'),
-    desktopInventory: document.getElementById('desktop-inventory'),
-    desktopMore: document.getElementById('desktop-more'),
+    sidebarDashboard: document.getElementById('sidebar-dashboard'),
+    sidebarInventory: document.getElementById('sidebar-inventory'),
+    sidebarSlabs: document.getElementById('sidebar-slabs'),
+    sidebarBoxes: document.getElementById('sidebar-boxes'),
+    sidebarGuide: document.getElementById('sidebar-guide'),
     bottomDashboard: document.getElementById('bottom-dashboard'),
     bottomInventory: document.getElementById('bottom-inventory'),
     bottomMore: document.getElementById('btb-more'),
-    dropdownGuide: document.getElementById('dropdown-guide'),
     sheetGuide: document.getElementById('sheet-guide'),
     staleSheet: document.getElementById('sheet-stale'),
   };
-  controls.desktopDashboard.setAttribute('onclick', "showPage('dashboard')");
-  controls.desktopInventory.setAttribute('onclick', "showPage('inventory')");
-  controls.desktopMore.setAttribute('onclick', "toggleNavDD('more', event)");
-  controls.desktopMore.classList.add('nav-dd-trigger');
+  controls.sidebarDashboard.setAttribute('onclick', "showPage('dashboard')");
+  controls.sidebarInventory.setAttribute('onclick', "showPage('inventory')");
+  controls.sidebarSlabs.setAttribute('onclick', "showPage('slabs')");
+  controls.sidebarBoxes.setAttribute('onclick', "showPage('boosterBoxes')");
+  controls.sidebarGuide.setAttribute('onclick', "showPage('guide')");
   controls.bottomDashboard.setAttribute('onclick', "showPage('dashboard')");
   controls.bottomInventory.setAttribute('onclick', "showPage('inventory')");
   controls.bottomMore.setAttribute('onclick', 'openMoreSheet()');
-  controls.dropdownGuide.setAttribute('onclick', "showPage('guide');closeNavDD()");
   controls.sheetGuide.setAttribute('onclick', "moreGo('guide')");
   controls.sheetGuide.setAttribute('data-page', 'guide');
   controls.staleSheet.setAttribute('data-page', 'trash');
   Object.values(controls).forEach(control => control.setAttribute('aria-current', 'page'));
 
-  const desktopMoreParent = document.getElementById('desktop-more-parent');
-  controls.desktopMore.closest = selector => selector === '.nav-dd' ? desktopMoreParent : null;
-  controls.dropdownGuide.closest = selector => selector === '.nav-dd' ? desktopMoreParent : null;
   document.querySelectorAll = selector => {
     if (selector === '.page') return [];
-    if (selector === '.nav-btn') return [controls.desktopDashboard, controls.desktopInventory, controls.desktopMore];
+    if (selector === '.nav-btn') return [controls.sidebarDashboard, controls.sidebarInventory, controls.sidebarSlabs, controls.sidebarBoxes, controls.sidebarGuide];
     if (selector === '.btb-item') return [controls.bottomDashboard, controls.bottomInventory, controls.bottomMore];
-    if (selector === '.nav-dd-item') return [controls.dropdownGuide];
+    if (selector === '.nav-dd-item') return [];
     if (selector === '#more-sheet .sheet-item[data-page]') return [controls.sheetGuide, controls.staleSheet];
-    if (selector === '.nav-dd') return [desktopMoreParent];
     return [];
   };
-  return controls;
+  const sidebar = [controls.sidebarDashboard, controls.sidebarInventory, controls.sidebarSlabs, controls.sidebarBoxes, controls.sidebarGuide];
+  const bottom = [controls.bottomDashboard, controls.bottomInventory, controls.bottomMore];
+  const current = list => list.filter(b => b.getAttribute('aria-current') === 'page');
+  return { ...controls, sidebar, bottom, current };
 }
 
 test('runtime accessibility: AI panel toggle keeps aria-expanded aligned with its visible state', async () => {
@@ -77,38 +79,43 @@ test('runtime accessibility: normal pages have one current control in each persi
   const controls = makeNavigationFixture(document);
   ctx.showPage('inventory');
 
-  assert.strictEqual(controls.desktopInventory.getAttribute('aria-current'), 'page');
+  assert.strictEqual(controls.sidebarInventory.getAttribute('aria-current'), 'page');
   assert.strictEqual(controls.bottomInventory.getAttribute('aria-current'), 'page');
-  assert.deepStrictEqual(
-    [controls.desktopDashboard, controls.desktopInventory, controls.desktopMore].filter(b => b.getAttribute('aria-current') === 'page'),
-    [controls.desktopInventory],
-    'desktop navigation has exactly one current item'
-  );
-  assert.deepStrictEqual(
-    [controls.bottomDashboard, controls.bottomInventory, controls.bottomMore].filter(b => b.getAttribute('aria-current') === 'page'),
-    [controls.bottomInventory],
-    'bottom navigation has exactly one current item'
-  );
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarInventory], 'the sidebar has exactly one current item');
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomInventory], 'the tab bar has exactly one current item');
   assert.strictEqual(controls.staleSheet.getAttribute('aria-current'), null, 'stale menu state is removed');
 });
 
-test('runtime accessibility: grouped More pages mark both persistent More controls and exact menu items only when present', async () => {
+test('runtime accessibility: the sidebar lights the exact item for every page, and the tab bar lights More for a page it has no tab for', async () => {
   const { ctx, document } = await loadApp();
   const controls = makeNavigationFixture(document);
+
+  // Slabs has a sidebar item and no tab: both regions say so
+  ctx.showPage('slabs');
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarSlabs], 'the exact sidebar item, MORE_PAGES or not');
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomMore], 'Slabs is behind More on the phone');
+  assert.strictEqual(controls.bottomInventory.getAttribute('aria-current'), null, 'Collection is Singles only');
+
+  // Booster Packs has no item of its own, the item that holds it (Boxes & packs) is current
   ctx.showPage('boosterPacks');
-
-  assert.strictEqual(controls.desktopMore.getAttribute('aria-current'), 'page');
-  assert.strictEqual(controls.bottomMore.getAttribute('aria-current'), 'page');
-  assert.strictEqual(controls.dropdownGuide.getAttribute('aria-current'), null, 'Booster Packs has no desktop child item');
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarBoxes]);
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomMore]);
   assert.strictEqual(controls.sheetGuide.getAttribute('aria-current'), null, 'Booster Packs has no sheet item');
-  assert.strictEqual(controls.desktopInventory.getAttribute('aria-current'), null, 'normal-page state is cleared');
+  ctx.showPage('boosterBoxes');
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarBoxes]);
 
+  // Guide: its sidebar item, the More tab and its sheet entry, and only the exact sheet page
   ctx.showPage('guide');
-  assert.strictEqual(controls.desktopMore.getAttribute('aria-current'), 'page');
-  assert.strictEqual(controls.bottomMore.getAttribute('aria-current'), 'page');
-  assert.strictEqual(controls.dropdownGuide.getAttribute('aria-current'), 'page');
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarGuide]);
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomMore]);
   assert.strictEqual(controls.sheetGuide.getAttribute('aria-current'), 'page');
   assert.strictEqual(controls.staleSheet.getAttribute('aria-current'), null, 'only the exact sheet page is current');
+
+  // back to a page with a tab: More lets go and the sidebar follows
+  ctx.showPage('dashboard');
+  assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarDashboard]);
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomDashboard]);
+  assert.strictEqual(controls.sheetGuide.getAttribute('aria-current'), null);
 });
 
 test('runtime accessibility: Sealed exposure disclosure is a native labelled control with synced state', async () => {

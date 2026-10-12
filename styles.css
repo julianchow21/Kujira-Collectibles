@@ -13,6 +13,13 @@ button,input,select,textarea{font-family:inherit;font-variant-numeric:inherit}
      one violet accent. Variable names are unchanged so every rule keeps working. */
   --bg:#0B0B0E;--bg2:#131317;--bg3:#1B1B21;--bg4:#24242B;
   --border:#1F1F25;--border2:#26262E;
+  /* The navigation shell (redesign Step 6a, v3.73): the sidebar, the icon rail, the phone header and the tab bar sit one
+     step above the ground. Its geometry is shared through four variables, set here for the sidebar (1280px and wider)
+     and overridden for the rail and the phone at the end of this file: --kjr-side-w is the width the shell takes at the
+     left of the page, --kjr-top-off the height it takes at the top (the phone header only), --kjr-tab-h and
+     --kjr-tab-lift the tab bar and how far its raised button stands above it. */
+  --sidebar:#0E0E12;
+  --kjr-side-w:calc(232px + env(safe-area-inset-left));--kjr-top-off:env(safe-area-inset-top);--kjr-tab-h:60px;--kjr-tab-lift:14px;
   --text:#F5F5F7;--text2:#B4B4BE;--text3:#8C8C97;
   --red:#FB7185;--red2:#E5485F;--red-soft:#2A1419;
   --green:#34D399;--green-soft:#10261D;
@@ -65,6 +72,8 @@ html.light{
   /* Light gallery palette (redesign Step 1, v3.68): same violet accent family as dark, teal retired. */
   --bg:#F6F6F7;--bg2:#FFFFFF;--bg3:#F1F1F3;--bg4:#E8E8EC;
   --border:#E4E4E8;--border2:#D4D4D8;
+  /* Between the ground and the surface, the way the dark sidebar sits between its ground and surface. */
+  --sidebar:#FBFBFC;
   --text:#0B0B0E;--text2:#55555F;--text3:#6B6B76;
   --red:#C7334A;--red2:#A82A3D;--red-soft:#FCECEF;
   --green:#0F7A55;--green-soft:#E3F4EC;
@@ -108,33 +117,12 @@ html.light body::before{content:"";position:fixed;top:0;left:0;right:0;height:en
 a{color:var(--link);text-decoration:none}
 a:hover{text-decoration:underline}
 
-/* TOPBAR */
-.topbar{background:var(--bg2);background:color-mix(in srgb,var(--bg2) 82%,transparent);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 24px;padding-top:env(safe-area-inset-top);padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right));display:flex;align-items:center;gap:0;height:calc(56px + env(safe-area-inset-top));position:sticky;top:0;z-index:100}
-.logo{font-weight:800;font-size:16px;letter-spacing:0.2px;margin-right:32px;display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);cursor:pointer}
-.logo:hover,.logo:focus{text-decoration:none;outline:none}
-.logo:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
-.logo-whale{height:30px;width:auto;flex-shrink:0}
-.logo-name{display:flex;flex-direction:column;line-height:1.1}
-/* Plain-text lockup (the pink gradient is retired). Explicit classes, not
-   span:first/last-child, so the version badge keeps its own inline styling. */
-.logo-title{font-size:16px;font-weight:600;letter-spacing:-0.01em;color:var(--text)}
-.logo-sub{font-size:12px;font-weight:500;color:var(--text3)}
-.nav{display:flex;gap:2px;flex:1}
-/* font-weight is FIXED at 500 for every state: a weight change on .active made
-   the text wider, so the whole tab row shifted on every click (and transition:all
-   animated the reflow). Active is signalled by the pill background + colour only:
-   a violet --accent-soft pill with an --accent icon. Hover stays on --bg3 so hover
-   and active read differently (--bg3 on the --bg2 topbar was nearly invisible as
-   the active state in dark). */
-.nav-btn{padding:8px 16px;border-radius:var(--radius);border:none;background:transparent;cursor:pointer;font-size:13px;font-weight:500;color:var(--text2);transition:background 0.15s,color 0.15s;font-family:inherit;display:flex;align-items:center;gap:6px;white-space:nowrap}
-.nav-btn:hover{background:var(--bg3);color:var(--text)}
-.nav-btn.active{background:var(--accent-soft);color:var(--text)}.nav-btn svg{width:15px;height:15px;flex-shrink:0}
-.nav-btn.active svg{color:var(--accent)}
+/* NAVIGATION SHELL. The top bar is gone (redesign Step 6a, v3.73). The one .topbar element is a fixed sidebar from
+   1280px, a 64px icon rail from 601px to 1279px and the sticky phone header at 600px and below, and the bottom tab bar
+   is the phone's other half. All of their rules sit in the "Navigation shell" section at the end of this file, so the
+   rail and phone overrides come after every base rule. What stays up here is the dropdown the Settings menu uses. */
 /* Nav dropdown */
 .nav-dd{position:relative}
-.nav-dd-trigger{display:flex;align-items:center;gap:6px}
-.nav-dd.open .nav-dd-caret{transform:rotate(180deg)}
-.nav-dd-caret{transition:transform 0.15s}
 .nav-dd-menu{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:4px;z-index:160;min-width:172px;box-shadow:var(--shadow-md)}
 .nav-dd.open .nav-dd-menu{display:flex;flex-direction:column;gap:1px}
 .nav-dd-menu.dd-right{left:auto;right:0}
@@ -148,26 +136,6 @@ a:hover{text-decoration:underline}
 .nav-dd-subitem:hover{background:var(--bg3);color:var(--text)}
 .nav-dd-subitem svg{width:14px;height:14px;flex-shrink:0;color:var(--text3)}
 .nav-dd-item.active svg{color:var(--accent)}
-/* Mark the dropdown trigger itself "active" when its menu owns the current page,
-   with the same treatment as .nav-btn.active (accent-soft pill, accent icons) */
-.nav-dd.contains-active>.nav-dd-trigger{background:var(--accent-soft);color:var(--text)}
-.nav-dd.contains-active>.nav-dd-trigger svg{color:var(--accent)}
-.topbar-actions{display:flex;align-items:center;gap:6px;margin-left:12px;flex-shrink:0}
-/* Sync indicator: a compact, keyboard-accessible button. The same currentColor
-   treatment serves the idle, pending, saving and error states, while the
-   diagnostics modal supplies the detail behind the pill. */
-/* flex-shrink:0 + max-width live here (not inline) so the mobile override
-   at max-width:768px below can actually win - an inline style attribute
-   otherwise always beats an external stylesheet rule, which is what let the
-   pill get squeezed to ~52px ("⚠ S…") on 375px before this fix (Finding 3). */
-#sync-indicator{flex-shrink:0;max-width:220px}
-#sync-indicator{appearance:none;-webkit-appearance:none;padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb, currentColor 35%, transparent);background:color-mix(in srgb, currentColor 8%, transparent);color:var(--text3);font-size:11px;font-weight:500;font-family:inherit;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:color 0.3s,background 0.3s,border-color 0.3s}
-#sync-indicator:hover{background:color-mix(in srgb, currentColor 10%, transparent)}
-#sync-indicator[data-state="error"]{color:var(--red)}
-#sync-indicator[data-state="pending"]{color:var(--amber)}
-#sync-indicator[data-state="saving"]{color:var(--text3)}
-#sync-indicator[data-state="ok"]{color:var(--green)}
-#sync-indicator[hidden]{display:none}
 .icon-btn{width:32px;height:32px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text2);transition:all 0.15s;flex-shrink:0}
 .icon-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--border2)}
 .icon-btn svg{width:15px;height:15px}
@@ -206,7 +174,8 @@ a:hover{text-decoration:underline}
    (CSS spec), which silently makes .tbl-wrap the sticky containing block, so
    th{position:sticky} never engaged against the page scroll - on ANY width.
    Desktop tables fit the viewport, so above 1000px drop the scroll container
-   entirely and let headers stick to the viewport below the topbar. Narrow
+   entirely and let headers stick to the top of the viewport (the sidebar and the
+   rail sit beside the page, not above it, since v3.73). Narrow
    widths keep the horizontal scroller (and give up sticky, as before).
    Trade-off: with many optional columns enabled a very wide table can now
    overflow the body horizontally on desktop - acceptable, rare, scrollable. */
@@ -216,10 +185,10 @@ th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-siz
 /* Stick the whole thead as one unit (not per-th): both header rows (labels +
    filter inputs) stay in normal flow relative to each other so they cannot
    overlap, and ride along together. Modern Chrome + iOS Safari support this. */
-.tbl-wrap thead{position:sticky;top:calc(56px + env(safe-area-inset-top));z-index:5;background:var(--bg2)}
+.tbl-wrap thead{position:sticky;top:env(safe-area-inset-top);z-index:5;background:var(--bg2)}
 /* <=1000px the wrap itself is a scroll container (overflow-x auto/hidden), so
-   sticky scopes to the WRAP, not the page: top:56px would shove the header
-   56px down INTO the first rows at rest. Stick to the wrap top instead, which
+   sticky scopes to the WRAP, not the page: a page offset would shove the header
+   down INTO the first rows at rest. Stick to the wrap top instead, which
    the wrap never scrolls vertically, so the header simply stays in flow. */
 @media(max-width:1000px){.tbl-wrap thead{top:0}}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
@@ -357,7 +326,9 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast.toast-error #toast-bar{background:var(--red)}
 #toast.toast-warn{border-left-color:var(--amber)}
 #toast.toast-warn #toast-bar{background:var(--amber)}
-@media(max-width:768px){#toast{bottom:calc(56px + env(safe-area-inset-bottom) + 12px);right:12px;left:12px;max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
+@media(max-width:768px){#toast{bottom:calc(12px + env(safe-area-inset-bottom));right:12px;left:calc(var(--kjr-side-w) + 12px);max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
+/* 600px and below the tab bar is up, and its raised "+" stands above it: the toast clears both (Navigation shell section) */
+@media (max-width: 600px){#toast{bottom:calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 12px)}}
 
 /* STALE-SHELL UPDATE PILL - stays reachable above the auth gate so a signed-out
    shell can activate a waiting worker. */
@@ -365,7 +336,8 @@ textarea.fi{resize:vertical;min-height:70px}
 #kjr-update-pill.show{display:flex}
 #kjr-update-pill-close{flex-shrink:0;background:none;border:none;color:var(--text3);font-size:15px;line-height:1;padding:4px;cursor:pointer}
 html.auth-gated #kjr-update-pill{z-index:200001}
-@media(max-width:768px){#kjr-update-pill{left:12px;right:12px;bottom:calc(64px + env(safe-area-inset-bottom));justify-content:center}}
+@media(max-width:768px){#kjr-update-pill{left:calc(var(--kjr-side-w) + 12px);right:12px;bottom:calc(12px + env(safe-area-inset-bottom));justify-content:center}}
+@media (max-width: 600px){#kjr-update-pill{bottom:calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 8px)}}
 /* ── HIG additions ── */
 .hig-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;gap:16px;color:var(--text3)}
 .hig-spinner{width:28px;height:28px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:hig-spin 0.75s linear infinite}
@@ -387,18 +359,8 @@ html.auth-gated #kjr-update-pill{z-index:200001}
 .touch-tip{position:fixed;z-index:9000;max-width:min(78vw,300px);background:var(--bg4);border:1px solid var(--border2);border-radius:8px;padding:7px 11px;font-size:13px;line-height:1.4;color:var(--text);box-shadow:var(--shadow-md);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;white-space:normal}
 .touch-tip.show{opacity:1;transform:translateY(0)}
 @media (hover:none){[title]{-webkit-touch-callout:none}}
-/* Bottom tab bar (mobile) */
-.bottom-tab-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);z-index:150;padding:0;padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
-.bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:56px}
-.btb-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:transparent;cursor:pointer;color:var(--text3);font-size:10px;font-family:inherit;padding:6px 2px;transition:color 0.15s;line-height:1}
-.btb-item svg{width:20px;height:20px;flex-shrink:0}
-.btb-item.active{color:var(--accent)}
-.btb-item:hover{color:var(--text)}
-@media(max-width:768px){
-  .bottom-tab-bar{display:block}
-  .nav{display:none}
-  body{padding-bottom:calc(56px + env(safe-area-inset-bottom) + 16px)}
-}
+/* Bottom tab bar (phone, 600px and below): hidden here, drawn by the Navigation shell section at the end of this file */
+.bottom-tab-bar{display:none}
 /* ── Tier 0 mobile baseline (24/05/2026) ──
    Prevents iOS Safari auto-zoom on input focus (font-size must be >=16px).
    Also kills the grey tap-highlight flash and the long-press callout menu
@@ -471,19 +433,6 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
   .col-toggle-item{min-height:44px}
 }
 
-/* ── Tier 2: frosted tab bar + 44px touch targets ── */
-@media(max-width:768px){
-  .bottom-tab-bar{
-    background:var(--bg2);
-    background:color-mix(in srgb,var(--bg2) 80%,transparent);
-    -webkit-backdrop-filter:blur(20px) saturate(180%);
-    backdrop-filter:blur(20px) saturate(180%);
-    border-top:0.5px solid var(--border2);
-  }
-  .btb-item{min-height:44px;transition:color 0.15s,transform 0.05s}
-  .btb-item:active{transform:scale(0.93)}
-}
-
 /* ── Bottom sheet (shared: More menu + mobile modals) ── */
 dialog.sheet-overlay{border:none;background:transparent;padding:0;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-end;justify-content:center}
 @supports (height:100dvh){dialog.sheet-overlay{height:100dvh}}
@@ -526,40 +475,9 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
   .cmd-box{width:100%;max-width:none;border-radius:16px}
 }
 
-/* ── Tier 4: large mobile titles + decluttered topbar ── */
+/* ── Tier 4: large mobile titles (the phone header is in the Navigation shell section at the end) ── */
 @media(max-width:768px){
   .section-title{font-size:26px;letter-spacing:-0.5px;margin-bottom:12px;line-height:1.1}
-  /* .logo pinned to flex-shrink:0 so the brand mark never squashes; all the
-     shrinking needed to fit a long sync string goes to topbar-actions/the
-     pill instead (base rule has flex-shrink:0 on topbar-actions, which is
-     fine on desktop where .nav's flex:1 leaves it plenty of room, but with
-     .nav hidden here it must be allowed to shrink or it overflows the
-     topbar - see the sync-indicator rule below). */
-  /* margin-right:0 reclaims the 32px gap the base .logo rule reserves for
-     .nav (which is display:none here) - that dead space was the real reason
-     the topbar overflowed at 375px once the sync pill got flex-shrink:0
-     protection above (Finding 3): the gear/settings icon-btn was being pushed
-     off the right edge with ~20-28px to spare that this margin was wasting. */
-  .logo{flex-shrink:0;margin-right:0}
-  .topbar-actions{gap:4px;margin-left:auto;flex-shrink:1;min-width:0}
-  .topbar-actions .icon-btn{display:none}
-  /* keep the gear (Settings) reachable on mobile */
-  .topbar-actions .nav-dd .icon-btn{display:flex}
-  /* Sync pill text is short at mobile widths ("Syncing...", "Synced",
-     "⚠ Sync error" - see setSyncStatus), so protect it with flex-shrink:0 and
-     a fitting max-width instead of letting it get squeezed toward 0 by its
-     siblings (was rendering "⚠ S…" at 52px before this fix). It stays hidden
-     while idle, so it does not reserve dead space before sync has a status. */
-  #sync-indicator{flex-shrink:0;min-width:0;max-width:130px}
-  /* padding trimmed from 18px to 12px each side (was 64px wide total incl.
-     the 20px icon) - the icon-only button doesn't need that much horizontal
-     padding, and the saved ~12px keeps the topbar from overflowing at 375px
-     now that the sync pill is protected with flex-shrink:0 above (Finding 3) -
-     without this the settings gear got pushed off the right edge of the
-     viewport. min-width dropped to match so it can actually shrink that far. */
-  .topbar-actions .btn-primary{font-size:0;padding:0 12px;min-height:42px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;gap:0}
-  .topbar-actions .btn-primary svg{width:20px;height:20px;margin:0}
-  .topbar-actions .btn-primary span{display:none}
 }
 
 /* Hidden on desktop; revealed in the mobile eBay section below */
@@ -1210,20 +1128,13 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 
 /* RESPONSIVE */
 @media(max-width:700px){
-  .topbar{padding:0 12px;padding-top:env(safe-area-inset-top);padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
   .main{padding:12px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
-  .nav-btn span{display:none}
   .metrics{grid-template-columns:1fr 1fr}
-}
-/* Landscape phone (e.g. 932x430): icon-only nav so the topbar does not clip
-   More/Quick Entry/gear. Mirrors the ≤700px nav-btn span rule above. */
-@media(min-width:701px) and (max-width:1000px){
-  .nav-btn span{display:none}
 }
 
 /* ── GUIDE PAGE (in-app user guide rendered from markdown) ── */
 .guide-wrap{display:grid;grid-template-columns:240px 1fr;gap:24px;align-items:flex-start;max-width:1200px;margin:0 auto}
-.guide-toc{position:sticky;top:80px;max-height:calc(100vh - 100px);overflow-y:auto;padding:16px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px}
+.guide-toc{position:sticky;top:calc(var(--kjr-top-off) + 24px);max-height:calc(100vh - var(--kjr-top-off) - 48px);overflow-y:auto;padding:16px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px}
 .guide-toc-title{font-size:12px;color:var(--text3);font-weight:500;margin-bottom:8px;padding:0 4px}
 .guide-toc a{display:block;padding:5px 8px;color:var(--text2);text-decoration:none;border-radius:4px;line-height:1.4;transition:background 0.1s,color 0.1s;border-left:2px solid transparent}
 .guide-toc a:hover{background:var(--bg3);color:var(--text)}
@@ -1232,8 +1143,8 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 .guide-toc a.active{background:var(--bg3);color:var(--accent);border-left-color:var(--accent)}
 .guide-content{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px 40px;line-height:1.65;color:var(--text);font-size:14px;min-height:60vh;min-width:0;overflow-wrap:break-word;word-wrap:break-word}
 .guide-content h1{font-size:26px;font-weight:700;margin:0 0 18px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:16px;overflow-wrap:break-word;word-wrap:break-word}
-.guide-content h2{font-size:20px;font-weight:600;margin:36px 0 16px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
-.guide-content h3{font-size:16px;font-weight:600;margin:24px 0 10px;color:var(--text);scroll-margin-top:80px;overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h2{font-size:20px;font-weight:600;margin:36px 0 16px;color:var(--text);scroll-margin-top:calc(var(--kjr-top-off) + 24px);overflow-wrap:break-word;word-wrap:break-word}
+.guide-content h3{font-size:16px;font-weight:600;margin:24px 0 10px;color:var(--text);scroll-margin-top:calc(var(--kjr-top-off) + 24px);overflow-wrap:break-word;word-wrap:break-word}
 .guide-content h4{font-size:14px;font-weight:600;margin:18px 0 8px;color:var(--text2)}
 .guide-content p{margin:0 0 12px;color:var(--text2)}
 .guide-content strong{color:var(--text);font-weight:600}
@@ -1270,8 +1181,11 @@ tr.recent-add{background:linear-gradient(90deg, color-mix(in srgb, var(--accent)
 }
 
 /* ── SENTRY PANEL ── */
-#sentry-drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:100vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:8000;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);box-shadow:-8px 0 32px rgba(0,0,0,0.4)}
-#sentry-drawer.open{transform:translateX(0)}
+#sentry-drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:100vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:8000;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(0.4,0,0.2,1),box-shadow 0.28s cubic-bezier(0.4,0,0.2,1)}
+/* The shadow belongs to the open state only: closed, the drawer waits just off the right edge at translateX(100%), and a
+   shadow cast to its left would bleed into every page as a grey strip (most visible in the light theme). It eases in and
+   out with the slide, none to shadow interpolates. */
+#sentry-drawer.open{transform:translateX(0);box-shadow:-8px 0 32px rgba(0,0,0,0.4)}
 #sentry-drawer-overlay{display:none;position:fixed;inset:0;background:var(--backdrop);z-index:7999}
 #sentry-drawer-overlay.open{display:block}
 .sentry-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
@@ -1563,6 +1477,7 @@ dialog.kjr-complete-back::backdrop{background:var(--backdrop)}
 /* Loopback Dealer Desk fixture: keep unrelated inventory mutators and cloud
    status out of the review surface. The production page has no marker class. */
 html.dealer-preview-only .topbar .nav,
+html.dealer-preview-only .topbar .kjr-side-actions,
 html.dealer-preview-only .topbar-actions,
 html.dealer-preview-only .bottom-tab-bar,
 html.dealer-preview-only #sentry-drawer,
@@ -1678,7 +1593,7 @@ html.dealer-preview-only #page-dealer{display:block!important}
 .dealer-production-local{display:inline-flex;padding:3px 7px;border:1px solid var(--amber);border-radius:999px;color:var(--amber);font-size:10px;font-weight:650;letter-spacing:.03em;text-transform:uppercase}
 .dealer-production-layout{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:14px;align-items:start}
 .dealer-production-list,.dealer-production-section,.dealer-production-pending{padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg2)}
-.dealer-production-list{position:sticky;top:calc(56px + env(safe-area-inset-top) + 12px);max-height:calc(100vh - 80px - env(safe-area-inset-top));overflow:auto;min-width:0}
+.dealer-production-list{position:sticky;top:calc(var(--kjr-top-off) + 12px);max-height:calc(100vh - 24px - var(--kjr-top-off));overflow:auto;min-width:0}
 .dealer-production-list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
 .dealer-production-list h2,.dealer-production-section h2{margin:0;font-size:15px}
 .dealer-production-picker{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;color:var(--text3);font-size:11px;font-weight:650}
@@ -2131,7 +2046,7 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
 .ov-mover.is-inspected{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--b-slab-bd)}
 
 /* The panel */
-#kjr-inspector{position:fixed;top:calc(56px + env(safe-area-inset-top));right:0;bottom:0;z-index:120;display:flex;flex-direction:column;width:min(440px,100vw);background:var(--bg2);border-left:1px solid var(--border);box-shadow:var(--shadow-lg);color:var(--text);transition:transform 0.2s ease-out,opacity 0.2s ease-out}
+#kjr-inspector{position:fixed;top:env(safe-area-inset-top);right:0;bottom:0;z-index:120;display:flex;flex-direction:column;width:min(440px,100vw);background:var(--bg2);border-left:1px solid var(--border);box-shadow:var(--shadow-lg);color:var(--text);transition:transform 0.2s ease-out,opacity 0.2s ease-out}
 #kjr-inspector[hidden]{display:none}
 @starting-style{#kjr-inspector:not([hidden]){transform:translateX(24px);opacity:0}}
 .kjr-insp-scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:20px;padding:0 24px calc(24px + env(safe-area-inset-bottom));overflow-y:auto;overscroll-behavior:contain}
@@ -2224,10 +2139,11 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
 .kjr-rowmenu [aria-disabled="true"],.kjr-rowmenu [aria-disabled="true"]:hover{background:transparent;color:var(--text3);cursor:not-allowed}
 
 /* Split view: from 1280px the page makes room for the panel while it is open, so the list stays fully visible.
-   The padding is the panel width plus 16px, less whatever margin the 1400px page already leaves on the right.
+   The padding is the panel width plus 16px, less whatever margin the 1400px page already leaves on the right. The
+   page sits to the right of the sidebar (v3.73), so that margin is measured from the width the sidebar leaves it.
    The toast and the update pill step left of the panel so they never sit on its buttons. */
 @media(min-width:1280px){
-  body.kjr-insp-open .main:has(.page.active){padding-right:max(24px,calc(456px - max(0px,(100vw - 1400px) / 2)))}
+  body.kjr-insp-open .main:has(.page.active){padding-right:max(24px,calc(456px - max(0px,(100vw - var(--kjr-side-w) - 1400px) / 2)))}
 }
 @media(min-width:901px){
   body.kjr-insp-open #toast{right:464px}
@@ -2250,4 +2166,273 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
    the Overview's 900px block with lastIndexOf on the compact form, so no later block may use it.) */
 @media (max-width: 900px){
   #kjr-inspector{display:none!important}
+}
+
+/* ═══════════ Navigation shell (redesign Step 6a, v3.73) ═══════════
+   New in this step and last in the file, so the rail and phone overrides come after every base rule. Existing tokens
+   only, plus --sidebar. One element, .topbar, is three things: from 1280px a fixed 232px sidebar, from 601px to 1279px
+   a fixed 64px icon rail, and at 600px and below the sticky phone header. The bottom tab bar and the Holdings rows are
+   the phone's other half. The page keeps clear of the shell through the body padding (--kjr-side-w), the phone header
+   through --kjr-top-off and the tab bar through --kjr-tab-h. No backdrop-filter anywhere on the shell: it would make a
+   stacking context that paints over the Settings menu. Media queries here are written with spaces on purpose,
+   tests/overview.test.js finds the Overview's blocks with lastIndexOf on the compact form, so no later block may use it. */
+
+@media (min-width: 601px) and (max-width: 1279px){
+  :root{--kjr-side-w:calc(64px + env(safe-area-inset-left))}
+}
+@media (max-width: 600px){
+  :root{--kjr-side-w:0px;--kjr-top-off:calc(56px + env(safe-area-inset-top))}
+}
+body{padding-left:var(--kjr-side-w)}
+
+/* The nav item follows the window height, so all 14 fit where they can. --kjr-k is everything in the shell except the items
+   (padding, gaps, logo, Search, Add, separators or labels, the footer) for the layout in force, plus 2px so rounding never starts
+   a scroll. Each layout below sets --kjr-k and --kjr-item-max, and an item gets its share of what is left, never under 32px.
+   100dvh where the browser has it, because a tablet or phone browser's toolbars change the visible height. --kjr-touch is the
+   44px Settings button a touch screen gets from the global pointer rule, 8px taller than the 36px one. tests/navigation.test.js
+   rebuilds each --kjr-k from the sizes its layout declares, so change a size and its --kjr-k together or that test fails. */
+:root{--kjr-vh:100vh;--kjr-touch:0px}
+@supports (height: 100dvh){
+  :root{--kjr-vh:100dvh}
+}
+@media (pointer: coarse){
+  :root{--kjr-touch:8px}
+}
+
+/* ── Shared by the sidebar, the rail and the phone header ── */
+.topbar{position:fixed;top:0;bottom:0;left:0;z-index:100;box-sizing:border-box;display:flex;flex-direction:column;background:var(--sidebar);border-right:1px solid var(--border)}
+.topbar{--kjr-k:0px;--kjr-item-max:40px;--kjr-item:clamp(32px,calc((var(--kjr-vh) - var(--kjr-k) - env(safe-area-inset-top) - env(safe-area-inset-bottom)) / 14),var(--kjr-item-max))}
+.logo{display:flex;flex:none;align-items:center;gap:10px;margin:0;color:var(--text);cursor:pointer;border-radius:var(--radius);text-decoration:none}
+.logo:hover,.logo:focus{text-decoration:none;outline:none}
+.logo:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.logo-whale{flex:none;width:40px;height:40px;object-fit:contain}
+.logo-name{display:flex;flex-direction:column;min-width:0;line-height:18px;text-align:left}
+.logo-title{font-size:15px;font-weight:600;letter-spacing:-0.01em;color:var(--text)}
+.logo-sub{font-size:12px;font-weight:400;color:var(--text3)}
+
+/* Search field and the Add button, both open Quick Entry for now */
+.kjr-side-actions{display:flex;flex:none;flex-direction:column;gap:8px}
+.kjr-side-search{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:8px;width:100%;height:40px;margin:0;padding:0 8px 0 12px;border:1px solid var(--border2);border-radius:10px;background:var(--bg2);color:var(--text3);font:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer;transition:border-color 0.16s ease-out,color 0.16s ease-out}
+.kjr-side-search:hover{color:var(--text);border-color:var(--control-border)}
+.kjr-side-search svg{flex:none;width:16px;height:16px}
+.kjr-side-search .kjr-side-label{flex:1 1 auto;min-width:0}
+.kjr-kbd{flex:none;padding:1px 6px;border:1px solid var(--control-border);border-radius:6px;color:var(--text2);font-family:var(--font-mono);font-size:11px;line-height:16px}
+.kjr-side-add{-webkit-appearance:none;appearance:none;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:40px;margin:0;padding:0 16px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-fg);font:inherit;font-size:14px;font-weight:600;line-height:20px;white-space:nowrap;cursor:pointer;transition:background 0.16s ease-out}
+.kjr-side-add:hover{background:var(--accent2)}
+.kjr-side-add svg{flex:none;width:16px;height:16px}
+
+/* The nav: groups of 40px items. It is the one part that scrolls when the window is short, the footer under it stays
+   put. The scrollbar only shows while the pointer is over it. */
+.nav{display:flex;flex-direction:column;gap:18px;flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain}
+.nav::-webkit-scrollbar-track{background:transparent}
+.nav::-webkit-scrollbar-thumb{background:transparent}
+.nav:hover::-webkit-scrollbar-thumb{background:var(--border2)}
+/* A nav that has to scroll says so. Two cover gradients are attached to the content (local) and hide two shadows that are attached
+   to the box, one at the very top and one at the very bottom. So a shadow shows only on an edge that has more to see, and nothing
+   shows while the nav fits. It is the nav's own background, from tokens, with no filter or extra element. */
+.nav{--kjr-shade:color-mix(in srgb,var(--text) 18%,transparent);background-image:linear-gradient(var(--sidebar) 30%,transparent),linear-gradient(transparent,var(--sidebar) 70%),radial-gradient(farthest-side at 50% 0,var(--kjr-shade),transparent),radial-gradient(farthest-side at 50% 100%,var(--kjr-shade),transparent);background-repeat:no-repeat;background-position:0 0,0 100%,0 0,0 100%;background-size:100% 28px,100% 28px,100% 12px,100% 12px;background-attachment:local,local,scroll,scroll}
+.kjr-nav-group{display:flex;flex-direction:column;gap:2px}
+.kjr-nav-label{padding:0 10px 4px;font-size:12px;font-weight:500;line-height:16px;color:var(--text3)}
+.nav-btn{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:40px;margin:0;padding:0 10px;border:0;border-radius:10px;background:transparent;color:var(--text2);font:inherit;font-size:14px;font-weight:500;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer;transition:background 0.16s ease-out,color 0.16s ease-out}
+.nav-btn svg{flex:none;width:18px;height:18px}
+.nav-btn>span:not(.kjr-nav-count){min-width:0;overflow:hidden;text-overflow:ellipsis}
+.nav-btn:hover{background:var(--bg3);color:var(--text)}
+.nav-btn.active{background:var(--accent-soft);color:var(--text)}
+.nav-btn.active svg{color:var(--accent)}
+.nav .nav-btn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.kjr-nav-count{flex:none;margin-left:auto;padding-left:8px;font-size:12px;font-weight:400;color:var(--text3);font-variant-numeric:tabular-nums}
+.kjr-nav-count:empty{display:none}
+/* text3 on the accent-soft pill is 4.37:1 in the light theme, text2 clears it */
+.nav-btn.active .kjr-nav-count{color:var(--text2)}
+
+/* The footer: the sync status and Settings. The dot and its soft ring take their colour from data-sync on the shell, which
+   _syncDiagRenderIndicator sets, so the sidebar dot, the phone's mirror dot and the menu item's dot always agree.
+   The words are always there on the sidebar, so the colour is never the only signal. */
+.topbar[data-sync="ok"]{--kjr-dot:var(--green);--kjr-ring:var(--green-soft)}
+.topbar[data-sync="saving"],.topbar[data-sync="pending"]{--kjr-dot:var(--amber);--kjr-ring:var(--amber-soft)}
+.topbar[data-sync="error"]{--kjr-dot:var(--red);--kjr-ring:var(--red-soft)}
+.kjr-sync-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--kjr-dot,var(--text3));box-shadow:0 0 0 3px var(--kjr-ring,var(--bg3))}
+.topbar-actions{display:flex;align-items:center;gap:4px;flex:none;margin:0;padding:8px 6px 8px 10px;border:1px solid var(--border);border-radius:12px;background:var(--bg2)}
+#sync-indicator{-webkit-appearance:none;appearance:none;display:flex;align-items:center;align-self:stretch;gap:8px;flex:1 1 auto;min-width:0;max-width:none;margin:-8px 0 -8px -10px;padding:8px 0 8px 10px;border:0;border-radius:11px 0 0 11px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;overflow:visible;transition:background 0.16s ease-out}
+#sync-indicator[hidden]{display:none}
+#sync-indicator:hover{background:var(--bg3)}
+#sync-indicator:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.topbar[data-sync="error"] #sync-indicator:hover,.topbar[data-sync="error"] #sync-indicator:focus-visible{background:var(--red-soft)}
+.kjr-sync-text{display:flex;flex-direction:column;flex:1 1 auto;min-width:0}
+.kjr-sync-line1{overflow:hidden;font-size:13px;font-weight:500;line-height:16px;color:var(--text);white-space:nowrap;text-overflow:ellipsis}
+.topbar[data-sync="error"] .kjr-sync-line1{color:var(--red)}
+.topbar[data-sync="error"] #sync-indicator:hover .kjr-sync-line1,.topbar[data-sync="error"] #sync-indicator:focus-visible .kjr-sync-line1{text-decoration:underline;text-underline-offset:3px}
+/* "2 min ago · v3.73 (12 Oct)" is about 135px and the line has about 130, so the version drops to its own line when it must. Nothing is cut off. */
+.kjr-sync-line2{display:flex;flex-wrap:wrap;min-width:0;font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap}
+#sync-ago{flex:none}
+#sync-ago:empty{display:none}
+#app-ver{min-width:0;max-width:100%;overflow:hidden;font-size:11px;font-weight:400;letter-spacing:0;color:var(--text3);text-overflow:ellipsis}
+.topbar #settings-btn{position:relative;flex:none;width:36px;height:36px;border:0;border-radius:9px;background:transparent;color:var(--text2);transition:background 0.16s ease-out,color 0.16s ease-out}
+.topbar #settings-btn:hover{background:var(--bg3);color:var(--text)}
+.topbar #settings-btn svg{width:18px;height:18px}
+.kjr-sync-mirror{display:none}
+.kjr-dd-sync{display:none}
+.kjr-dd-sync+.nav-dd-section{margin-top:0}
+.kjr-dd-sync .kjr-sync-dot{margin:0 3px}
+.kjr-dd-sync-text{display:flex;flex-direction:column;align-items:flex-start;min-width:0;line-height:16px}
+.kjr-dd-sync-sub{font-size:12px;color:var(--text3)}
+/* The Settings menu opens upward from the footer on the sidebar, to the right of the rail, and under the button on a
+   phone. It scrolls inside itself when the window is too short for it, so it is never cut off by the viewport. */
+.topbar .nav-dd-menu.dd-right{min-width:208px;max-height:calc(100vh - 96px);overflow-y:auto;overscroll-behavior:contain}
+
+/* The rail's tooltip (one element, features.js kjrNavTipInstall). Fixed, because the nav scrolls and would clip a child. */
+.kjr-tip{position:fixed;z-index:9000;max-width:260px;padding:6px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--bg4);color:var(--text);font-size:13px;font-weight:500;line-height:18px;white-space:nowrap;box-shadow:var(--shadow-md);pointer-events:none;opacity:0;transform:translateX(-4px);transition:opacity 0.16s ease-out,transform 0.16s ease-out}
+.kjr-tip.show{opacity:1;transform:translateX(0)}
+.kjr-tip[hidden]{display:none}
+
+/* ── Sidebar, 1280px and wider ── */
+@media (min-width: 1280px){
+  .topbar{width:var(--kjr-side-w);gap:16px;padding:20px 12px 12px;padding-top:calc(20px + env(safe-area-inset-top));padding-left:calc(12px + env(safe-area-inset-left));padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .logo{padding:0 8px}
+  .topbar .nav-dd-menu.dd-right{top:auto;bottom:calc(100% + 17px);left:auto;right:-9px}
+}
+/* A short window, in three steps. In each the item is a share of the window (--kjr-k above), so there is no height at which the nav
+   is longer than its box. A step starts where the one before runs out of room: its fixed parts plus 14 items at 32px. The footer
+   is counted at its tallest, 66px, which is what it is when the sync line wraps to three lines. First the gaps close up, then
+   the padding, Search and Add shrink, then the group names give way to the thin separators the rail uses (the words stay in the
+   markup for assistive tech). Below about 690px even that cannot fit, and the nav scrolls with its shadow. */
+@media (min-width: 1280px) and (max-height: 980px){
+  .topbar{gap:14px;--kjr-k:398px}
+  .nav{gap:14px}
+  .nav-btn{height:var(--kjr-item)}
+}
+@media (min-width: 1280px) and (max-height: 850px){
+  .topbar{gap:10px;padding-top:calc(12px + env(safe-area-inset-top));--kjr-k:352px}
+  .nav{gap:10px}
+  .kjr-nav-label{padding-bottom:2px}
+  .kjr-side-search,.kjr-side-add{height:36px}
+}
+@media (min-width: 1280px) and (max-height: 799px){
+  .topbar{gap:8px;padding-top:calc(10px + env(safe-area-inset-top));padding-bottom:calc(10px + env(safe-area-inset-bottom));--kjr-k:242px}
+  .logo-whale{width:34px;height:34px}
+  .kjr-side-actions{gap:6px}
+  .kjr-side-search,.kjr-side-add{height:32px}
+  .nav,.kjr-nav-group{gap:0}
+  .kjr-nav-label{height:1px;margin:4px 8px 3px;padding:0;overflow:hidden;background:var(--border2);font-size:0;line-height:0;color:transparent}
+}
+
+/* ── Icon rail, 601px to 1279px ──
+   The same rail is also used from 1280px to 1599px while the card inspector is open (body.kjr-insp-open): the sidebar plus the
+   panel leave a Singles or Slabs list less than the 867px its columns need there, and the Detail board of the redesign draws
+   the rail beside the open panel. At 1600px and wider the sidebar stays. The two blocks are the same rules, the second with
+   body.kjr-insp-open in front of every selector, so keep them in step. The rail is compact on purpose: its fixed parts add up to 246px
+   (--kjr-k is that plus 2px), so the 14 items fit from 700px tall and are 44px from 864px (see the item height variables above). */
+@media (min-width: 601px) and (max-width: 1279px){
+  .topbar{width:var(--kjr-side-w);align-items:center;gap:8px;padding:8px 0;padding-top:calc(8px + env(safe-area-inset-top));padding-left:env(safe-area-inset-left);padding-bottom:calc(8px + env(safe-area-inset-bottom));--kjr-k:calc(248px + var(--kjr-touch));--kjr-item-max:44px}
+  .logo{justify-content:center;width:40px;height:40px;padding:0}
+  .logo-whale{width:34px;height:34px}
+  .logo-name{display:none}
+  .kjr-side-actions{gap:6px}
+  .kjr-side-search,.kjr-side-add{justify-content:center;width:36px;height:36px;padding:0}
+  .kjr-side-search svg,.kjr-side-add svg{width:18px;height:18px}
+  .kjr-side-label,.kjr-kbd{display:none}
+  .nav{align-items:center;align-self:stretch;gap:0;scrollbar-width:none}
+  .nav::-webkit-scrollbar{display:none}
+  .kjr-nav-group{align-items:center;align-self:stretch;gap:0}
+  .kjr-nav-label{width:24px;height:1px;margin:4px 0 3px;padding:0;overflow:hidden;background:var(--border2);font-size:0;line-height:0;color:transparent}
+  .nav-btn{justify-content:center;width:max(40px,var(--kjr-item));height:var(--kjr-item);padding:0}
+  .nav-btn>span{display:none}
+  .topbar-actions{flex-direction:column;gap:0;padding:0;border:0;background:transparent}
+  #sync-indicator{flex:none;align-self:center;justify-content:center;width:36px;height:28px;margin:0;padding:0;border-radius:9px}
+  .kjr-sync-text{display:none}
+  .topbar .nav-dd-menu.dd-right{top:auto;bottom:-6px;left:calc(100% + 18px);right:auto;max-height:calc(100vh - 16px)}
+}
+@media (min-width: 1280px) and (max-width: 1599px){
+  body.kjr-insp-open{--kjr-side-w:calc(64px + env(safe-area-inset-left))}
+  body.kjr-insp-open .topbar{width:var(--kjr-side-w);align-items:center;gap:8px;padding:8px 0;padding-top:calc(8px + env(safe-area-inset-top));padding-left:env(safe-area-inset-left);padding-bottom:calc(8px + env(safe-area-inset-bottom));--kjr-k:calc(248px + var(--kjr-touch));--kjr-item-max:44px}
+  body.kjr-insp-open .logo{justify-content:center;width:40px;height:40px;padding:0}
+  body.kjr-insp-open .logo-whale{width:34px;height:34px}
+  body.kjr-insp-open .logo-name{display:none}
+  body.kjr-insp-open .kjr-side-actions{gap:6px}
+  body.kjr-insp-open .kjr-side-search,body.kjr-insp-open .kjr-side-add{justify-content:center;width:36px;height:36px;padding:0}
+  body.kjr-insp-open .kjr-side-search svg,body.kjr-insp-open .kjr-side-add svg{width:18px;height:18px}
+  body.kjr-insp-open .kjr-side-label,body.kjr-insp-open .kjr-kbd{display:none}
+  body.kjr-insp-open .nav{align-items:center;align-self:stretch;gap:0;scrollbar-width:none}
+  body.kjr-insp-open .nav::-webkit-scrollbar{display:none}
+  body.kjr-insp-open .kjr-nav-group{align-items:center;align-self:stretch;gap:0}
+  body.kjr-insp-open .kjr-nav-label{width:24px;height:1px;margin:4px 0 3px;padding:0;overflow:hidden;background:var(--border2);font-size:0;line-height:0;color:transparent}
+  body.kjr-insp-open .nav-btn{justify-content:center;width:max(40px,var(--kjr-item));height:var(--kjr-item);padding:0}
+  body.kjr-insp-open .nav-btn>span{display:none}
+  body.kjr-insp-open .topbar-actions{flex-direction:column;gap:0;padding:0;border:0;background:transparent}
+  body.kjr-insp-open #sync-indicator{flex:none;align-self:center;justify-content:center;width:36px;height:28px;margin:0;padding:0;border-radius:9px}
+  body.kjr-insp-open .kjr-sync-text{display:none}
+  body.kjr-insp-open .topbar .nav-dd-menu.dd-right{top:auto;bottom:-6px;left:calc(100% + 18px);right:auto;max-height:calc(100vh - 16px)}
+}
+
+/* ── Phone header, 600px and below ── */
+@media (max-width: 600px){
+  .topbar{position:sticky;top:0;bottom:auto;left:auto;flex-direction:row;align-items:center;gap:8px;height:calc(56px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));background:var(--bg);border-right:0;border-bottom:1px solid var(--border)}
+  .logo{flex:none;gap:10px}
+  .logo-whale{width:34px;height:34px}
+  .logo-title{font-size:17px}
+  .logo-sub{display:none}
+  .nav,.kjr-side-add,#sync-indicator{display:none}
+  .kjr-side-actions{margin-left:auto}
+  .kjr-side-search{justify-content:center;width:44px;height:44px;padding:0;border:1px solid var(--border);border-radius:50%;color:var(--text)}
+  .kjr-side-label,.kjr-kbd{display:none}
+  .kjr-side-search svg{width:18px;height:18px}
+  .topbar-actions{padding:0;border:0;background:transparent}
+  .topbar #settings-btn{width:44px;height:44px;border:1px solid var(--border);border-radius:50%;background:var(--bg2);color:var(--text)}
+  .topbar #settings-btn:hover{background:var(--bg3)}
+  .kjr-sync-dot.kjr-sync-mirror{display:block;position:absolute;top:8px;right:8px;box-shadow:0 0 0 2px var(--bg2)}
+  .kjr-dd-sync{display:flex}
+  .kjr-dd-sync+.nav-dd-section{margin-top:4px}
+  .topbar .nav-dd-menu.dd-right{max-height:calc(100vh - 80px - env(safe-area-inset-top))}
+}
+
+/* ── Bottom tab bar, 600px and below ── */
+.btb-item{flex:1 1 0;min-width:0;min-height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:0;background:transparent;color:var(--text3);font:inherit;font-size:11px;font-weight:500;line-height:14px;cursor:pointer;transition:color 0.16s ease-out}
+.btb-item svg{flex:none;width:22px;height:22px}
+.btb-item.active{color:var(--accent);font-weight:600}
+.btb-item:hover{color:var(--text)}
+.btb-item.active:hover{color:var(--accent)}
+.btb-add{flex:none;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:54px;height:54px;margin:calc(var(--kjr-tab-lift) * -1) 10px 0;padding:0;border:0;border-radius:50%;background:var(--accent);color:var(--accent-fg);box-shadow:0 0 0 5px var(--bg),0 8px 24px var(--accent-glow);cursor:pointer;transition:background 0.16s ease-out,transform 0.16s ease-out}
+.btb-add:hover{background:var(--accent2)}
+.btb-add:active{transform:scale(0.94)}
+.btb-add svg{width:22px;height:22px}
+@media (max-width: 600px){
+  .bottom-tab-bar{display:block;position:fixed;left:0;right:0;bottom:0;z-index:150;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);background:var(--sidebar);border-top:1px solid var(--border)}
+  .bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:var(--kjr-tab-h)}
+  body{padding-bottom:calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
+}
+
+/* ── Phone Holdings rows (Singles and Slabs, list view, 600px and below, not in Tables layout) ──
+   features.js (kjrHoldApply) builds the rows only when this applies and puts .kjr-hold-on on the page, so a page that
+   failed to draw them keeps its table. The table is still rendered underneath, only hidden. */
+.kjr-hold-wrap{display:none}
+.kjr-hold{display:flex;flex-direction:column;margin-bottom:8px}
+.kjr-hold-row{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:12px;width:calc(100% + 16px);min-height:60px;margin:0 -8px;padding:8px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;content-visibility:auto;contain-intrinsic-size:auto 60px;transition:background 0.16s ease-out}
+.kjr-hold-row:active{background:var(--bg3)}
+.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:calc(var(--kjr-top-off) + 16px) 0 calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
+.kjr-hold-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.kjr-hold-row .kjr-thumb{width:32px;height:auto;aspect-ratio:63/88;border-radius:4px}
+.kjr-hold-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+.kjr-hold-name{overflow:hidden;font-weight:500;line-height:20px;white-space:nowrap;text-overflow:ellipsis}
+.kjr-hold-sub{overflow:hidden;font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;text-overflow:ellipsis}
+.kjr-hold-lang{font-family:var(--font-mono)}
+.kjr-hold-val{flex:none;display:flex;flex-direction:column;align-items:flex-end}
+.kjr-hold-price{font-weight:600;line-height:20px;font-variant-numeric:tabular-nums}
+.kjr-hold-pct{font-size:12px;font-weight:600;line-height:16px;font-variant-numeric:tabular-nums}
+.kjr-hold-row.is-sold .kjr-thumb{opacity:0.55}
+.kjr-hold-row.is-sold .kjr-hold-name,.kjr-hold-row.is-sold .kjr-hold-price{color:var(--text2)}
+.kjr-hold-alt{margin-top:4px}
+.kjr-hold-alt .sold-section-toggle{min-height:44px;border:1px dashed var(--border2);border-radius:var(--radius)}
+.kjr-hold-alt .kjr-hold{margin-top:8px}
+@media (hover: hover){
+  .kjr-hold-row:hover{background:var(--bg3)}
+  .kjr-hold-row.is-inspected:hover{background:var(--accent-soft)}
+}
+@media (max-width: 600px){
+  body:not(.force-tables) .page.kjr-hold-on>.card{display:none}
+  body:not(.force-tables) .page.kjr-hold-on .kjr-hold-wrap{display:block}
+}
+
+@media (prefers-reduced-motion: reduce){
+  .nav-btn,.kjr-side-search,.kjr-side-add,.topbar #settings-btn,#sync-indicator,.btb-item,.btb-add,.kjr-hold-row,.kjr-tip{transition:none}
+  .btb-add:active{transform:none}
 }

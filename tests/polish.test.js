@@ -47,12 +47,17 @@ test('wording: no key emoji is left in app.js, and every price API message names
   const said = [];
   ctx.toast = (m) => said.push(String(m));
   ctx.openApiSettings = () => {};
+  // refreshPrice and bulkRefreshPrices follow the refresh queue since v3.75 (tests/refresh-price.test.js): the Worker holds the PPT key, so a
+  // slab is not stopped for a missing local one. Only with the proxy off do they ask, that half runs for real in
+  // tests/refresh-price-noproxy.test.js, so here the wording is pinned where each message lives. Declining the confirm ends the bulk run
+  // before any request.
+  ctx.kjrConfirm = async () => false;
   await ctx.bulkRefreshPrices('slabs');
-  assert.deepEqual(said, ['Add API keys first: open Settings, then API settings']);
-  said.length = 0;
   await ctx.refreshPrice('s1', 'slabs');
-  assert.equal(said[0], 'Add API keys first: open Settings, then API settings');
-  for (const m of said) assert.match(m, /Settings/), assert.match(said[0], /API settings/);
+  assert.ok(!said.includes('Add API keys first: open Settings, then API settings'), 'a slab is not blocked on a missing local key: ' + JSON.stringify(said));
+  assert.match(appSrc, /async function refreshPrice[\s\S]*?toast\('Add API keys first: open Settings, then API settings'\)/);
+  assert.match(appSrc, /async function bulkRefreshPrices[\s\S]*?toast\('Add API keys first: open Settings, then API settings'\); openApiSettings\(\)/);
+  said.length = 0;
   // the status lines and the advice
   assert.match(appSrc, /' · API looks down - check your keys in Settings, then API settings'/);
   assert.match(appSrc, /' · ⚠ key invalid - check Settings, then API settings'/);

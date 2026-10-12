@@ -13239,6 +13239,67 @@ function _preserveModalListingMeta(norm, existing) {
   norm.listingMeta = _kjrListingClone(existing.listingMeta);
 }
 
+// Full-row modal saves keep every key the form does not own (v3.75). Singles and slabs
+// are full-row modal replacements and the saved row used to be built from the form
+// alone, so a save that never touched a key still dropped it: datePurchased, set and
+// dateSold on a slab, whatever a later feature adds, the local pricing markers. The
+// cloud copy lost the synced ones too, because the upsert sends the whole row. This
+// copies every own key of the stored row that the saved row does not already have, so
+// a save only changes what the form shows. The deliberate exceptions:
+//  - keys the callers restore with a rule of their own keep it: createdAt and
+//    createdAtSeq (valid values only), _serverVersion and _updatedAt (the edit
+//    context), listingMeta (a byte copy) and _tcgdexResolvedName (kept only while a
+//    non-blank tcgdexId is unchanged)
+//  - _tcgdexMissDate and _tcgdexPricedDate describe a lookup of one pricing identity,
+//    so they carry only while it is unchanged: tcgdexId, name and language, and for a
+//    slab grader and grade. After an edit that changes one, the card is looked up
+//    afresh, and a card whose number was just fixed leaves the "needs a card number"
+//    list instead of staying flagged under its old name
+//  - no row has an art link to reset. Card art lives in local maps, kjr_card_images by
+//    tcgdexId and kjr_slab_card_ids by slab id with a name signature, so changing the
+//    id cannot leave a stale link on the row. A key called "image" is carried like any
+//    other, nothing can tell it from user data and dropping it would be silent loss
+const _MODAL_OWN_RULE_KEYS = ['createdAt', 'createdAtSeq', '_serverVersion', '_updatedAt', 'listingMeta', '_tcgdexResolvedName'];
+const _MODAL_LOOKUP_MARKERS = ['_tcgdexMissDate', '_tcgdexPricedDate'];
+const _MODAL_PRICING_IDENTITY = { singles: ['name', 'language', 'tcgdexId'], slabs: ['name', 'grader', 'grade', 'language', 'tcgdexId'] };
+
+function _modalPricingIdentityChanged(table, norm, existing) {
+  // A blank language is English everywhere pricing looks at it (_queueLaneFor), so a row with
+  // no language that the form saves as EN has not changed identity.
+  const read = (key, value) => {
+    const text = String(value == null ? '' : value).trim().toLowerCase();
+    return key === 'language' && !text ? 'en' : text;
+  };
+  return (_MODAL_PRICING_IDENTITY[table] || []).some(key => read(key, norm[key]) !== read(key, existing[key]));
+}
+
+function _preserveModalOffFormKeys(table, norm, existing) {
+  if (!norm || !existing) return;
+  const identityChanged = _modalPricingIdentityChanged(table, norm, existing);
+  for (const key of Object.keys(existing)) {
+    if (key === '__proto__' || Object.prototype.hasOwnProperty.call(norm, key)) continue;
+    if (_MODAL_OWN_RULE_KEYS.includes(key)) continue;
+    if (identityChanged && _MODAL_LOOKUP_MARKERS.includes(key)) continue;
+    const value = existing[key];
+    let copy = value;
+    if (value !== null && typeof value === 'object') {
+      try { copy = JSON.parse(JSON.stringify(value)); } catch (_) { copy = value; }
+    }
+    norm[key] = copy;
+  }
+}
+
+// A date input can only show what toIsoDateStr can read. A stored date it cannot read
+// ("31 Feb 2026", free text) opens as a blank picker, so a blank picker on save is not
+// a decision to clear it and the stored text is kept. A readable date cleared on
+// purpose still clears, and a typed date always wins.
+function _preserveUnreadableModalDate(norm, existing, key, typed) {
+  if (!norm || !existing || typed) return;
+  const stored = existing[key];
+  if (stored == null || !String(stored).trim() || toIsoDateStr(stored)) return;
+  norm[key] = stored;
+}
+
 function openAddSingle(opts) {
   _modalEditContexts.singles = null;
   document.getElementById('ms-id').value = '';
@@ -13347,6 +13408,7 @@ function _saveSingleNow(id) {
   // Empty strings stay empty so the UI can show '-' rather than '0'.
   const _cost   = document.getElementById('ms-cost').value;
   const _market = document.getElementById('ms-market').value;
+  const _msDate = document.getElementById('ms-date').value;
   const item = {
     id: id || genId('s'),
     name, set: _validated.set,
@@ -13357,7 +13419,7 @@ function _saveSingleNow(id) {
     listPrice: kjrNum(document.getElementById('ms-list').value),
     costPrice: _cost === '' ? '' : kjrNum(_cost),
     marketPrice: _market === '' ? '' : kjrNum(_market),
-    datePurchased: formatDateInput(document.getElementById('ms-date').value),
+    datePurchased: formatDateInput(_msDate),
     status: document.getElementById('ms-status').value,
     notes: _validated.notes,
     priceAlert: _validated.priceAlert,
@@ -13379,6 +13441,8 @@ function _saveSingleNow(id) {
       kjrPreserveCreatedMetadata(norm, DB.singles[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.singles);
       _preserveModalListingMeta(norm, DB.singles[editIndex]);
+      _preserveModalOffFormKeys('singles', norm, DB.singles[editIndex]);
+      _preserveUnreadableModalDate(norm, DB.singles[editIndex], 'datePurchased', _msDate);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
       // confirm name (it'll re-populate on the next successful fetch), and
@@ -13696,6 +13760,7 @@ function _saveSlabNow(id) {
   // Coerce numeric fields on save (see saveSingle comment).
   const _slCost   = document.getElementById('msl-cost').value;
   const _slMarket = document.getElementById('msl-market').value;
+  const _slListed = document.getElementById('msl-date').value;
   const item = {
     id: id || genId('sl'),
     name, type: 'slab',
@@ -13707,7 +13772,7 @@ function _saveSlabNow(id) {
     listPrice: kjrNum(document.getElementById('msl-list').value),
     costPrice: _slCost === '' ? '' : kjrNum(_slCost),
     marketPrice: _slMarket === '' ? '' : kjrNum(_slMarket),
-    dateListed: formatDateInput(document.getElementById('msl-date').value),
+    dateListed: formatDateInput(_slListed),
     status: document.getElementById('msl-status').value,
     notes: _validated.notes,
     priceAlert: _validated.priceAlert,
@@ -13727,6 +13792,8 @@ function _saveSlabNow(id) {
       kjrPreserveCreatedMetadata(norm, DB.slabs[editIndex]);
       _preserveModalEditStamp(norm, _modalEditContexts.slabs);
       _preserveModalListingMeta(norm, DB.slabs[editIndex]);
+      _preserveModalOffFormKeys('slabs', norm, DB.slabs[editIndex]);
+      _preserveUnreadableModalDate(norm, DB.slabs[editIndex], 'dateListed', _slListed);
       // Same confirm-name carry-over rule as saveSingle.
       if (norm.tcgdexId && norm.tcgdexId === beforeSlab.tcgdexId) norm._tcgdexResolvedName = beforeSlab._tcgdexResolvedName;
     }
@@ -17429,22 +17496,49 @@ async function fetchMarketPrice(descriptor) {
   };
 }
 
-// ── Refresh single price using real APIs (fallback to AI if no keys) ──
+// ── Refresh one row's price (the card inspector's "Refresh price") ──
+// Follows the refresh queue's lane rules (_queueLaneFor, runRefreshQueue) so one click
+// never behaves differently from a queued pass (v3.75):
+//   - a row of the Slabs table is a slab, as buildRefreshQueue sees it, whatever its type
+//     field says. With a grader it is the PPT lane. PPT counts as available when the
+//     Worker proxy is configured, it holds PPT_KEY as a secret, so a missing key in this
+//     browser must not block it. Only with the proxy off (PRICE_PROXY_BASE falsy) is a
+//     local key required, the same test runRefreshQueue makes.
+//   - a single, English with a card number: the free lane. tcgdexOnly, so a TCGdex miss is
+//     a clean unpriced result with zero PPT calls, never a fuzzy PPT name search.
+//   - a single that is non-English or has no card number, or a slab with no grader:
+//     manual. No API call at all, and the toast says why (the card inspector's own wording
+//     for a single).
+// A miss changes nothing worth syncing, so it only marks the row dirty when it resolved a
+// new tcgdexId. On the free lane it is stamped _tcgdexMissDate the way _runTcgdexLane
+// stamps it (local, never synced), and the lane reads that stamp off the row too, so the
+// queue does not try the card again today.
+// The local-preview guard lives in the callers (kjrInspectRefreshInfo, runRefreshQueue).
 async function refreshPrice(id, table) {
   const item = DB[table].find(i => i.id === id);
   if (!item) return;
-  // TCGdex needs no key (free, CORS-open); PPT does. Only block when neither
-  // path can possibly work - a raw single can still price via TCGdex alone.
-  const hasKeys = getApiKey('ppt');
-  const isRaw = item.type !== 'slab';
-  if (!hasKeys && !isRaw) {
+  const isSlab = table === 'slabs';
+  // buildRefreshQueue never hands a single a grader, so a single is routed without one. A
+  // Slabs row goes in as it is: with a grader it is the PPT lane, without one the queue
+  // sends it to the free lane or leaves it manual, and so does this.
+  const lane = _queueLaneFor(isSlab ? item : Object.assign({}, item, { grader: null }));
+  if (lane === 'manual') {
+    const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+    toast(isSlab ? 'Add the grader and grade to price this slab'
+      : lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing');
+    return;
+  }
+  if (lane === 'ppt' && !PRICE_PROXY_BASE && !getApiKey('ppt')) {
     toast('Add API keys first: open Settings, then API settings');
     return;
   }
   toast('Fetching market price...');
-  const grader = item.type === 'slab' ? (item.grader||null) : null;
-  const grade  = item.type === 'slab' ? (item.grade||null) : null;
-  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null });
+  const grader = isSlab ? (item.grader||null) : null;
+  const grade  = isSlab ? (item.grade||null) : null;
+  const today = new Date().toISOString().slice(0,10);
+  // The router sends a lookup to PPT's graded lane only with a grader AND a grade. Anything
+  // else is its raw branch, so tcgdexOnly keeps every such call off the fuzzy PPT search.
+  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) });
   // Computed BEFORE the persist block assigns item.tcgdexId - afterwards
   // !item.tcgdexId is always false, the guard below would treat a freshly
   // resolved id as "nothing new" and the id would save locally but never
@@ -17458,13 +17552,15 @@ async function refreshPrice(id, table) {
   }
   if (r.maxSgd) {
     const newPrice = r.maxSgd.toFixed(0);
+    // A priced card carries no stale miss, the way _runTcgdexLane clears it. Local only.
+    if (item._tcgdexMissDate) item._tcgdexMissDate = null;
     // Same no-op guard as applyPriceToGroup: unchanged value + no new id
     // means nothing to sync, so skip history/markDirty and leave the row
     // untouched. Still stamp the local priced-today marker. Number() on both
     // sides because the edit modal stores marketPrice as a number while this
     // path writes strings - see applyPriceToGroup.
     if (Number(item.marketPrice) === Number(newPrice) && !idIsNew) {
-      item._tcgdexPricedDate = new Date().toISOString().slice(0,10);
+      item._tcgdexPricedDate = today;
       saveData();
       toast('Price unchanged: S$' + newPrice + ' (' + r.source + ')');
       return;
@@ -17485,8 +17581,18 @@ async function refreshPrice(id, table) {
     if (table === 'slabs') renderSlabs();
     toast('Updated S$' + r.maxSgd.toFixed(0) + ' (' + r.source + ')');
   } else {
-    markDirty(table, id); // a resolved tcgdexId may still need to sync even on a miss
-    saveData();
+    // A miss is a data outcome. Only a freshly resolved tcgdexId is worth syncing, so a pure
+    // miss no longer queues a phantom upsert. On the free lane the miss is stamped the way
+    // _runTcgdexLane stamps it, local and never synced, so the "needs a card number" list
+    // and the queue both know the card was tried today.
+    let changed = idIsNew;
+    if (lane === 'tcgdex' && item._tcgdexMissDate !== today) { item._tcgdexMissDate = today; changed = true; }
+    if (idIsNew) markDirty(table, id); // a resolved tcgdexId may still need to sync even on a miss
+    if (changed) {
+      saveData();
+      if (table === 'singles') renderSingles();
+      if (table === 'slabs') renderSlabs();
+    }
     toastError('No price found · TCGdex: ' + (r.tcgdexError||'?') + ' · PPT: ' + (r.pptError||'?'));
   }
 }
@@ -17862,6 +17968,16 @@ function _tcgdexPricedToday(item, today) {
   return !!(last && last.date === today);
 }
 
+// The mirror of _tcgdexPricedToday for misses (v3.75). _runTcgdexLane stamps a miss on the
+// queue item and on the live row, and refreshPrice stamps the row alone, so the lane has
+// to look at both or a card that just missed from the inspector would be tried again by
+// the next pass.
+function _tcgdexMissedToday(item, today) {
+  if (item._tcgdexMissDate === today) return true;
+  const row = DB[item.table]?.find(i => i.id === item.id);
+  return !!row && row._tcgdexMissDate === today;
+}
+
 // True when at least one tcgdex-lane item still needs an attempt today (not
 // yet priced today, and didn't already miss today). Lets the outer
 // runRefreshQueue gate distinguish "lastTcgdexPass stamp says today but an
@@ -17869,7 +17985,7 @@ function _tcgdexPricedToday(item, today) {
 // re-enter even on an auto/page-load run) from "genuinely fully done today"
 // (no work, safe to skip until tomorrow).
 function _tcgdexLaneHasWork(q, today) {
-  return q.items.some(i => i.lane === 'tcgdex' && !_tcgdexPricedToday(i, today) && i._tcgdexMissDate !== today);
+  return q.items.some(i => i.lane === 'tcgdex' && !_tcgdexPricedToday(i, today) && !_tcgdexMissedToday(i, today));
 }
 
 // Free-lane pass: every TCGdex-lane item that still needs an attempt today,
@@ -17912,14 +18028,16 @@ async function _runTcgdexLane(q, manual, today) {
   // reason to know the queue's internal shape) - same pattern as tcgdexId
   // already being written to both places. Missing this mirror would leave
   // _kjrUnresolvedSingles blind to "had a number, TCGdex found no unique
-  // match today" and only ever catch "no number at all".
+  // match today" and only ever catch "no number at all". The skip/todo
+  // logic reads the row's stamp too (_tcgdexMissedToday), since refreshPrice
+  // stamps the row alone.
   const setMissDate = (item, val) => {
     item._tcgdexMissDate = val;
     const row = DB[item.table]?.find(i => i.id === item.id);
     if (row) row._tcgdexMissDate = val;
   };
-  if (manual) laneItems.forEach(item => { if (item._tcgdexMissDate === today) setMissDate(item, null); });
-  const todo = laneItems.filter(item => !_tcgdexPricedToday(item, today) && item._tcgdexMissDate !== today);
+  if (manual) laneItems.forEach(item => { if (_tcgdexMissedToday(item, today)) setMissDate(item, null); });
+  const todo = laneItems.filter(item => !_tcgdexPricedToday(item, today) && !_tcgdexMissedToday(item, today));
   let done = 0, failedData = 0, skipped = laneItems.length - todo.length;
   const errorTally = {};
   for (let i = 0; i < todo.length; i++) {
@@ -18351,10 +18469,11 @@ async function startFreshQueue() {
 let _bulkRefreshRunning = false;
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
-  // TCGdex needs no key; only block when the table can't reach ANY free
-  // lane - a slab table has no TCGdex-free option, so it still needs PPT.
-  const hasKeys = getApiKey('ppt');
-  if (!hasKeys && table === 'slabs') { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
+  // TCGdex needs no key, and a slab table has no TCGdex-free option so it needs PPT. PPT
+  // counts as available when the Worker proxy is configured, it holds PPT_KEY as a secret,
+  // so a key missing from this browser only blocks with the proxy off (v3.75). The same
+  // test runRefreshQueue and refreshPrice make.
+  if (table === 'slabs' && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
   const items = DB[table].filter(i => (i.status||'Available') === 'Available');
   if (!items.length) { toast('No available items to refresh'); return; }
   if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;

@@ -237,26 +237,16 @@
       escapeHtml(actionLabel) + '</a>';
   }
 
+  // The app's own lookup and highlight (features.js, shared with viewSourceItem) find the row in whichever view shows it, the
+  // table, a grid tile or a phone Holdings row, scroll it to the middle (no smooth scroll with reduced motion) and outline it for
+  // 2.5 seconds. Without them, as when this module runs alone, there is no page to show a row on.
   function focusCoreRow(page, table, id) {
     if (!root.document || !id) return;
-    const bodyIds = page === 'sales'
-      ? ['sales-body']
-      : page === 'slabs'
-        ? ['slabs-body', 'slabs-sold-body']
-        : ['singles-body', 'singles-sold-body'];
+    const zone = page === 'sales' ? 'sales' : page === 'slabs' ? 'slabs' : 'singles';
     setTimeout(() => {
-      let row = null;
-      bodyIds.some(bodyId => {
-        const body = root.document.getElementById(bodyId);
-        if (!body || typeof body.querySelectorAll !== 'function') return false;
-        row = Array.from(body.querySelectorAll('[data-id]')).find(item => String(item.getAttribute('data-id') || '') === String(id)) || null;
-        return !!row;
-      });
-      if (!row) return;
-      if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      row.style.outline = '2px solid var(--accent)';
-      row.style.outlineOffset = '-2px';
-      setTimeout(() => { row.style.outline = ''; row.style.outlineOffset = ''; }, 2500);
+      if (typeof root.kjrRowOnScreen !== 'function' || typeof root.kjrFlashRow !== 'function') return;
+      const row = root.kjrRowOnScreen(zone, id);
+      if (row) root.kjrFlashRow(row);
     }, 320);
   }
 

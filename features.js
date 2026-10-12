@@ -3615,9 +3615,10 @@ function kjrRememberCardImageMiss(tcgdexId, lang) {
   } catch (e) { return false; }
 }
 
-// ── Slab -> card link (kjr_slab_card_ids). Slab rows have no tcgdexId, so the id found by
+// ── Slab -> card link (kjr_slab_card_ids). Most slab rows have no tcgdexId, so the id found by
 // resolveTcgdexId on a copy is remembered here: slabId -> {id, n} or {miss, n}, where n is
-// the name and language it was resolved for. A renamed slab no longer matches and resolves again.
+// the signature it was resolved for (kjrSlabSig). An edit to the name, language or set no longer
+// matches and resolves again. A slab's own tcgdexId always wins over any link.
 function kjrSlabMapLoad() {
   if (_kjrSlabMem) return _kjrSlabMem;
   var m = {};
@@ -3632,9 +3633,21 @@ function kjrSlabMapLoad() {
 function kjrSlabMapSave() {
   try { localStorage.setItem(KJR_SLAB_LINK_KEY, JSON.stringify(_kjrSlabMem || {})); return true; } catch (e) { return false; }
 }
+// The signature is the name and language, plus the set once the row has one ("Charizard 4|en|set:Base Set"), because the set
+// now steers the resolve (resolveTcgdexId's opts.set). A slab with no set keeps the old "name|lang" form: the rule resolves it
+// exactly as before, so its link stays good and costs no request. A link the old rule made for a slab that has a set no longer
+// matches, so that slab is looked up again (the image map, keyed by card id, is left alone). It also keeps two slabs that share
+// a name but not a set from borrowing each other's link (kjrSlabLinkBySig).
 function kjrSlabSig(slab) {
   var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab && slab.language) : 'en';
-  return String(slab && slab.name || '').trim() + '|' + lang;
+  var set = String(slab && slab.set || '').trim();
+  return String(slab && slab.name || '').trim() + '|' + lang + (set ? '|set:' + set : '');
+}
+// The slab row for a placeholder's or a job's slab id, or null once it is gone.
+function kjrSlabRow(sid) {
+  var rows = (typeof DB !== 'undefined' && DB && Array.isArray(DB.slabs)) ? DB.slabs : [];
+  for (var i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === String(sid)) return rows[i]; }
+  return null;
 }
 function kjrSlabLinkState(slab) {
   if (!slab || slab.id == null) return { state: 'none' };
@@ -3704,11 +3717,12 @@ function kjrSlotState(el) {
   var lang = el.getAttribute('data-lg') || 'en';
   var sid = el.getAttribute('data-slab') || '';
   if (!tcg && sid) {
-    var m = kjrSlabMapLoad();
-    var v = Object.prototype.hasOwnProperty.call(m, sid) ? m[sid] : null;
-    if (v && typeof v.id === 'string') { tcg = v.id; lang = 'en'; }
-    else if (v && kjrImgMissFresh(v.miss)) return { state: 'none' };
-    else return { state: 'need' };
+    // A slab placeholder asks the row as it is now, through kjrArtState: its own tcgdexId wins, and a link is used only while
+    // its signature matches, so a link made for an older name, language or set is never drawn. A slab gone meanwhile stays blank.
+    var row = kjrSlabRow(sid);
+    if (!row) return { state: 'none' };
+    var st = kjrArtState(row, 'slabs');
+    return st.state === 'hit' ? { state: 'hit', base: st.base } : { state: st.state };
   }
   if (!tcg) return { state: 'none' };
   var base = kjrCardImageBase(tcg, lang);
@@ -3825,10 +3839,11 @@ function kjrObserveCardImages(root, table) {
 // Is the answer already on file (another tab, the price lane, an identical card)?
 function kjrJobSettled(job) {
   if (job.tcg) return !!(kjrCardImageBase(job.tcg, job.lang) || kjrCardImageMissed(job.tcg, job.lang));
-  var m = kjrSlabMapLoad();
-  var v = Object.prototype.hasOwnProperty.call(m, job.slab) ? m[job.slab] : null;
-  if (v && typeof v.id === 'string') return !!(kjrCardImageBase(v.id, 'en') || kjrCardImageMissed(v.id, 'en'));
-  return !!(v && kjrImgMissFresh(v.miss));
+  // A slab job asks the row as it is now (kjrArtState): settled once it needs no lookup, its own id or a link whose signature
+  // matches has an answer on file, a fresh miss, nothing to resolve, or the row is gone. A link made for an older name, language
+  // or set never counts, so it can neither be drawn nor stop the lookup again.
+  var row = kjrSlabRow(job.slab);
+  return !row || kjrArtState(row, 'slabs').state !== 'need';
 }
 function kjrQueueCardImage(job, el) {
   if (!job || !job.key) return false;
@@ -3895,22 +3910,34 @@ async function kjrImgRun(job, keys) {
     if (!id) {
       // A slab: find the card first. resolveTcgdexId WRITES tcgdexId onto the object it is given,
       // so it gets a shallow copy and the slab row is never touched, never marked dirty.
-      var slab = (typeof DB !== 'undefined' && DB && Array.isArray(DB.slabs))
-        ? DB.slabs.find(function (r) { return r && String(r.id) === job.slab; }) : null;
-      if (!slab || slab.tcgdexId) return; // deleted meanwhile, or it carries an id of its own now
-      var sig = kjrSlabSig(slab);
-      id = kjrSlabLinkBySig(sig);
-      if (!id) {
-        id = await resolveTcgdexId(Object.assign({}, slab));
+      var slab = kjrSlabRow(job.slab);
+      if (!slab) return; // deleted meanwhile
+      var own = String(slab.tcgdexId == null ? '' : slab.tcgdexId).trim();
+      if (own) {
+        // It carries an id of its own now (typed after this placeholder was drawn), and that always wins:
+        // fetch that card's image, link nothing.
+        lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab.language) : 'en';
+        var ownKey = kjrCardImageKey(own, lang);
+        if (!ownKey) return;
+        id = own;
+        keys.push(ownKey);
+      } else {
+        var sig = kjrSlabSig(slab);
+        id = kjrSlabLinkBySig(sig);
         if (!id) {
-          // resolveTcgdexId swallows its own network errors, so offline is the one failure we can tell apart
-          if (kjrOnline()) { kjrSlabLinkSet(slab.id, sig, null); q.fails = 0; } else { kjrImgCoolDown(job.key); }
-          return;
+          // Its set goes along as a second never-guess signal: it picks between printings the name cannot tell
+          // apart and rules out a printing from another set (resolveTcgdexId opts.set, app.js _tcgdexSetHintPick).
+          id = await resolveTcgdexId(Object.assign({}, slab), { set: slab.set });
+          if (!id) {
+            // resolveTcgdexId swallows its own network errors, so offline is the one failure we can tell apart
+            if (kjrOnline()) { kjrSlabLinkSet(slab.id, sig, null); q.fails = 0; } else { kjrImgCoolDown(job.key); }
+            return;
+          }
         }
+        kjrSlabLinkSet(slab.id, sig, id);
+        keys.push(kjrCardImageKey(id, 'en'));
+        lang = 'en';
       }
-      kjrSlabLinkSet(slab.id, sig, id);
-      keys.push(kjrCardImageKey(id, 'en'));
-      lang = 'en';
     }
     if (kjrCardImageBase(id, lang) || kjrCardImageMissed(id, lang)) return; // learned while queued
     var api = typeof TCGDEX_BASE === 'string' ? TCGDEX_BASE : 'https://api.tcgdex.net/v2';
@@ -6614,6 +6641,74 @@ function kjrDeleteFocusRestore(plan) {
       if (lost) kjrInspectFocusEl(target);
     });
   }
+  return true;
+}
+// Bulk delete (deleteSelected, app.js) keeps the same rule. Its plan is the position, in the order the list drew, of the first row
+// in the selection: every row above it stays, so once the list is redrawn the row at that position is the first kept row at or
+// after it, and kjrDeleteFocusRestore falls back to the one before it, then the heading. A selection with none of its rows in the
+// drawn order (filtered out of view since it was ticked) plans the heading (at -1). Singles and Slabs only, and only for the page
+// showing, like kjrDeleteFocusPlan. Sales has no row rule, kjrBulkBarFocusRescue below covers its bar.
+function kjrBulkDeleteFocusPlan(table, ids) {
+  if (table !== 'singles' && table !== 'slabs') return null;
+  var page = document.getElementById(table === 'singles' ? 'page-inventory' : 'page-slabs');
+  if (!page || !page.classList || !page.classList.contains('active')) return null;
+  var gone = Object.create(null);
+  if (ids && typeof ids.forEach === 'function') ids.forEach(function (id) { gone[String(id)] = true; });
+  var order = typeof _kjrInspectOrder === 'object' && _kjrInspectOrder && _kjrInspectOrder[table];
+  var list = Array.isArray(order) ? order : [];
+  for (var i = 0; i < list.length; i++) { if (gone[String(list[i])]) return { table: table, at: i }; }
+  return { table: table, at: -1 };
+}
+// The bulk bars (Singles, Slabs, Sales) hide once nothing is selected. When keyboard focus sits on one of their buttons, Clear or
+// Delete selected, it would be left on a control that is no longer shown, so it goes to the page heading, which takes focus without
+// a ring (tabindex -1, set here when the markup lacks it). It acts only when focus is inside a bar that is hidden.
+var KJR_BULK_PAGES = { singles: 'page-inventory', slabs: 'page-slabs', sales: 'page-sales' };
+function kjrBulkBarFocusRescue(table) {
+  var bar = document.getElementById('bulk-bar-' + table);
+  var ae = document.activeElement;
+  if (!bar || !ae || typeof bar.contains !== 'function' || !bar.contains(ae)) return false;
+  if (bar.classList && typeof bar.classList.contains === 'function' && bar.classList.contains('show')) return false;
+  var page = KJR_BULK_PAGES[table] ? document.getElementById(KJR_BULK_PAGES[table]) : null;
+  var heading = page && typeof page.querySelector === 'function' ? page.querySelector('.section-title') : null;
+  if (!heading) return false;
+  if (typeof heading.hasAttribute === 'function' && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+  return kjrInspectFocusEl(heading);
+}
+
+// ── A row the app links to: viewSourceItem (app.js, the Sales "↗" button and the Dealer Desk's Singles and Slabs links) and the
+// Dealer Desk's focusCoreRow (its Sales link and its fallback). kjrRowOnScreen finds the element for the row id in whichever view
+// shows it, the table and its Sold section, the grid tiles or the phone Holdings rows. The table body can still hold the rows the
+// list drew before the grid was picked, hidden, so an element counts only when it has client rects. Sales has its one table.
+var KJR_ROW_ZONES = { singles: KJR_INSP_ZONES.singles, slabs: KJR_INSP_ZONES.slabs, sales: ['sales-body'] };
+function kjrRowOnScreen(table, id) {
+  if (id == null || id === '') return null;
+  var want = String(id);
+  var zones = KJR_ROW_ZONES[table] || [];
+  for (var z = 0; z < zones.length; z++) {
+    var zone = document.getElementById(zones[z]);
+    if (!zone || typeof zone.querySelectorAll !== 'function') continue;
+    var els = zone.querySelectorAll('[data-id]');
+    for (var j = 0; j < els.length; j++) {
+      if (els[j].getAttribute('data-id') !== want) continue;
+      if (typeof els[j].getClientRects !== 'function' || els[j].getClientRects().length > 0) return els[j];
+    }
+  }
+  return null;
+}
+// kjrFlashRow scrolls it to the middle (no smooth scroll with reduced motion) and outlines it for 2.5 seconds, as the list always
+// has, and leaves focus where it is, as the list always has. A table or Holdings row keeps the inset outline. A grid tile is
+// outlined just outside its edge, because its card stage is a positioned layer that paints over an outline drawn inside the tile.
+// A second flash on the same element restarts the 2.5 seconds. Reads, scrolls and styles only.
+function kjrFlashRow(el) {
+  if (!el || !el.style) return false;
+  var reduce = false;
+  try { reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { reduce = false; }
+  try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' }); } catch (e2) { /* scrolling is a nicety */ }
+  var tile = !!(el.classList && typeof el.classList.contains === 'function' && el.classList.contains('kjr-tile'));
+  el.style.outline = '2px solid var(--accent)';
+  el.style.outlineOffset = tile ? '2px' : '-2px';
+  if (el._kjrFlashTimer) clearTimeout(el._kjrFlashTimer);
+  el._kjrFlashTimer = setTimeout(function () { el._kjrFlashTimer = 0; el.style.outline = ''; el.style.outlineOffset = ''; }, 2500);
   return true;
 }
 

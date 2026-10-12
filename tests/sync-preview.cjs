@@ -1,10 +1,11 @@
 'use strict';
 
 // Local-only browser fixture for the Cloud Sync diagnostics pass. It serves
-// the real app scripts and styles, keeps the house Google Fonts stylesheet for
-// visual parity, removes the production auth/CDN shell from the response, and
-// blocks application network, authentication and service-worker access. All
-// rows and failure details below are synthetic.
+// the real app scripts and styles and the self-hosted Geist fonts from
+// Assets/fonts (no font comes from another origin), removes the production
+// auth/CDN shell from the response, and blocks application network,
+// authentication and service-worker access. All rows and failure details
+// below are synthetic.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -579,12 +580,15 @@ const STATIC_FILES = Object.freeze({
   '/Assets/whale-icon-maskable-512.png': 'Assets/whale-icon-maskable-512.png',
   '/Assets/lib/three.core.min.js': 'Assets/lib/three.core.min.js',
   '/Assets/lib/three.module.js': 'Assets/lib/three.module.js',
+  '/Assets/fonts/Geist-Variable.woff2': 'Assets/fonts/Geist-Variable.woff2',
+  '/Assets/fonts/GeistMono-Variable.woff2': 'Assets/fonts/GeistMono-Variable.woff2',
 });
 
 const CONTENT_TYPES = Object.freeze({
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/manifest+json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8', '.png': 'image/png',
+  '.woff2': 'font/woff2',
 });
 
 function readKnownFile(relativePath) {
@@ -598,7 +602,7 @@ function buildPreviewIndex() {
   let html = readKnownFile('index.html').toString('utf8');
   html = html.replace(/\s*<script\s+src="https?:\/\/[^\"]+"[^>]*><\/script>\s*/gi, '\n');
   html = html.replace(/\s*<link\s+rel="preconnect"[^>]*>\s*/gi, '\n');
-  html = html.replace(/\s*<link\s+rel="stylesheet"\s+href="https?:\/\/(?!fonts\.googleapis\.com\/)[^\"]+"[^>]*>\s*/gi, '\n');
+  html = html.replace(/\s*<link\s+rel="stylesheet"\s+href="https?:\/\/[^\"]+"[^>]*>\s*/gi, '\n');
   html = html.replace(/\s*<script>\s*\(function\s*\(\)\s*\{\s*var DSN\s*=\s*[\s\S]*?<\/script>\s*/i, '\n');
   html = html.replace(/\s*<section id="kjr-auth-gate"[\s\S]*?<\/section>\s*/i, '\n');
   html = html.replace('</head>', '<style id="kjr-sync-preview-style">#intro{display:none!important}#kjr-sync-preview-tools button{font:inherit;padding:3px 6px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text);cursor:pointer}#kjr-sync-preview-tools button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}</style>\n</head>');
@@ -629,7 +633,7 @@ function handleRequest(req, res) {
     const body = Buffer.from(buildPreviewIndex(), 'utf8');
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store',
-      'Content-Security-Policy': "default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self'; worker-src 'none'",
+      'Content-Security-Policy': "default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'none'",
       'X-Content-Type-Options': 'nosniff',
     });
     if (req.method === 'HEAD') res.end(); else res.end(body);
@@ -662,7 +666,7 @@ if (require.main === module) {
   server.listen(PORT, HOST, function () {
     console.log('Cloud Sync diagnostics preview: http://' + HOST + ':' + PORT + '/');
     console.log('Synthetic controls: Empty, Pending many, Queue 125, Long queue names, Long failure, Offline, Recovered local, Retained receipt, Ack demo, Health warnings, Backfill guards, Acknowledge, Show details, Toggle theme');
-    console.log('Cloud, auth and service-worker access: disabled. Google Fonts remains enabled for visual parity.');
+    console.log('Cloud, auth and service-worker access: disabled. Geist is served from Assets/fonts, no font comes from another origin.');
   });
   const stop = function () { server.close(function () { process.exit(0); }); };
   process.on('SIGINT', stop);

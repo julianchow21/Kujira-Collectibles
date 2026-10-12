@@ -274,6 +274,147 @@ test('card-art: offline, a slab that resolves to nothing is not recorded as a mi
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').state, 'need', 'it stays a candidate for a later lookup');
 });
 
+// ── slab art never guesses a printing ───────────────────────────────────────────────────────
+// Two printings can share a name and a number (Charizard 4 is base1-4 in Base Set and base4-4 in Base Set 2). Slab art follows
+// pricing's never-guess rule: the slab's own tcgdexId wins, its set is a second signal next to the set words in its name, and
+// anything still ambiguous shows the placeholder. Links carry the set in their signature, so one resolved before is looked up again.
+const B1 = 'https://assets.tcgdex.net/en/base/base1/4';
+const B4 = 'https://assets.tcgdex.net/en/base/base4/4';
+// A placeholder already on the page, the way kjrArtSlot draws one for a slab with no id yet.
+function slabSlot(slabId) {
+  const a = { 'data-need': '1', 'data-ik': 'slab:' + slabId, 'data-slab': slabId, 'data-lg': 'en', 'data-sz': 'c' };
+  const cls = new Set(['kjr-art', 'kjr-art-ph']);
+  return {
+    inserted: [], _kjrVis: true, isConnected: true,
+    getAttribute: (k) => (k in a ? a[k] : null),
+    hasAttribute: (k) => k in a,
+    removeAttribute: (k) => { delete a[k]; },
+    classList: { remove: (c) => cls.delete(c), add: (c) => cls.add(c), contains: (c) => cls.has(c) },
+    insertAdjacentHTML(pos, h) { this.inserted.push(h); },
+  };
+}
+
+test('card-art: a slab\'s own tcgdexId always wins, over a link resolved before it was typed, in every path that draws art', async () => {
+  const app = await loadApp({
+    seed: makeSeed({ slabs: [slab({ id: 'p1', name: 'Charizard 4', set: 'Base Set', tcgdexId: 'base4-4' })] }),
+    localStorage: { kjr_slab_card_ids: { p1: { id: 'base1-4', n: 'Charizard 4|en' } }, kjr_card_images: { 'base1-4': B1, 'base4-4': B4 } },
+  });
+  const { ctx, fetchMock } = app;
+  fetchMock.calls.length = 0;
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B4, 'the row draws its own card');
+  // a placeholder drawn before the id was typed is still on the page: it asks the row, never the old link
+  const slot = slabSlot('p1');
+  assert.deepEqual(plain(ctx.kjrSlotState(slot)), { state: 'hit', base: B4 });
+  app.document.querySelectorAll = (sel) => (sel === '.kjr-art[data-need]' ? [slot] : []);
+  ctx.kjrQueueCardImage(ctx.kjrImgJobFromEl(slot), slot);
+  await drain(app);
+  assert.match(slot.inserted.join(''), /base4\/4\/low\.webp/, 'the late fill draws the row\'s own card');
+  assert.doesNotMatch(slot.inserted.join(''), /base1\/4/);
+  assert.equal(fetchMock.calls.filter((c) => c.url.includes('/cards?name=')).length, 0, 'nothing is resolved for a slab with its own id');
+  // its own id with no image on file yet: that card is fetched, nothing is linked
+  const app2 = await loadApp({
+    seed: makeSeed({ slabs: [slab({ id: 'p1', name: 'Charizard 4', tcgdexId: 'base4-4' })] }),
+    localStorage: { kjr_slab_card_ids: { p1: { id: 'base1-4', n: 'Charizard 4|en' } }, kjr_card_images: { 'base1-4': B1 } },
+  });
+  app2.fetchMock.calls.length = 0;
+  app2.fetchMock.route('/cards/base4-4', () => jsonResponse({ id: 'base4-4', image: B4 }));
+  const slot2 = slabSlot('p1');
+  app2.document.querySelectorAll = (sel) => (sel === '.kjr-art[data-need]' ? [slot2] : []);
+  app2.ctx.kjrQueueCardImage(app2.ctx.kjrImgJobFromEl(slot2), slot2);
+  await drain(app2);
+  assert.deepEqual(app2.fetchMock.calls.map((c) => c.url.replace(/^.*\/v2/, '')), ['/en/cards/base4-4']);
+  assert.match(slot2.inserted.join(''), /base4\/4\/low\.webp/);
+  assert.deepEqual(JSON.parse(app2.localStorage.getItem('kjr_slab_card_ids')), { p1: { id: 'base1-4', n: 'Charizard 4|en' } }, 'no link written for a slab with its own id');
+  assert.equal(app2.ctx.DB.slabs[0].tcgdexId, 'base4-4');
+});
+
+test('card-art: a slab\'s set picks the right one of two printings that share the name and number, each slab keeps its own link', async () => {
+  const seed = makeSeed({ slabs: [slab({ id: 'p1', name: 'Charizard 4', set: 'Base Set' }), slab({ id: 'p2', name: 'Charizard 4', set: 'Base Set 2' })] });
+  const app = await loadApp({ seed });
+  const { ctx, fetchMock, localStorage } = app;
+  const rowsBefore = JSON.stringify(ctx.DB.slabs);
+  const dirtyBefore = JSON.stringify([...ctx._dirty.slabs]);
+  fetchMock.calls.length = 0;
+  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'base1-4', localId: '4', name: 'Charizard' }, { id: 'base4-4', localId: '4', name: 'Charizard' }]));
+  fetchMock.route('/cards/base1-4', () => jsonResponse({ id: 'base1-4', image: B1 }));
+  fetchMock.route('/cards/base4-4', () => jsonResponse({ id: 'base4-4', image: B4 }));
+  ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
+  await drain(app);
+  ctx.kjrQueueCardImage({ key: 'slab:p2', slab: 'p2', lang: 'en' });
+  await drain(app);
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'Base Set: base1-4');
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[1], 'slabs').base, B4, 'Base Set 2: base4-4, not its twin\'s Base Set link');
+  const urls = fetchMock.calls.map((c) => c.url);
+  assert.equal(urls.filter((u) => /\/en\/cards\?name=Charizard&localId=4$/.test(u)).length, 2, 'each slab resolved for its own set');
+  assert.deepEqual(JSON.parse(localStorage.getItem('kjr_slab_card_ids')), {
+    p1: { id: 'base1-4', n: 'Charizard 4|en|set:Base Set' },
+    p2: { id: 'base4-4', n: 'Charizard 4|en|set:Base Set 2' },
+  });
+  assert.equal(JSON.stringify(ctx.DB.slabs), rowsBefore, 'the rows are untouched, no tcgdexId lands on them');
+  assert.equal(JSON.stringify([...ctx._dirty.slabs]), dirtyBefore, 'nothing is marked dirty');
+  // the set names a set by its longest phrase: Base Set 2 over Base Set, Expedition Base Set over Base Set, a tie names none
+  assert.equal(ctx._tcgdexSetIdIn('Base Set 2'), 'base4');
+  assert.equal(ctx._tcgdexSetIdIn('Base Set Shadowless'), 'base1');
+  assert.equal(ctx._tcgdexSetIdIn('Expedition Base Set'), 'ecard1');
+  assert.equal(ctx._tcgdexSetIdIn('Team Rocket Returns'), 'ex7');
+  assert.equal(ctx._tcgdexSetIdIn('Jungle Fossil'), '');
+  assert.equal(ctx._tcgdexSetIdIn('Evolving Skies'), '');
+  // pricing passes no set and resolves exactly as before: the same row priced is still ambiguous
+  const priced = { name: 'Charizard 4', set: 'Base Set', language: 'EN' };
+  assert.equal(await ctx.resolveTcgdexId(priced), null);
+  assert.equal(priced.tcgdexId, undefined);
+});
+
+test('card-art: an ambiguous slab shows the placeholder, it never borrows a twin\'s link or a pick its own set rules out', async () => {
+  const seed = makeSeed({ slabs: [
+    slab({ id: 'p1', name: 'Charizard 4' }), // linked long ago, when TCGdex had one match
+    slab({ id: 'p2', name: 'Charizard 4', set: 'Celebrations' }), // a set the token table does not know: no second signal
+    slab({ id: 'p3', name: 'Charizard 4 Base Set 2', set: 'Base Set' }), // its name says base4, its set says base1
+    slab({ id: 'p4', name: 'Blastoise 2', set: 'Base Set 2' }), // a unique match, from a set its own set rules out
+  ] });
+  const app = await loadApp({ seed, localStorage: { kjr_slab_card_ids: { p1: { id: 'base1-4', n: 'Charizard 4|en' } }, kjr_card_images: { 'base1-4': B1 } } });
+  const { ctx, fetchMock, localStorage } = app;
+  fetchMock.calls.length = 0;
+  fetchMock.route('/cards?name=Charizard', () => jsonResponse([{ id: 'base1-4' }, { id: 'base4-4' }, { id: 'cel25c-4_A' }]));
+  fetchMock.route('/cards?name=Blastoise', () => jsonResponse([{ id: 'base1-2' }]));
+  for (const id of ['p2', 'p3', 'p4']) { ctx.kjrQueueCardImage({ key: 'slab:' + id, slab: id, lang: 'en' }); await drain(app); }
+  for (const i of [1, 2, 3]) assert.equal(ctx.kjrArtState(ctx.DB.slabs[i], 'slabs').state, 'none', ctx.DB.slabs[i].id + ' shows the placeholder');
+  const links = JSON.parse(localStorage.getItem('kjr_slab_card_ids'));
+  assert.deepEqual(links.p2, { miss: iso(0), n: 'Charizard 4|en|set:Celebrations' });
+  assert.deepEqual(links.p3, { miss: iso(0), n: 'Charizard 4 Base Set 2|en|set:Base Set' });
+  assert.deepEqual(links.p4, { miss: iso(0), n: 'Blastoise 2|en|set:Base Set 2' });
+  assert.equal(fetchMock.calls.filter((c) => /\/cards\/(base|cel)/.test(c.url)).length, 0, 'no card is fetched for any of them');
+  assert.equal(fetchMock.calls.filter((c) => c.url.includes('/cards?name=')).length, 3, 'each resolved for itself, p2 did not borrow p1\'s link');
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'the slab with no set keeps its old link');
+});
+
+test('card-art: a link the old rule resolved for a slab that has a set is looked up again, and the image map is kept whole', async () => {
+  const OTHER = 'https://assets.tcgdex.net/en/swsh/swsh7/215';
+  const seed = makeSeed({ slabs: [slab({ id: 'p1', name: 'Charizard 4', set: 'Base Set' }), slab({ id: 'p2' })] });
+  const app = await loadApp({ seed, localStorage: {
+    kjr_slab_card_ids: { p1: { id: 'base4-4', n: 'Charizard 4|en' }, p2: { id: 'swsh7-215', n: 'Umbreon VMAX 215/203|en' } },
+    kjr_card_images: { 'base1-4': B1, 'base4-4': B4, 'swsh7-215': OTHER },
+  } });
+  const { ctx, fetchMock, localStorage } = app;
+  fetchMock.calls.length = 0;
+  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'base1-4' }, { id: 'base4-4' }]));
+  const st = ctx.kjrArtState(ctx.DB.slabs[0], 'slabs');
+  assert.equal(st.state, 'need', 'the old signature no longer matches, so the Base Set 2 art it pointed at is not drawn');
+  assert.equal(st.key, 'slab:p1');
+  // the stale link is not drawn on a placeholder either, and it does not count as settled
+  assert.deepEqual(plain(ctx.kjrSlotState(slabSlot('p1'))), { state: 'need' });
+  ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
+  await drain(app);
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'resolved again with its set: base1-4');
+  assert.deepEqual(JSON.parse(localStorage.getItem('kjr_slab_card_ids')).p1, { id: 'base1-4', n: 'Charizard 4|en|set:Base Set' });
+  assert.deepEqual(Object.keys(JSON.parse(localStorage.getItem('kjr_card_images'))).sort(), ['base1-4', 'base4-4', 'swsh7-215'], 'no image entry is dropped');
+  assert.equal(fetchMock.calls.length, 1, 'one resolve, the image was already on file');
+  // a slab with no set keeps its old link: the rule resolves it the same way, so it costs no request
+  assert.equal(ctx.kjrArtState(ctx.DB.slabs[1], 'slabs').base, OTHER);
+  assert.equal(ctx.kjrQueueCardImage({ key: 'slab:p2', slab: 'p2', lang: 'en' }), false);
+  assert.equal(fetchMock.calls.length, 1);
+});
+
 // ── the throttled queue ─────────────────────────────────────────────────────────────────────
 test('card-art: the queue runs at most 3 lookups at once, about 150ms apart, one per card', async () => {
   const { ctx, fetchMock, timers, settle } = await loadApp();

@@ -63,6 +63,7 @@ const CONTENT_TYPES = Object.freeze({
   '.json': 'application/manifest+json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
 });
 
 const PREVIEW_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; worker-src 'none'";

@@ -2361,6 +2361,24 @@ body{padding-left:var(--kjr-side-w)}
   body.kjr-insp-open .topbar .nav-dd-menu.dd-right{top:auto;bottom:-6px;left:calc(100% + 18px);right:auto;max-height:calc(100vh - 16px)}
 }
 
+/* ── Rail on a short window, 601px to 1279px wide and 500px tall or less (a phone on its side) ──
+   The rail normally pins its header and footer and scrolls only the nav between them. In a window this short that leaves the nav
+   about 150px of 375px (three or four items), and nothing below about 270px, where Settings ran off the bottom with no way to
+   reach it. Here the rail is one column that scrolls as a whole: the nav takes its full height, the scrollbar is hidden and the
+   scroll stays inside the rail. The footer is sticky at the bottom on the sidebar surface, so the sync dot and Settings stay in
+   reach, and scroll-padding keeps a focused item clear of it. A scroll container clips what is positioned inside it, so the Settings
+   menu is fixed beside the rail instead (the tooltip already is). The nav's two scroll shadows have nothing left to say, so they go.
+   The logo goes as well. The Overview item already does what it did, and the column loses its 40px and the 8px gap under it, so more
+   of the nav shows before any scroll. Search and Add stay, and the items keep their 32px floor. */
+@media (min-width: 601px) and (max-width: 1279px) and (max-height: 500px){
+  .topbar{overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;padding-bottom:0;scroll-padding-bottom:calc(72px + var(--kjr-touch) + env(safe-area-inset-bottom))}
+  .topbar::-webkit-scrollbar{display:none}
+  .logo{display:none}
+  .nav{flex:none;overflow:visible;overscroll-behavior:auto;background-image:none}
+  .topbar-actions{position:sticky;bottom:0;align-self:stretch;padding-bottom:calc(8px + env(safe-area-inset-bottom));background:var(--sidebar)}
+  .topbar .nav-dd-menu.dd-right{position:fixed;top:auto;bottom:calc(8px + env(safe-area-inset-bottom));left:calc(var(--kjr-side-w) + 6px);right:auto;max-height:calc(var(--kjr-vh) - 16px)}
+}
+
 /* ── Phone header, 600px and below ── */
 @media (max-width: 600px){
   .topbar{position:sticky;top:0;bottom:auto;left:auto;flex-direction:row;align-items:center;gap:8px;height:calc(56px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));background:var(--bg);border-right:0;border-bottom:1px solid var(--border)}
@@ -2513,4 +2531,31 @@ body{padding-left:var(--kjr-side-w)}
 /* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
 @media (hover: none) {
   .topbar .nav-btn,.topbar .kjr-side-search,.topbar .kjr-side-add,.topbar .logo,.topbar #sync-indicator,.topbar #settings-btn{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+}
+
+/* ── Cert numbers read as codes, in the mono face, wherever a slab shows one ──
+   The Slabs table (.cert-no) and the card inspector (.kjr-insp-mono) already set it. On a slab tile the line under the name is the
+   grader, the grade and the cert, like the inspector's set line, so the whole line takes the mono face the way that one does. The
+   markup has no hook on the cert alone, and a slab tile is the one with a drawn slab in its stage. The slab form's cert field goes
+   by its id, because input.fi and .kjr-modal .fi give every field the page face and outrank a class. */
+.kjr-tile:has(.kjr-slab) .kjr-tile-set{font-family:var(--font-mono)}
+#msl-cert{font-family:var(--font-mono)}
+
+/* ── Light theme, hover and press only: small text clears 4.5:1 on the fill it lands on ──
+   The light --text3, --red and --amber are 4.31, 4.30 and 4.29:1 on --bg4, the hover fill of a .btn, a Chart Builder pill and a Sentry
+   issue row. While one of those is hovered, the grey inside it reads as --text2 and red as --red2, the deeper red the token set already
+   holds. Inline styles read the same variables, so they follow. The two amber controls hover onto the amber soft fill instead of grey,
+   the quick sale remove button onto the red soft fill, and a hovered dealer card's small lines are --text2 on its accent tint. A sold row
+   comes up to full strength under the pointer or a press (the phone table dims the row as well as its cells, so both lift), and the two
+   pills that dimmed while pressed keep their strength on a --bg3 fill. The tokens, the dark theme and every resting state are as they
+   were. tests/light-contrast.test.js computes each pair from this file. */
+html.light :is(.btn,.cb-field-pill,.sentry-issue):hover{--text3:var(--text2);--red:var(--red2)}
+html.light #singles-unresolved-filter-chip:hover,html.light .skipped-toggle:hover{background:var(--amber-soft)}
+html.light .sell-cart-remove:hover{background:var(--red-soft)}
+html.light .dealer-production-card:hover :is(span,small){color:var(--text2)}
+html.light tr.sold-row:is(:hover,:active) td{opacity:1}
+html.light .cb-field-pill:active{opacity:1;background:var(--bg3)}
+@media (max-width: 600px){
+  html.light body:not(.force-tables) .page .tbl-wrap>table>tbody>tr.sold-row:is(:hover,:active){opacity:1}
+  html.light body:not(.force-tables) #kjr-ebay-table .eb-meta-decl-pill:active{opacity:1;background:var(--bg3)}
 }

@@ -110,12 +110,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.75 \(12 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.76 \(13 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.75 \(12 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.76 \(13 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -886,6 +886,42 @@ test('nav budget, rail: 246px of fixed parts around the 14 items, so they all fi
   assert.equal(total + MARGIN + 14 * 44, 864, 'and 44px items from 864px tall');
 });
 
+// v3.76: a phone on its side. The rail normally scrolls only its nav between a pinned header and footer, which leaves the nav about 150px of
+// a 375px window and nothing below about 270px. At 500px tall and under the rail scrolls as one column, and the logo goes (Overview is the
+// first item and does what it did). The harness has no layout engine, a browser run confirmed it at 844x390, 740x360 (touch) and 932x430:
+// the logo going took the items under the fold, counted against the sticky footer, from 9, 10 and 8 to 8, 9 and 7, every item cleared the
+// footer at some scroll and the last by 8px, an item reached with Tab scrolled clear of the footer, and the fixed Settings menu was whole.
+test('css: on a short rail window the whole rail scrolls, the logo goes, the footer is sticky, the Settings menu is fixed and the 700px budget above is untouched', () => {
+  const short = blockOf(shellRules, '@media (min-width: 601px) and (max-width: 1279px) and (max-height: 500px){');
+  const at = shellRules.indexOf(short);
+  assert.ok(at > shellRules.indexOf(railAt) + railAt.length, 'after the rail block, so it overrides it');
+  assert.ok(at > shellRules.indexOf('@media (min-width: 1280px) and (max-width: 1599px){'), 'and after the inspector-open twin');
+  assert.equal(shellRules.split('(max-height: 500px)').length - 1, 1, 'one such block in the shell section');
+  assert.equal(short.match(/@media/g).length, 1, 'no query inside it, and written with spaces like the rest of the section');
+  // the whole block, rule by rule, so anything added to it is added on purpose
+  assert.deepEqual([...short.matchAll(/\n {2}([^{\n]+)\{/g)].map((m) => m[1]), ['.topbar', '.topbar::-webkit-scrollbar', '.logo', '.nav', '.topbar-actions', '.topbar .nav-dd-menu.dd-right']);
+  assert.match(short, /\.topbar\{overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;padding-bottom:0;scroll-padding-bottom:calc\(72px \+ var\(--kjr-touch\) \+ env\(safe-area-inset-bottom\)\)\}/, 'the rail scrolls, inside itself, with no bar');
+  assert.match(short, /\.topbar::-webkit-scrollbar\{display:none\}/);
+  assert.match(short, /\n {2}\.logo\{display:none\}\n/, 'the logo goes, the column is 48px shorter (the 40px mark and the 8px gap under it)');
+  assert.match(railAt, /\.logo\{justify-content:center;width:40px;height:40px;padding:0\}/, 'the 40px it frees');
+  assert.match(railAt, /\.topbar\{[^}]*align-items:center;gap:8px;/, 'and the 8px gap');
+  // Search and Add stay, and nothing here touches an item's height, so the 32px floor of the one formula holds
+  assert.doesNotMatch(short, /kjr-side-search|kjr-side-add|kjr-side-actions/, 'Search and Add stay as the rail draws them');
+  assert.doesNotMatch(short, /--kjr-k\b|--kjr-item|\.nav-btn|\.kjr-nav-label/, 'no item size, no budget variable, no separator change');
+  assert.match(shellRules, /--kjr-item:clamp\(32px,/, 'the floor the items keep');
+  assert.match(short, /\.nav\{flex:none;overflow:visible;overscroll-behavior:auto;background-image:none\}/, 'the nav takes its full height, so the rail is the one scroller and the nav shadows go');
+  assert.match(short, /\.topbar-actions\{position:sticky;bottom:0;align-self:stretch;padding-bottom:calc\(8px \+ env\(safe-area-inset-bottom\)\);background:var\(--sidebar\)\}/, 'the footer stays in reach on the sidebar surface');
+  assert.match(short, /\.topbar \.nav-dd-menu\.dd-right\{position:fixed;top:auto;bottom:calc\(8px \+ env\(safe-area-inset-bottom\)\);left:calc\(var\(--kjr-side-w\) \+ 6px\);right:auto;max-height:calc\(var\(--kjr-vh\) - 16px\)\}/, 'a scroll container clips an absolute menu, a fixed one is whole');
+  // the 72px the scroll-padding keeps clear is the footer: the 28px sync button, the 36px Settings button and its 8px bottom padding (+ the touch 8px, + the safe area, both in the rule)
+  assert.equal(28 + 36 + 8, 72);
+  assert.match(railAt, /#sync-indicator\{[^}]*height:28px;/);
+  assert.match(shellRules, /\.topbar #settings-btn\{position:relative;flex:none;width:36px;height:36px;/);
+  // tokens only, like the rest of the shell (the section-wide checks above also cover this block)
+  assert.doesNotMatch(short, /#[0-9a-fA-F]{3,8}\b|rgba?\(|will-change/);
+  // and nothing here reaches the sidebar or the phone: the query needs a 601px floor and a 1279px ceiling
+  assert.match(short.split('{')[0], /^@media \(min-width: 601px\) and \(max-width: 1279px\) and \(max-height: 500px\)$/);
+});
+
 test('nav budget, sidebar: four steps by window height, each fits down to the next step, so the nav is never longer than its box from 700px tall', () => {
   const parts = {
     airy: [
@@ -1048,14 +1084,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.75: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.76: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.75'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.75">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.76'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.76">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.75"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.75'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.76"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.76'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v78'/);
+  assert.match(sw, /const CACHE = 'kujira-v79'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

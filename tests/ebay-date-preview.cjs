@@ -135,7 +135,8 @@ function handleRequest(req, res) {
       : ext === '.js' ? 'text/javascript; charset=utf-8'
       : ext === '.html' ? 'text/html; charset=utf-8'
       : ext === '.json' || ext === '.webmanifest' ? 'application/manifest+json; charset=utf-8'
-      : ext === '.png' ? 'image/png' : 'application/octet-stream';
+      : ext === '.png' ? 'image/png'
+      : ext === '.woff2' ? 'font/woff2' : 'application/octet-stream';
     res.writeHead(200, {
       'Content-Type': contentType,
       'Content-Length': body.length,

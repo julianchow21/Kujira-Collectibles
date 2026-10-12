@@ -6845,6 +6845,8 @@ function clearSelection(table) {
   if (table === 'slabs') renderSlabs();
   if (table === 'sales') renderSales();
   updateBulkBar(table);
+  // The bar hides now. If its Clear button had keyboard focus, the page heading takes it (features.js).
+  if (typeof kjrBulkBarFocusRescue === 'function') kjrBulkBarFocusRescue(table);
 }
 
 function updateBulkBar(table) {
@@ -6913,6 +6915,10 @@ async function deleteSelected(table) {
   }
 
   // ── Optimistic update: remove from UI immediately ──
+  // Focus: the single delete's rule (v3.74). Note where the first selected row sits in the drawn list before the rows go, then
+  // hand focus to the row that took its place once the list is redrawn (Singles and Slabs). The bar hides with the selection, so
+  // focus is never left on its Delete button (Sales goes to the heading). Reads and focuses only, the data path is unchanged.
+  const focusPlan = typeof kjrBulkDeleteFocusPlan === 'function' ? kjrBulkDeleteFocusPlan(table, ids) : null;
   DB[table] = DB[table].filter(i => !ids.has(i.id));
   ids.clear();
   saveData();
@@ -6920,6 +6926,8 @@ async function deleteSelected(table) {
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (table === 'sales') renderSales();
+  if (focusPlan && typeof kjrDeleteFocusRestore === 'function') kjrDeleteFocusRestore(focusPlan);
+  if (typeof kjrBulkBarFocusRescue === 'function') kjrBulkBarFocusRescue(table);
   toast(count + ' moved to trash · view in 🗑 tab');
   // Audit: list the names + cost of every deleted row so the changelog
   // can answer "what did we just lose?" without diving into trash.
@@ -15202,60 +15210,6 @@ function _resetEphemeralUi(){
 }
 document.addEventListener('DOMContentLoaded', _resetEphemeralUi);
 
-// Serialise the page for GitHub Pages push, BUT clone first and strip every
-// transient UI element so the deployed HTML never starts with a stale modal
-// open, a half-typed chat message, or a "Pushing…" button frozen in time.
-function _buildCleanPushHtml(){
-  // Clone the whole document; mutations on the clone don't touch the live UI.
-  const clone = document.documentElement.cloneNode(true);
-  const $ = sel => clone.querySelectorAll(sel);
-  const $1 = sel => clone.querySelector(sel);
-  // Close every overlay-style modal
-  $('.overlay, .ver-overlay, .nav-dd').forEach(el => { if (el.tagName === 'DIALOG') el.removeAttribute('open'); else el.classList.remove('open'); });
-  $('dialog[open]').forEach(el => el.removeAttribute('open'));
-  // Strip injected-on-open modals entirely
-  ['#api-key-modal', '#health-overlay'].forEach(s => { const el = $1(s); if (el) el.remove(); });
-  // Wipe AI chat & visualisation panels - these can carry sensitive data
-  const aiHist = $1('#ai-chat-history'); if (aiHist) aiHist.innerHTML = '';
-  const aiViz  = $1('#ai-viz-area');     if (aiViz)  aiViz.style.display = 'none';
-  const aiVizC = $1('#ai-viz-content');  if (aiVizC) aiVizC.innerHTML = '';
-  const aiInp  = $1('#ai-chat-input');   if (aiInp)  aiInp.value = '';
-  // Bulk-select bars + selection state
-  $('.bulk-bar').forEach(b => b.classList.remove('show'));
-  $('input.row-cb').forEach(cb => { cb.checked = false; });
-  $('tr.row-selected').forEach(tr => tr.classList.remove('row-selected'));
-  // Column-visibility dropdowns
-  $('.col-toggle-wrap').forEach(w => w.classList.remove('open'));
-  // Sold-section toggles back to collapsed
-  $('#singles-sold-divider, #slabs-sold-divider').forEach(d => { d.style.display = 'none'; });
-  $('#singles-sold-body, #slabs-sold-body').forEach(b => { b.style.display = 'none'; });
-  // Search & filter inputs - drop any typed value so the deployed page loads
-  // unfiltered.
-  $('input.search-input, input.col-filter, input.fi').forEach(inp => {
-    // Skip the API-key inputs (those are inside #api-key-modal which is
-    // already removed above; this is just defensive).
-    if (inp.closest('#api-key-modal')) return;
-    inp.value = '';
-    inp.removeAttribute('value');
-  });
-  // GitHub push button - reset if it was stuck on "Pushing…"
-  clone.querySelectorAll('button').forEach(btn => {
-    if (/pushing|encoding/i.test(btn.textContent||'')) {
-      btn.textContent = '🚀 Push to GitHub';
-      btn.disabled = false;
-    }
-  });
-  // Status text inside the GH modal
-  const ghStatus = $1('#gh-status'); if (ghStatus) ghStatus.innerHTML = '';
-  // Toast (could be mid-fade)
-  const toastEl = $1('#toast'); if (toastEl) { toastEl.classList.remove('show','toast-error','toast-warn'); const tm = $1('#toast-msg'); if (tm) tm.textContent = ''; }
-  // Sync indicator chip
-  const sync = $1('#sync-indicator'); if (sync) sync.textContent = '';
-  // Build the final string. We can't take .outerHTML of an HTMLElement and
-  // get the doctype, so prepend it manually.
-  return '<!DOCTYPE html>\n' + clone.outerHTML;
-}
-
 function sendAiPrompt(prompt) {
   document.getElementById('ai-chat-input').value = prompt;
   sendAiAnalyst();
@@ -16855,6 +16809,33 @@ function _disambiguateBySetName(name, candidates) {
   return null;
 }
 
+// The set id a free-text set field names, from the same _TCGDEX_SET_TOKENS table, by its LONGEST phrase rather than table order:
+// "Base Set 2" is base4 and "Expedition Base Set" is ecard1, never base1 for the shorter "base set" inside them. Two different
+// sets named by phrases of the same length name neither (''), and a set the table does not know names none.
+function _tcgdexSetIdIn(text) {
+  const lower = String(text || '').toLowerCase();
+  let best = '', bestLen = 0, tie = false;
+  for (const [token, setId] of _TCGDEX_SET_TOKENS) {
+    if (!lower.includes(token)) continue;
+    if (token.length > bestLen) { best = setId; bestLen = token.length; tie = false; }
+    else if (token.length === bestLen && setId !== best) tie = true;
+  }
+  return tie ? '' : best;
+}
+
+// A row's set as a second never-guess signal next to its name (slab art, see resolveTcgdexId's opts). When the set names a set,
+// the pick (a unique match, or the one the set words in the name chose) must be in it, else nothing is picked: a printing from
+// another set shares the name and number but is not this card. When the name left several candidates, the set picks the one
+// candidate in it, if exactly one is. A set the table does not know changes nothing. It never widens a pick, it only narrows one.
+function _tcgdexSetHintPick(card, candidates, setHint) {
+  const want = _tcgdexSetIdIn(setHint);
+  if (!want) return card;
+  const inSet = c => !!(c && typeof c.id === 'string' && c.id.startsWith(want + '-'));
+  if (card) return inSet(card) ? card : null;
+  const matches = (Array.isArray(candidates) ? candidates : []).filter(inSet);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // Resolve an item to a TCGdex card id ("setcode-number", e.g. "sv03-223").
 // Auto-accept ONLY when the query returns exactly one candidate outright, OR
 // when it returns several and the card's stored name mentions a set the
@@ -16868,12 +16849,15 @@ function _disambiguateBySetName(name, candidates) {
 // (+ matched name) onto the item so repeat lookups skip the resolve
 // round-trip. Does not touch item.name itself - the stored name (set words,
 // "RH", "(Sealed)" etc.) is read-only input here, never rewritten.
-async function resolveTcgdexId(item) {
+// opts.set (slab art only, features.js kjrImgRun): the row's set, applied by _tcgdexSetHintPick after the name has had its say.
+// Pricing passes no opts, so a priced card resolves exactly as it always has.
+async function resolveTcgdexId(item, opts) {
   if (item.tcgdexId) return item.tcgdexId;
   const name = _baseCardName(item.name);
   const num  = _tcgdexNumber(item.name);
   if (!name || !num) return null; // nothing to resolve against
   const lang = _tcgdexLang(item.language);
+  const setHint = opts && opts.set != null ? String(opts.set).trim() : '';
   try {
     const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
     const r = await fetch(url);
@@ -16881,6 +16865,7 @@ async function resolveTcgdexId(item) {
     const data = await r.json();
     if (!Array.isArray(data) || !data.length) return null; // zero results - unresolved, never guess
     let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data);
+    if (setHint) card = _tcgdexSetHintPick(card, data, setHint);
     if (!card) return null; // several candidates and the set name didn't narrow it to one - still ambiguous
     if (!card.id) return null;
     item.tcgdexId = card.id;
@@ -18765,27 +18750,13 @@ function viewSourceItem(id, table) {
   }
 
   setTimeout(() => {
-    // Escape the id for use inside a CSS attribute selector.
-    const sel = '[data-id="' + (id || '').replace(/"/g, '\\"') + '"]';
-    // Look in BOTH the available and the sold tbodies for this table.
-    // v3.69: in Grid view the card is a tile (also carries data-id) inside the grid containers.
-    const bodyIds = table === 'singles'
-      ? ['singles-body', 'singles-sold-body', 'singles-grid', 'singles-grid-alt']
-      : ['slabs-body', 'slabs-sold-body', 'slabs-grid', 'slabs-grid-alt'];
-    let el = null;
-    for (const bid of bodyIds) {
-      const root = document.getElementById(bid);
-      const found = root ? root.querySelector(sel) : null;
-      if (found) { el = found; break; }
-    }
-    if (el) {
-      el.scrollIntoView({behavior:'smooth', block:'center'});
-      el.style.outline = '2px solid var(--accent)';
-      el.style.outlineOffset = '-2px';
-      setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 2500);
-    } else {
-      toast('Source item not found (may have been deleted)');
-    }
+    // The row in whichever view shows it (features.js kjrRowOnScreen): the available and Sold tables, the grid tiles (v3.69) or
+    // the phone Holdings rows (v3.73). Only an element on screen counts, so a hidden table row the list drew before the grid was
+    // picked never takes the highlight. kjrFlashRow scrolls it to the middle (no smooth scroll with reduced motion) and outlines
+    // it for 2.5 seconds, just outside the edge for a tile, where its card stage cannot paint over the outline.
+    const el = typeof kjrRowOnScreen === 'function' ? kjrRowOnScreen(table === 'singles' ? 'singles' : 'slabs', id) : null;
+    if (el && typeof kjrFlashRow === 'function') kjrFlashRow(el);
+    else toast('Source item not found (may have been deleted)');
   }, 320);
 }
 

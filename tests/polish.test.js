@@ -396,6 +396,292 @@ test('delete focus: a frame later it puts focus back where it was lost (the insp
   void target;
 });
 
+// ══ 3h (bulk). focus after a bulk delete ════════════════════════════════════════════════════════
+// deleteSelected follows the single delete's rule: the first deleted row's position in the drawn order, then the row that took
+// it, else the one before it, else the heading. Its button sits in the bulk bar, which hides once nothing is selected, so focus
+// is never left on a control that is no longer shown. The bar is a stub that answers contains() for its own buttons.
+function bulkBar(e, table) {
+  const bar = e.doc.getElementById('bulk-bar-' + table);
+  const button = (name) => ({ tagName: 'BUTTON', isConnected: true, name, focus() { e.doc.activeElement = this; e.focusLog.push('bar:' + name); }, closest: (sel) => (sel === '.page' ? { id: 'page' } : null) });
+  const del = button('delete');
+  const clear = button('clear');
+  bar.contains = (el) => el === del || el === clear;
+  return { bar, del, clear };
+}
+const select = (e, table, ids) => { ids.forEach((id) => e.ctx.selectedIds[table].add(id)); e.ctx.updateBulkBar(table); };
+
+test('bulk delete focus: the first row kept at or after the first deleted position gets focus, else the one before it, else the heading', async () => {
+  const e = await deleteEnv(['a', 'b', 'c', 'd', 'e'], 'table');
+  const { bar, del } = bulkBar(e, 'singles');
+  select(e, 'singles', ['b', 'd', 'e']);
+  assert.equal(bar.classList.contains('show'), true);
+  e.doc.activeElement = del;
+  await e.ctx.deleteSelected('singles');
+  assert.deepEqual(e.order(), ['a', 'c']);
+  assert.deepEqual(e.focusLog, ['name:c'], 'b was the first to go and c took its place');
+  assert.equal(bar.classList.contains('show'), false, 'the bar hid');
+  assert.notEqual(e.doc.activeElement, del, 'and focus left its Delete button');
+  assert.equal(e.ctx.selectedIds.singles.size, 0);
+  // the selection ran to the end of the list: the row before the first deleted one
+  e.focusLog.length = 0;
+  select(e, 'singles', ['c']);
+  e.doc.activeElement = del;
+  await e.ctx.deleteSelected('singles');
+  assert.deepEqual(e.order(), ['a']);
+  assert.deepEqual(e.focusLog, ['name:a']);
+  // every row: the page heading, made focusable on the spot
+  e.focusLog.length = 0;
+  select(e, 'singles', ['a']);
+  e.doc.activeElement = del;
+  await e.ctx.deleteSelected('singles');
+  assert.deepEqual(e.order(), []);
+  assert.deepEqual(e.focusLog, ['heading']);
+  assert.equal(e.heading._attrs.tabindex, '-1');
+  // Slabs the same way, and the Holdings rows on a phone
+  const s = await deleteEnv(['p1', 'p2', 'p3', 'p4'], 'table', 'slabs');
+  select(s, 'slabs', ['p2', 'p3']);
+  await s.ctx.deleteSelected('slabs');
+  assert.deepEqual(s.focusLog, ['name:p4']);
+  const phone = await deleteEnv(['a', 'b', 'c'], 'phone');
+  select(phone, 'singles', ['a', 'c']);
+  await phone.ctx.deleteSelected('singles');
+  assert.deepEqual(phone.focusLog, ['row:b']);
+});
+
+test('bulk delete focus: a selection with no row in the drawn list goes to the heading, a cancelled or failed delete leaves focus on the button', async () => {
+  const e = await deleteEnv(['a', 'b', 'c'], 'table');
+  const { del } = bulkBar(e, 'singles');
+  // a selected row that the list does not show (filtered out of view since it was ticked)
+  e.ctx.DB.singles.push(single({ id: 'z', name: 'Card z' }));
+  select(e, 'singles', ['z']);
+  e.doc.activeElement = del;
+  await e.ctx.deleteSelected('singles');
+  assert.equal(e.ctx.DB.singles.some((r) => r.id === 'z'), false);
+  assert.deepEqual(e.order(), ['a', 'b', 'c']);
+  assert.deepEqual(e.focusLog, ['heading']);
+  assert.deepEqual(plain(e.ctx.kjrBulkDeleteFocusPlan('singles', new Set(['z']))), { table: 'singles', at: -1 }, 'planned as the heading');
+  // cancelled: the bar stays, so does focus
+  e.focusLog.length = 0;
+  select(e, 'singles', ['b']);
+  e.ctx.confirm = () => false;
+  e.doc.activeElement = del;
+  await e.ctx.deleteSelected('singles');
+  assert.deepEqual(e.order(), ['a', 'b', 'c']);
+  assert.deepEqual(e.focusLog, []);
+  assert.equal(e.doc.activeElement, del);
+  // the Trash copies could not be made: nothing was removed, the bar and focus stay
+  e.ctx.confirm = () => true;
+  e.ctx.sendBatchToTrash = async () => false;
+  await e.ctx.deleteSelected('singles');
+  assert.deepEqual(e.order(), ['a', 'b', 'c']);
+  assert.deepEqual(e.focusLog, []);
+  assert.equal(e.doc.activeElement, del);
+  // plans: Singles and Slabs only, a showing page only, the first deleted position in the drawn order
+  assert.equal(e.ctx.kjrBulkDeleteFocusPlan('sales', new Set(['a'])), null);
+  assert.deepEqual(plain(e.ctx.kjrBulkDeleteFocusPlan('singles', new Set(['c', 'b']))), { table: 'singles', at: 1 });
+  e.page.classList.remove('active');
+  assert.equal(e.ctx.kjrBulkDeleteFocusPlan('singles', new Set(['b'])), null);
+  const body = appSrc.slice(appSrc.indexOf('async function deleteSelected(table)'), appSrc.indexOf('// =========== COLUMN VISIBILITY & ORDER'));
+  assert.match(body, /const focusPlan = typeof kjrBulkDeleteFocusPlan === 'function' \? kjrBulkDeleteFocusPlan\(table, ids\) : null;\n  DB\[table\] = DB\[table\]\.filter\(i => !ids\.has\(i\.id\)\);\n  ids\.clear\(\);/, 'the plan is read just before the rows go');
+  assert.match(body, /if \(table === 'sales'\) renderSales\(\);\n  if \(focusPlan && typeof kjrDeleteFocusRestore === 'function'\) kjrDeleteFocusRestore\(focusPlan\);\n  if \(typeof kjrBulkBarFocusRescue === 'function'\) kjrBulkBarFocusRescue\(table\);\n  toast\(count \+ ' moved to trash/, 'and focus is placed right after the redraw');
+});
+
+test('bulk bar focus: Delete selected on Sales and Clear anywhere hand focus to the page heading, focus outside the bar is left alone', async () => {
+  const app = await loadApp({ seed: makeSeed({ sales: ['x1', 'x2', 'x3'].map((id, n) => ({ id, dateSold: '1 Oct 2026', product: 'Product ' + n, buyer: '', costPrice: 10, totalCollected: 15, shippingCost: 0, fees: 0, channel: 'Carousell', profit: 5 })) }) });
+  const doc = app.document;
+  const focusLog = [];
+  const e = { ctx: app.ctx, doc, focusLog };
+  const { bar, del, clear } = bulkBar(e, 'sales');
+  const page = doc.getElementById('page-sales');
+  page.classList.add('active');
+  const heading = { className: 'section-title', tagName: 'DIV', isConnected: true, _attrs: {}, hasAttribute(k) { return k in this._attrs; }, setAttribute(k, v) { this._attrs[k] = v; }, focus() { doc.activeElement = this; focusLog.push('heading'); } };
+  page.querySelector = (sel) => (sel === '.section-title' ? heading : null);
+  app.ctx.confirm = () => true;
+  app.ctx.toast = () => {};
+  select(e, 'sales', ['x1', 'x2']);
+  doc.activeElement = del;
+  await app.ctx.deleteSelected('sales');
+  assert.deepEqual(plain(app.ctx.DB.sales.map((r) => r.id)), ['x3']);
+  assert.equal(bar.classList.contains('show'), false);
+  assert.deepEqual(focusLog, ['heading'], 'Sales has no row rule, so the heading, never the hidden button');
+  assert.equal(heading._attrs.tabindex, '-1', 'the Sales heading is made focusable on the spot');
+  // Clear hides the bar too
+  focusLog.length = 0;
+  select(e, 'sales', ['x3']);
+  doc.activeElement = clear;
+  app.ctx.clearSelection('sales');
+  assert.equal(bar.classList.contains('show'), false);
+  assert.deepEqual(focusLog, ['heading']);
+  // a box ticked off by hand hides the bar with focus on the box: not the bar's business
+  focusLog.length = 0;
+  const box = { tagName: 'INPUT', focus() {} };
+  select(e, 'sales', ['x3']);
+  doc.activeElement = box;
+  app.ctx.toggleRowSelect('sales', 'x3', false);
+  assert.equal(bar.classList.contains('show'), false);
+  assert.equal(app.ctx.kjrBulkBarFocusRescue('sales'), false);
+  assert.deepEqual(focusLog, []);
+  assert.equal(doc.activeElement, box);
+  // a bar that still shows keeps its focus
+  select(e, 'sales', ['x3']);
+  doc.activeElement = clear;
+  assert.equal(app.ctx.kjrBulkBarFocusRescue('sales'), false);
+  assert.equal(doc.activeElement, clear);
+  const rescueSrc = features.slice(features.indexOf('function kjrBulkBarFocusRescue'), features.indexOf('// ── Phone sort.'));
+  assert.doesNotMatch(rescueSrc, /markDirty\(|saveData\(|saveAllToSupabase\(|snapshotForUndo\(|DB\.(singles|slabs|sales)\s*=[^=]|localStorage\.setItem|fetch\(/, 'reads and focuses only');
+  const clearSrc = appSrc.slice(appSrc.indexOf('function clearSelection(table)'), appSrc.indexOf('function updateBulkBar(table)'));
+  assert.match(clearSrc, /updateBulkBar\(table\);\n[^\n]*\n?  if \(typeof kjrBulkBarFocusRescue === 'function'\) kjrBulkBarFocusRescue\(table\);\n\}/);
+});
+
+// ══ 3i. a linked row is shown where it is on screen ═════════════════════════════════════════════
+// The Dealer Desk's "Open linked Singles/Slabs copy" runs viewSourceItem (app.js), its Sales link and its fallback run
+// focusCoreRow (dealer-production-ui.js). Both outline the row for 2.5 seconds after scrolling it to the middle. In the grid the
+// row is a tile, on a phone a Holdings row, and the table body can still hold the rows the list drew before the grid was picked
+// (hidden, no client rects). A fake page per view: each zone answers [data-id] with its own element, visible or not.
+function linkEl(log, id, kind, visible) {
+  return {
+    tagName: kind === 'tile' ? 'BUTTON' : (kind === 'tr' ? 'TR' : 'DIV'), kind, style: {},
+    classList: { contains: (c) => (c === 'kjr-tile' && kind === 'tile') },
+    getAttribute: (k) => (k === 'data-id' ? id : null),
+    getClientRects: () => (visible ? [{}] : []),
+    scrollIntoView(opts) { log.push({ id, kind, behavior: opts && opts.behavior, block: opts && opts.block }); },
+  };
+}
+function linkZones(app, zones) {
+  // zones: { zoneId: [el, ...] }. Every other zone of the three tables answers nothing.
+  const ids = ['body', 'sold-body', 'grid', 'grid-alt', 'cards', 'sold-cards'].flatMap((z) => ['singles-' + z, 'slabs-' + z]).concat(['sales-body']);
+  ids.forEach((zid) => {
+    const z = app.document.getElementById(zid);
+    const els = zones[zid] || [];
+    z.querySelectorAll = (sel) => (sel === '[data-id]' ? els : []);
+    z.querySelector = (sel) => els.find((el) => sel === '[data-id="' + el.getAttribute('data-id') + '"]') || null;
+  });
+}
+const newTimers = (app, before, delay) => app.timers.list().filter((t) => !before.has(t.id) && t.delay === delay);
+const reduceMotion = (app) => { app.sandbox.matchMedia = (q) => ({ matches: /prefers-reduced-motion: reduce/.test(q), media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }); };
+
+test('linked row: viewSourceItem outlines the tile in the grid, never a hidden table row the list left behind, and lets go after 2.5 seconds', async () => {
+  const app = await loadApp({ seed: makeSeed({ singles: [single({ id: 'x', name: 'Card x' })] }), localStorage: { kjr_view_singles: 'grid' } });
+  const log = [];
+  const stale = linkEl(log, 'x', 'tr', false);
+  const tile = linkEl(log, 'x', 'tile', true);
+  linkZones(app, { 'singles-body': [stale], 'singles-grid': [tile] });
+  const before = new Set(app.timers.list().map((t) => t.id));
+  app.ctx.viewSourceItem('x', 'singles');
+  const wait = newTimers(app, before, 320);
+  assert.equal(wait.length, 1, 'one look, 320ms after the page is drawn');
+  const toasts = [];
+  app.ctx.toast = (m) => toasts.push(m);
+  const beforeFlash = new Set(app.timers.list().map((t) => t.id));
+  app.timers.invoke(wait[0].id);
+  assert.equal(tile.style.outline, '2px solid var(--accent)', 'the tile on screen is outlined');
+  assert.equal(tile.style.outlineOffset, '2px', 'outside the tile, where its card stage cannot paint over it');
+  assert.equal(stale.style.outline, undefined, 'the hidden table row is left alone');
+  assert.deepEqual(log, [{ id: 'x', kind: 'tile', behavior: 'smooth', block: 'center' }]);
+  assert.deepEqual(toasts, []);
+  const clear = newTimers(app, beforeFlash, 2500);
+  assert.equal(clear.length, 1, 'the same 2.5 seconds as the list');
+  app.timers.invoke(clear[0].id);
+  assert.equal(tile.style.outline, '');
+  assert.equal(tile.style.outlineOffset, '');
+});
+
+test('linked row: the list row and the phone Holdings row keep the list outline, reduced motion scrolls without animation, and a row not on screen says so', async () => {
+  const app = await loadApp({ seed: makeSeed({ slabs: [slab({ id: 'p1' })] }) });
+  const log = [];
+  const row = linkEl(log, 'p1', 'tr', true);
+  linkZones(app, { 'slabs-body': [row] });
+  reduceMotion(app);
+  let before = new Set(app.timers.list().map((t) => t.id));
+  app.ctx.viewSourceItem('p1', 'slabs');
+  app.timers.invoke(newTimers(app, before, 320)[0].id);
+  assert.equal(row.style.outline, '2px solid var(--accent)');
+  assert.equal(row.style.outlineOffset, '-2px', 'a table row keeps the inset outline it always had');
+  assert.deepEqual(log, [{ id: 'p1', kind: 'tr', behavior: 'auto', block: 'center' }], 'reduced motion: no smooth scroll');
+  // a phone: the table is hidden, the Holdings row is what shows
+  const phone = await loadApp({ seed: makeSeed({ singles: [single({ id: 'x', name: 'Card x' })] }) });
+  const plog = [];
+  const hiddenRow = linkEl(plog, 'x', 'tr', false);
+  const holding = linkEl(plog, 'x', 'row', true);
+  linkZones(phone, { 'singles-body': [hiddenRow], 'singles-cards': [holding] });
+  before = new Set(phone.timers.list().map((t) => t.id));
+  phone.ctx.viewSourceItem('x', 'singles');
+  phone.timers.invoke(newTimers(phone, before, 320)[0].id);
+  assert.equal(holding.style.outline, '2px solid var(--accent)');
+  assert.equal(holding.style.outlineOffset, '-2px');
+  assert.equal(hiddenRow.style.outline, undefined);
+  assert.deepEqual(plog, [{ id: 'x', kind: 'row', behavior: 'smooth', block: 'center' }]);
+  // drawn nowhere that shows (deleted, or filtered out): the toast, and nothing is outlined
+  const gone = await loadApp({ seed: makeSeed({ singles: [single({ id: 'x', name: 'Card x' })] }) });
+  const glog = [];
+  const ghost = linkEl(glog, 'x', 'tr', false);
+  linkZones(gone, { 'singles-body': [ghost] });
+  const toasts = [];
+  gone.ctx.toast = (m) => toasts.push(m);
+  before = new Set(gone.timers.list().map((t) => t.id));
+  gone.ctx.viewSourceItem('x', 'singles');
+  gone.timers.invoke(newTimers(gone, before, 320)[0].id);
+  assert.deepEqual(toasts, ['Source item not found (may have been deleted)']);
+  assert.equal(ghost.style.outline, undefined);
+  assert.deepEqual(glog, []);
+  // a second flash on the same row before the first one let go keeps its own 2.5 seconds
+  const again = await loadApp();
+  const el = linkEl([], 'q', 'tr', true);
+  let t0 = new Set(again.timers.list().map((t) => t.id));
+  again.ctx.kjrFlashRow(el);
+  const first = newTimers(again, t0, 2500);
+  t0 = new Set(again.timers.list().map((t) => t.id));
+  again.ctx.kjrFlashRow(el);
+  assert.equal(again.timers.list().some((t) => t.id === first[0].id), false, 'the first timer is dropped');
+  assert.equal(newTimers(again, t0, 2500).length, 1);
+  assert.equal(again.ctx.kjrFlashRow(null), false);
+  const flashSrc = features.slice(features.indexOf('function kjrRowOnScreen'), features.indexOf('// ── Phone sort.'));
+  assert.doesNotMatch(flashSrc, /markDirty\(|saveData\(|saveAllToSupabase\(|snapshotForUndo\(|DB\.(singles|slabs|sales)\s*=[^=]|localStorage\.setItem|fetch\(|\.focus\(/, 'reads, scrolls and styles only, and moves no focus (the list never did)');
+});
+
+test('linked row: the Dealer Desk click handler outlines the grid tile and the Sales row through focusCoreRow, with no smooth scroll under reduced motion', async () => {
+  const vm = require('node:vm');
+  const app = await loadApp({ seed: makeSeed({ singles: [single({ id: 'x', name: 'Card x' })], sales: [{ id: 'y', dateSold: '1 Oct 2026', product: 'Product y', buyer: '', costPrice: 10, totalCollected: 15, shippingCost: 0, fees: 0, channel: 'Carousell', profit: 5 }] }), localStorage: { kjr_view_singles: 'grid' } });
+  vm.runInContext(read('dealer-production-ui.js'), app.sandbox, { filename: 'dealer-production-ui.js' });
+  const handlers = {};
+  const root = { innerHTML: '', addEventListener(type, fn) { handlers[type] = fn; }, contains: () => true, querySelector: () => null, querySelectorAll: () => [] };
+  // mount binds the click handler at once, its async tail stops on the stub store and draws the owner gate
+  app.ctx.DealerProductionUI.createController({ root, store: { view: () => null } }).mount();
+  await app.settle();
+  assert.equal(typeof handlers.click, 'function');
+  // in the app viewSourceItem takes the Singles and Slabs links, so null it to reach focusCoreRow, the path the Sales link takes
+  app.sandbox.viewSourceItem = null;
+  const log = [];
+  const stale = linkEl(log, 'x', 'tr', false);
+  const tile = linkEl(log, 'x', 'tile', true);
+  const saleRow = linkEl(log, 'y', 'tr', true);
+  linkZones(app, { 'singles-body': [stale], 'singles-grid': [tile], 'sales-body': [saleRow] });
+  const link = (page, table, id) => ({ target: { getAttribute: (k) => ({ 'data-navigate-page': page, 'data-ref-table': table, 'data-ref-id': id })[k] || null, hasAttribute: (k) => k === 'data-navigate-page', closest() { return this; } }, preventDefault() {} });
+  let before = new Set(app.timers.list().map((t) => t.id));
+  await handlers.click(link('inventory', 'singles', 'x'));
+  let wait = newTimers(app, before, 320);
+  assert.equal(wait.length, 1);
+  app.timers.invoke(wait[0].id);
+  assert.equal(tile.style.outline, '2px solid var(--accent)', 'the grid tile, not the hidden table row');
+  assert.equal(tile.style.outlineOffset, '2px');
+  assert.equal(stale.style.outline, undefined);
+  assert.deepEqual(log, [{ id: 'x', kind: 'tile', behavior: 'smooth', block: 'center' }]);
+  // the Sales link, with reduced motion
+  reduceMotion(app);
+  log.length = 0;
+  before = new Set(app.timers.list().map((t) => t.id));
+  await handlers.click(link('sales', 'sales', 'y'));
+  wait = newTimers(app, before, 320);
+  app.timers.invoke(wait[0].id);
+  assert.equal(saleRow.style.outline, '2px solid var(--accent)');
+  assert.equal(saleRow.style.outlineOffset, '-2px');
+  assert.deepEqual(log, [{ id: 'y', kind: 'tr', behavior: 'auto', block: 'center' }]);
+  // a link with no id does nothing at all
+  before = new Set(app.timers.list().map((t) => t.id));
+  await handlers.click(link('sales', 'sales', ''));
+  assert.equal(newTimers(app, before, 320).length, 0);
+});
+
 // ══ 4a. the phone sort ══════════════════════════════════════════════════════════════════════════
 function fakeSelect(app, table) {
   const options = [];

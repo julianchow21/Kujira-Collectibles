@@ -31,7 +31,9 @@ const STATIC_FILES = Object.freeze({
   '/Assets/whale-icon-192.png': 'Assets/whale-icon-192.png',
   '/Assets/whale-icon-maskable-512.png': 'Assets/whale-icon-maskable-512.png',
   '/Assets/lib/three.core.min.js': 'Assets/lib/three.core.min.js',
-  '/Assets/lib/three.module.js': 'Assets/lib/three.module.js'
+  '/Assets/lib/three.module.js': 'Assets/lib/three.module.js',
+  '/Assets/fonts/Geist-Variable.woff2': 'Assets/fonts/Geist-Variable.woff2',
+  '/Assets/fonts/GeistMono-Variable.woff2': 'Assets/fonts/GeistMono-Variable.woff2'
 });
 
 const CONTENT_TYPES = Object.freeze({
@@ -40,7 +42,8 @@ const CONTENT_TYPES = Object.freeze({
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/manifest+json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
-  '.png': 'image/png'
+  '.png': 'image/png',
+  '.woff2': 'font/woff2'
 });
 
 function jsonForScript(value) {

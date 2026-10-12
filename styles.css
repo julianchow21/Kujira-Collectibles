@@ -1,5 +1,10 @@
 /* Kujira Collectibles, all app CSS (split from index.html, v3.12, 05/07/2026).
    Cascade order preserved: five original style blocks concatenated in document order. */
+/* Geist and Geist Mono, self-hosted (v3.74): the official Vercel "geist" npm package 1.7.2, SIL Open Font License 1.1 (Assets/fonts/OFL.txt).
+   One variable file each. The declared ranges are the ones the app asked Google Fonts for (400 to 700, 400 to 500), so a heavier or lighter
+   request clamps exactly as it did before, and nothing is fetched from another origin. swap shows the fallback stack until the file is in. */
+@font-face{font-family:'Geist';font-style:normal;font-weight:400 700;font-display:swap;src:url('Assets/fonts/Geist-Variable.woff2') format('woff2')}
+@font-face{font-family:'Geist Mono';font-style:normal;font-weight:400 500;font-display:swap;src:url('Assets/fonts/GeistMono-Variable.woff2') format('woff2')}
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-tap-highlight-color:transparent}
 /* Form controls do not inherit the page font by default (the UA font shorthand
@@ -64,6 +69,9 @@ button,input,select,textarea{font-family:inherit;font-variant-numeric:inherit}
      stay the same in both themes, the label text is white on PSA and CGC, near-black on BGS and TAG.
      The slab case and the control border are the only theme-dependent ones. */
   --grader-psa:#C9353B;--grader-cgc:#2459D6;--grader-bgs:#C9A227;--grader-tag:#F5F5F7;
+  /* The chip's 8px dot is a graphic and needs 3:1 against the chip (--bg3). CGC blue is 2.84:1 on the dark chip, so dark takes a
+     lighter blue (4.52:1 on --bg3, 4.88:1 on --bg2). Light keeps the brand blue (5.36:1). Used by the badge rules in BADGES. */
+  --grader-cgc-dot:#4F7FE8;
   --grader-fg-light:#FFFFFF;--grader-fg-dark:#0B0B0E;
   --control-border:#34343D;
   --slab-case-top:#2C2C33;--slab-case-bot:#1B1B21;--slab-case-bd:#3A3A44;
@@ -105,6 +113,8 @@ html.light{
   --shadow-lg:0 8px 32px rgba(0,0,0,0.14);
   /* Category tokens (light), exposure/split bar segments */
   --cat1:#5B4BD1;--cat2:#4535A8;--cat3:#2E2475;
+  /* BGS gold is 2.14:1 on the light chip, so the light dot is a deeper gold (3.38:1 on --bg3, 3.82:1 on --bg2). Dark keeps --grader-bgs (7.08:1). */
+  --grader-bgs-dot:#A67C00;
   /* Card art tokens (light): only the control border and the slab case change */
   --control-border:#CFCFD6;
   --slab-case-top:#FFFFFF;--slab-case-bot:#E8E8EC;--slab-case-bd:#C4C4CC;
@@ -235,6 +245,12 @@ th[data-col-key="profit"] input,th[data-col-key="qty"] input{text-align:right}
 .badge.b-cgc{--kjr-dot:var(--grader-cgc)}
 .badge.b-tag{--kjr-dot:var(--text)}
 .badge.b-slab{--kjr-dot:var(--text3)}
+/* v3.74, dot contrast. The rules above stay as they are, these come after them. BGS is a plain slab chip (b-slab, _graderClass is
+   unchanged) that graderGradeBadge marks with data-grader="bgs", so its dot is gold instead of grey. Dark takes the lighter CGC
+   blue, light a deeper BGS gold, so each dot clears 3:1 on its chip (the numbers sit beside the two tokens at the top). */
+.badge.b-slab[data-grader="bgs"]{--kjr-dot:var(--grader-bgs)}
+html:not(.light) .badge.b-cgc{--kjr-dot:var(--grader-cgc-dot)}
+html.light .badge.b-slab[data-grader="bgs"]{--kjr-dot:var(--grader-bgs-dot)}
 /* Pristine - the top-pop subgrade. Same neutral chip, kept distinct by a gold dot and a gold hairline
    (the star stays in the text). Adapts to light/dark via the badge tokens. */
 .badge.b-pristine{--kjr-dot:var(--b-pristine-fg);border-color:var(--b-pristine-bd)}
@@ -410,10 +426,8 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
    not change. Standalone icon buttons get a real min-height/min-width. */
 @media(pointer:coarse){
   .icon-btn{min-width:44px;min-height:44px}
-  .eb-tl-dot,.sell-qty button,.sell-cart-remove,.metric-info,.inv-stat-info,
-  .metric-trust{position:relative}
-  .eb-tl-dot::after,.sell-qty button::after,.sell-cart-remove::after,
-  .metric-info::after,.inv-stat-info::after,.metric-trust::after{
+  .eb-tl-dot,.sell-qty button,.sell-cart-remove{position:relative}
+  .eb-tl-dot::after,.sell-qty button::after,.sell-cart-remove::after{
     content:"";position:absolute;inset:-12px;
   }
   /* ::after does not render on replaced form controls (checkboxes) in most
@@ -914,10 +928,6 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 #page-sales [data-col-key="buyer"]{display:none}
 .inv-stat-label{font-size:12px;font-weight:500;color:var(--text3);margin-bottom:4px}
 .inv-stat-value{font-size:20px;font-weight:700;letter-spacing:-0.3px}
-.inv-stat-info{position:absolute;top:8px;right:8px;width:16px;height:16px;border-radius:50%;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;font-family:inherit;line-height:1}
-.inv-stat-info:hover{background:var(--bg4);color:var(--text);border-color:var(--accent)}
-.inv-stat-tooltip{display:none;position:absolute;top:calc(100% + 6px);right:0;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:11px;color:var(--text2);line-height:1.6;z-index:50;min-width:200px;max-width:260px;box-shadow:var(--shadow-md);text-align:left;white-space:normal}
-.inv-stat-info:hover .inv-stat-tooltip{display:block}
 /* Mini split-bar inside an inventory stat card */
 .inv-split-bar{display:flex;height:18px;border-radius:5px;overflow:hidden;border:1px solid var(--border);background:var(--bg3);margin-top:6px}
 .inv-split-bar > div{display:flex;align-items:center;justify-content:center;color:var(--split-bar-fg);font-size:10px;font-weight:600;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
@@ -936,17 +946,8 @@ th.col-drag-over{outline:2px solid var(--accent);outline-offset:-2px}
 .inv-split-tag{background:var(--tag)}
 .inv-split-other{background:var(--text3)}
 
-/* DASHBOARD METRIC INFO */
+/* KPI tile (the Sales summary). The info button and the trust dot that used to sit on it are gone (v3.74). */
 .metric{position:relative}
-.metric-info{position:absolute;top:8px;right:8px;width:16px;height:16px;border-radius:50%;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;font-family:inherit;line-height:1}
-.metric-info:hover{background:var(--bg4);color:var(--text);border-color:var(--accent)}
-.metric-info:hover .inv-stat-tooltip{display:block}
-/* Persistent data-trust dot, sits just left of the info button. Its colour
-   warns about how trustworthy the card's number is (red = low coverage or
-   stale). The coverage + freshness text shows on hover. */
-.metric-trust{position:absolute;top:8px;right:30px;width:16px;height:16px;padding:0;border:none;background:transparent;cursor:help;display:flex;align-items:center;justify-content:center}
-.metric-trust-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.metric-trust:hover .inv-stat-tooltip{display:block}
 
 /* COMMAND BAR */
 dialog.cmd-overlay{border:none;background:transparent;padding:0;padding-top:80px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-start;justify-content:center}
@@ -1249,10 +1250,6 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
 /* toast popover (JS track) - #toast:popover-open unhides it; the UA popover
    chrome reset (margin/inset) now lives in the main #toast rule above. */
 #toast:popover-open{display:block}
-
-/* KPI tooltip tap-toggle (JS track) - mirrors the existing :hover rules for touch */
-.metric-info.open .inv-stat-tooltip{display:block}
-.metric-trust.open .inv-stat-tooltip{display:block}
 
 /* Global focus ring for keyboard navigation across interactive controls */
 :is(.btn,.icon-btn,.nav-btn,.btb-item,.sheet-item,th.sortable,.nav-dd-item,.nav-dd-subitem):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -2435,4 +2432,85 @@ body{padding-left:var(--kjr-side-w)}
 @media (prefers-reduced-motion: reduce){
   .nav-btn,.kjr-side-search,.kjr-side-add,.topbar #settings-btn,#sync-indicator,.btb-item,.btb-add,.kjr-hold-row,.kjr-tip{transition:none}
   .btb-add:active{transform:none}
+}
+
+/* ═══════════ Polish and leftovers (redesign Step 6b, v3.74) ═══════════
+   New in this step and last in the file, so its overrides come after every base rule. Existing tokens only (the two dot tokens this
+   step added sit with the other grader tokens at the top). Media queries here are written with spaces on purpose, tests/overview.test.js
+   finds the Overview's 900px block with lastIndexOf on the compact form, so no later block may use it. The compositing hint for the holo
+   shine is set from script, on the art under the pointer only, never in this file. */
+
+/* ── The ⌘K palette: the Search tab of #cmd-overlay ── */
+.cmd-mode-tab .cmd-tab-ico{width:15px;height:15px;margin-right:4px;vertical-align:-3px}
+#cmd-find-list{max-height:min(420px,60vh)}
+#cmd-find-list [role="group"]+[role="group"]{margin-top:4px;padding-top:4px;border-top:1px solid var(--border)}
+#cmd-find-list .cmd-result{padding-top:7px;padding-bottom:7px}
+/* The active option is a tint and a 2px bar, so it never depends on colour alone */
+#cmd-find-list .cmd-result[aria-selected="true"]{box-shadow:inset 2px 0 0 var(--accent)}
+#cmd-find-list .cmd-result-icon{width:28px;height:28px;background:var(--bg3);color:var(--text2)}
+#cmd-find-list .cmd-result-icon svg{width:16px;height:16px}
+.cmd-find-val{flex:none;margin-left:auto;padding-left:8px;font-size:13px;font-weight:600;line-height:18px;font-variant-numeric:tabular-nums;color:var(--text)}
+.cmd-result.is-sold .kjr-thumb{opacity:0.55}
+.cmd-result.is-sold .cmd-find-val{font-weight:500;color:var(--text2)}
+.cmd-find-more{padding:6px 16px 8px;font-size:12px;line-height:16px;color:var(--text3)}
+.cmd-hint kbd.cmd-kbd{font-family:var(--font-mono);font-size:11px;line-height:14px}
+
+/* ── Holo shine: a pointer-tracked sheen and a slight lean on the Overview's top tiles and on the inspector art, nowhere else ──
+   features.js (kjrHoloMove) writes --kjr-hx and --kjr-hy (the pointer as a percentage of the stage) and --kjr-rx and --kjr-ry (the
+   lean, within 6deg) on the art, and puts .is-holo on it while the pointer is there. Everything below is declared inside one query,
+   hover and a fine pointer and no reduced motion, so a phone, a tablet, a pen-less touch screen and anyone who asked for less motion
+   gets none of it, and features.js attaches no listener there either. The sheen is a ::before, a white glare and one band of colour, in an
+   overlay blend over the art itself (isolation keeps the blend inside the art), so it reads on any card in both themes. */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .ov-top .kjr-tile-art,.ov-top .kjr-slab,.kjr-insp-card,.kjr-insp-slabwrap .kjr-slab{isolation:isolate}
+  .ov-top .kjr-tile-art::before,.ov-top .kjr-slab::before,.kjr-insp-card::before,.kjr-insp-slabwrap .kjr-slab::before{content:"";position:absolute;inset:0;z-index:2;border-radius:inherit;pointer-events:none;opacity:0;mix-blend-mode:overlay;background-image:radial-gradient(circle at var(--kjr-hx,50%) var(--kjr-hy,50%),color-mix(in srgb,var(--grader-fg-light) 55%,transparent),transparent 52%),linear-gradient(115deg,transparent 22%,color-mix(in srgb,var(--accent2) 60%,transparent) 38%,color-mix(in srgb,var(--blue) 55%,transparent) 47%,color-mix(in srgb,var(--green) 50%,transparent) 55%,color-mix(in srgb,var(--amber) 45%,transparent) 63%,transparent 78%);background-size:100% 100%,260% 260%;background-position:0 0,var(--kjr-hx,50%) var(--kjr-hy,50%);background-repeat:no-repeat;transition:opacity 0.16s ease-out}
+  .ov-top .kjr-tile-art.is-holo::before,.ov-top .kjr-slab.is-holo::before,.kjr-insp-card.is-holo::before,.kjr-insp-slabwrap .kjr-slab.is-holo::before{opacity:1}
+  /* The tiles keep the 4px lift they already have and lean on top of it. The inspector card keeps its resting pose (-8deg, 3deg)
+     and the lean is added to it, so with no pointer on it it sits exactly where it did. The panel itself never takes a transform. */
+  .ov-top .kjr-tile:hover .kjr-tile-art,.ov-top .kjr-tile:hover .kjr-slab{transform:translateY(-4px) perspective(700px) rotateX(var(--kjr-rx,0deg)) rotateY(var(--kjr-ry,0deg))}
+  .kjr-insp-card{transform:perspective(900px) rotateY(calc(-8deg + var(--kjr-ry,0deg))) rotateX(calc(3deg + var(--kjr-rx,0deg)));transition:transform 0.16s ease-out}
+  .kjr-insp-slabwrap .kjr-slab{transform:perspective(900px) rotateX(var(--kjr-rx,0deg)) rotateY(var(--kjr-ry,0deg))}
+}
+/* Belt and braces: the pseudo-elements above only exist inside that query, and under reduced motion or a coarse pointer these say so again */
+@media (prefers-reduced-motion: reduce), (pointer: coarse) {
+  .ov-top .kjr-tile-art::before,.ov-top .kjr-slab::before,.kjr-insp-card::before,.kjr-insp-slabwrap .kjr-slab::before{content:none}
+}
+
+/* ── Overview, Needs attention: room to read ──
+   .ov is a size container, so the question is how wide the page is, not how wide the window is (the inspector's split view, the
+   rail and the sidebar all change that). Up to 1120px of page the band cannot keep a comfortable column beside the value block and
+   the other two figures, so it takes a row of its own under them, with a hairline above it, instead of being squeezed, and each
+   item puts its link beside its words when they fit. Wider than that, and on a phone (its own layout, above), nothing changes. At 900px and below the hero is already stacked, so the row starts
+   at the card's edge instead of lining up under the figures. */
+.ov{container-name:ov;container-type:inline-size}
+@media (min-width: 601px) {
+  @container ov (max-width: 1120px) {
+    .ov-stats{flex-wrap:wrap}
+    .ov-stat:last-child{flex:1 0 100%;margin-top:16px;padding:16px 0 0 24px;border-left:0;border-top:1px solid var(--border)}
+    .ov-att-item{flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:0 12px}
+  }
+}
+@media (min-width: 601px) and (max-width: 900px) {
+  .ov-stat:last-child{padding-left:0}
+}
+
+/* ── Phone sort: a labelled select above the Holdings rows, only while they are drawn ── */
+.kjr-hold-sort{display:none;align-items:center;gap:10px;margin:0 0 8px}
+.kjr-hold-sort-lbl{flex:none;font-size:12px;font-weight:500;line-height:16px;color:var(--text3)}
+.kjr-hold-sort select.fi{flex:1 1 auto;width:auto;min-width:0;min-height:44px}
+@media (max-width: 600px) {
+  body:not(.force-tables) .page.kjr-hold-on .kjr-hold-sort{display:flex}
+}
+
+/* ── Chart Builder field icons: inline strokes in place of emoji, the sidebar's glyph style at 16px ── */
+.cb-ico{flex:none;width:16px;height:16px;vertical-align:-3px}
+.cb-field-pill .pill-icon .cb-ico{display:block}
+.cb-field-pill .pill-icon:has(.cb-ico){display:inline-flex;align-items:center}
+
+/* ── Singles and Slabs headings take focus after the last row of a list is deleted, and a heading is not a control, so no ring ── */
+.section-title:focus,.section-title:focus-visible{outline:none}
+
+/* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
+@media (hover: none) {
+  .topbar .nav-btn,.topbar .kjr-side-search,.topbar .kjr-side-add,.topbar .logo,.topbar #sync-indicator,.topbar #settings-btn{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 }

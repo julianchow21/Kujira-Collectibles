@@ -4218,10 +4218,60 @@ function kjrNavTipInstall() {
     if (el && keyboard) show(el);
   });
   shell.addEventListener('focusout', hide);
+  // Touch (v3.74): a long press shows the label. Registered ahead of the click listener below on purpose: the click that ends a
+  // long press is swallowed with stopImmediatePropagation, and that listener would otherwise hide the label the same instant.
+  kjrNavTouchTips(shell, show, hide, controlOf);
   shell.addEventListener('click', hide, true); // capture: the Settings button stops its click from bubbling
   shell.addEventListener('keydown', function (e) { if (e && e.key === 'Escape') hide(); });
   shell.addEventListener('scroll', hide, true); // the nav scrolling moves the item out from under the bubble
   window.addEventListener('resize', hide);
+}
+// A touch screen has no hover, so a long press (about 450ms) on a rail control shows the same bubble the pointer gets, for about 2.5
+// seconds or until the next touch. The click that ends the long press is swallowed, so it does not also navigate. A short tap, a
+// scroll of the nav and a mouse are untouched, and where the rail is not showing (a phone has its header and its tab bar) this does
+// nothing. The hover media query is read at the moment of the press, so a device that changes its input is followed.
+function kjrNavTouchTips(shell, show, hide, controlOf) {
+  var LONG_MS = 450, SHOW_MS = 2500, SLOP = 10;
+  var timer = null, hideTimer = null, startX = 0, startY = 0, pressed = null, swallow = false;
+  var touchOnly = function () { try { return !!(window.matchMedia && window.matchMedia('(hover: none)').matches); } catch (err) { return false; } };
+  var cancel = function () { if (timer) { clearTimeout(timer); timer = null; } };
+  var hideNow = function () { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } hide(); };
+  shell.addEventListener('pointerdown', function (e) {
+    if (!e || e.pointerType === 'mouse') return;
+    swallow = false; // a new touch is a new gesture: the click of the last long press, if there was one, has come and gone
+    cancel();
+    hideNow(); // the next touch puts away a label that is still up
+    if (!touchOnly() || !kjrRailActive()) return;
+    var el = controlOf(e);
+    if (!el) return;
+    pressed = el;
+    startX = e.clientX; startY = e.clientY;
+    timer = setTimeout(function () {
+      timer = null;
+      show(pressed);
+      swallow = true;
+      hideTimer = setTimeout(hideNow, SHOW_MS);
+    }, LONG_MS);
+  }, true);
+  shell.addEventListener('pointermove', function (e) {
+    if (timer && e && (Math.abs(e.clientX - startX) > SLOP || Math.abs(e.clientY - startY) > SLOP)) cancel(); // the nav is scrolling
+  }, true);
+  shell.addEventListener('pointerup', cancel, true);
+  shell.addEventListener('pointercancel', cancel, true);
+  shell.addEventListener('click', function (e) {
+    if (!swallow) return;
+    swallow = false;
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    if (e && typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    else if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+  }, true);
+  // A long press on a rail control would otherwise raise the system menu or a text selection on some touch browsers.
+  shell.addEventListener('contextmenu', function (e) {
+    if (touchOnly() && kjrRailActive() && controlOf(e)) e.preventDefault();
+  });
+  document.addEventListener('pointerdown', function (e) {
+    if (hideTimer && e && e.pointerType !== 'mouse' && !(typeof shell.contains === 'function' && shell.contains(e.target))) hideNow(); // a touch outside the rail
+  }, true);
 }
 
 // ── Phone Holdings rows. At 600px and below, in the list view and not in the Tables layout, Singles and Slabs show one row
@@ -4318,6 +4368,7 @@ function kjrRenderHoldings(table, o) {
   var page = kjrHoldPage(table);
   if (page && page.classList) page.classList.add('kjr-hold-on');
   kjrHoldFocusBack(key, list, alt);
+  if (typeof kjrHoldSortSync === 'function') kjrHoldSortSync(table); // the Sort select shows what the headers last set (v3.74)
   return true;
 }
 // Draws the rows when the phone list view applies, otherwise empties them and gives the page back its table.
@@ -6392,3 +6443,239 @@ function kjrInspectBindRows() {
 
   kjrIntroMain().catch(function (e) { introKillSwitch = introKillSwitch || 'error'; kjrIntroForceRemove(e); });
 })();
+
+// ═════════════ Polish and leftovers (v3.74) ═════════════
+// Redesign Step 6b. Three small features share this section: the holo shine, the focus after a delete and the phone sort. The
+// rail's long-press labels sit beside the rail tooltip (kjrNavTouchTips, above) and the ⌘K palette is in app.js, next to Quick Entry.
+
+// ── Holo shine. A pointer-tracked sheen and a slight lean on the card art of the Overview's "Top of the collection" and of the card
+// inspector (the panel and the sheet), and nowhere else, so a grid or a list never moves under the pointer. One delegated pointermove
+// and one pointerleave per host, a frame at a time (requestAnimationFrame), writing custom properties on the art: --kjr-hx and
+// --kjr-hy (the pointer, as a percentage of the stage) and --kjr-rx and --kjr-ry (the lean in degrees, KJR_HOLO_TILT at the most
+// either way). The look is in styles.css (the Step 6b section). It runs only where there is a hover and a fine pointer and never
+// under reduced motion. When either does not hold no listener is attached to the hosts, and both media queries are watched, so a
+// change attaches or removes them. The art has will-change only while the pointer is on it (never in the stylesheet).
+var KJR_HOLO_TILT = 6;
+var KJR_HOLO_HOSTS = ['dash-top', 'kjr-insp-body', 'kjr-insp-sheet-body'];
+var KJR_HOLO_STAGE = '.kjr-tile-stage, .kjr-insp-stage';
+var KJR_HOLO_ART = '.kjr-tile-art, .kjr-slab, .kjr-insp-card';
+var KJR_HOLO_FINE_MQ = '(hover: hover) and (pointer: fine)';
+var KJR_HOLO_REDUCED_MQ = '(prefers-reduced-motion: reduce)';
+var _kjrHolo = { on: false, cur: null, frame: 0, x: 0, y: 0 };
+
+function kjrHoloWanted() {
+  try {
+    if (!window.matchMedia) return false;
+    return !!window.matchMedia(KJR_HOLO_FINE_MQ).matches && !window.matchMedia(KJR_HOLO_REDUCED_MQ).matches;
+  } catch (e) { return false; }
+}
+function kjrHoloArtOf(stage) {
+  return stage && typeof stage.querySelector === 'function' ? stage.querySelector(KJR_HOLO_ART) : null;
+}
+// The pointer left: the lean and the sheen ease back (the stylesheet transitions them), and will-change goes once they have.
+function kjrHoloRelease() {
+  if (_kjrHolo.frame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(_kjrHolo.frame);
+  _kjrHolo.frame = 0;
+  var c = _kjrHolo.cur;
+  if (!c) return;
+  _kjrHolo.cur = null;
+  var art = c.art;
+  if (art.classList) art.classList.remove('is-holo');
+  if (art.style && typeof art.style.removeProperty === 'function') { art.style.removeProperty('--kjr-rx'); art.style.removeProperty('--kjr-ry'); }
+  setTimeout(function () {
+    if (art.style && !(_kjrHolo.cur && _kjrHolo.cur.art === art)) art.style.willChange = '';
+  }, 320);
+}
+function kjrHoloMove(e) {
+  if (!e || e.pointerType === 'touch') return; // a finger has no hover, whatever the primary input says
+  var t = e.target;
+  var stage = t && typeof t.closest === 'function' ? t.closest(KJR_HOLO_STAGE) : null;
+  var art = kjrHoloArtOf(stage);
+  if (!art) { kjrHoloRelease(); return; }
+  if (_kjrHolo.cur && _kjrHolo.cur.art !== art) kjrHoloRelease();
+  if (!_kjrHolo.cur) {
+    _kjrHolo.cur = { art: art, stage: stage };
+    if (art.classList) art.classList.add('is-holo');
+    if (art.style) art.style.willChange = 'transform';
+  }
+  _kjrHolo.x = e.clientX;
+  _kjrHolo.y = e.clientY;
+  if (!_kjrHolo.frame && typeof requestAnimationFrame === 'function') _kjrHolo.frame = requestAnimationFrame(kjrHoloFrame);
+}
+function kjrHoloFrame() {
+  _kjrHolo.frame = 0;
+  var c = _kjrHolo.cur;
+  if (!c || !c.stage || typeof c.stage.getBoundingClientRect !== 'function') return;
+  var r = c.stage.getBoundingClientRect();
+  if (!(r.width > 0) || !(r.height > 0)) return;
+  var s = c.art.style;
+  if (!s || typeof s.setProperty !== 'function') return;
+  var nx = Math.min(1, Math.max(0, (_kjrHolo.x - r.left) / r.width));
+  var ny = Math.min(1, Math.max(0, (_kjrHolo.y - r.top) / r.height));
+  var rd = function (v) { return Math.round(v * 100) / 100; };
+  s.setProperty('--kjr-hx', rd(nx * 100) + '%');
+  s.setProperty('--kjr-hy', rd(ny * 100) + '%');
+  s.setProperty('--kjr-ry', rd((nx - 0.5) * 2 * KJR_HOLO_TILT) + 'deg');   // the pointer on the right presses the right edge away
+  s.setProperty('--kjr-rx', rd(-(ny - 0.5) * 2 * KJR_HOLO_TILT) + 'deg');  // and on the top, the top edge
+}
+// pointerleave does not bubble, but a capture listener on the host sees it for every descendant. Only the stage in use (or the host
+// itself) leaving ends the shine: moving from the art to the stage around it is still the same card.
+function kjrHoloLeave(e) {
+  var c = _kjrHolo.cur;
+  if (!c) return;
+  var t = e && e.target;
+  if (t === c.stage || t === e.currentTarget) kjrHoloRelease();
+}
+// Attach to the hosts when a hover and a fine pointer are there and motion is welcome, detach otherwise.
+function kjrHoloSync() {
+  var want = kjrHoloWanted();
+  KJR_HOLO_HOSTS.forEach(function (id) {
+    var host = document.getElementById(id);
+    if (!host || typeof host.addEventListener !== 'function') return;
+    if (want && !host._kjrHoloOn) {
+      host._kjrHoloOn = true;
+      host.addEventListener('pointermove', kjrHoloMove);
+      host.addEventListener('pointerleave', kjrHoloLeave, true);
+    } else if (!want && host._kjrHoloOn) {
+      host._kjrHoloOn = false;
+      host.removeEventListener('pointermove', kjrHoloMove);
+      host.removeEventListener('pointerleave', kjrHoloLeave, true);
+    }
+  });
+  if (!want) kjrHoloRelease();
+  _kjrHolo.on = want;
+  return want;
+}
+(function kjrHoloInstall() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  kjrHoloSync();
+  [KJR_HOLO_FINE_MQ, KJR_HOLO_REDUCED_MQ].forEach(function (q) {
+    try {
+      var mq = window.matchMedia && window.matchMedia(q);
+      if (!mq) return;
+      if (typeof mq.addEventListener === 'function') mq.addEventListener('change', kjrHoloSync);
+      else if (typeof mq.addListener === 'function') mq.addListener(kjrHoloSync);
+    } catch (e) { /* no media query support: the shine stays off */ }
+  });
+})();
+
+// ── Focus after a delete. deleteItem (app.js) asks kjrDeleteFocusPlan, before the row goes, where the row sits in the order the list
+// drew, and kjrDeleteFocusRestore, once the list is redrawn, to focus the row that took its place: the one now at the same position,
+// else the one before it. Its control is the card name button in the table, the tile in the grid and the Holdings row on a phone,
+// whichever of the three is on screen. Nothing left in the list: the page heading, which takes focus without a ring. It only acts
+// when the page being deleted from is the one showing, so a delete from an inspector opened on the Overview leaves focus alone, and
+// a cancelled delete never gets here. Reads and focuses only, it never writes a row.
+function kjrDeleteFocusPlan(table, id) {
+  if (table !== 'singles' && table !== 'slabs') return null;
+  var page = document.getElementById(table === 'singles' ? 'page-inventory' : 'page-slabs');
+  if (!page || !page.classList || !page.classList.contains('active')) return null;
+  var order = typeof _kjrInspectOrder === 'object' && _kjrInspectOrder && _kjrInspectOrder[table];
+  var at = Array.isArray(order) ? order.map(String).indexOf(String(id)) : -1;
+  return at < 0 ? null : { table: table, at: at };
+}
+// The focusable control for one row id, in whichever view shows it (a hidden view has no client rects).
+function kjrDeleteFocusControl(table, id) {
+  var want = String(id);
+  var zones = KJR_INSP_ZONES[table] || [];
+  for (var z = 0; z < zones.length; z++) {
+    var zone = document.getElementById(zones[z]);
+    if (!zone || typeof zone.querySelectorAll !== 'function') continue;
+    var els = zone.querySelectorAll('[data-id]');
+    for (var j = 0; j < els.length; j++) {
+      if (els[j].getAttribute('data-id') !== want) continue;
+      var ctl = typeof els[j].querySelector === 'function' && els[j].querySelector('.kjr-name-btn') || (els[j].tagName === 'BUTTON' ? els[j] : null);
+      if (ctl && (typeof ctl.getClientRects !== 'function' || ctl.getClientRects().length > 0)) return ctl;
+    }
+  }
+  return null;
+}
+function kjrDeleteFocusRestore(plan) {
+  if (!plan) return false;
+  var order = (typeof _kjrInspectOrder === 'object' && _kjrInspectOrder && _kjrInspectOrder[plan.table]) || [];
+  var target = null;
+  var tries = [plan.at, plan.at - 1];
+  for (var i = 0; i < tries.length && !target; i++) {
+    if (tries[i] >= 0 && order[tries[i]] != null) target = kjrDeleteFocusControl(plan.table, order[tries[i]]);
+  }
+  if (!target) {
+    var page = document.getElementById(plan.table === 'singles' ? 'page-inventory' : 'page-slabs');
+    target = page && typeof page.querySelector === 'function' ? page.querySelector('.section-title') : null;
+    if (target && typeof target.hasAttribute === 'function' && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+  }
+  if (!target) return false;
+  kjrInspectFocusEl(target);
+  // The inspector sheet hands focus back to what opened it one frame after it closes, and that can be another row. This runs a
+  // frame later (callbacks in one frame run in the order they were asked for) and only puts focus back where it was lost.
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function () {
+      var ae = document.activeElement;
+      if (ae === target || target.isConnected === false) return;
+      var lost = !ae || ae === document.body || (typeof ae.closest === 'function' && !!ae.closest('.page'));
+      if (lost) kjrInspectFocusEl(target);
+    });
+  }
+  return true;
+}
+
+// ── Phone sort. At 600px and below, in the list view, the table's headers are hidden, so Singles and Slabs get a labelled "Sort"
+// select above the Holdings rows. It sets sortState[table].col and .dir directly and redraws, the same state the desktop headers
+// use, so the two always agree: every Holdings redraw calls kjrHoldSortSync, which shows whatever the headers last set, as an
+// option when one fits and as "Custom" when none does. [value, label, column, direction]; the last one's column and label depend on
+// the table (Date bought on Singles, Date listed on Slabs) and are filled in by kjrHoldSortOptions.
+var KJR_HOLD_SORTS = [
+  ['recent', 'Recently added', null, 1],
+  ['value-desc', 'Value high to low', 'marketPrice', -1],
+  ['value-asc', 'Value low to high', 'marketPrice', 1],
+  ['cost-desc', 'Cost high to low', 'costPrice', -1],
+  ['name-asc', 'Name A to Z', 'name', 1],
+  ['date-desc', null, null, -1]
+];
+function kjrHoldSortOptions(table) {
+  return KJR_HOLD_SORTS.map(function (o) {
+    if (o[0] !== 'date-desc') return { value: o[0], label: o[1], col: o[2], dir: o[3] };
+    return table === 'slabs'
+      ? { value: o[0], label: 'Date listed, newest first', col: 'dateListed', dir: -1 }
+      : { value: o[0], label: 'Date bought, newest first', col: 'datePurchased', dir: -1 };
+  });
+}
+// The option the current sort is, or 'custom' when it is none of them (a column the desktop headers can sort that the select has no
+// entry for, or an order the other way round).
+function kjrHoldSortValue(table) {
+  var s = typeof sortState === 'object' && sortState ? sortState[table] : null;
+  if (!s || !s.col) return 'recent';
+  var dir = s.dir === -1 ? -1 : 1;
+  var opts = kjrHoldSortOptions(table);
+  for (var i = 0; i < opts.length; i++) { if (opts[i].col && opts[i].col === s.col && opts[i].dir === dir) return opts[i].value; }
+  return 'custom';
+}
+// Puts the select in step with sortState: its value, and a disabled "Custom" entry only while the sort is not one of the options.
+function kjrHoldSortSync(table) {
+  var sel = document.getElementById(table + '-sort');
+  if (!sel) return false;
+  var v = kjrHoldSortValue(table);
+  var custom = null;
+  var opts = sel.options || [];
+  for (var i = 0; i < opts.length; i++) { if (opts[i].value === 'custom') custom = opts[i]; }
+  if (v === 'custom' && !custom && typeof document.createElement === 'function') {
+    custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'Custom';
+    custom.disabled = true;
+    sel.appendChild(custom);
+  } else if (v !== 'custom' && custom) {
+    if (typeof custom.remove === 'function') custom.remove(); else if (typeof sel.removeChild === 'function') sel.removeChild(custom);
+  }
+  if (sel.value !== v) sel.value = v;
+  return true;
+}
+// The select's onchange. Anything that is not one of the options (the Custom entry, a stale value) changes nothing.
+function kjrHoldSortSet(table, value) {
+  if (table !== 'singles' && table !== 'slabs') return false;
+  var pick = null;
+  kjrHoldSortOptions(table).forEach(function (o) { if (o.value === value) pick = o; });
+  if (!pick || typeof sortState !== 'object' || !sortState || !sortState[table]) return false;
+  sortState[table].col = pick.col;
+  sortState[table].dir = pick.dir;
+  if (table === 'singles') renderSingles(); else renderSlabs();
+  return true;
+}

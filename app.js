@@ -5,6 +5,19 @@ const kjrModalCtrl = (() => {
   const stack = [];
   let pushed = false;
   let popping = false;
+  // When the last history.back() this controller asked for was made (Date.now()), 0 once the popstate it causes has arrived.
+  let selfPopAt = 0;
+  const SELF_POP_WINDOW_MS = 1000;
+
+  // Every history.back() the controller asks for goes through here (v3.74). It is a navigation, so the popstate it causes arrives a
+  // moment later. A dialog can open in that moment (More sheet, then Log Sale, Version history or Health check: the sheet closes and
+  // the next dialog opens in the same click). The popstate used to find the new dialog on the stack and close it as if the user had
+  // pressed Back. So the time is recorded here, and the popstate listener uses it to tell its own pop from a real one. The window
+  // is there so a pop that never arrives (a back() with nowhere to go) cannot swallow a genuine Back press later on.
+  function goBack() {
+    selfPopAt = Date.now();
+    history.back();
+  }
 
   function syncScroll() {
     const sentryOpen = document.getElementById('sentry-drawer') &&
@@ -69,7 +82,7 @@ const kjrModalCtrl = (() => {
     const entry = stack.splice(idx, 1)[0];
     dialog.dataset.dirty = '0';
     if (dialog.open) dialog.close();
-    if (stack.length === 0 && pushed && !popping) { pushed = false; history.back(); }
+    if (stack.length === 0 && pushed && !popping) { pushed = false; goBack(); }
     syncScroll();
     // Run the per-dialog onClose hook (if one was registered at open()) on
     // every close path - explicit button, ESC/'cancel', and backdrop click
@@ -103,6 +116,22 @@ const kjrModalCtrl = (() => {
   // state back the way it was) and run the confirm prompt; only actually
   // go back + close if the user confirms discarding the changes.
   window.addEventListener('popstate', () => {
+    // A pop this controller asked for itself (goBack), not the user's Back: nothing is closed. When a dialog is open now, it opened
+    // after the pop was asked for, and where the history landed says what is left to do. A browser that works out where a back() goes
+    // when it is called (Chromium does) has gone back past the entry the new dialog pushed, to the page's own entry, so a real Back
+    // would leave the page and the dialog needs a fresh modal entry. A browser that works it out when it runs lands on the old modal
+    // entry, which already does the job. The state the entry carries tells the two apart.
+    if (selfPopAt) {
+      const fresh = Date.now() - selfPopAt <= SELF_POP_WINDOW_MS;
+      selfPopAt = 0;
+      if (fresh) {
+        if (stack.length > 0) {
+          pushed = true;
+          if (!(history.state && history.state.kjrModal)) history.pushState({ kjrModal: 1 }, '');
+        }
+        return;
+      }
+    }
     if (stack.length === 0) return;
     const top = stack[stack.length - 1].dialog;
     if (top.dataset.dirty === '1' && typeof kjrConfirm === 'function') {
@@ -112,7 +141,7 @@ const kjrModalCtrl = (() => {
         if (!ok) return; // stay open, history already restored above
         popping = true; closeAll(); popping = false;
         pushed = false;
-        history.back(); // now actually leave the modal state
+        goBack(); // now actually leave the modal state
       });
       return;
     }
@@ -7797,21 +7826,53 @@ function saveSmartAdd() {
 }
 
 // =========== COMMAND BAR ===========
+// One dialog, #cmd-overlay, in three modes (v3.74): Search (the ⌘K palette, find a card or run an action), Add Inventory (Quick
+// Entry) and Log Sale (Quick Sale). The last two work exactly as they did, Search is new and is the first tab.
 let cmdMode = 'add';
 let cmdSellCart = [];        // [{ id, _table, name, grader, grade, certNo, type, costPrice, availQty, qty, price }]
 let cmdAddResultIdx = -1;
 let cmdSellResultIdx = -1;
 let cmdSellResults = [];
+let cmdFindResults = [];     // Search: the options on screen, cards first and then actions, in the order they are drawn
+let cmdFindIdx = -1;         // Search: the active option (aria-activedescendant), -1 when there is none
+let _cmdOpener = null;       // what had focus when the bar opened, where Esc puts it back
+
+// The element to hand focus back to: what had focus, else the control that was clicked (Safari does not focus a button on a
+// click, so a mouse user would lose their place), else null when neither is a real, live element.
+function _cmdOpenerEl() {
+  const live = el => !!el && el !== document.body && el !== document.documentElement && typeof el.focus === 'function' && el.isConnected !== false;
+  try {
+    if (live(document.activeElement)) return document.activeElement;
+    const ev = window.event;
+    if (ev && live(ev.currentTarget)) return ev.currentTarget;
+  } catch (_) { /* putting focus back is a nicety */ }
+  return null;
+}
+
+function _cmdFocusInput(mode) {
+  const inp = document.getElementById(mode === 'sell' ? 'cmd-sell-search' : mode === 'find' ? 'cmd-find-input' : 'cmd-add-input');
+  if (inp) inp.focus();
+}
+
+// Esc, a tap on the backdrop, the Back button and closeCmdBar all end here (kjrModalCtrl runs it on every close path), so the
+// Search box and its results never survive a close. Add and Sell keep their own behaviour.
+function _cmdOnClosed() {
+  _cmdFindReset();
+}
 
 function openCmdBar(mode) {
   if (_kjrDealerPreviewOnly()) return;
-  cmdMode = mode || 'add';
+  const dlg = document.getElementById('cmd-overlay');
+  const wasOpen = !!(dlg && dlg.open);
+  cmdMode = mode === 'find' || mode === 'sell' ? mode : 'add';
   setCmdMode(cmdMode);
-  kjrModalCtrl.open(document.getElementById('cmd-overlay'));
-  setTimeout(() => {
-    const inp = cmdMode === 'sell' ? document.getElementById('cmd-sell-search') : document.getElementById('cmd-add-input');
-    inp.focus();
-  }, 50);
+  // Already open: only the mode changes. A second open would push a second entry on the modal stack and in the history, and
+  // Esc would then close the bar and leave a stale entry behind.
+  if (!wasOpen) {
+    _cmdOpener = _cmdOpenerEl();
+    kjrModalCtrl.open(dlg, { trigger: _cmdOpener || undefined, onClose: _cmdOnClosed });
+  }
+  setTimeout(() => _cmdFocusInput(cmdMode), 50);
 }
 
 function closeCmdBar() {
@@ -7827,27 +7888,315 @@ function closeCmdBar() {
   cmdSellCart = [];
   cmdAddResultIdx = -1;
   cmdSellResultIdx = -1;
+  _cmdFindReset();
 }
 
-document.addEventListener('keydown', function(e) {
-  const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key === 'k') { e.preventDefault(); if (!_kjrDealerPreviewOnly()) openCmdBar(); }
-});
+// ⌘K and Ctrl+K open Search, in any case (Caps Lock and Shift make no difference). It stays out of the way of typing and of
+// anything else that already has the screen or the keyboard: a field with focus, any open dialog (this bar included, so a second
+// press does nothing), the API settings overlay, an open row menu or an open nav dropdown. Out of the way means no
+// preventDefault either, so the field or the browser keeps its own Ctrl+K.
+function _cmdShortcutBlocked(e) {
+  const isField = el => {
+    if (!el) return false;
+    const tag = String(el.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!el.isContentEditable;
+  };
+  if (isField(e && e.target) || isField(document.activeElement)) return true;
+  if (document.documentElement.classList.contains('auth-gated')) return true; // signed out: there is no collection to search
+  if (typeof kjrRowMenuCurrent === 'function' && kjrRowMenuCurrent()) return true;
+  if (document.querySelector('.nav-dd.open') || document.querySelector('#api-key-modal')) return true;
+  const dialogs = document.querySelectorAll('dialog[open]');
+  return !!(dialogs && dialogs.length);
+}
+function cmdShortcutKey(e) {
+  if (!e || e.defaultPrevented || e.isComposing || e.altKey || !(e.ctrlKey || e.metaKey)) return;
+  if (String(e.key || '').toLowerCase() !== 'k') return;
+  if (_cmdShortcutBlocked(e)) return;
+  e.preventDefault();
+  if (!_kjrDealerPreviewOnly()) openCmdBar('find');
+}
+document.addEventListener('keydown', cmdShortcutKey);
 
 function setCmdMode(mode) {
   cmdMode = mode;
-  document.getElementById('cmd-tab-add').classList.toggle('active', mode === 'add');
-  document.getElementById('cmd-tab-sell').classList.toggle('active', mode === 'sell');
-  document.getElementById('cmd-add-panel').style.display = mode === 'add' ? '' : 'none';
-  document.getElementById('cmd-sell-panel').style.display = mode === 'sell' ? '' : 'none';
+  [['find', 'cmd-tab-find', 'cmd-find-panel'], ['add', 'cmd-tab-add', 'cmd-add-panel'], ['sell', 'cmd-tab-sell', 'cmd-sell-panel']].forEach(([m, tabId, panelId]) => {
+    const tab = document.getElementById(tabId);
+    tab.classList.toggle('active', mode === m);
+    tab.setAttribute('aria-pressed', mode === m ? 'true' : 'false');
+    document.getElementById(panelId).style.display = mode === m ? '' : 'none';
+  });
   document.getElementById('cmd-sell-form').style.display = 'none';
   document.getElementById('cmd-sell-preview').style.display = '';
   cmdSellCart = [];
   if (mode === 'sell') _cmdSellShowStatus('Type to search your inventory...');
-  setTimeout(() => {
-    const inp = mode === 'sell' ? document.getElementById('cmd-sell-search') : document.getElementById('cmd-add-input');
-    inp.focus();
-  }, 30);
+  if (mode === 'find') cmdFindSearch();
+  setTimeout(() => _cmdFocusInput(mode), 30);
+}
+
+// ── FIND MODE (Search, the ⌘K palette, v3.74) ─────────────────────────────────────────────────
+// An editable combobox over a listbox. The input keeps focus, the active option is named by aria-activedescendant, ArrowUp and
+// ArrowDown (wrapping), Home and End move it, Enter or a click runs it. Two groups. Cards: up to 8 singles and slabs that match
+// every word typed, available ones before sold. Actions: the four core ones, then a "Go to" for each of the 14 sidebar pages,
+// kept while they match the same words. With nothing typed only the actions show, so the palette is useful before the first key.
+const CMD_FIND_CAP = 8;
+const CMD_FIND_GLYPH = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  entry: '<path d="M4 7h16M4 12h9M4 17h6"/><path d="m15.5 16 2 2 4-4.5"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5a2.5 2.5 0 0 1 2.5-1h.3a2.2 2.2 0 0 1 0 4.4h-.6a2.2 2.2 0 0 0 0 4.4h.3a2.5 2.5 0 0 0 2.5-1"/>',
+  dashboard: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  inventory: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6"/>',
+  slabs: '<rect x="4" y="2" width="16" height="20" rx="2.5"/><path d="M4 7h16"/><rect x="7.5" y="10" width="9" height="9" rx="1"/>',
+  etbs: '<rect x="3" y="6" width="18" height="14" rx="1.5"/><path d="M3 10h18"/><path d="M8 6V4h8v2"/>',
+  boosterBoxes: '<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>',
+  listing: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  ebay: '<path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
+  sales: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  dealerProduction: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
+  reports: '<path d="M3 3v18h18"/><path d="M7 15v2M11 11v6M15 7v10M19 12v5"/>',
+  import: '<path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>',
+  changelog: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  guide: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'
+};
+// The 14 sidebar pages, in sidebar order: the page id showPage takes, its label, and words that should find it.
+const CMD_FIND_PAGES = [
+  ['dashboard', 'Overview', 'home dashboard summary'],
+  ['inventory', 'Singles', 'cards raw collection'],
+  ['slabs', 'Slabs', 'graded psa cgc bgs tag collection'],
+  ['etbs', 'ETBs', 'elite trainer boxes sealed collection'],
+  ['boosterBoxes', 'Boxes & packs', 'booster sealed collection'],
+  ['listing', 'Listings', 'carousell listing workspace selling'],
+  ['ebay', 'eBay', 'purchases pipeline selling'],
+  ['sales', 'Sales', 'sold history revenue profit selling'],
+  ['dealerProduction', 'Dealer Desk', 'dealer selling'],
+  ['reports', 'Reports', 'charts builder analyst ai workspace'],
+  ['import', 'Import', 'csv export backup workspace'],
+  ['changelog', 'History', 'changelog log workspace'],
+  ['trash', 'Trash', 'deleted restore workspace'],
+  ['guide', 'Guide', 'help docs workspace']
+];
+const CMD_FIND_ACTIONS = [
+  { key: 'add-single', label: 'Add single', kw: 'new card raw ungraded', glyph: 'plus' },
+  { key: 'add-slab', label: 'Add slab', kw: 'new graded psa cgc bgs tag', glyph: 'plus' },
+  { key: 'quick-entry', label: 'Quick entry', kw: 'add inventory type line', glyph: 'entry' },
+  { key: 'quick-sale', label: 'Quick sale', kw: 'log sale sell sold', glyph: 'coin' }
+].concat(CMD_FIND_PAGES.map(p => ({ key: 'go-' + p[0], page: p[0], label: 'Go to ' + p[1], kw: p[2], glyph: p[0] })));
+
+function _cmdFindE(s) { return typeof kjrEscape === 'function' ? kjrEscape(s) : esc(s); }
+function _cmdFindSvg(glyph) {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (CMD_FIND_GLYPH[glyph] || '') + '</svg>';
+}
+
+// The cards that match every word, best first, at most CMD_FIND_CAP of them. Fields searched, like Quick Sale's search:
+// a single's name, set, language, condition and notes, a slab's name, set, grader, grade, "grader grade" (and the glued
+// "psa10"), cert number and notes. Order: available before sold, then a name that starts with the query, contains it, contains
+// every word, or only matches elsewhere, then the higher value, then name and id so the order never shuffles.
+function _cmdFindCards(tokens, raw) {
+  const hit = [];
+  const add = (table, i) => {
+    if (!i || typeof i !== 'object') return;
+    const grader = String(i.grader == null ? '' : i.grader).trim(), grade = String(i.grade == null ? '' : i.grade).trim();
+    const parts = table === 'slabs'
+      ? [i.name, i.set, grader, grade, grader && grade ? grader + ' ' + grade : '', grader && grade ? grader + grade : '', i.certNo, i.notes]
+      : [i.name, i.set, i.language, i.condition, i.notes];
+    const hay = parts.filter(p => p != null && p !== '').join(' ').toLowerCase();
+    if (!tokens.every(t => hay.includes(t))) return;
+    const name = String(i.name == null ? '' : i.name).toLowerCase();
+    const tier = name.startsWith(raw) ? 0 : name.includes(raw) ? 1 : tokens.every(t => name.includes(t)) ? 2 : 3;
+    hit.push({ table, item: i, sold: String(i.status || 'Available') === 'Sold', tier, value: effectiveMarketInfo(i).value, name });
+  };
+  (DB.singles || []).forEach(i => add('singles', i));
+  (DB.slabs || []).forEach(i => add('slabs', i));
+  hit.sort((a, b) => (Number(a.sold) - Number(b.sold)) || (a.tier - b.tier) || (b.value - a.value) ||
+    a.name.localeCompare(b.name) || String(a.item.id).localeCompare(String(b.item.id)));
+  return { rows: hit.slice(0, CMD_FIND_CAP).map(h => ({ kind: 'card', table: h.table, item: h.item, sold: h.sold })), total: hit.length };
+}
+
+// The actions whose label or keywords match every word, in the order they are defined. No words keeps them all.
+function _cmdFindActions(tokens) {
+  return CMD_FIND_ACTIONS
+    .filter(a => { const hay = (a.label + ' ' + a.kw).toLowerCase(); return tokens.every(t => hay.includes(t)); })
+    .map(a => Object.assign({ kind: 'action' }, a));
+}
+
+function _cmdFindOpt(idx, on, kind, attrs, inner, extraClass) {
+  return '<div role="option" id="cmd-find-opt-' + idx + '" class="cmd-result' + (on ? ' selected' : '') + (extraClass ? ' ' + extraClass : '') + '" aria-selected="' + (on ? 'true' : 'false') + '" data-kind="' + kind + '"' + attrs +
+    ' onmousedown="event.preventDefault()" onclick="cmdFindRun(' + idx + ')">' + inner + '</div>';
+}
+// One option's markup. Every string from a row, and every label, goes through the escaper.
+function _cmdFindOptHtml(r, idx, on) {
+  const E = _cmdFindE;
+  if (r.kind === 'card') {
+    const item = r.item, table = r.table;
+    let sub;
+    if (table === 'slabs') {
+      const m = typeof kjrSlabMeta === 'function' ? kjrSlabMeta(item) : { grader: String(item.grader || '?'), grade: String(item.grade || '?') };
+      sub = m.grader + ' ' + m.grade;
+    } else {
+      const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+      const set = String(item.set || '').trim();
+      sub = (set ? set + ' · ' : '') + lang;
+    }
+    if (r.sold) sub += ' · Sold';
+    const mi = effectiveMarketInfo(item);
+    const money = typeof kjrTileMoney === 'function' ? kjrTileMoney(mi.value) : (mi.value > 0 ? 'S$' + Math.round(mi.value) : '');
+    const val = money ? (mi.isEstimate ? '~' : '') + money : '-';
+    const thumb = typeof kjrThumbHtml === 'function' ? kjrThumbHtml(item, table) : '';
+    return _cmdFindOpt(idx, on, 'card', ' data-table="' + E(table) + '" data-id="' + E(item.id) + '"',
+      thumb + '<span class="cmd-result-main"><span class="cmd-result-name">' + E(item.name || '-') + '</span><span class="cmd-result-meta">' + E(sub) + '</span></span>' +
+      '<span class="cmd-find-val">' + E(val) + '</span>', r.sold ? 'is-sold' : '');
+  }
+  return _cmdFindOpt(idx, on, 'action', ' data-key="' + E(r.key) + '"',
+    '<span class="cmd-result-icon" aria-hidden="true">' + _cmdFindSvg(r.glyph) + '</span>' +
+    '<span class="cmd-result-main"><span class="cmd-result-name">' + E(r.label) + '</span></span>', '');
+}
+// The whole list: a labelled group of cards, then a labelled group of actions, each only when it has options. total is how many
+// cards matched, so a capped list says so instead of looking complete.
+function cmdFindListHtml(results, idx, total) {
+  const cards = [], acts = [];
+  results.forEach((r, i) => { (r.kind === 'card' ? cards : acts).push(_cmdFindOptHtml(r, i, i === idx)); });
+  const group = (key, label, rows, note) => rows.length
+    ? '<div role="group" aria-labelledby="cmd-find-g-' + key + '"><div class="cmd-section-label" id="cmd-find-g-' + key + '" role="presentation">' + label + '</div>' + rows.join('') + (note || '') + '</div>'
+    : '';
+  const more = total > cards.length ? '<div class="cmd-find-more" role="presentation">Showing the first ' + cards.length + ' of ' + total + ' matches, keep typing to narrow them</div>' : '';
+  return group('cards', 'Cards', cards, more) + group('actions', 'Actions', acts, '');
+}
+
+function _cmdFindDescendant() {
+  const inp = document.getElementById('cmd-find-input');
+  if (!inp) return;
+  if (cmdFindIdx >= 0) inp.setAttribute('aria-activedescendant', 'cmd-find-opt-' + cmdFindIdx);
+  else inp.removeAttribute('aria-activedescendant');
+}
+
+function _cmdFindRender(total) {
+  const inp = document.getElementById('cmd-find-input');
+  const list = document.getElementById('cmd-find-list');
+  const status = document.getElementById('cmd-find-status');
+  const live = document.getElementById('cmd-find-live');
+  const raw = String(inp ? inp.value : '').trim();
+  const has = cmdFindResults.length > 0;
+  if (list) { list.hidden = !has; list.innerHTML = has ? cmdFindListHtml(cmdFindResults, cmdFindIdx, total) : ''; }
+  if (status) {
+    status.hidden = has;
+    // textContent, never innerHTML: what was typed is shown back, so it must never be read as markup
+    status.textContent = has ? '' : 'No cards or actions match' + (raw ? ' "' + (raw.length > 40 ? raw.slice(0, 40) + '…' : raw) + '"' : '');
+  }
+  if (live) live.textContent = raw && has ? cmdFindResults.length + (cmdFindResults.length === 1 ? ' result' : ' results') : '';
+  if (inp) inp.setAttribute('aria-expanded', has ? 'true' : 'false');
+  _cmdFindDescendant();
+}
+
+// Typing (and opening, and switching to the tab): rebuild the results from what is in the box. The first one is active.
+function cmdFindSearch() {
+  const inp = document.getElementById('cmd-find-input');
+  const raw = String(inp ? inp.value : '').toLowerCase().trim();
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const cards = tokens.length ? _cmdFindCards(tokens, raw) : { rows: [], total: 0 };
+  cmdFindResults = cards.rows.concat(_cmdFindActions(tokens));
+  cmdFindIdx = cmdFindResults.length ? 0 : -1;
+  _cmdFindRender(cards.total);
+}
+
+// Moves the active option without redrawing the list (a redraw would reload every thumbnail on each key press). Falls back to a
+// redraw when the option nodes are not there to touch.
+function _cmdFindSelect() {
+  const list = document.getElementById('cmd-find-list');
+  const nodes = list && typeof list.querySelectorAll === 'function' ? list.querySelectorAll('[role="option"]') : [];
+  if (nodes && nodes.length === cmdFindResults.length && nodes.length > 0) {
+    nodes.forEach((el, i) => {
+      el.classList.toggle('selected', i === cmdFindIdx);
+      el.setAttribute('aria-selected', i === cmdFindIdx ? 'true' : 'false');
+    });
+    _cmdFindDescendant();
+    const on = nodes[cmdFindIdx];
+    if (on && typeof on.scrollIntoView === 'function') on.scrollIntoView({ block: 'nearest' });
+  } else {
+    const inp = document.getElementById('cmd-find-input');
+    const raw = String(inp ? inp.value : '').toLowerCase().trim();
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    _cmdFindRender(tokens.length ? _cmdFindCards(tokens, raw).total : 0);
+  }
+}
+
+function cmdFindKey(e) {
+  if (!e || e.isComposing) return;
+  const n = cmdFindResults.length;
+  const k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') {
+    if (!n) return;
+    e.preventDefault();
+    if (k === 'Home') cmdFindIdx = 0;
+    else if (k === 'End') cmdFindIdx = n - 1;
+    else if (k === 'ArrowDown') cmdFindIdx = (cmdFindIdx + 1) % n;
+    else cmdFindIdx = (cmdFindIdx - 1 + n) % n;
+    _cmdFindSelect();
+  } else if (k === 'Enter') {
+    if (!n) return;
+    e.preventDefault();
+    cmdFindRun(cmdFindIdx < 0 ? 0 : cmdFindIdx);
+  }
+}
+
+// The Search box, its results and the active option back to nothing. Runs on every close and is safe to run twice.
+function _cmdFindReset() {
+  cmdFindResults = [];
+  cmdFindIdx = -1;
+  const inp = document.getElementById('cmd-find-input');
+  if (inp) { inp.value = ''; inp.setAttribute('aria-expanded', 'false'); inp.removeAttribute('aria-activedescendant'); }
+  const list = document.getElementById('cmd-find-list');
+  if (list) { list.innerHTML = ''; list.hidden = true; }
+  const status = document.getElementById('cmd-find-status');
+  if (status) { status.textContent = ''; status.hidden = true; }
+  const live = document.getElementById('cmd-find-live');
+  if (live) live.textContent = '';
+}
+
+// Where the inspector hands focus back to when it closes: what had focus before the bar opened, else the sidebar (or phone tab)
+// item for the card's page, else nothing and kjrInspect uses whatever has focus.
+function _cmdFindTrigger(page) {
+  const usable = el => !!el && el.isConnected !== false && typeof el.focus === 'function' &&
+    (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
+  if (usable(_cmdOpener)) return _cmdOpener;
+  const items = document.querySelectorAll('.nav-btn, .btb-item');
+  for (let i = 0; items && i < items.length; i++) {
+    const oc = items[i].getAttribute('onclick') || '';
+    if (oc.indexOf("'" + page + "'") !== -1 && usable(items[i])) return items[i];
+  }
+  const more = document.getElementById('btb-more');
+  if (typeof MORE_PAGES !== 'undefined' && MORE_PAGES.has(page) && usable(more)) return more;
+  return null;
+}
+
+function cmdFindRun(idx) {
+  const r = cmdFindResults[idx];
+  if (!r) return;
+  if (r.kind === 'card') { _cmdFindOpenCard(r); return; }
+  if (r.page) { closeCmdBar(); showPage(r.page); return; }
+  if (r.key === 'quick-entry') { setCmdMode('add'); return; }
+  if (r.key === 'quick-sale') { setCmdMode('sell'); return; }
+  // Add single and Add slab: the form opens first and the bar closes under it, for the reason given in _cmdFindOpenCard.
+  const opts = { trigger: _cmdOpener || undefined };
+  if (r.key === 'add-single') { openAddSingle(opts); closeCmdBar(); }
+  else if (r.key === 'add-slab') { openAddSlab(opts); closeCmdBar(); }
+}
+
+function _cmdFindOpenCard(r) {
+  const table = r.table === 'slabs' ? 'slabs' : 'singles';
+  const page = table === 'slabs' ? 'slabs' : 'inventory';
+  const trigger = _cmdFindTrigger(page);
+  // The page and the card open first, the bar closes under them, so the modal stack never empties and the history entry the bar
+  // pushed is reused: no pop and no push per selection, which counts most where the inspector is a dialog (a narrow window) and for
+  // the two Add forms. kjrModalCtrl copes with a close followed straight away by an open (goBack, v3.74), so closing the bar first
+  // would work too. This order is a choice for fewer history moves, not a workaround.
+  showPage(page);
+  const ok = typeof kjrInspect === 'function' ? kjrInspect(table, r.item.id, trigger ? { trigger } : {}) : false;
+  closeCmdBar();
+  // kjrModalCtrl gives focus back to what opened the bar one frame after it closes. A card that opened wants it in the
+  // inspector, so this runs a frame later still (callbacks in one frame run in the order they were asked for).
+  if (ok && typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => { if (typeof _kjrInsp !== 'undefined' && _kjrInsp && typeof kjrInspectFocusTitle === 'function') kjrInspectFocusTitle(); });
+  }
 }
 
 // ── ADD MODE ──────────────────────────────────────────────────
@@ -11200,6 +11549,9 @@ function kjrInitTouchTips() {
     if (e.pointerType === 'mouse') return;
     const el = e.target.closest('[title]');
     if (!el || !el.getAttribute('title')) return;
+    // The rail's controls have their own long-press label, drawn by kjrNavTipInstall (features.js, v3.74), so a titled one
+    // (Settings, the sync button) must not get this bubble as well.
+    if (typeof kjrRailActive === 'function' && kjrRailActive() && el.closest('.topbar')) return;
     startX = e.clientX; startY = e.clientY; swallow = false;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => show(el, startX, startY), 450);
@@ -11240,21 +11592,6 @@ if (document.readyState === 'loading') {
 } else {
   kjrInitMobileShell();
 }
-
-// =========== KPI / STAT TOOLTIPS (touch parity) ===========
-// .metric-info and .metric-trust tooltips rely on :hover in CSS, which is
-// unreachable on touch. Tap toggles an .open class (CSS mirrors :hover with
-// .open), and a document-level click-away listener closes any open one.
-function kjrToggleTooltip(btn, e) {
-  if (e) e.stopPropagation();
-  const wasOpen = btn.classList.contains('open');
-  document.querySelectorAll('.metric-info.open,.metric-trust.open').forEach(b => { if (b !== btn) b.classList.remove('open'); });
-  btn.classList.toggle('open', !wasOpen);
-}
-document.addEventListener('click', function(e) {
-  if (e.target.closest && e.target.closest('.metric-info,.metric-trust')) return;
-  document.querySelectorAll('.metric-info.open,.metric-trust.open').forEach(b => b.classList.remove('open'));
-});
 
 // =========== TOAST ===========
 let toastTimer;
@@ -11328,9 +11665,11 @@ function warnOnce(key, message) {
 }
 
 // =========== MODALS ===========
-function openModal(id) {
+// opts is kjrModalCtrl.open's own (trigger: where focus goes back to on close), passed through for callers that know better
+// than document.activeElement, like the Search palette (v3.74). Every older call passes none.
+function openModal(id, opts) {
   const el = document.getElementById(id);
-  if (el && el.tagName === 'DIALOG') kjrModalCtrl.open(el);
+  if (el && el.tagName === 'DIALOG') kjrModalCtrl.open(el, opts);
   else if (el) el.classList.add('open');
 }
 // force=true skips the unsaved-changes prompt even if the dialog is dirty -
@@ -11462,7 +11801,10 @@ function graderGradeBadge(grader, grade, notes, name) {
   const title         = r.pristine
     ? ' title="' + esc(topTierLabel + ' - top-pop subgrade') + '" aria-label="' + esc(topTierLabel) + '"'
     : '';
-  return '<span class="badge ' + cls + '"' + title + ' style="font-size:13px;font-weight:600;letter-spacing:0.2px;padding:3px 10px">' +
+  // BGS has no class of its own (_graderClass maps it to the generic slab chip), so its gold dot hangs off this attribute
+  // (v3.74). Only a plain BGS carries it, a pristine one keeps b-pristine and its own gold, PSA, CGC and TAG are untouched.
+  const dataGrader = r.grader === 'BGS' && !r.pristine ? ' data-grader="bgs"' : '';
+  return '<span class="badge ' + cls + '"' + dataGrader + title + ' style="font-size:13px;font-weight:600;letter-spacing:0.2px;padding:3px 10px">' +
     esc(displayGrader) + ' ' + esc(displayGrade) + pristineMark + '</span>';
 }
 
@@ -12597,11 +12939,15 @@ async function deleteItem(id, table) {
   }
 
   // ── Optimistic update: remove from UI immediately ──
+  // Focus (v3.74): note where the row sits in the list before it goes, and hand focus to the row that takes its place once the
+  // list is redrawn. Reads and focuses only, nothing here touches the data path below.
+  const focusPlan = typeof kjrDeleteFocusPlan === 'function' ? kjrDeleteFocusPlan(table, id) : null;
   DB[table] = DB[table].filter(i => i.id !== id);
   saveData();
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (table === 'sales') renderSales();
+  if (focusPlan && typeof kjrDeleteFocusRestore === 'function') kjrDeleteFocusRestore(focusPlan);
   toast('Moved to trash · view in 🗑 tab');
   // Snapshot the row's full field set so the changelog records what was
   // moved to trash. If the trash auto-purges after 30d, the changelog
@@ -12893,7 +13239,7 @@ function _preserveModalListingMeta(norm, existing) {
   norm.listingMeta = _kjrListingClone(existing.listingMeta);
 }
 
-function openAddSingle() {
+function openAddSingle(opts) {
   _modalEditContexts.singles = null;
   document.getElementById('ms-id').value = '';
   document.getElementById('modal-single-title').textContent = 'Add Single';
@@ -12904,7 +13250,7 @@ function openAddSingle() {
   document.getElementById('ms-cond').value = 'Near Mint';
   document.getElementById('ms-status').value = 'Available';
   document.getElementById('ms-tcgdex-resolved').textContent = '';
-  openModal('modal-single');
+  openModal('modal-single', opts);
 }
 
 function openEditSingle(id) {
@@ -13273,7 +13619,7 @@ function renderSlabs() {
   if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
 }
 
-function openAddSlab() {
+function openAddSlab(opts) {
   _modalEditContexts.slabs = null;
   document.getElementById('msl-id').value = '';
   document.getElementById('modal-slab-title').textContent = 'Add Slab';
@@ -13282,7 +13628,7 @@ function openAddSlab() {
   document.getElementById('msl-lang').value = 'EN';
   document.getElementById('msl-status').value = 'Available';
   document.getElementById('msl-tcgdex-resolved').textContent = '';
-  openModal('modal-slab');
+  openModal('modal-slab', opts);
 }
 
 function openEditSlab(id) {
@@ -16582,7 +16928,7 @@ function openApiSettings() {
     <div id="api-key-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
       <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg,12px);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--border)">
-          <h3 style="font-size:15px;font-weight:600;margin:0">🔑 Price API Settings</h3>
+          <h3 style="font-size:15px;font-weight:600;margin:0">Price API settings</h3>
           <button onclick="window._closeApiSettings&&window._closeApiSettings()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px" aria-label="Close">&times;</button>
         </div>
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
@@ -17092,7 +17438,7 @@ async function refreshPrice(id, table) {
   const hasKeys = getApiKey('ppt');
   const isRaw = item.type !== 'slab';
   if (!hasKeys && !isRaw) {
-    toast('Add API keys first - click 🔑 in top bar');
+    toast('Add API keys first: open Settings, then API settings');
     return;
   }
   toast('Fetching market price...');
@@ -17815,9 +18161,9 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
                             .map(([err,n]) => n + '× ' + err).join(', ');
   const diagHint =
       pausedReason                          ? ' · ⏸ paused: ' + pausedReason + ' - retrying tomorrow'
-    : failedTransport >= 5 && done === 0    ? ' · API looks down - check 🔑 keys'
+    : failedTransport >= 5 && done === 0    ? ' · API looks down - check your keys in Settings, then API settings'
     : /401|403|invalid|unauthor/i.test(errSummary)
-                                            ? ' · ⚠ key invalid - check 🔑 settings'
+                                            ? ' · ⚠ key invalid - check Settings, then API settings'
     : /429|rate/i.test(errSummary)          ? ' · ⏰ rate-limited - slows down'
     : '';
   const tcgdexNote = tcgdexResult.ran
@@ -17950,7 +18296,7 @@ function _renderQueueStatus() {
       const total = top.reduce((s,[,n]) => s+n, 0);
       const dominant = top[0][0];
       let advice = '';
-      if (/401|403|invalid|unauthor/i.test(dominant))     advice = 'Likely cause: API key invalid or expired. Open 🔑 Price API Settings and re-test.';
+      if (/401|403|invalid|unauthor/i.test(dominant))     advice = 'Likely cause: API key invalid or expired. Open Settings, then API settings, and re-test.';
       else if (/429|rate/i.test(dominant))                advice = 'Likely cause: rate-limited by the vendor. The queue will retry these tomorrow automatically.';
       else if (/HTTP 5\d\d/.test(dominant))               advice = 'Likely cause: vendor API is down. The queue will retry these tomorrow.';
       else if (/HTTP 400/.test(dominant))                 advice = 'Likely cause: the price proxy rejected the request format, so this app version and the Worker disagree. Waiting will not fix it, reload to load the latest app.';
@@ -18008,7 +18354,7 @@ async function bulkRefreshPrices(table) {
   // TCGdex needs no key; only block when the table can't reach ANY free
   // lane - a slab table has no TCGdex-free option, so it still needs PPT.
   const hasKeys = getApiKey('ppt');
-  if (!hasKeys && table === 'slabs') { toast('Add API keys first - click 🔑 in top bar'); openApiSettings(); return; }
+  if (!hasKeys && table === 'slabs') { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
   const items = DB[table].filter(i => (i.status||'Available') === 'Available');
   if (!items.length) { toast('No available items to refresh'); return; }
   if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
@@ -18072,7 +18418,7 @@ async function bulkRefreshPrices(table) {
                             .map(([err,n]) => n + '× ' + err).join(', ');
   const dominant = Object.keys(errorTally).sort((a,b) => errorTally[b]-errorTally[a])[0] || '';
   const advice =
-      /401|403|invalid|unauthor/i.test(dominant)            ? ' · ⚠ key invalid - open 🔑 settings'
+      /401|403|invalid|unauthor/i.test(dominant)            ? ' · ⚠ key invalid - open Settings, then API settings'
     : /429|rate/i.test(dominant)                             ? ' · ⏰ rate-limited'
     : /HTTP 5\d\d/.test(dominant)                            ? ' · vendor API down'
     : /no match|no price/i.test(dominant)                    ? ' · names don\'t match catalogue'
@@ -18379,7 +18725,7 @@ async function searchEbay() {
   try {
     r = await fetchMarketPrice({ name: q, grader: null, grade: null, language: null });
   } catch(err) {
-    outEl.innerHTML = '<div style="color:var(--red)">Price lookup threw: ' + esc(err.message || String(err)) + '<br><span style="font-size:11px;color:var(--text3)">This usually means the price API is unreachable from your browser (CORS, network, or rate limit). Click 🔑 to rotate the keys.</span></div>';
+    outEl.innerHTML = '<div style="color:var(--red)">Price lookup threw: ' + esc(err.message || String(err)) + '<br><span style="font-size:11px;color:var(--text3)">This usually means the price API is unreachable from your browser (CORS, network, or rate limit). Open Settings, then API settings, to check or replace the keys.</span></div>';
     return;
   }
   if (r.maxSgd) {
@@ -19392,28 +19738,59 @@ try { localStorage.removeItem('kjr_price_cache'); } catch(e){}
 // without losing pills. Sealed sources use `totalPrice` instead of
 // `costPrice` - the costPrice getter falls back to totalPrice for those rows.
 const _INV_SOURCES    = ['singles','slabs','etbs','boosterBoxes','boosterPacks','all_inventory','everything'];
+// Field icons (v3.74): inline stroke SVG in place of emoji, drawn the way the sidebar glyphs are (24px grid, stroke 1.75, round
+// caps and joins, currentColor) and shown at 16px. Fields of one kind share a glyph. CB_FIELDS names a glyph by key and cbIconHtml
+// turns the key into markup for the picker label, the field pill and the axis chip, which are all HTML, so an SVG is safe in each.
+const CB_ICON_PATHS = {
+  card: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6"/>',
+  lang: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>',
+  box: '<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>',
+  star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+  list: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6"/>',
+  tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  hash: '<path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/>',
+  flag: '<path d="M6 21V4M6 4h11l-2 4 2 4H6"/>',
+  cal: '<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 10h16M8 3v4M16 3v4"/>',
+  user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
+  trend: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  down: '<path d="M3 7l6 6 4-4 8 8"/><path d="M15 17h6v-6"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5a2.5 2.5 0 0 1 2.5-1h.3a2.2 2.2 0 0 1 0 4.4h-.6a2.2 2.2 0 0 0 0 4.4h.3a2.5 2.5 0 0 0 2.5-1"/>',
+  bars: '<path d="M3 3v18h18"/><path d="M7 15v2M11 11v6M15 7v10M19 12v5"/>',
+  truck: '<path d="M3 6h11v10H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  store: '<path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
+  warn: '<path d="M12 4 2.8 20h18.4z"/><path d="M12 10v4M12 17.2v.1"/>'
+};
+function cbIconHtml(key) {
+  const d = Object.prototype.hasOwnProperty.call(CB_ICON_PATHS, key) ? CB_ICON_PATHS[key] : CB_ICON_PATHS.warn;
+  return '<svg class="cb-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>';
+}
 const _SEALED_SOURCES = ['etbs','boosterBoxes','boosterPacks','all_inventory','everything'];
 const CB_FIELDS = {
   // Dimensions - group by
-  pokeName:     { label: 'Pokémon Name',      icon: '🃏', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'], get: i => ((i.name||i.product||'?').toString()).split(' ')[0] },
-  fullName:     { label: 'Full Card Name',     icon: '🃏', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'], get: i => i.name || i.product || '?' },
-  language:     { label: 'Language',           icon: '🌐', type: 'dim',  tables: _INV_SOURCES,                       get: i => i.language||'?' },
-  cardType:     { label: 'Card Type',          icon: '📦', type: 'dim',  tables: ['singles','all_inventory','everything'], get: i => i.type||'raw' },
-  condition:    { label: 'Condition',          icon: '⭐', type: 'dim',  tables: ['singles','etbs','all_inventory','everything'], get: i => i.condition||'?' },
-  set:          { label: 'Set',                icon: '📋', type: 'dim',  tables: ['singles','slabs','all_inventory','everything'], get: i => i.set||'?' },
-  graderGrade:  { label: 'Grader + Grade',      icon: '🏷', type: 'dim',  tables: ['slabs','all_inventory','everything'], get: i => ((i.grader||'') + ' ' + (i.grade||'')).trim() || '?' },
-  grade:        { label: 'Grade',              icon: '🔢', type: 'dim',  tables: ['slabs','all_inventory','everything'], get: i => i.grade||'?' },
-  status:       { label: 'Status',             icon: '📌', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'],  get: i => i.status||'Available' },
-  monthBought:  { label: 'Month Acquired',     icon: '📅', type: 'dim',  tables: [..._INV_SOURCES, 'ebay'],          get: i => normaliseToMonthYear(i.datePurchased || i.dateListed || i.date) || '?' },
-  dateSold:     { label: 'Month Sold',         icon: '📅', type: 'dim',  tables: ['sales','everything'],             get: s => normaliseToMonthYear(s.dateSold)||'?' },
-  buyer:        { label: 'Buyer',              icon: '👤', type: 'dim',  tables: ['sales','everything'],             get: s => s.buyer||'?' },
-  saleProduct:  { label: 'Product (Pokémon)',  icon: '🃏', type: 'dim',  tables: ['sales','everything'],             get: s => (s.product||'?').split(' ')[0] },
+  pokeName:     { label: 'Pokémon Name',      icon: 'card', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'], get: i => ((i.name||i.product||'?').toString()).split(' ')[0] },
+  fullName:     { label: 'Full Card Name',     icon: 'card', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'], get: i => i.name || i.product || '?' },
+  language:     { label: 'Language',           icon: 'lang', type: 'dim',  tables: _INV_SOURCES,                       get: i => i.language||'?' },
+  cardType:     { label: 'Card Type',          icon: 'box', type: 'dim',  tables: ['singles','all_inventory','everything'], get: i => i.type||'raw' },
+  condition:    { label: 'Condition',          icon: 'star', type: 'dim',  tables: ['singles','etbs','all_inventory','everything'], get: i => i.condition||'?' },
+  set:          { label: 'Set',                icon: 'list', type: 'dim',  tables: ['singles','slabs','all_inventory','everything'], get: i => i.set||'?' },
+  graderGrade:  { label: 'Grader + Grade',      icon: 'tag', type: 'dim',  tables: ['slabs','all_inventory','everything'], get: i => ((i.grader||'') + ' ' + (i.grade||'')).trim() || '?' },
+  grade:        { label: 'Grade',              icon: 'hash', type: 'dim',  tables: ['slabs','all_inventory','everything'], get: i => i.grade||'?' },
+  status:       { label: 'Status',             icon: 'flag', type: 'dim',  tables: [..._INV_SOURCES, 'sales','ebay'],  get: i => i.status||'Available' },
+  monthBought:  { label: 'Month Acquired',     icon: 'cal', type: 'dim',  tables: [..._INV_SOURCES, 'ebay'],          get: i => normaliseToMonthYear(i.datePurchased || i.dateListed || i.date) || '?' },
+  dateSold:     { label: 'Month Sold',         icon: 'cal', type: 'dim',  tables: ['sales','everything'],             get: s => normaliseToMonthYear(s.dateSold)||'?' },
+  buyer:        { label: 'Buyer',              icon: 'user', type: 'dim',  tables: ['sales','everything'],             get: s => s.buyer||'?' },
+  saleProduct:  { label: 'Product (Pokémon)',  icon: 'card', type: 'dim',  tables: ['sales','everything'],             get: s => (s.product||'?').split(' ')[0] },
   // Sealed-specific dimensions
-  sealedProduct: { label: 'Product',           icon: '📦', type: 'dim',  tables: _SEALED_SOURCES,                    get: i => i.product || '?' },
+  sealedProduct: { label: 'Product',           icon: 'box', type: 'dim',  tables: _SEALED_SOURCES,                    get: i => i.product || '?' },
   // eBay-specific dimensions
-  ebayStatus:    { label: 'eBay Status',       icon: '📦', type: 'dim',  tables: ['ebay','everything'],              get: r => r.status||'?' },
-  ebayDeclared:  { label: 'Declared?',         icon: '✅', type: 'dim',  tables: ['ebay','everything'],              get: r => r.declared||'?' },
-  ebayTarget:    { label: 'Target Inventory',  icon: '🎯', type: 'dim',  tables: ['ebay','everything'],              get: r => r.targetTable||'?' },
+  ebayStatus:    { label: 'eBay Status',       icon: 'box', type: 'dim',  tables: ['ebay','everything'],              get: r => r.status||'?' },
+  ebayDeclared:  { label: 'Declared?',         icon: 'check', type: 'dim',  tables: ['ebay','everything'],              get: r => r.declared||'?' },
+  ebayTarget:    { label: 'Target Inventory',  icon: 'target', type: 'dim',  tables: ['ebay','everything'],              get: r => r.targetTable||'?' },
 
   // Measures - `agg` defaults to 'sum'; use 'avg' for ratios. `weighted` ×
   // qty for singles / packs / boxes so multi-qty rows contribute their full
@@ -19425,30 +19802,30 @@ const CB_FIELDS = {
   //   'count' → "5"           (no currency prefix)
   // costPrice falls back to totalPrice so sealed sources work without their
   // own bespoke measure.
-  costPrice:    { label: 'Cost Price (S$)',    icon: '💵', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
+  costPrice:    { label: 'Cost Price (S$)',    icon: 'cash', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
                   get: i => parseFloat(i.costPrice ?? i.totalPrice)||0 },
   // Routed through effectiveMarketInfo (F2) so singles/slabs agree with the
   // marketPrice cell, sort and dashboard on cost-as-estimate fallback. Sealed
   // tables have no costPrice field at all, so effectiveMarketInfo always
   // returns 0 for them and the tail `|| totalPrice` fallback is what actually
   // prices them, exactly as before this change.
-  marketPrice:  { label: 'Market Price (S$)',  icon: '📈', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
+  marketPrice:  { label: 'Market Price (S$)',  icon: 'trend', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
                   get: i => effectiveMarketInfo(i).value || (parseFloat(i.totalPrice) || 0) },
-  pnl:          { label: 'Unrealised P&L',     icon: '💹', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
+  pnl:          { label: 'Unrealised P&L',     icon: 'trend', type: 'meas', agg: 'sum', weighted: true, unit:'sgd',   tables: _INV_SOURCES,
                   get: i => (effectiveMarketInfo(i).value || (parseFloat(i.totalPrice) || 0)) - (parseFloat(i.costPrice ?? i.totalPrice)||0) },
-  itemCount:    { label: 'Item Count',         icon: '🔢', type: 'meas', agg: 'sum', weighted: true, unit:'count', tables: _INV_SOURCES,
+  itemCount:    { label: 'Item Count',         icon: 'hash', type: 'meas', agg: 'sum', weighted: true, unit:'count', tables: _INV_SOURCES,
                   get: () => 1 },
-  revenue:      { label: 'Revenue (S$)',       icon: '💰', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],  get: s => parseFloat(s.totalCollected)||0 },
-  profit:       { label: 'Profit (S$)',        icon: '📊', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],  get: s => parseFloat(s.profit)||0 },
-  marginPct:    { label: 'Margin % (avg)',     icon: '📉', type: 'meas', agg: 'avg', unit:'pct',   tables: ['sales','everything'],  get: s => parseFloat(s.margin)||0 },
-  ebayUsd:      { label: 'USD Spent',          icon: '💵', type: 'meas', agg: 'sum', unit:'usd',   tables: ['ebay','everything'],  get: r => parseFloat(r.priceUsd)||0 },
-  ebayFreight:  { label: 'Freight (SGD)',      icon: '🚚', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['ebay','everything'],  get: r => parseFloat(r.freightSgd)||0 },
-  ebayTotalSgd: { label: 'Total SGD',          icon: '💰', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['ebay','everything'],  get: r => parseFloat(r.totalSgd)||0 },
-  costSold:     { label: 'Cost of Sale (S$)',  icon: '💵', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales'],                          get: s => parseFloat(s.costPrice)||0 },
-  saleCount:    { label: 'Sale Count',         icon: '🔢', type: 'meas', agg: 'sum', unit:'count', tables: ['sales'],                          get: () => 1 },
-  fees:         { label: 'Fees (S$)',          icon: '💸', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],             get: s => parseFloat(s.fees)||0 },
-  daysHeld:     { label: 'Days Held (avg)',    icon: '📆', type: 'meas', agg: 'avg', unit:'count', tables: ['sales','everything'],             get: s => parseFloat(s.daysHeld)||0 },
-  channel:      { label: 'Channel',            icon: '🏪', type: 'dim',  tables: ['sales','everything'],                                       get: s => s.channel || 'Carousell' },
+  revenue:      { label: 'Revenue (S$)',       icon: 'coin', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],  get: s => parseFloat(s.totalCollected)||0 },
+  profit:       { label: 'Profit (S$)',        icon: 'bars', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],  get: s => parseFloat(s.profit)||0 },
+  marginPct:    { label: 'Margin % (avg)',     icon: 'down', type: 'meas', agg: 'avg', unit:'pct',   tables: ['sales','everything'],  get: s => parseFloat(s.margin)||0 },
+  ebayUsd:      { label: 'USD Spent',          icon: 'cash', type: 'meas', agg: 'sum', unit:'usd',   tables: ['ebay','everything'],  get: r => parseFloat(r.priceUsd)||0 },
+  ebayFreight:  { label: 'Freight (SGD)',      icon: 'truck', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['ebay','everything'],  get: r => parseFloat(r.freightSgd)||0 },
+  ebayTotalSgd: { label: 'Total SGD',          icon: 'coin', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['ebay','everything'],  get: r => parseFloat(r.totalSgd)||0 },
+  costSold:     { label: 'Cost of Sale (S$)',  icon: 'cash', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales'],                          get: s => parseFloat(s.costPrice)||0 },
+  saleCount:    { label: 'Sale Count',         icon: 'hash', type: 'meas', agg: 'sum', unit:'count', tables: ['sales'],                          get: () => 1 },
+  fees:         { label: 'Fees (S$)',          icon: 'receipt', type: 'meas', agg: 'sum', unit:'sgd',   tables: ['sales','everything'],             get: s => parseFloat(s.fees)||0 },
+  daysHeld:     { label: 'Days Held (avg)',    icon: 'clock', type: 'meas', agg: 'avg', unit:'count', tables: ['sales','everything'],             get: s => parseFloat(s.daysHeld)||0 },
+  channel:      { label: 'Channel',            icon: 'store', type: 'dim',  tables: ['sales','everything'],                                       get: s => s.channel || 'Carousell' },
 };
 
 // Format a measure value according to its unit. Centralised so axis labels,
@@ -19599,7 +19976,7 @@ function _cbOpenFieldPicker(type) {
     const dis = (!chk && checkedCount >= 5) ? ' disabled' : '';
     return `<label style="display:flex;align-items:center;gap:5px;font-size:11px;padding:3px 4px;cursor:pointer">` +
       `<input type="checkbox" value="${k}"${chk ? ' checked' : ''}${dis} onchange="_cbPickerEnforce('${type}')"> ` +
-      `${f.icon} ${f.label}</label>`;
+      `${cbIconHtml(f.icon)} ${f.label}</label>`;
   }).join('') +
   `<div style="font-size:10px;color:var(--text3);margin-top:4px">Pick up to 5</div>` +
   `<button class="btn btn-primary btn-sm" onclick="_cbApplyFieldPicker('${type}')" style="font-size:10px;margin-top:6px;width:100%">Apply</button>`;
@@ -19711,7 +20088,7 @@ function initCustomChartBuilder() {
       pill.dataset.field = key;
       pill.dataset.label = f.label;
       pill.dataset.section = type; // marks it as a reorder drag, not a drop-to-axis drag
-      pill.innerHTML = `<span class="pill-icon" style="cursor:grab;opacity:0.5;font-size:11px;margin-right:2px">⠿</span><span class="pill-icon">${f.icon}</span><span>${f.label}</span>` +
+      pill.innerHTML = `<span class="pill-icon" style="cursor:grab;opacity:0.5;font-size:11px;margin-right:2px">⠿</span><span class="pill-icon">${cbIconHtml(f.icon)}</span><span>${f.label}</span>` +
         `<span class="cb-pill-meta"><span class="pill-type">${type === 'dim' ? 'Group' : 'Value'}</span>` +
         `<button type="button" class="btn btn-ghost btn-sm cb-pill-order-btn" style="padding:2px 6px;font-size:11px" title="Move up" aria-label="Move ${f.label} up" onclick="event.stopPropagation();_cbMovePillStep('${src}','${type}','${key}',-1)"${key === firstKey ? ' disabled' : ''}>↑</button>` +
         `<button type="button" class="btn btn-ghost btn-sm cb-pill-order-btn" style="padding:2px 6px;font-size:11px" title="Move down" aria-label="Move ${f.label} down" onclick="event.stopPropagation();_cbMovePillStep('${src}','${type}','${key}',1)"${key === lastKey ? ' disabled' : ''}>↓</button></span>`;
@@ -19874,8 +20251,8 @@ function renderCbChips(axis) {
   const placeholder  = document.getElementById('cb-' + axis + '-placeholder');
   if (!chipsEl) return;
   chipsEl.innerHTML = cbState[axis].map(key => {
-    const f = CB_FIELDS[key] || { icon: '⚠️', label: key };
-    return `<span class="cb-axis-chip">${f.icon} ${f.label}<button onclick="cbRemove('${axis}','${key}')" title="Remove">×</button></span>`;
+    const f = CB_FIELDS[key] || { icon: 'warn', label: key };
+    return `<span class="cb-axis-chip">${cbIconHtml(f.icon)} ${f.label}<button onclick="cbRemove('${axis}','${key}')" title="Remove">×</button></span>`;
   }).join('');
   if (placeholder) placeholder.style.display = cbState[axis].length ? 'none' : '';
 }

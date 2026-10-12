@@ -139,6 +139,28 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Step 6b (polish and leftovers, v3.74) was built and browser-verified on 12/10/2026, then deployed to `main`. `./qc.sh` PASS, `node --test` 1070 tests, 1064 pass, 0 fail, 6 skipped (new: tests/palette.test.js, tests/polish.test.js, tests/modal-controller.test.js).
+
+**What it is**
+- ⌘K palette: a third `find` mode (Search tab, first) in `#cmd-overlay`, a combobox over a listbox. Cards (up to 8 singles and slabs, available before sold) and actions (Add single, Add slab, Quick entry, Quick sale, Go to each of the 14 pages). Enter on a card opens its page, then `kjrInspect`, then closes the bar. Ctrl or Cmd+K is ignored in fields, with any `dialog[open]`, the API settings overlay, an open row menu or `.nav-dd.open`. Re-opening an open bar only switches mode. The sidebar and phone Search open `find`, Add and the phone "+" open `add`
+- Holo shine (`kjrHolo*`, features.js): pointer-tracked sheen and up to 6° tilt on `#dash-top` art and the inspector art only, off without `(hover: hover) and (pointer: fine)` or with reduced motion
+- Fonts self-hosted: `Assets/fonts/Geist-Variable.woff2` and `GeistMono-Variable.woff2` (geist 1.7.2 from npm via jsDelivr, OFL 1.1 in `OFL.txt`), in sw.js `CORE`. The Google Fonts link and preconnects are gone
+- BGS dot gold via `data-grader="bgs"` on plain BGS badges (`_graderClass` still says `b-slab`). Light BGS dot `#A67C00`, dark CGC dot `#4F7FE8`
+- Price-API copy names Settings, then API settings. No 🔑 left
+- Removed `kjrToggleTooltip` and the `.metric-trust`, `.metric-info`, `.inv-stat-info` CSS
+- Chart Builder field icons are inline SVG (the "⠿" handles stay)
+- Needs attention takes its own row through an `@container` rule on `.ov`, so it also reacts to the inspector split
+- Focus after Delete (Singles and Slabs, row menu and inspector) goes to the row that took the place, else the previous row, else the page heading (`tabindex="-1"`)
+- Phone Holdings sort select (`kjrHoldSort*`) drives `sortState`, shows "Custom" when the headers set something else
+- Rail long-press labels on touch (`kjrNavTouchTips`)
+- `kjrModalCtrl` fix: closing the last dialog calls `history.back()` through `goBack()`, which stamps `selfPopAt`. The popstate listener ignores its own pop for 1000ms and re-pushes a modal entry when a dialog opened meanwhile (Chromium resolves the back target at call time). This fixed the More sheet's Log Sale and Version history, which opened and closed at once
+
+**Open from Step 6b**
+- Unverified on real iOS and iPad Safari (touch long-press, palette with the on-screen keyboard, font loading), with live data, and reduced-motion rendering by eye
+- The test preview fixtures (`tests/*.cjs`) do not serve `Assets/fonts/`, and `sync-preview.cjs` still mentions Google Fonts in a comment and its CSP
+- Bulk delete (`deleteSelected`) does not restore focus
+- Two queued controller backs in one tick is reasoned, not measured
+
 Step 6a (navigation and phone layout, v3.73) was built and browser-verified on 12/10/2026, then deployed to `main`. `./qc.sh` PASS, `node --test` 1006 tests, 1000 pass, 0 fail, 6 skipped (58 new in tests/navigation.test.js).
 
 **What it is**

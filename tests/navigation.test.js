@@ -41,7 +41,7 @@ test('sidebar: the topbar element stays before .main, with the logo, the search 
   assert.ok(at('class="logo"') < at('class="kjr-side-actions"') && at('class="kjr-side-actions"') < at('<nav class="nav"') && at('<nav class="nav"') < at('class="topbar-actions"'));
   assert.match(topbar, /<button class="logo" type="button" onclick="showPage\('dashboard'\)" aria-label="Open overview">/);
   assert.match(topbar, /<span class="logo-title">Kujira<\/span>\s*<span class="logo-sub">Collectibles<\/span>/);
-  assert.match(topbar, /<button type="button" class="kjr-side-search" onclick="openCmdBar\(\)" aria-label="Search" aria-keyshortcuts="Control\+K Meta\+K">[\s\S]*?<span class="kjr-side-label">Search<\/span>\s*<kbd class="kjr-kbd" aria-hidden="true">⌘K<\/kbd>/);
+  assert.match(topbar, /<button type="button" class="kjr-side-search" onclick="openCmdBar\('find'\)" aria-label="Search" aria-keyshortcuts="Control\+K Meta\+K">[\s\S]*?<span class="kjr-side-label">Search<\/span>\s*<kbd class="kjr-kbd" aria-hidden="true">⌘K<\/kbd>/);
   assert.match(topbar, /<button type="button" class="kjr-side-add" onclick="openCmdBar\(\)" aria-label="Add">[\s\S]*?<span class="kjr-side-label">Add<\/span>/);
   assert.doesNotMatch(topbar, /btn btn-primary btn-sm|Quick add \/ log sale/, 'the old Quick Entry button is gone');
   assert.doesNotMatch(topbar, /nav-dd-trigger|data-dd="more"|toggleNavDD\('more'/, 'and so is the More dropdown');
@@ -110,12 +110,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.73 \(12 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.74 \(12 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.73 \(12 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.74 \(12 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -1048,14 +1048,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.73: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.74: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.73'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.73">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.74'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.74">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.73"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.73'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.74"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.74'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v76'/);
+  assert.match(sw, /const CACHE = 'kujira-v77'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

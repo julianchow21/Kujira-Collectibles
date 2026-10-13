@@ -79,5 +79,3 @@ The database gate uses the local postgres:17-alpine image in one uniquely named
 container with --network none, no host mounts, and tmpfs data. It restarts the
 PostgreSQL process inside that container so the durability check does not
 create a second database.
-
-*Disposable point-in-time doc. Delete once fully actioned (see AGENTS.md, Folder cleanliness).*

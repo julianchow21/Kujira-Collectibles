@@ -50,7 +50,7 @@ test('refresh-price, proxy off: a slab with no local PPT key is asked for one an
 test('refresh-price, proxy off: with a local key the slab goes to PPT directly, carrying the key', async () => {
   const app = await setup({ slabs: [slabRow()] }, 'test-key-not-real');
   app.fetchMock.route('/api/v2/cards', { ok: true, json: { data: [{ name: 'Charizard', number: '4', ebay: { psa10: { avg: 500 } } }] } });
-  app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1 } } });
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
   await app.ctx.refreshPrice('sl1', 'slabs');
   const ppt = app.fetchMock.calls.filter((c) => c.url.includes('pokemonpricetracker.com'));
   assert.equal(ppt.length, 1);
@@ -64,7 +64,7 @@ test('refresh-price, proxy off: singles never needed a key, and a manual single 
     { id: 'j1', name: 'Pikachu 25', type: 'raw', language: 'JP', marketPrice: 30, priceHistory: [], status: 'Available' },
   ] });
   app.fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1 } } });
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
   await app.ctx.refreshPrice('s1', 'singles');
   assert.equal(app.grab('DB').DB.singles.find((r) => r.id === 's1').marketPrice, '45', 'priced free, no key involved');
   app.fetchMock.calls.length = 0; app.toasts.length = 0;
@@ -103,7 +103,7 @@ test('bulk refresh, proxy off: with a local key the slabs go to PPT directly, ca
   const app = await setup({ slabs: [slabRow()] }, 'test-key-not-real');
   app.ctx.kjrConfirm = async () => true;
   app.fetchMock.route('/api/v2/cards', { ok: true, json: { data: [{ name: 'Charizard', number: '4', ebay: { psa10: { avg: 500 } } }] } });
-  app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1 } } });
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
   await runWithTimerDrain(() => app.ctx.bulkRefreshPrices('slabs'), app.timers);
   const ppt = app.fetchMock.calls.filter((c) => c.url.includes('pokemonpricetracker.com'));
   assert.equal(ppt.length, 1);
@@ -117,7 +117,7 @@ test('bulk refresh, proxy off: singles never needed a key, the gate is for the S
   app.ctx.openApiSettings = () => { opened++; };
   app.ctx.kjrConfirm = async () => true;
   app.fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1 } } });
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
   await runWithTimerDrain(() => app.ctx.bulkRefreshPrices('singles'), app.timers);
   assert.equal(opened, 0);
   assert.ok(!app.toasts.some((t) => /Add API keys first/.test(t)));

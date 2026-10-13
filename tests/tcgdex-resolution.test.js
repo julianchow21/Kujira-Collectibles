@@ -98,6 +98,78 @@ test('tcgdex-resolution: _disambiguateBySetName - longest-phrase-first ("Team Ro
   assert.strictEqual(picked.id, 'ex7-1', '"Team Rocket Returns" must resolve to ex7, not be short-circuited by "Team Rocket" -> base5');
 });
 
+// v3.77: the table is walked in declared order, and "base set" is declared before "expedition", so "Expedition Base Set" used to hit
+// "base set" first and resolve to Base Set (base1), a wrong card priced as the right one. It now takes the LONGEST phrase the name
+// holds, the same rule _tcgdexSetIdIn uses (the two share one implementation, they cannot drift apart again). Ids are TCGdex's own,
+// from the table: Base Set base1, Jungle base2, Fossil base3, Base Set 2 base4, Team Rocket base5, Expedition Base Set ecard1.
+test('tcgdex-resolution: _disambiguateBySetName - "Base Set", "Base Set 2" and "Expedition Base Set" each pick their own set (base1, base4, ecard1)', async () => {
+  const { ctx } = await loadApp();
+  // One printing per set, so a pick of the wrong set is possible for every name and shows up as a wrong id.
+  const candidates = [{ id: 'base1-4' }, { id: 'base4-4' }, { id: 'ecard1-4' }];
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Base Set', candidates).id, 'base1-4');
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Base Set 2', candidates).id, 'base4-4', '"Base Set 2" is base4, not base2 (that is Jungle) and not base1');
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Expedition Base Set', candidates).id, 'ecard1-4', 'first-match over the table gave base1 here');
+  // candidate order must not matter
+  const reversed = candidates.slice().reverse();
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Expedition Base Set', reversed).id, 'ecard1-4');
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Base Set 2', reversed).id, 'base4-4');
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Base Set', reversed).id, 'base1-4');
+  // the set words can sit anywhere in the name, in any case
+  assert.strictEqual(ctx._disambiguateBySetName('EXPEDITION BASE SET Charizard 4', candidates).id, 'ecard1-4');
+});
+
+test('tcgdex-resolution: _disambiguateBySetName - agrees with _tcgdexSetIdIn for every set the table names', async () => {
+  const { ctx } = await loadApp();
+  const names = ['Base Set', 'Base Set 2', 'Expedition Base Set', 'Team Rocket', 'Team Rocket Returns', 'Jungle', 'Fossil', 'Neo Genesis', 'Skyridge'];
+  for (const text of names) {
+    const setId = ctx._tcgdexSetIdIn(text);
+    assert.ok(setId, text + ' names a set');
+    const picked = ctx._disambiguateBySetName('Card 7 ' + text, [{ id: setId + '-7' }, { id: 'zzz-7' }]);
+    assert.strictEqual(picked && picked.id, setId + '-7', text);
+  }
+});
+
+test('tcgdex-resolution: _disambiguateBySetName - the longest phrase names the set, so a shorter phrase inside it never rescues a miss (never guess)', async () => {
+  const { ctx } = await loadApp();
+  // The name says Expedition Base Set but only Base Set and Base Set 2 printings came back. Falling through to the shorter "base set"
+  // used to hand back base1-4, a different set's card. Now it is unresolved.
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Expedition Base Set', [{ id: 'base1-4' }, { id: 'base4-4' }]), null);
+  // "Base Set 2" with no base4 printing must not fall back to base1 either
+  assert.strictEqual(ctx._disambiguateBySetName('Charizard 4 Base Set 2', [{ id: 'base1-4' }, { id: 'base3-4' }]), null);
+  // "Team Rocket Returns" with no ex7 printing must not fall back to base5
+  assert.strictEqual(ctx._disambiguateBySetName('Some Card 1 Team Rocket Returns', [{ id: 'base5-1' }, { id: 'base2-1' }]), null);
+});
+
+test('tcgdex-resolution: _disambiguateBySetName - two different sets named by phrases of the same length name neither (null, never a guess)', async () => {
+  const { ctx } = await loadApp();
+  // "jungle" and "fossil" are both six letters, so the name does not say which set. First-match used to return Jungle (declared first).
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle Fossil', [{ id: 'base2-5' }, { id: 'base3-5' }]), null);
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Fossil Jungle', [{ id: 'base2-5' }, { id: 'base3-5' }]), null);
+});
+
+test('tcgdex-resolution: _disambiguateBySetName - still null when the named set has no candidate or more than one, and tolerates junk input', async () => {
+  const { ctx } = await loadApp();
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle', [{ id: 'base3-5' }]), null, 'the named set has no candidate');
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle', [{ id: 'base2-5' }, { id: 'base2-5b' }, { id: 'base3-5' }]), null, 'two candidates in the named set is still ambiguous');
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle', []), null);
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle', [null, undefined, { id: 7 }, {}]), null, 'malformed candidates never throw');
+  assert.strictEqual(ctx._disambiguateBySetName(null, [{ id: 'base2-5' }]), null);
+  assert.strictEqual(ctx._disambiguateBySetName(undefined, [{ id: 'base2-5' }]), null);
+  assert.strictEqual(ctx._disambiguateBySetName('Gyarados 5 Jungle', null), null, 'a missing candidate list is unresolved, not a throw');
+});
+
+test('tcgdex-resolution: resolveTcgdexId - "Charizard 4 Expedition Base Set" resolves to the Expedition printing, not the Base Set one (end to end through the lookup)', async () => {
+  const { ctx, fetchMock } = await loadApp();
+  fetchMock.route('/cards?name=', { ok: true, json: [{ id: 'base1-4', name: 'Charizard' }, { id: 'base4-4', name: 'Charizard' }, { id: 'ecard1-4', name: 'Charizard' }] });
+  const item = { name: 'Charizard 4 Expedition Base Set', language: 'EN' };
+  assert.strictEqual(await ctx.resolveTcgdexId(item), 'ecard1-4');
+  assert.strictEqual(item.tcgdexId, 'ecard1-4');
+  // a name with no set words stays unresolved against the same three printings
+  const bare = { name: 'Charizard 4', language: 'EN' };
+  assert.strictEqual(await ctx.resolveTcgdexId(bare), null);
+  assert.strictEqual(bare.tcgdexId, undefined);
+});
+
 test('tcgdex-resolution: _pickBestMatch - a card-number match outweighs plain name similarity', async () => {
   const { ctx } = await loadApp();
   const results = [

@@ -308,8 +308,8 @@ function buildBootstrap() {
   var parseRequestBody = ${parsePreviewFetchBody.toString()};
   window.fetch = function (input, init) {
     var url = String(input && input.url || input || '');
-    if (url.indexOf('api.frankfurter.app/latest?from=USD') !== -1 || url.indexOf('open.er-api.com/v6/latest/USD') !== -1) return Promise.resolve(response({ rates: { SGD: 1.35 } }));
-    if (url.indexOf('api.frankfurter.app/latest?from=EUR') !== -1 || url.indexOf('open.er-api.com/v6/latest/EUR') !== -1) return Promise.resolve(response({ rates: { SGD: 1.45 } }));
+    if (url.indexOf('api.frankfurter.dev/v1/latest?from=USD') !== -1 || url.indexOf('open.er-api.com/v6/latest/USD') !== -1) return Promise.resolve(response({ rates: { SGD: 1.35 } }));
+    if (url.indexOf('api.frankfurter.dev/v1/latest?from=EUR') !== -1 || url.indexOf('open.er-api.com/v6/latest/EUR') !== -1) return Promise.resolve(response({ rates: { SGD: 1.45 } }));
     if (url.indexOf('currency-api@latest/v1/currencies/usd.json') !== -1) return Promise.resolve(response({ usd: { sgd: 1.35 } }));
     if (url.indexOf('currency-api@latest/v1/currencies/eur.json') !== -1) return Promise.resolve(response({ eur: { sgd: 1.45 } }));
     if (url.indexOf('/auth/v1/user') !== -1) return Promise.resolve(response({ id: OWNER_ID }));

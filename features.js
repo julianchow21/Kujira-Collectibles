@@ -375,6 +375,20 @@ function kjrNum(n){
   const x = parseFloat(String(n).replace(/[^0-9.\-]/g, ''));
   return isNaN(x) ? 0 : x;
 }
+// kjrNumOrNull - the nullable twin of kjrNum, for an OPTIONAL money field (the
+// Carousell list price). Blank, whitespace, null, undefined and text with no
+// digit all mean "no value" and return null, where kjrNum would say 0, a price
+// the owner never typed. A typed "0" is still the number 0. Everything else
+// parses exactly as kjrNum does, so the two never disagree on a real number.
+// kjrNum keeps returning 0 on purpose: the cost, total and fee callers rely on it.
+function kjrNumOrNull(n){
+  if (n == null) return null;
+  if (typeof n === 'number') return isFinite(n) ? n : null;
+  const cleaned = String(n).replace(/[^0-9.\-]/g, '');
+  if (!/\d/.test(cleaned)) return null; // '', '-', '.', '--', 'abc', '$'
+  const x = parseFloat(cleaned);
+  return isNaN(x) ? null : x;
+}
 // kjrMoneyStr - same sanitisation as kjrNum but returns a clean numeric
 // STRING (or '' for empty) for storage in DB fields that round-trip as text.
 function kjrMoneyStr(val){

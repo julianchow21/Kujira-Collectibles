@@ -70,7 +70,7 @@ async function wireClientToWorker(appOpts, emptyFor = []) {
     workerStatuses.push(response.status);
     return response;
   });
-  app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1 } } });
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
   return { ...app, vendorSearches, workerStatuses };
 }
 

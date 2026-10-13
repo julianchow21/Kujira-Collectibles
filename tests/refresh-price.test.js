@@ -33,7 +33,7 @@ async function setup(seed) {
   app.dirty = (table, id) => app.grab('_dirty')._dirty[table].has(id);
   return app;
 }
-const fx = (app, rate) => app.fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: rate == null ? 1 : rate } } });
+const fx = (app, rate) => app.fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: rate == null ? 1 : rate } } });
 const pptHit = (app, avg) => app.fetchMock.route('/ppt/cards', { ok: true, json: { data: [{ name: 'Charizard', number: '4', ebay: { psa10: { avg } } }] } });
 
 // ── slabs: PPT through the Worker, no local key needed ──────────────────────────────────────────────

@@ -13413,7 +13413,9 @@ function _saveSingleNow(id) {
     _validated[c.field] = r.value;
   }
   // Coerce numeric fields on save so downstream reducers never have to guess.
-  // Empty strings stay empty so the UI can show '-' rather than '0'.
+  // Empty strings stay empty so the UI can show '-' rather than '0'. The
+  // Carousell price is optional too: blank saves as null (no price), never 0,
+  // and a typed "0" stays 0 (kjrNumOrNull, features.js).
   const _cost   = document.getElementById('ms-cost').value;
   const _market = document.getElementById('ms-market').value;
   const _msDate = document.getElementById('ms-date').value;
@@ -13424,7 +13426,7 @@ function _saveSingleNow(id) {
     type: document.getElementById('ms-type').value,
     condition: document.getElementById('ms-cond').value,
     qty: _validated.qty,
-    listPrice: kjrNum(document.getElementById('ms-list').value),
+    listPrice: kjrNumOrNull(document.getElementById('ms-list').value),
     costPrice: _cost === '' ? '' : kjrNum(_cost),
     marketPrice: _market === '' ? '' : kjrNum(_market),
     datePurchased: formatDateInput(_msDate),
@@ -13765,7 +13767,8 @@ function _saveSlabNow(id) {
     }
     _validated[c.field] = r.value;
   }
-  // Coerce numeric fields on save (see saveSingle comment).
+  // Coerce numeric fields on save (see saveSingle comment). A blank Carousell
+  // price is null (no price), never 0.
   const _slCost   = document.getElementById('msl-cost').value;
   const _slMarket = document.getElementById('msl-market').value;
   const _slListed = document.getElementById('msl-date').value;
@@ -13777,7 +13780,7 @@ function _saveSlabNow(id) {
     language: document.getElementById('msl-lang').value,
     certNo: _validated.certNo,
     rank: _validated.rank,
-    listPrice: kjrNum(document.getElementById('msl-list').value),
+    listPrice: kjrNumOrNull(document.getElementById('msl-list').value),
     costPrice: _slCost === '' ? '' : kjrNum(_slCost),
     marketPrice: _slMarket === '' ? '' : kjrNum(_slMarket),
     dateListed: formatDateInput(_slListed),
@@ -16520,8 +16523,21 @@ function lstGoBack() {
   if (backId) {
     window._listingFromId = null;
     setTimeout(() => {
-      const sel = '[data-id="' + backId.replace(/"/g, '\\"') + '"]';
-      const el = document.querySelector('.page.active ' + sel);
+      // The first match in document order is not always the one on screen: with
+      // the grid on, the table body still holds the rows drawn before it was
+      // picked (hidden), and on a phone the table sits hidden under the Holdings
+      // rows. Take the first match that has client rects, the test kjrRowOnScreen
+      // uses. None on screen: leave the page alone, no outline and no scroll. The
+      // id is compared here, not spliced into a selector, so quotes, brackets and
+      // backslashes in an id cannot break the lookup.
+      const want = String(backId);
+      const rows = document.querySelectorAll('.page.active [data-id]');
+      let el = null;
+      for (let i = 0; i < rows.length && !el; i++) {
+        const row = rows[i];
+        if (row.getAttribute('data-id') !== want) continue;
+        if (typeof row.getClientRects !== 'function' || row.getClientRects().length > 0) el = row;
+      }
       if (el) {
         el.scrollIntoView({ behavior:'smooth', block:'center' });
         el.style.transition = 'outline-color 0.4s ease-out';
@@ -16790,23 +16806,21 @@ const _TCGDEX_SET_TOKENS = [
 ];
 
 // Given a card's free-text name and a list of TCGdex candidates (each
-// {id: "<setId>-<localId>", ...}), find the ONE candidate whose set id
-// matches a set-name token present in the name. Returns that candidate, or
-// null if zero or more-than-one candidates match (still ambiguous - never
-// guess). Case-insensitive; checks _TCGDEX_SET_TOKENS in its declared
-// (longest-phrase-first) order so a multi-word set name is matched before a
-// shorter one that's a substring of it.
+// {id: "<setId>-<localId>", ...}), find the ONE candidate in the set the name
+// names. The set is _tcgdexSetIdIn's answer, the LONGEST _TCGDEX_SET_TOKENS
+// phrase the name holds (case-insensitive), not the first one in table order:
+// "Base Set 2" is base4 and "Expedition Base Set" is ecard1, never base1 for
+// the shorter "base set" inside them, and two different sets named by phrases
+// of the same length name neither. Returns that candidate, or null when the
+// name names no set or that set has zero or more-than-one candidate (still
+// ambiguous - never guess). There is no fall-through to a shorter phrase: a
+// name that says Expedition Base Set does not take a Base Set printing as a
+// second best, that is a different card priced as this one.
 function _disambiguateBySetName(name, candidates) {
-  const lowerName = String(name || '').toLowerCase();
-  for (const [token, setId] of _TCGDEX_SET_TOKENS) {
-    if (!lowerName.includes(token)) continue;
-    const matches = candidates.filter(c => c && typeof c.id === 'string' && c.id.startsWith(setId + '-'));
-    if (matches.length === 1) return matches[0]; // exactly one candidate in this set - confident
-    // 0 or 2+ matches for this token - fall through and try the next token
-    // (rare, but a name could mention two set words); if nothing yields a
-    // single match the caller's null return keeps the card unresolved.
-  }
-  return null;
+  const setId = _tcgdexSetIdIn(name);
+  if (!setId) return null;
+  const matches = (Array.isArray(candidates) ? candidates : []).filter(c => c && typeof c.id === 'string' && c.id.startsWith(setId + '-'));
+  return matches.length === 1 ? matches[0] : null; // exactly one candidate in the named set - confident
 }
 
 // The set id a free-text set field names, from the same _TCGDEX_SET_TOKENS table, by its LONGEST phrase rather than table order:
@@ -18868,10 +18882,12 @@ async function getSgdRate() {
     return cached.rate;
   }
 
-  // Try three independent free FX sources in sequence
+  // Try three independent free FX sources in sequence. The first moved to
+  // api.frankfurter.dev/v1 on 13/10/2026: the old .app host only 301s to it
+  // with no CORS header, so a browser blocks that redirect.
   const sources = [
     async () => {
-      const r = await fetch('https://api.frankfurter.app/latest?from=USD&to=SGD', { signal: AbortSignal.timeout(4000) });
+      const r = await fetch('https://api.frankfurter.dev/v1/latest?from=USD&to=SGD', { signal: AbortSignal.timeout(4000) });
       const d = await r.json();
       return d.rates?.SGD;
     },
@@ -18952,7 +18968,7 @@ async function getEurSgdRate() {
 
   const sources = [
     async () => {
-      const r = await fetch('https://api.frankfurter.app/latest?from=EUR&to=SGD', { signal: AbortSignal.timeout(4000) });
+      const r = await fetch('https://api.frankfurter.dev/v1/latest?from=EUR&to=SGD', { signal: AbortSignal.timeout(4000) });
       const d = await r.json();
       return d.rates?.SGD;
     },

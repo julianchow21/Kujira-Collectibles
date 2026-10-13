@@ -487,3 +487,128 @@ test('listing bulk import rolls back all rows and preserves an unrelated dirty q
   assert.equal(localStorage.getItem('pokeinventory_v3'), beforeCache);
   assert.equal(grab('_dirty')._dirty.singles.has(untouched.id), true);
 });
+
+// v3.77: the Listing tab's Back button drops you on the row you came from and outlines it. lstGoBack took the FIRST [data-id] match on
+// the active page, and the first match in document order is not always the one on screen: with the grid on, the table body still holds
+// the rows the list drew before it was picked (hidden), and on a phone the table is hidden under the Holdings rows. The outline landed
+// on a row nobody could see. It now takes the first match that has client rects (the test kjrRowOnScreen uses), and when none is on
+// screen it leaves the page alone, no outline, no scroll, no error.
+function backRow(log, id, visible, kind) {
+  return {
+    kind, style: {},
+    getAttribute: (k) => (k === 'data-id' ? id : null),
+    getClientRects: () => (visible ? [{}] : []),
+    scrollIntoView(opts) { log.push({ id, kind, behavior: opts && opts.behavior, block: opts && opts.block }); },
+  };
+}
+// A tiny stand-in for the active page: answers ".page.active [data-id]" with every row and ".page.active [data-id="x"]" with the ones
+// whose id matches, in document order, like a browser. Any other selector finds nothing.
+function backPage(app, rows) {
+  const find = (sel) => {
+    const m = /^\.page\.active \[data-id(?:="((?:[^"\\]|\\.)*)")?\]$/.exec(sel);
+    if (!m) return [];
+    if (m[1] === undefined) return rows.slice();
+    const want = m[1].replace(/\\(.)/g, '$1');
+    return rows.filter((r) => r.getAttribute('data-id') === want);
+  };
+  app.document.querySelectorAll = (sel) => find(sel);
+  app.document.querySelector = (sel) => find(sel)[0] || null;
+}
+const backTimers = (app, before, delay) => app.timers.list().filter((t) => !before.has(t.id) && t.delay === delay);
+
+test('lstGoBack outlines the row that is on screen, never a hidden one that comes first in the page', async () => {
+  const app = await loadApp();
+  const log = [];
+  const hiddenRow = backRow(log, 'x', false, 'table row');
+  const otherRow = backRow(log, 'y', true, 'other card');
+  const tile = backRow(log, 'x', true, 'grid tile');
+  backPage(app, [hiddenRow, otherRow, tile]);
+  app.sandbox._listingFromId = 'x';
+  app.sandbox._listingFromPage = 'inventory';
+  const before = new Set(app.timers.list().map((t) => t.id));
+  app.ctx.lstGoBack();
+  assert.equal(app.sandbox._listingFromId, null, 'the remembered row is spent');
+  assert.equal(app.sandbox._listingFromPage, null, 'and so is the remembered page');
+  assert.equal(app.document.getElementById('lst-back-btn').style.display, 'none', 'the Back button goes away');
+  const wait = backTimers(app, before, 280);
+  assert.equal(wait.length, 1, 'one look, 280ms after the page is shown');
+  const beforeFlash = new Set(app.timers.list().map((t) => t.id));
+  app.timers.invoke(wait[0].id);
+  assert.equal(tile.style.outline, '2px solid var(--accent)', 'the row on screen is outlined');
+  assert.equal(tile.style.outlineOffset, '-2px');
+  assert.deepEqual(log, [{ id: 'x', kind: 'grid tile', behavior: 'smooth', block: 'center' }], 'and only that row is scrolled to');
+  assert.equal(hiddenRow.style.outline, undefined, 'the hidden row is never touched');
+  assert.equal(otherRow.style.outline, undefined, 'nor is a row with a different id');
+  const letGo = backTimers(app, beforeFlash, 2200);
+  assert.equal(letGo.length, 1, 'the outline lets go after 2.2 seconds');
+  app.timers.invoke(letGo[0].id);
+  assert.equal(tile.style.outline, '');
+  assert.equal(tile.style.outlineOffset, '');
+});
+
+test('lstGoBack falls back quietly when the row is not on screen anywhere: no outline, no scroll, no error', async () => {
+  const app = await loadApp();
+  const log = [];
+  const hiddenRow = backRow(log, 'x', false, 'table row');
+  const otherRow = backRow(log, 'y', true, 'other card');
+  backPage(app, [hiddenRow, otherRow]);
+  app.sandbox._listingFromId = 'x';
+  app.sandbox._listingFromPage = 'slabs';
+  const toasts = [];
+  app.ctx.toast = (m) => toasts.push(m);
+  const before = new Set(app.timers.list().map((t) => t.id));
+  app.ctx.lstGoBack();
+  const wait = backTimers(app, before, 280);
+  assert.equal(wait.length, 1);
+  const beforeFlash = new Set(app.timers.list().map((t) => t.id));
+  assert.doesNotThrow(() => app.timers.invoke(wait[0].id));
+  assert.equal(hiddenRow.style.outline, undefined, 'a hidden row is not outlined');
+  assert.equal(otherRow.style.outline, undefined);
+  assert.deepEqual(log, [], 'nothing is scrolled');
+  assert.equal(backTimers(app, beforeFlash, 2200).length, 0, 'no outline, so nothing to let go of');
+  assert.deepEqual(toasts, [], 'the user already left the row behind on purpose, no toast about it');
+  // and a page with no row for that id at all
+  const empty = await loadApp();
+  backPage(empty, []);
+  empty.sandbox._listingFromId = 'gone';
+  empty.sandbox._listingFromPage = 'inventory';
+  const b2 = new Set(empty.timers.list().map((t) => t.id));
+  empty.ctx.lstGoBack();
+  assert.doesNotThrow(() => empty.timers.invoke(backTimers(empty, b2, 280)[0].id));
+});
+
+test('lstGoBack finds a row whose id has quotes, brackets or backslashes in it, and a numeric id', async () => {
+  for (const id of ['we"ird\\id]x', "o'brien [1]", 'a\\"b']) {
+    const app = await loadApp();
+    const log = [];
+    const row = backRow(log, id, true, 'row');
+    backPage(app, [backRow(log, 'decoy', true, 'decoy'), row]);
+    app.sandbox._listingFromId = id;
+    app.sandbox._listingFromPage = 'inventory';
+    const before = new Set(app.timers.list().map((t) => t.id));
+    app.ctx.lstGoBack();
+    app.timers.invoke(backTimers(app, before, 280)[0].id);
+    assert.equal(row.style.outline, '2px solid var(--accent)', JSON.stringify(id));
+  }
+  // an id stored as a number is looked up as the string the attribute holds, it does not throw
+  const app = await loadApp();
+  const row = backRow([], '42', true, 'row');
+  backPage(app, [row]);
+  app.sandbox._listingFromId = 42;
+  app.sandbox._listingFromPage = 'inventory';
+  const before = new Set(app.timers.list().map((t) => t.id));
+  assert.doesNotThrow(() => app.ctx.lstGoBack());
+  app.timers.invoke(backTimers(app, before, 280)[0].id);
+  assert.equal(row.style.outline, '2px solid var(--accent)');
+});
+
+test('lstGoBack with no remembered row still returns to the page and hides the Back button, with no timers', async () => {
+  const app = await loadApp();
+  app.sandbox._listingFromId = null;
+  app.sandbox._listingFromPage = 'inventory';
+  const before = new Set(app.timers.list().map((t) => t.id));
+  app.ctx.lstGoBack();
+  assert.equal(app.sandbox._listingFromPage, null);
+  assert.equal(app.document.getElementById('lst-back-btn').style.display, 'none');
+  assert.equal(app.timers.list().filter((t) => !before.has(t.id) && t.delay === 280).length, 0);
+});

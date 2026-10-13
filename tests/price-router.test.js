@@ -8,7 +8,7 @@ test('price-router: slab descriptor hits the PPT worker URL and never touches TC
   const { ctx, fetchMock } = await loadApp();
   fetchMock.calls.length = 0;
   fetchMock.route('/ppt/cards', { ok: true, json: { data: [{ name: 'Charizard', number: '4', ebay: { psa10: { avg: 500 } } }] } });
-  fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1.35 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1.35 } } });
 
   const result = await ctx.fetchMarketPrice({ name: 'Charizard', grader: 'PSA', grade: '10', language: 'EN' });
 
@@ -73,7 +73,7 @@ test('price-router: raw EN single happy path - TCGdex resolves and prices via TC
     ok: true,
     json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 }, 'reverse-holofoil': { marketPrice: 60 } } } },
   });
-  fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1.35 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1.35 } } });
 
   const result = await ctx.fetchMarketPrice({ name: 'Pikachu 25', language: 'EN' });
 
@@ -92,7 +92,7 @@ test('price-router: raw EN single flagged reverse-holo prefers the reverse-holof
     ok: true,
     json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 }, 'reverse-holofoil': { marketPrice: 60 } } } },
   });
-  fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1.35 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1.35 } } });
 
   const result = await ctx.fetchMarketPrice({ name: 'Pikachu 25 RH', language: 'EN' });
   assert.strictEqual(result.maxUsd, 60, 'a name flagged reverse-holo prefers reverse-holofoil ahead of the normal precedence');
@@ -103,7 +103,7 @@ test('price-router: TCGdex fallback to Cardmarket EUR when TCGplayer has nothing
   fetchMock.calls.length = 0;
   fetchMock.route('/cards?name=', { ok: true, json: [{ id: 'sv3-199' }] });
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { cardmarket: { avg: 12.5 } } } });
-  fetchMock.route('frankfurter.app', { ok: true, json: { rates: { SGD: 1.5 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1.5 } } });
 
   const result = await ctx.fetchMarketPrice({ name: 'Pikachu 25', language: 'EN' });
   assert.strictEqual(result.maxEur, 12.5);

@@ -139,6 +139,11 @@ Step 1 shipped on `redesign` as v3.68 on 10/10/2026. These notes stay as the rec
   - cert numbers are not mono yet
   - the listing description textarea is still mono
 
+Follow-ups (v3.75 `90808fb` and v3.76 `3da9ee2`, 13/10/2026, committed locally, not pushed). `./qc.sh` PASS, `node --test` 1163 tests, 1157 pass, 0 fail, 6 skipped.
+- v3.75: singles and slabs edit-save keep every key the form does not own (`_preserveModalOffFormKeys`, lookup markers reset when name, language, tcgdexId, grader or grade change), unreadable stored dates survive (`_preserveUnreadableModalDate`). `refreshPrice` follows the queue lanes (Slabs table means PPT lane, Worker needs no local key, singles `tcgdexOnly`, manual lane makes no call), a miss stamps `_tcgdexMissDate` and only syncs a new tcgdexId, `_tcgdexMissedToday` reads the row stamp too
+- v3.76: bulk delete and Clear focus (`kjrBulkDeleteFocusPlan`, `kjrBulkBarFocusRescue`), linked-row highlight in any view (`kjrRowOnScreen`, `kjrFlashRow`, used by `viewSourceItem` and Dealer `focusCoreRow`), slab art uses the row set (`_tcgdexSetIdIn` longest phrase, `_tcgdexSetHintPick`, signature `name|lang|set:`), own tcgdexId wins, `_buildCleanPushHtml` deleted, fixtures serve `Assets/fonts/` with `font-src 'self'`, light hover-only contrast block at the end of styles.css, short landscape rail (`max-height: 500px`) scrolls as one column with sticky footer and hidden logo, cert numbers mono on slab tiles and `#msl-cert`, listing description Geist
+- Parked bugs and Step 2, 6a, 6b leftovers above are closed by these. Open items moved to todo.md
+
 Step 6b (polish and leftovers, v3.74) was built and browser-verified on 12/10/2026, then deployed to `main`. `./qc.sh` PASS, `node --test` 1070 tests, 1064 pass, 0 fail, 6 skipped (new: tests/palette.test.js, tests/polish.test.js, tests/modal-controller.test.js).
 
 **What it is**
@@ -198,7 +203,7 @@ Step 5 (card inspector, v3.72) was built on 11/10/2026, browser-verified and dep
 - Finish the browser pass: cache-bust, confirm the title focus ring is gone after a mouse click, check the Slabs and Overview phone taps, and sign off visually in both themes
 - The seed set must be rebuilt. Cover: EN with real tcgdexIds, JP, sealed, qty more than 1, Sold, notes, a carousellUrl, slabs (PSA, CGC, TAG, with and without datePurchased) and sales
 
-**Found, not fixed**
+**Found, not fixed** (both fixed in v3.75)
 - `_saveSlabNow` drops a slab's `datePurchased` on edit-save
 - `refreshPrice` needs a local PPT key for slabs (not needed with the Worker), and for singles a TCGdex miss falls back to a fuzzy PPT search (no `tcgdexOnly`)
 

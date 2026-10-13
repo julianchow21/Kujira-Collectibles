@@ -453,3 +453,71 @@ test('price proxy accepts only the exact narrow route', async () => {
   );
   assert.equal(calls[0].init.headers.Authorization, 'Bearer synthetic-price-key');
 });
+
+// v3.76: slabs read their graded price from card.ebay[grade].avg, which the vendor only returns with includeEbay=true. The route
+// allows that one flag, once, with that one value, and still refuses everything else before any vendor call.
+test('price proxy forwards includeEbay=true only, once, and refuses every other extra parameter or value', async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ data: [] });
+  };
+  const priceEnv = { PPT_KEY: 'synthetic-price-key' };
+  const priceHeaders = { Origin: 'https://julianchow21.github.io' };
+  const ask = (query) => worker.fetch(new Request('https://worker.example/ppt/cards?' + query, { headers: priceHeaders }), priceEnv);
+  const UPSTREAM = 'https://www.pokemonpricetracker.com/api/v2/cards?';
+
+  // the flag, in either position: forwarded exactly as sent, with the key still on the server side
+  let response = await ask('search=Charizard&limit=3&includeEbay=true');
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, UPSTREAM + 'search=Charizard&limit=3&includeEbay=true');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer synthetic-price-key');
+  response = await ask('includeEbay=true&search=Charizard%204%2F102&limit=3');
+  assert.equal(response.status, 200);
+  assert.equal(calls[1].url, UPSTREAM + 'includeEbay=true&search=Charizard%204%2F102&limit=3');
+
+  // the plain two-parameter shape every released client sends is unchanged
+  response = await ask('search=Charizard&limit=3');
+  assert.equal(response.status, 200);
+  assert.equal(calls[2].url, UPSTREAM + 'search=Charizard&limit=3');
+
+  // a listed flag with any other value, spelled or encoded another way, is refused
+  const before = calls.length;
+  for (const bad of [
+    'includeEbay=false', 'includeEbay=1', 'includeEbay=TRUE', 'includeEbay=True', 'includeEbay=', 'includeEbay',
+    'includeEbay=%20true', 'includeEbay=true%20', 'includeEbay=truee', 'includeEbay=true%0A', 'includeEbay=yes',
+    'includeEbay=true&includeEbay=true', 'includeEbay=true&includeEbay=false', 'includeEbay=false&includeEbay=true',
+    'includeebay=true', 'INCLUDEEBAY=true'
+  ]) {
+    response = await ask('search=Charizard&limit=3&' + bad);
+    assert.equal(response.status, 400, bad + ' must be refused');
+    assert.deepEqual(await response.json(), { error: 'invalid query' }, bad);
+  }
+  // every other vendor flag, and the keys a plain object would answer for, are refused as before
+  for (const bad of [
+    'includeHistory=true', 'includeBoth=true', 'days=30', 'set=Base', 'fetchAllInSet=true', 'language=japanese', 'tcgPlayerId=1',
+    'sortBy=price', 'maxDataPoints=730', 'extra=1', '__proto__=true', 'constructor=true', 'toString=true', 'hasOwnProperty=true',
+    'includeEbay=true&includeHistory=true', 'includeEbay=true&days=30', 'includeEbay=true&extra=1'
+  ]) {
+    response = await ask('search=Charizard&limit=3&' + bad);
+    assert.equal(response.status, 400, bad + ' must be refused');
+  }
+  // the two required parameters still decide, with or without the flag
+  for (const bad of [
+    'limit=3&includeEbay=true', 'search=&limit=3&includeEbay=true', 'search=%20&limit=3&includeEbay=true',
+    'search=Charizard&includeEbay=true', 'search=Charizard&limit=4&includeEbay=true', 'search=Charizard&limit=03&includeEbay=true',
+    'search=Charizard&search=Pikachu&limit=3&includeEbay=true', 'search=Charizard&limit=3&limit=3&includeEbay=true'
+  ]) {
+    response = await ask(bad);
+    assert.equal(response.status, 400, bad + ' must be refused');
+  }
+  assert.equal(calls.length, before, 'nothing refused ever reached the vendor');
+
+  // origin and method are still checked first
+  response = await worker.fetch(new Request('https://worker.example/ppt/cards?search=Charizard&limit=3&includeEbay=true', { headers: { Origin: 'https://attacker.example' } }), priceEnv);
+  assert.equal(response.status, 403);
+  response = await worker.fetch(new Request('https://worker.example/ppt/cards?search=Charizard&limit=3&includeEbay=true', { method: 'POST', headers: priceHeaders }), priceEnv);
+  assert.equal(response.status, 405);
+  assert.equal(calls.length, before);
+});

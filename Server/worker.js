@@ -2,7 +2,10 @@
  * Kujira Prices + CAS DB Proxy, reproducible server candidate
  * -------------------------------------------------------------
  * Price route:
- *   GET /ppt/cards?search=<name>&limit=3, exact-origin vendor proxy
+ *   GET /ppt/cards?search=<name>&limit=3[&includeEbay=true], exact-origin vendor proxy. The two named
+ *      parameters are required and limit must be 3. includeEbay=true is the one optional flag, it adds the
+ *      graded eBay sold data a slab price is read from. Any other parameter, a repeated one or another
+ *      value for includeEbay is refused with HTTP 400 before any vendor call.
  *
  * Authenticated sync:
  *   POST /sync/v2/pull
@@ -51,6 +54,11 @@ const DEALER_COMMANDS = new Set([
 // Cache TTL for OK price responses (seconds). DB responses are never cached.
 const CACHE_TTL_SECONDS = 21600;
 
+// The optional vendor flags the price route forwards besides search and limit, each with the one value it may carry. A flag that is
+// not listed, or listed with any other value, is refused, so a caller can never widen a vendor request (and what it costs) by
+// guessing. includeEbay=true adds the graded eBay sold data a slab price is read from, and costs the vendor one more credit per card.
+const PRICE_EXTRA_PARAMS = Object.freeze({ includeEbay: /^true$/ });
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -89,12 +97,14 @@ export default {
     if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405);
     if (url.pathname !== '/ppt/cards') return json({ error: 'unknown route' }, 404);
 
+    // search and limit=3 are required. Beyond them only a key in PRICE_EXTRA_PARAMS passes, once, with its one valid value.
     const priceKeys = [...url.searchParams.keys()];
-    const validPriceQuery = priceKeys.length === 2
-      && new Set(priceKeys).size === 2
+    const validPriceQuery = new Set(priceKeys).size === priceKeys.length
       && url.searchParams.has('search')
       && url.searchParams.get('search').trim() !== ''
-      && url.searchParams.get('limit') === '3';
+      && url.searchParams.get('limit') === '3'
+      && priceKeys.every(key => key === 'search' || key === 'limit'
+        || (Object.prototype.hasOwnProperty.call(PRICE_EXTRA_PARAMS, key) && PRICE_EXTRA_PARAMS[key].test(url.searchParams.get(key))));
     if (!validPriceQuery) return json({ error: 'invalid query' }, 400);
 
     const upstream = 'https://www.pokemonpricetracker.com/api/v2/cards' + url.search;

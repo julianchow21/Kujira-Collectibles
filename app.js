@@ -16834,38 +16834,345 @@ const _TCGDEX_SET_TOKENS = [
 // ambiguous - never guess). There is no fall-through to a shorter phrase: a
 // name that says Expedition Base Set does not take a Base Set printing as a
 // second best, that is a different card priced as this one.
-function _disambiguateBySetName(name, candidates) {
-  const setId = _tcgdexSetIdIn(name);
+// sets (art lookups only, see _kjrTcgdexSets) and lang widen what counts as a set name, pricing passes neither and is unchanged.
+function _disambiguateBySetName(name, candidates, sets, lang) {
+  const setId = _tcgdexSetIdIn(name, sets, lang, false);
   if (!setId) return null;
   const matches = (Array.isArray(candidates) ? candidates : []).filter(c => c && typeof c.id === 'string' && c.id.startsWith(setId + '-'));
   return matches.length === 1 ? matches[0] : null; // exactly one candidate in the named set - confident
 }
 
-// The set id a free-text set field names, from the same _TCGDEX_SET_TOKENS table, by its LONGEST phrase rather than table order:
-// "Base Set 2" is base4 and "Expedition Base Set" is ecard1, never base1 for the shorter "base set" inside them. Two different
-// sets named by phrases of the same length name neither (''), and a set the table does not know names none.
-function _tcgdexSetIdIn(text) {
-  const lower = String(text || '').toLowerCase();
-  let best = '', bestLen = 0, tie = false;
-  for (const [token, setId] of _TCGDEX_SET_TOKENS) {
-    if (!lower.includes(token)) continue;
-    if (token.length > bestLen) { best = setId; bestLen = token.length; tie = false; }
-    else if (token.length === bestLen && setId !== best) tie = true;
+// The set id a piece of free text names, by its LONGEST phrase rather than table order: "Base Set 2" is base4 and "Expedition
+// Base Set" is ecard1, never base1 for the shorter "base set" inside them. Two different sets named by phrases of the same length
+// name neither (''), and a set that no source knows names none.
+// Two sources, both read for English: the static _TCGDEX_SET_TOKENS (the verified floor, offline, and the ONLY source pricing ever
+// sees) and, when the caller passes it, the fetched TCGdex set list `sets` ([{id, name}], _kjrTcgdexSets), longest phrase over
+// both. A language other than English has its own set ids, so it reads its list alone (the static table's ids would match nothing).
+// field is true when `text` is a row's dedicated set field, false (default) when it is a card name: a name is searched for set
+// words only AFTER its card number, because the words before it are the Pokemon ("Deoxys" is a set, and a card).
+function _tcgdexSetIdIn(text, sets, lang, field) {
+  const found = [];
+  if (!lang || lang === 'en') {
+    const lower = String(text || '').toLowerCase();
+    for (const [token, setId] of _TCGDEX_SET_TOKENS) {
+      if (lower.includes(token)) found.push({ id: setId, len: token.length });
+    }
   }
-  return tie ? '' : best;
+  if (Array.isArray(sets) && sets.length) found.push(..._kjrSetsMatch(field ? text : _kjrNameSetWords(text), sets, !!field));
+  return _kjrBestSet(found);
 }
 
 // A row's set as a second never-guess signal next to its name (slab art, see resolveTcgdexId's opts). When the set names a set,
 // the pick (a unique match, or the one the set words in the name chose) must be in it, else nothing is picked: a printing from
 // another set shares the name and number but is not this card. When the name left several candidates, the set picks the one
-// candidate in it, if exactly one is. A set the table does not know changes nothing. It never widens a pick, it only narrows one.
-function _tcgdexSetHintPick(card, candidates, setHint) {
-  const want = _tcgdexSetIdIn(setHint);
+// candidate in it, if exactly one is. A set no source knows changes nothing. It never widens a pick, it only narrows one.
+function _tcgdexSetHintPick(card, candidates, setHint, sets, lang) {
+  const want = _tcgdexSetIdIn(setHint, sets, lang, true);
   if (!want) return card;
   const inSet = c => !!(c && typeof c.id === 'string' && c.id.startsWith(want + '-'));
   if (card) return inSet(card) ? card : null;
   const matches = (Array.isArray(candidates) ? candidates : []).filter(inSet);
   return matches.length === 1 ? matches[0] : null;
+}
+
+// The longest phrase wins, a tie between two different sets names neither. found: [{ id, len }].
+function _kjrBestSet(found) {
+  let best = '', bestLen = 0, tie = false;
+  for (const f of found) {
+    if (f.len > bestLen) { best = f.id; bestLen = f.len; tie = false; }
+    else if (f.len === bestLen && f.id !== best) tie = true;
+  }
+  return tie ? '' : best;
+}
+
+// What a card name says after its card number ("Charizard ex 006 JP SV2a" gives "JP SV2a"): the only part of a name that can
+// hold set words once the fetched list is in play.
+function _kjrNameSetWords(name) {
+  const tokens = String(name || '').trim().split(/\s+/).filter(Boolean);
+  const hit = _findNumToken(tokens);
+  return hit ? tokens.slice(hit.index + 1).join(' ') : '';
+}
+
+// ── Full TCGdex set list (art lookups only) ──
+// GET /{lang}/sets once per language, kept as [{id, name}] in localStorage under a versioned key for 30 days (about 220 English
+// and 184 Japanese sets, 10 to 15 KB each). It knows every modern set the static table does not, and each language's own ids
+// ("SV2a" is 151 in Japanese, "sv03.5" in English). A failed fetch, or offline, gives the stale list if there is one, else null,
+// and the caller falls back to the static table. A failure is not retried for a minute (this session only).
+const KJR_SETS_KEY = 'kjr_tcgdex_sets_v1:';
+const KJR_SETS_DAYS = 30;
+const KJR_SETS_COOL_MS = 60000;
+const KJR_SETS_MAX = 1000;
+let _kjrSetsMem = Object.create(null);    // lang -> { t, list }
+let _kjrSetsFlight = Object.create(null); // lang -> the fetch in progress
+let _kjrSetsFailAt = Object.create(null); // lang -> when the last fetch failed
+
+function _kjrSetsClean(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const s of raw) {
+    if (out.length >= KJR_SETS_MAX) break;
+    if (!s || typeof s.id !== 'string' || typeof s.name !== 'string') continue;
+    const id = s.id.trim(), name = s.name.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$/.test(id) || !name || name.length > 120) continue;
+    out.push({ id, name });
+  }
+  return out.length ? out : null;
+}
+function _kjrSetsRead(lang) {
+  try {
+    const raw = localStorage.getItem(KJR_SETS_KEY + lang);
+    const p = raw ? JSON.parse(raw) : null;
+    if (!p || p.v !== 1 || !Number.isFinite(p.t)) return null;
+    const list = _kjrSetsClean(p.list);
+    return list ? { t: p.t, list } : null;
+  } catch (e) { return null; }
+}
+// Resolves to the list, or null when there is none to use. Never throws.
+async function _kjrTcgdexSets(lang) {
+  const l = String(lang || 'en');
+  if (!/^[a-z]{2}(-[a-z]{2})?$/.test(l)) return null;
+  const have = _kjrSetsMem[l] || (_kjrSetsMem[l] = _kjrSetsRead(l));
+  const now = Date.now();
+  // a stamp from the future (a clock that was wrong) counts as expired, so it can never pin an old list for good
+  if (have && have.t <= now + 86400000 && now - have.t < KJR_SETS_DAYS * 86400000) return have.list;
+  if (_kjrSetsFlight[l]) return _kjrSetsFlight[l];
+  const cooling = _kjrSetsFailAt[l] && now - _kjrSetsFailAt[l] < KJR_SETS_COOL_MS;
+  if (cooling || (typeof navigator !== 'undefined' && navigator.onLine === false)) return have ? have.list : null;
+  const p = (async () => {
+    try {
+      const r = await fetch(TCGDEX_BASE + '/' + l + '/sets');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const list = _kjrSetsClean(await r.json());
+      if (!list) throw new Error('unusable set list');
+      const rec = { t: Date.now(), list };
+      _kjrSetsMem[l] = rec;
+      try { localStorage.setItem(KJR_SETS_KEY + l, JSON.stringify({ v: 1, t: rec.t, list })); } catch (e) { /* cache only, memory still serves */ }
+      return list;
+    } catch (e) {
+      _kjrSetsFailAt[l] = Date.now();
+      return have ? have.list : null;
+    }
+  })();
+  _kjrSetsFlight[l] = p;
+  p.then(() => { if (_kjrSetsFlight[l] === p) delete _kjrSetsFlight[l]; });
+  return p;
+}
+
+// "sv3pt5", "SV03.5" and "sv3.5" are one set id: pt is a point, zeros after the letters are padding ("sv03" is "sv3").
+function _kjrSetKey(s) {
+  return String(s || '').toLowerCase().replace(/(\d)pt(?=\d)/g, '$1.').replace(/([a-z])0+(?=\d)/g, '$1');
+}
+function _kjrSetText(s) {
+  return String(s || '').normalize('NFKC').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim();
+}
+const _kjrReEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Every set of the list that `text` names: [{ id, len }]. A set is named by its id (a whole word of the text) or by its name (a
+// whole phrase, or any substring for a name with Japanese in it, which has no word breaks). A name or id under 3 characters names
+// nothing, except an id typed in a set field (2). When nothing is named and the text IS a set field, a field of 3+ characters
+// that sits inside exactly one set name names that set ("151" is inside "ポケモンカード151" and no other).
+function _kjrSetsMatch(text, sets, field) {
+  const T = _kjrSetText(text);
+  const out = [];
+  if (!T) return out;
+  const words = T.split(/[\s,;/()|[\]]+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9+]+$/g, '')).filter(Boolean).map(_kjrSetKey);
+  const names = [];
+  for (const s of sets) {
+    const key = _kjrSetKey(s.id);
+    if (key.length >= (field ? 2 : 3) && words.includes(key)) out.push({ id: s.id, len: key.length });
+    const N = _kjrSetText(s.name);
+    names.push(N);
+    if (N.length < 3) continue;
+    const hit = /^[\x00-\x7f]+$/.test(N) ? new RegExp('(^|[^a-z0-9])' + _kjrReEscape(N) + '([^a-z0-9]|$)').test(T) : T.includes(N);
+    if (hit) out.push({ id: s.id, len: N.length });
+  }
+  if (!out.length && field && T.length >= 3) {
+    const rx = /^[\x00-\x7f]+$/.test(T) ? new RegExp('(^|[^a-z0-9])' + _kjrReEscape(T) + '([^a-z0-9]|$)') : null;
+    const inside = [];
+    sets.forEach((s, i) => { if (rx ? rx.test(names[i]) : names[i].includes(T)) inside.push(s); });
+    if (inside.length === 1) out.push({ id: inside[0].id, len: T.length });
+  }
+  return out;
+}
+
+// ── Japanese species names (art lookups of Japanese cards) ──
+// TCGdex's Japanese catalogue stores Japanese card names, so "Charizard ex" finds nothing on /ja/. Assets/species-ja.json maps an
+// English species name to its katakana name (about 1,000 entries, regenerated by scripts/species-ja.mjs). It loads lazily, the
+// first time a Japanese lookup needs it, and is held in memory for the session. It is not in the service worker's CORE list.
+// A failed load gives null (the lookup degrades to the placeholder, nothing throws, no 7-day miss is recorded), is not retried
+// for a minute and is tried again on the next session.
+const KJR_SPECIES_URL = 'Assets/species-ja.json';
+const KJR_SPECIES_COOL_MS = 60000;
+let _kjrSpeciesIdx = null;     // normalised English name -> Japanese name, once loaded
+let _kjrSpeciesFlight = null;  // the load in progress, shared by every lookup
+let _kjrSpeciesFailAt = 0;
+
+// "Mr. Mime", "mr mime" and "MrMime" are one key. Accents go, the female and male signs become f and m ("Nidoran♀").
+function _kjrSpeciesKey(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/\u2640/g, 'f').replace(/\u2642/g, 'm').replace(/[^a-z0-9]/g, '');
+}
+function _kjrSpeciesBuild(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const idx = Object.create(null);
+  let n = 0;
+  for (const k of Object.keys(raw)) {
+    const key = _kjrSpeciesKey(k), ja = raw[k];
+    if (!key || key.length > 40 || typeof ja !== 'string') continue;
+    const v = ja.trim();
+    if (!v || v.length > 40) continue;
+    idx[key] = v;
+    n++;
+  }
+  return n ? idx : null;
+}
+async function _kjrSpeciesIndex() {
+  if (_kjrSpeciesIdx) return _kjrSpeciesIdx;
+  if (_kjrSpeciesFlight) return _kjrSpeciesFlight;
+  if (_kjrSpeciesFailAt && Date.now() - _kjrSpeciesFailAt < KJR_SPECIES_COOL_MS) return null;
+  const p = (async () => {
+    try {
+      const r = await fetch(KJR_SPECIES_URL);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const idx = _kjrSpeciesBuild(await r.json());
+      if (!idx) throw new Error('unusable species map');
+      _kjrSpeciesIdx = idx;
+      return idx;
+    } catch (e) {
+      _kjrSpeciesFailAt = Date.now();
+      return null;
+    }
+  })();
+  _kjrSpeciesFlight = p;
+  p.then(() => { if (_kjrSpeciesFlight === p) _kjrSpeciesFlight = null; });
+  return p;
+}
+// Rarity and mechanic words that are never part of a species name. Regional and Mega prefixes are dropped too, their species word
+// stays ("Alolan Raichu" is Raichu). Everything else is kept, a word that names no species simply finds nothing.
+const _KJR_SPECIES_DROP = new Set(['ex', 'gx', 'v', 'vmax', 'vstar', 'vunion', 'break', 'prime', 'legend', 'lv', 'lvx', 'tag', 'team',
+  'radiant', 'shining', 'alolan', 'galarian', 'hisuian', 'paldean', 'mega', 'primal', 'and']);
+// The Japanese name for a card name, or null. The name is cut at its card number (_baseCardName), then tried whole ("Mr. Mime",
+// "Tapu Koko"), as every two words in a row, then word by word from the first, so "Charizard ex", "Dark Charizard", "Misty's
+// Psyduck" and "Charizard-EX" all find a species. A trainer, an energy or any name with no species word is null. idx is the
+// loaded map (_kjrSpeciesIndex), the lookup itself is synchronous.
+function _kjrJaSpeciesFrom(idx, name) {
+  const base = _baseCardName(name);
+  if (!base || !idx) return null;
+  const words = base.replace(/&/g, ' ').split(/\s+/).filter(Boolean)
+    .map(w => w.replace(/['\u2018\u2019]s$/i, ''))
+    .map(w => ({ raw: w, key: _kjrSpeciesKey(w) }))
+    .filter(w => w.key && !_KJR_SPECIES_DROP.has(w.key));
+  if (!words.length) return null;
+  const tries = [words.map(w => w.key).join('')];
+  for (let i = 0; i + 1 < words.length; i++) tries.push(words[i].key + words[i + 1].key);
+  for (const w of words) {
+    tries.push(w.key);
+    if (w.raw.includes('-')) w.raw.split('-').forEach(part => { const k = _kjrSpeciesKey(part); if (k && !_KJR_SPECIES_DROP.has(k)) tries.push(k); });
+  }
+  for (const k of tries) { if (idx[k]) return idx[k]; }
+  return null;
+}
+// report (optional): report.transient and report.why = 'map' are set when the answer is "could not tell" (the map would not
+// load), so the caller does not record it as a 7-day miss.
+async function _kjrJaSpeciesName(name, report) {
+  const idx = await _kjrSpeciesIndex();
+  if (!idx) { if (report) { report.transient = true; report.why = 'map'; } return null; }
+  return _kjrJaSpeciesFrom(idx, name);
+}
+
+// A candidate's localId against the card number typed in the name. Two numbers compare as numbers ("6" is "006"), anything else
+// (a promo or gallery number such as "TG11") must match exactly, so "TG11" never takes "TG111" or "TG01".
+function _kjrLocalIdMatches(localId, num) {
+  const a = String(localId == null ? '' : localId).trim(), b = String(num == null ? '' : num).trim();
+  if (!a || !b) return false;
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) return parseInt(a, 10) === parseInt(b, 10);
+  return a.toUpperCase() === b.toUpperCase();
+}
+
+// The mechanic a card name carries: "Charizard ex", "Umbreon VMAX", "Pikachu & Zekrom GX", "Mega Charizard X ex" are different cards
+// from the plain "Charizard" and from each other. A tag is one of ex gx v vmax vstar vunion break lvx tagteam mega, returned
+// sorted and comma-joined so two names can be compared with ===. From the English name on a row (its base, the words before the
+// card number), and from the Japanese name on a card ("リザードンex", "ブラッキー&ダークライGX", "メガリザードンXex").
+function _kjrRowTags(base) {
+  const words = String(base || '').toLowerCase().replace(/v-?union/g, ' vunion ').replace(/lv\.?x/g, ' lvx ').replace(/&/g, ' & ')
+    .replace(/[^a-z0-9&\s-]/g, ' ').split(/[\s-]+/).filter(Boolean);
+  const tags = new Set();
+  for (const w of words) {
+    if (['ex', 'gx', 'v', 'vmax', 'vstar', 'vunion', 'break', 'lvx'].includes(w)) tags.add(w);
+    else if (w === '&') tags.add('tagteam');
+    else if (w === 'mega') tags.add('mega');
+  }
+  if (words.includes('tag') && words.includes('team')) tags.add('tagteam');
+  if (words.length > 1 && words[0] === 'm') tags.add('mega'); // the older "M Charizard EX"
+  return [...tags].sort().join(',');
+}
+function _kjrCardTags(jaName) {
+  const t = String(jaName || '').normalize('NFKC').toLowerCase();
+  const tags = [];
+  if (t.includes('&')) tags.push('tagteam');
+  if (t.includes('\u30e1\u30ac')) tags.push('mega'); // メガ
+  if (/vmax/.test(t)) tags.push('vmax');
+  if (/vstar/.test(t)) tags.push('vstar');
+  if (/v-?union/.test(t)) tags.push('vunion');
+  if (/gx/.test(t)) tags.push('gx');
+  if (/ex/.test(t)) tags.push('ex');
+  if (/break/.test(t)) tags.push('break');
+  if (/lv\.?x/.test(t)) tags.push('lvx');
+  if (/v/.test(t.replace(/vmax|vstar|v-?union/g, ''))) tags.push('v');
+  return tags.sort().join(',');
+}
+// Can this Japanese card be the row's card? Its name must hold the species we searched for (TCGdex matches loosely) and carry the
+// same mechanic tags as the row's name. A lone localId match is not enough: "Umbreon VMAX 215/203" (an English number on a Japanese
+// row) found exactly one card numbered 215 with Umbreon in its name, the Tag Team "ブラッキー&ダークライGX", which is another card.
+function _kjrJaNameFits(rowTags, species, cardName) {
+  if (typeof cardName !== 'string' || !cardName) return false; // a card with no name cannot be checked, so it is not taken
+  return cardName.normalize('NFKC').includes(species.normalize('NFKC')) && _kjrCardTags(cardName) === rowTags;
+}
+
+// Does this lookup need the set list at all? Only when there is set text that the static table (English) does not already name,
+// and only once the candidates are down to what narrowing could still change: a set field always, a name's set words only
+// when several candidates remain.
+function _kjrArtNeedsSets(lang, name, setHint, candidateCount) {
+  const staticToo = lang === 'en';
+  const nameWords = candidateCount > 1 ? _kjrNameSetWords(name) : '';
+  return !!((nameWords && !(staticToo && _tcgdexSetIdIn(name))) || (setHint && !(staticToo && _tcgdexSetIdIn(setHint))));
+}
+// The list when this lookup needs it and it can be had, else null (no fetch at all when it is not needed).
+async function _kjrArtSets(lang, name, setHint, candidateCount) {
+  return _kjrArtNeedsSets(lang, name, setHint, candidateCount) ? await _kjrTcgdexSets(lang) : null;
+}
+
+// Japanese art lookup: the English name becomes the Japanese species name, TCGdex's /ja/ search returns every card that merely
+// CONTAINS that name and number, so the candidates are cut to the exact localId and to cards whose name fits the row's (the species,
+// the same ex / V / VMAX / GX / Tag Team / Mega tags), narrowed by the set (the row's set field, or the set words in its name),
+// and accepted only when exactly one remains. Ambiguous or empty is null, never a guessed id. Zero price calls: this only ever
+// reads the card list and the set list.
+async function _kjrResolveJa(item, num, setHint, report) {
+  const flag = (why) => { if (report) { report.transient = true; report.why = why; } return null; };
+  try {
+    const ja = await _kjrJaSpeciesName(item.name, report);
+    if (!ja) return null; // a trainer, an energy, an unknown name, or the map would not load (flagged above): no TCGdex call
+    const r = await fetch(TCGDEX_BASE + '/ja/cards?name=' + encodeURIComponent(ja) + '&localId=' + encodeURIComponent(num));
+    if (!r.ok) return flag('net');
+    const data = await r.json();
+    if (!Array.isArray(data)) return flag('net');
+    const seen = new Set(), cands = [], rowTags = _kjrRowTags(_baseCardName(item.name));
+    for (const c of data) {
+      if (!c || typeof c.id !== 'string' || seen.has(c.id) || !_kjrLocalIdMatches(c.localId, num) || !_kjrJaNameFits(rowTags, ja, c.name)) continue;
+      seen.add(c.id);
+      cands.push(c);
+    }
+    if (!cands.length) return null;
+    const needSets = _kjrArtNeedsSets('ja', item.name, setHint, cands.length);
+    const sets = needSets ? await _kjrTcgdexSets('ja') : null;
+    let card = cands.length === 1 ? cands[0] : _disambiguateBySetName(item.name, cands, sets, 'ja');
+    if (setHint) card = _tcgdexSetHintPick(card, cands, setHint, sets, 'ja');
+    // Several candidates and the list that could have told them apart was not to be had: that is "could not tell" (no 7-day
+    // miss for a network blip), not "ambiguous". A unique candidate needs no list to be taken, a failed list only skips the check.
+    if (!card || !card.id) return needSets && !sets ? flag('sets') : null;
+    item.tcgdexId = card.id;
+    if (card.name) item._tcgdexResolvedName = card.name;
+    return card.id;
+  } catch (e) { return flag('net'); }
 }
 
 // Resolve an item to a TCGdex card id ("setcode-number", e.g. "sv03-223").
@@ -16881,7 +17188,12 @@ function _tcgdexSetHintPick(card, candidates, setHint) {
 // (+ matched name) onto the item so repeat lookups skip the resolve
 // round-trip. Does not touch item.name itself - the stored name (set words,
 // "RH", "(Sealed)" etc.) is read-only input here, never rewritten.
-// opts.set (slab art only, features.js kjrImgRun): the row's set, applied by _tcgdexSetHintPick after the name has had its say.
+// opts.set (art only, features.js kjrImgRun): the row's set, applied by _tcgdexSetHintPick after the name has had its say.
+// opts.art (art only): this lookup is for a card image. English then also reads the fetched TCGdex set list when the static table
+// does not know the row's set (_kjrArtSets), and a Japanese row (lang ja) is searched by its Japanese species name (_kjrResolveJa),
+// which pricing never does: a Japanese row is manual-priced, so the price lane never calls this for one. opts.report (art only) is
+// an object that gets .transient = true (and .why: 'net', 'map' or 'sets') when the answer was "could not tell" (a transport
+// failure, the species map or the set list would not load), so the caller does not record it as a 7-day miss.
 // Pricing passes no opts, so a priced card resolves exactly as it always has.
 async function resolveTcgdexId(item, opts) {
   if (item.tcgdexId) return item.tcgdexId;
@@ -16890,14 +17202,17 @@ async function resolveTcgdexId(item, opts) {
   if (!name || !num) return null; // nothing to resolve against
   const lang = _tcgdexLang(item.language);
   const setHint = opts && opts.set != null ? String(opts.set).trim() : '';
+  const art = !!(opts && opts.art);
+  if (art && lang === 'ja') return _kjrResolveJa(item, num, setHint, opts.report);
   try {
     const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
     const r = await fetch(url);
     if (!r.ok) return null; // transport failure - treat as unresolved, PPT fallback picks it up
     const data = await r.json();
     if (!Array.isArray(data) || !data.length) return null; // zero results - unresolved, never guess
-    let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data);
-    if (setHint) card = _tcgdexSetHintPick(card, data, setHint);
+    const sets = art && lang === 'en' ? await _kjrArtSets('en', item.name, setHint, data.length) : null;
+    let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data, sets);
+    if (setHint) card = _tcgdexSetHintPick(card, data, setHint, sets);
     if (!card) return null; // several candidates and the set name didn't narrow it to one - still ambiguous
     if (!card.id) return null;
     item.tcgdexId = card.id;

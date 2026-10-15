@@ -339,9 +339,13 @@ test('art: a single shows the high image, the neutral placeholder for no id, a m
   assert.match(ctx.kjrImgTag(BASE, 'h'), /src="[^"]*\/high\.webp" width="245" height="337"/);
   assert.match(ctx.kjrImgTag(BASE, 'c'), /src="[^"]*\/low\.webp" width="245" height="337"/);
   assert.match(ctx.kjrImgTag(BASE, 't'), /src="[^"]*\/low\.webp" width="28" height="39"/);
-  // no id, a non-English single without one, and a fresh miss: the neutral placeholder, nothing for a lookup to do
+  // no id, and a fresh miss: the neutral placeholder, nothing for a lookup to do. A Japanese single is the exception (v3.80): with a
+  // card number in its name a lookup can find its card by the Japanese name, so its placeholder carries the row id for that lookup,
+  // and without a number (or in another non-English language) it is the neutral placeholder again
   assert.match(art({ tcgdexId: '' }), /<span class="kjr-art kjr-insp-art kjr-art-ph" data-sz="h"><\/span>/);
-  assert.match(art({ tcgdexId: '', language: 'JP' }), /kjr-art-ph" data-sz="h"><\/span>/);
+  assert.match(art({ tcgdexId: '', language: 'JP' }), /<span class="kjr-art kjr-insp-art kjr-art-ph" data-sz="h" data-need="1" data-ik="single:u" data-lg="ja" data-single="u"><\/span>/);
+  assert.match(art({ tcgdexId: '', language: 'JP', name: 'Umbreon Custom Card' }), /kjr-art-ph" data-sz="h"><\/span>/);
+  assert.match(art({ tcgdexId: '', language: 'CN' }), /kjr-art-ph" data-sz="h"><\/span>/);
   ctx.kjrRememberCardImageMiss('swsh7-218', 'en');
   assert.match(art({ tcgdexId: 'swsh7-218' }), /kjr-art-ph" data-sz="h"><\/span>/);
   // a high image that failed to load falls back to the small one, and when that fails too it is the placeholder

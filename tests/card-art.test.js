@@ -129,11 +129,17 @@ test('card-art: kjrArtState covers hit, need and none for singles and slabs, and
   const jp = ctx.kjrArtState(single({ tcgdexId: 'SV2a-001', language: 'JP' }), 'singles');
   assert.equal(jp.state, 'need'); assert.equal(jp.key, 'ja:SV2a-001'); assert.equal(jp.lang, 'ja');
 
-  // slabs: only an English slab whose name carries a card number can ever resolve
+  // slabs: an English or Japanese slab whose name carries a card number can resolve (v3.80), the other languages stay placeholders
   assert.equal(ctx.kjrArtState(slab({ id: 'a' }), 'slabs').state, 'need');
   assert.equal(ctx.kjrArtState(slab({ id: 'a' }), 'slabs').key, 'slab:a');
+  assert.equal(ctx.kjrArtState(slab({ id: 'a' }), 'slabs').lang, 'en');
   assert.equal(ctx.kjrArtState(slab({ id: 'b', name: 'Umbreon Custom Card' }), 'slabs').state, 'none', 'no number, nothing to resolve');
-  assert.equal(ctx.kjrArtState(slab({ id: 'c', language: 'JP' }), 'slabs').state, 'none', 'non-English slabs stay placeholders');
+  const jpSlab = ctx.kjrArtState(slab({ id: 'c', language: 'JP' }), 'slabs');
+  assert.equal(jpSlab.state, 'need', 'a Japanese slab with a card number is looked up, on /ja/');
+  assert.equal(jpSlab.key, 'slab:c'); assert.equal(jpSlab.lang, 'ja'); assert.equal(jpSlab.slab, 'c');
+  assert.equal(ctx.kjrArtState(slab({ id: 'c2', language: 'JP', name: 'Umbreon Custom Card' }), 'slabs').state, 'none', 'no number, nothing to resolve in any language');
+  assert.equal(ctx.kjrArtState(slab({ id: 'c3', language: 'CN' }), 'slabs').state, 'none', 'Chinese slabs stay placeholders (zh-tw has no art lane)');
+  assert.equal(ctx.kjrArtState(slab({ id: 'c4', language: 'ID' }), 'slabs').lang, 'en', 'a language TCGdex has no catalogue for is still looked up as English, as before');
   assert.equal(ctx.kjrArtState(slab({ id: 'd', tcgdexId: 'swsh7-215' }), 'slabs').state, 'hit', 'an id on the slab itself is used as is');
   // a stored link wins, a renamed slab no longer matches it
   ctx.kjrSlabLinkSet('a', 'Umbreon VMAX 215/203|en', 'swsh7-215');

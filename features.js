@@ -3543,10 +3543,14 @@ async function exportXlsx() {
 //      they hand us data.image
 //   2. lazy backfill: for rows ON SCREEN with no base yet, an IntersectionObserver queues
 //      a lookup, at most 3 at once and about 150ms apart, skipped offline
-// Rendering itself never fetches. Slabs carry no tcgdexId, so an English slab with a card
+// Rendering itself never fetches. Slabs carry no tcgdexId, so an English or Japanese slab with a card
 // number is resolved on a SHALLOW COPY (resolveTcgdexId writes onto what it is given) and
 // the link is kept in `kjr_slab_card_ids`. A row with no id, a miss (retried after 7 days)
 // or an image that fails to load shows the neutral placeholder. Nothing here guesses.
+// v3.80: a Japanese single with no tcgdexId gets an art-only lookup too (the Japanese species name from Assets/species-ja.json,
+// the exact localId, set narrowing, a unique hit only: resolveTcgdexId opts.art). On a hit the id is written onto the row ONCE
+// with markDirty, as the English price lane does, and the image is drawn. Its misses live in the same `kjr_slab_card_ids` map
+// under "s:<id>". Japanese pricing is still manual, nothing here makes a price call.
 var KJR_IMG_KEY = 'kjr_card_images';
 var KJR_SLAB_LINK_KEY = 'kjr_slab_card_ids';
 var KJR_IMG_HOST = 'https://assets.tcgdex.net/';
@@ -3712,6 +3716,7 @@ function kjrSlabLinkSet(slabId, sig, tcgdexId) {
       // full: forget links for slabs that no longer exist, then give up quietly if still full
       var live = {};
       ((typeof DB !== 'undefined' && DB && DB.slabs) || []).forEach(function (r) { if (r) live[String(r.id)] = 1; });
+      ((typeof DB !== 'undefined' && DB && DB.singles) || []).forEach(function (r) { if (r) live['s:' + String(r.id)] = 1; });
       Object.keys(m).forEach(function (k) { if (!live[k]) delete m[k]; });
       if (Object.keys(m).length >= KJR_IMG_MAX_ENTRIES) return false;
     }
@@ -3731,22 +3736,59 @@ function kjrSlabLinkBySig(sig) {
   return '';
 }
 
+// ── Japanese singles with no id (v3.80). A hit is written onto the row (tcgdexId), so the map only keeps a MISS, under "s:<id>"
+// with the signature it was looked up for (name|lang|set, the slab signature), 7 days like every miss. A renamed or re-set row
+// no longer matches it and is looked up again. A single's id can never collide with a slab's key, the "s:" prefix keeps them apart.
+function kjrSingleRow(sid) {
+  var rows = (typeof DB !== 'undefined' && DB && Array.isArray(DB.singles)) ? DB.singles : [];
+  for (var i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === String(sid)) return rows[i]; }
+  return null;
+}
+function kjrSingleMissFresh(row) {
+  if (!row || row.id == null) return false;
+  var m = kjrSlabMapLoad(), k = 's:' + String(row.id);
+  if (!Object.prototype.hasOwnProperty.call(m, k)) return false;
+  var v = m[k];
+  return !!(v && typeof v === 'object' && v.n === kjrSlabSig(row) && kjrImgMissFresh(v.miss));
+}
+function kjrSingleMissSet(row) { return kjrSlabLinkSet('s:' + String(row.id), kjrSlabSig(row), null); }
+// A row Dealer Desk controls is changed only by Dealer Desk, after the server confirms (kjrDealerWriteGuard). Art never writes one.
+function kjrSingleDealerOwned(row) {
+  try { return typeof kjrDealerControlledRow === 'function' && !!kjrDealerControlledRow('singles', row); } catch (e) { return false; }
+}
+// Write a resolved id onto a single, once, the way the English price lane does when it resolves a card: the row changes like any
+// other edit (markDirty, then saveData). Name, set, language and every price field are left alone. _tcgdexResolvedName is the
+// local-only "Resolved to" note the edit modal shows.
+function kjrAdoptSingleId(row, id, cardName) {
+  row.tcgdexId = id;
+  if (cardName) row._tcgdexResolvedName = String(cardName);
+  markDirty('singles', row.id);
+  saveData();
+}
+
 // ── What does this row show? 'hit' (a base is known), 'need' (a lookup may find one) or 'none'.
 function kjrArtState(item, table) {
   var none = { state: 'none' };
   if (!item) return none;
   var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(item.language) : 'en';
   var id = String(item.tcgdexId == null ? '' : item.tcgdexId).trim();
-  if (!id && table === 'slabs' && lang === 'en' && item.id != null) {
+  // Only a name with a card number can resolve (the same test the price lane uses).
+  var resolvable = function () {
+    return typeof _baseCardName === 'function' && typeof _tcgdexNumber === 'function' && !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+  };
+  // Slabs: English and Japanese resolve (v3.80), Chinese and the rest stay placeholders.
+  if (!id && table === 'slabs' && (lang === 'en' || lang === 'ja') && item.id != null) {
     var link = kjrSlabLinkState(item);
     if (link.state === 'id') { id = link.id; }
     else if (link.state === 'miss') { return none; }
-    else {
-      // No id yet. Only a name with a card number can resolve (the same test the price lane uses).
-      var resolvable = typeof _baseCardName === 'function' && typeof _tcgdexNumber === 'function' &&
-        !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
-      return resolvable ? { state: 'need', key: 'slab:' + item.id, slab: String(item.id), lang: 'en' } : none;
-    }
+    else { return resolvable() ? { state: 'need', key: 'slab:' + item.id, slab: String(item.id), lang: lang } : none; }
+  }
+  // Raw Japanese singles with no id: an art-only lookup, never a price one. English singles keep their path (the price lane
+  // gives them an id), Chinese and the rest stay placeholders, a sealed product has no card number to resolve.
+  if (!id && table === 'singles' && lang === 'ja' && item.id != null && item.type !== 'sealed') {
+    if (kjrSingleDealerOwned(item)) return none; // Dealer Desk owns the writes to its rows, a background id would change one
+    if (kjrSingleMissFresh(item)) return none;
+    return resolvable() ? { state: 'need', key: 'single:' + item.id, single: String(item.id), lang: lang } : none;
   }
   var key = kjrCardImageKey(id, lang);
   if (!key) return none;
@@ -3760,6 +3802,15 @@ function kjrSlotState(el) {
   var tcg = el.getAttribute('data-tcg') || '';
   var lang = el.getAttribute('data-lg') || 'en';
   var sid = el.getAttribute('data-slab') || '';
+  var single = el.getAttribute('data-single') || '';
+  if (!tcg && single) {
+    // A single placeholder with no id yet (a Japanese row, v3.80) asks the row as it is now: the id a lookup wrote onto it, or
+    // a fresh miss, or still nothing. A row gone meanwhile stays blank.
+    var srow = kjrSingleRow(single);
+    if (!srow) return { state: 'none' };
+    var sst = kjrArtState(srow, 'singles');
+    return sst.state === 'hit' ? { state: 'hit', base: sst.base } : { state: sst.state };
+  }
   if (!tcg && sid) {
     // A slab placeholder asks the row as it is now, through kjrArtState: its own tcgdexId wins, and a link is used only while
     // its signature matches, so a link made for an older name, language or set is never drawn. A slab gone meanwhile stays blank.
@@ -3789,7 +3840,8 @@ function kjrArtSlot(st, sz, cls) {
   var attrs = '';
   if (st.state === 'need') {
     attrs = ' data-need="1" data-ik="' + kjrEscape(st.key) + '" data-lg="' + kjrEscape(st.lang) + '"' +
-      (st.tcg ? ' data-tcg="' + kjrEscape(st.tcg) + '"' : '') + (st.slab ? ' data-slab="' + kjrEscape(st.slab) + '"' : '');
+      (st.tcg ? ' data-tcg="' + kjrEscape(st.tcg) + '"' : '') + (st.slab ? ' data-slab="' + kjrEscape(st.slab) + '"' : '') +
+      (st.single ? ' data-single="' + kjrEscape(st.single) + '"' : '');
   }
   return '<span class="' + c + ' kjr-art-ph" data-sz="' + sz + '"' + attrs + '></span>';
 }
@@ -3859,7 +3911,7 @@ window.addEventListener('online', function () { kjrImgPump(); });
 function kjrImgJobFromEl(el) {
   return {
     key: el.getAttribute('data-ik') || '', tcg: el.getAttribute('data-tcg') || '',
-    slab: el.getAttribute('data-slab') || '', lang: el.getAttribute('data-lg') || 'en'
+    slab: el.getAttribute('data-slab') || '', single: el.getAttribute('data-single') || '', lang: el.getAttribute('data-lg') || 'en'
   };
 }
 function kjrImgOnIntersect(entries) {
@@ -3883,6 +3935,12 @@ function kjrObserveCardImages(root, table) {
 // Is the answer already on file (another tab, the price lane, an identical card)?
 function kjrJobSettled(job) {
   if (job.tcg) return !!(kjrCardImageBase(job.tcg, job.lang) || kjrCardImageMissed(job.tcg, job.lang));
+  if (job.single) {
+    // A single with no id: settled once the row needs no lookup (it has an id and a known image, a fresh miss, nothing to
+    // resolve), or is gone. An id with no image yet is still a job, it fetches that card's image.
+    var srow = kjrSingleRow(job.single);
+    return !srow || kjrArtState(srow, 'singles').state !== 'need';
+  }
   // A slab job asks the row as it is now (kjrArtState): settled once it needs no lookup, its own id or a link whose signature
   // matches has an answer on file, a fresh miss, nothing to resolve, or the row is gone. A link made for an older name, language
   // or set never counts, so it can neither be drawn nor stop the lookup again.
@@ -3946,41 +4004,102 @@ function kjrImgCoolDown(key) {
   q.fails++;
   if (q.fails >= 3) { q.pauseUntil = Date.now() + KJR_IMG_PAUSE_MS; q.fails = 0; }
 }
+// A lookup that could not be answered (offline, a failed request, the species map or the set list would not load, an edit dialog
+// open on the row) is not a "no match": it waits a minute and is asked again, never recorded as a 7-day miss. Only a failed card
+// request counts toward pausing the whole queue, the app's own species map and a missing set list do not.
+function kjrImgUnanswered(job, report) {
+  if (report && (report.why === 'map' || report.why === 'sets' || report.why === 'busy')) _kjrImgCool[job.key] = Date.now() + KJR_IMG_COOL_MS;
+  else kjrImgCoolDown(job.key);
+}
+// Is the edit dialog open on this very row? A background write would change the row under it, and the save would then be refused
+// as stale (the dialog compares the whole row), so the id waits until the dialog is closed.
+function kjrSingleEditOpen(id) {
+  try {
+    var dlg = document.getElementById('modal-single'), idEl = document.getElementById('ms-id');
+    return !!(dlg && dlg.open && idEl && String(idEl.value) === String(id));
+  } catch (e) { return false; }
+}
 async function kjrImgRun(job, keys) {
   var q = _kjrImgQ;
   var lang = job.lang || 'en';
   var id = job.tcg || '';
   try {
-    if (!id) {
+    if (!id && job.single) {
+      // A Japanese single with no id (v3.80): find its card. resolveTcgdexId WRITES tcgdexId onto the object it is given, so it gets
+      // a shallow copy, and the row is only touched once the answer is in and still fits the row as it is NOW.
+      var srow = kjrSingleRow(job.single);
+      if (!srow) return; // deleted meanwhile
+      lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(srow.language) : 'en';
+      var typed = String(srow.tcgdexId == null ? '' : srow.tcgdexId).trim();
+      if (typed) {
+        // It carries an id now (typed in the edit modal after this placeholder was drawn): that wins, fetch that card's image.
+        var typedKey = kjrCardImageKey(typed, lang);
+        if (!typedKey) return;
+        id = typed;
+        keys.push(typedKey);
+      } else {
+        if (lang !== 'ja') return; // only a Japanese single is looked up here, an English single's id comes from the price lane
+        var ssig = kjrSlabSig(srow);
+        var copy = Object.assign({}, srow);
+        var report = {};
+        id = await resolveTcgdexId(copy, { set: srow.set, art: true, report: report });
+        var live = kjrSingleRow(job.single);
+        if (!live) return; // deleted while the lookup ran
+        var theirs = String(live.tcgdexId == null ? '' : live.tcgdexId).trim();
+        if (theirs) {
+          // an id arrived while we looked (typed in the edit modal): it wins, ours is dropped
+          lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(live.language) : 'en';
+          var theirKey = kjrCardImageKey(theirs, lang);
+          if (!theirKey) return;
+          id = theirs;
+          keys.push(theirKey);
+        } else if (kjrSlabSig(live) !== ssig) {
+          return; // the name, language or set changed meanwhile: this answer is for an older row, the next render asks again
+        } else if (!id) {
+          // resolveTcgdexId swallows its own errors, report.transient says "could not tell", and so does being offline
+          if (report.transient || !kjrOnline()) kjrImgUnanswered(job, report);
+          else { kjrSingleMissSet(live); q.fails = 0; }
+          return;
+        } else {
+          var ownKey = kjrCardImageKey(id, lang);
+          if (!ownKey) { kjrSingleMissSet(live); q.fails = 0; return; } // an id the image cache cannot hold: nothing to draw
+          if (kjrSingleDealerOwned(live)) return; // it became a Dealer Desk row while we looked: not ours to write, it stays a placeholder
+          if (kjrSingleEditOpen(live.id)) { kjrImgUnanswered(job, { why: 'busy' }); return; } // written once the dialog is closed
+          kjrAdoptSingleId(live, id, copy._tcgdexResolvedName);
+          keys.push(ownKey);
+        }
+      }
+    } else if (!id) {
       // A slab: find the card first. resolveTcgdexId WRITES tcgdexId onto the object it is given,
       // so it gets a shallow copy and the slab row is never touched, never marked dirty.
       var slab = kjrSlabRow(job.slab);
       if (!slab) return; // deleted meanwhile
+      // The row's own language (v3.80), English or Japanese, so a Japanese slab is searched and fetched on /ja/.
+      lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab.language) : 'en';
       var own = String(slab.tcgdexId == null ? '' : slab.tcgdexId).trim();
       if (own) {
         // It carries an id of its own now (typed after this placeholder was drawn), and that always wins:
         // fetch that card's image, link nothing.
-        lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab.language) : 'en';
-        var ownKey = kjrCardImageKey(own, lang);
-        if (!ownKey) return;
+        var slabOwnKey = kjrCardImageKey(own, lang);
+        if (!slabOwnKey) return;
         id = own;
-        keys.push(ownKey);
+        keys.push(slabOwnKey);
       } else {
         var sig = kjrSlabSig(slab);
         id = kjrSlabLinkBySig(sig);
         if (!id) {
           // Its set goes along as a second never-guess signal: it picks between printings the name cannot tell
           // apart and rules out a printing from another set (resolveTcgdexId opts.set, app.js _tcgdexSetHintPick).
-          id = await resolveTcgdexId(Object.assign({}, slab), { set: slab.set });
+          var slabReport = {};
+          id = await resolveTcgdexId(Object.assign({}, slab), { set: slab.set, art: true, report: slabReport });
           if (!id) {
-            // resolveTcgdexId swallows its own network errors, so offline is the one failure we can tell apart
-            if (kjrOnline()) { kjrSlabLinkSet(slab.id, sig, null); q.fails = 0; } else { kjrImgCoolDown(job.key); }
+            // resolveTcgdexId swallows its own network errors, so offline (or the report it fills in) is how we tell
+            if (kjrOnline() && !slabReport.transient) { kjrSlabLinkSet(slab.id, sig, null); q.fails = 0; } else { kjrImgUnanswered(job, slabReport); }
             return;
           }
         }
         kjrSlabLinkSet(slab.id, sig, id);
-        keys.push(kjrCardImageKey(id, 'en'));
-        lang = 'en';
+        keys.push(kjrCardImageKey(id, lang));
       }
     }
     if (kjrCardImageBase(id, lang) || kjrCardImageMissed(id, lang)) return; // learned while queued

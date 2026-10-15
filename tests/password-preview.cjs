@@ -27,7 +27,14 @@ const RECOVERY_REFRESH_TOKEN = 'preview-recovery-refresh-token';
 const STATIC_FILES = Object.freeze({
   '/app.js': 'app.js',
   '/features.js': 'features.js',
+  // the five Dealer Desk scripts index.html loads after features.js, so the page does not 404 on them (the query string is ignored)
+  '/dealer-money.js': 'dealer-money.js',
+  '/dealer-desk.js': 'dealer-desk.js',
+  '/dealer-ui.js': 'dealer-ui.js',
+  '/dealer-store.js': 'dealer-store.js',
+  '/dealer-production-ui.js': 'dealer-production-ui.js',
   '/styles.css': 'styles.css',
+  '/sw.js': 'sw.js',
   '/Assets/apple-touch-icon.png': 'Assets/apple-touch-icon.png',
   '/Assets/manifest.webmanifest': 'Assets/manifest.webmanifest',
   '/Assets/whale-icon.png': 'Assets/whale-icon.png',

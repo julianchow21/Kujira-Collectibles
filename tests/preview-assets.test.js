@@ -4,14 +4,22 @@
 // dealer-store, dealer-production-ui). The eBay date fixture and the Dealer Desk fixture borrow its route table, so they 404ed the same way.
 // Every local script, stylesheet, preload, manifest and icon the served page names must now answer 200 with the file's exact bytes, and the
 // table is still an allowlist.
+// v3.78: the Cloud Sync diagnostics fixture (sync-preview.cjs) and the password fixture (password-preview.cjs) keep route tables of their own and
+// had the same five 404s (the password one had no /sw.js either), so both are pinned here too.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-// the fixtures that serve the index through preview-server.cjs's route table
-const FIXTURES = ['preview-server.cjs', 'ebay-date-preview.cjs', 'dealer-preview.cjs'];
+// [file, the path its page is served from]: the first three serve the index through preview-server.cjs's route table, the last two keep their own
+const FIXTURES = [
+  ['preview-server.cjs', '/'],
+  ['ebay-date-preview.cjs', '/'],
+  ['dealer-preview.cjs', '/'],
+  ['sync-preview.cjs', '/'],
+  ['password-preview.cjs', '/auth-preview.html'],
+];
 const DEALER_SCRIPTS = ['dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js'];
 
 function call(fixture, method, url) {
@@ -32,10 +40,10 @@ function localRefs(html) {
   return [...refs].filter((r) => !/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(r) && !/^(?:data|blob|javascript):/i.test(r) && !r.startsWith('#'));
 }
 
-for (const file of FIXTURES) {
+for (const [file, page] of FIXTURES) {
   test(`${file}: the page it serves loads with no 404, every local script and stylesheet answers 200 with the file's exact bytes`, () => {
     const fixture = require('./' + file);
-    const home = call(fixture, 'GET', '/');
+    const home = call(fixture, 'GET', page);
     assert.equal(home.status, 200);
     const refs = localRefs(home.body.toString('utf8'));
     const names = refs.map((r) => r.replace(/[?#].*$/, ''));
@@ -51,6 +59,10 @@ for (const file of FIXTURES) {
       assert.equal(got.headers['X-Content-Type-Options'], 'nosniff', ref);
     }
     assert.deepEqual(missing, [], `${file} 404s on assets its own page loads`);
+    // the page registers sw.js from script and no tag names it, so it is checked by name
+    const sw = call(fixture, 'GET', '/sw.js');
+    assert.equal(sw.status, 200, `${file} serves /sw.js`);
+    assert.ok(sw.body && sw.body.equals(fs.readFileSync(path.join(ROOT, 'sw.js'))), `${file} serves /sw.js as the file on disk`);
   });
 }
 
@@ -58,7 +70,7 @@ test('preview-server.cjs: the five Dealer Desk scripts are served for GET and HE
   const fixture = require('./preview-server.cjs');
   for (const script of DEALER_SCRIPTS) {
     const bytes = fs.readFileSync(path.join(ROOT, script));
-    const get = call(fixture, 'GET', '/' + script + '?v=3.77');
+    const get = call(fixture, 'GET', '/' + script + '?v=3.78');
     assert.equal(get.status, 200, script);
     assert.equal(get.headers['Content-Length'], bytes.length, script);
     assert.equal(get.headers['Cache-Control'], 'no-store', script);

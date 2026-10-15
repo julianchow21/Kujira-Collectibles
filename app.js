@@ -6184,6 +6184,22 @@ function kjrParseNonNegativeNumber(raw, options) {
   return { ok: true, value, blank: false };
 }
 
+// Step one of every lenient money parser (kjrNum, kjrNumOrNull, kjrMoneyStr, _kjrFmtCurrency in features.js, and normalizeRecord
+// below): read the text as a plain decimal number, exponent form included, once the currency marks (S$, US$, SGD, USD, $), commas
+// and spaces are off. Returns the finite number, or null for anything else, and the caller then runs its own strip-the-junk
+// fallback exactly as before. Needed because a <input type="number"> hands over "1e3" and the fallback deletes every letter, so
+// "1e3" became 13. The strict grammar (no hex, no "Infinity", at least one digit) keeps every other input on its old path, so
+// "(50)" still reads as 50 and "12-5" as 12. It lives here, not in features.js, because app.js loads first and normalizeRecord
+// must not depend on features.js.
+function _kjrPlainNumber(raw) {
+  if (raw == null) return null;
+  const text = String(raw).replace(/,/g, '').replace(/\s+/g, '')
+    .replace(/^(?:SGD|USD|S\$|US\$|\$)/i, '').replace(/(?:SGD|USD)$/i, '');
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
 // =========== UNIFIED MANUAL-INPUT NORMALIZER ===========
 // Every manual-entry path (Add Single modal, Add Slab modal, Add Sale modal,
 // kjr modal for ETB/BB/Pack/eBay) routes its raw form values through this so
@@ -6194,12 +6210,13 @@ function kjrParseNonNegativeNumber(raw, options) {
 function normalizeRecord(table, obj) {
   if (!obj || typeof obj !== 'object') return obj;
   const out = { ...obj };
-  // 1. Numbers - strip leading $/spaces, parseFloat, drop NaN
+  // 1. Numbers - a plain or exponent number ("1e3") reads as itself, anything else has its junk stripped, parseFloat, drop NaN
   const numKeys = ['costPrice','marketPrice','listPrice','unitPrice','totalPrice',
                    'totalCollected','shippingCost','profit','priceUsd','freightSgd','totalSgd','qty','priceAlert'];
   numKeys.forEach(k => {
     if (out[k] === '' || out[k] == null) return;
-    const v = parseFloat(String(out[k]).replace(/[^0-9.\-]/g, ''));
+    const plain = _kjrPlainNumber(out[k]);
+    const v = plain !== null ? plain : parseFloat(String(out[k]).replace(/[^0-9.\-]/g, ''));
     out[k] = isNaN(v) ? '' : (k === 'qty' ? Math.max(1, Math.round(v)) : v);
   });
   // 2. Dates - "D MMM YYYY"
@@ -7501,8 +7518,9 @@ function parseSmartLine(raw) {
   if (!line) return null;
 
   let s = line;
+  // listPrice is seeded null, not 0: Quick Entry never sets a Carousell price, so a new row has no price rather than a typed S$0.
   const result = { _raw: line, name: '', type: 'raw', language: 'EN', condition: 'Near Mint',
-    qty: 1, listPrice: 0, costPrice: '', marketPrice: '', set: '', notes: '',
+    qty: 1, listPrice: null, costPrice: '', marketPrice: '', set: '', notes: '',
     status: 'Available', grader: '', grade: '', certNo: '', rank: '',
     dateListed: '', datePurchased: '', date: '', targetTable: 'singles' };
 
@@ -19427,7 +19445,8 @@ async function importData() {
       const qty = kjrParseNonNegativeNumber(obj.qty, { label: 'Quantity', allowBlank: true, blankValue: 1, positiveInteger: true });
       if (!qty.ok) invalidReason = qty.reason;
       parseMoneyField('costPrice', 'Cost price', '');
-      parseMoneyField('listPrice', 'List price', 0);
+      // The Carousell price is optional: a blank cell stays null (no price), never 0. A cell that says "0" is still 0.
+      parseMoneyField('listPrice', 'List price', null);
       parseMoneyField('marketPrice', 'Market price', '', true);
       if (obj.priceAlert != null) parseMoneyField('priceAlert', 'Price alert', '');
       if (invalidReason) { skipRow(lineNum, rowRaw, invalidReason); continue; }
@@ -19445,7 +19464,7 @@ async function importData() {
 
     } else if (type === 'slabs') {
       parseMoneyField('costPrice', 'Cost price', '');
-      parseMoneyField('listPrice', 'List price', 0);
+      parseMoneyField('listPrice', 'List price', null);
       parseMoneyField('marketPrice', 'Market price', '', true);
       if (obj.priceAlert != null) parseMoneyField('priceAlert', 'Price alert', '');
       if (obj.unitPrice != null && obj.unitPrice !== '') {

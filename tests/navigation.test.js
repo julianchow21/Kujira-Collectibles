@@ -110,12 +110,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.77 \(13 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.78 \(15 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.77 \(13 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.78 \(15 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -989,9 +989,19 @@ test('nav budget, sidebar: four steps by window height, each fits down to the ne
 test('css: a nav that has to scroll shows a shadow on the edge with more to see, from tokens, as its own background', () => {
   const rule = (shellRules.match(/\n\.nav\{--kjr-shade:[^\n]*\}/) || [''])[0];
   assert.ok(rule, 'one rule');
-  assert.match(rule, /--kjr-shade:color-mix\(in srgb,var\(--text\) 18%,transparent\);/);
+  // v3.78: 20px at 36%, where 12px at 18% was too faint to see on the 64px rail (its scrollbar is hidden, so the fade is the only cue)
+  assert.match(rule, /--kjr-shade:color-mix\(in srgb,var\(--text\) 36%,transparent\);/);
   assert.match(rule, /background-image:linear-gradient\(var\(--sidebar\) 30%,transparent\),linear-gradient\(transparent,var\(--sidebar\) 70%\),radial-gradient\(farthest-side at 50% 0,var\(--kjr-shade\),transparent\),radial-gradient\(farthest-side at 50% 100%,var\(--kjr-shade\),transparent\);/, 'two covers in the sidebar colour, two shadows');
-  assert.match(rule, /background-position:0 0,0 100%,0 0,0 100%;background-size:100% 28px,100% 28px,100% 12px,100% 12px;/, 'the covers are taller than the shadows they hide');
+  assert.match(rule, /background-position:0 0,0 100%,0 0,0 100%;background-size:100% 48px,100% 48px,100% 20px,100% 20px;/, 'the covers are taller than the shadows they hide');
+  // the covers must stay tall enough that a shadow is gone at the very top or bottom: this is how much of it a cover leaves showing, as a
+  // share of the shade, for the sizes in the rule (a cover is opaque for its first 30% and fades out over the rest)
+  const [cover, shadow] = [48, 20];
+  let left = 0;
+  for (let y = 0; y <= shadow; y += 0.25) {
+    const alpha = y <= cover * 0.3 ? 1 : Math.max(0, (cover - y) / (cover - cover * 0.3));
+    left = Math.max(left, 0.36 * (1 - y / shadow) * (1 - alpha));
+  }
+  assert.ok(left < 0.005, 'under 0.5% of the shade is left showing at the ends of the scroll, got ' + (left * 100).toFixed(2) + '%');
   assert.match(rule, /background-attachment:local,local,scroll,scroll\}$/, 'the covers move with the items, the shadows stay with the box');
   assert.doesNotMatch(rule, /filter|rgba?\(|#[0-9a-fA-F]{3,8}\b/);
   assert.match(shellRules, /\.nav\{display:flex;flex-direction:column;gap:18px;flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;/, 'it is the nav that scrolls, the footer stays');
@@ -1084,14 +1094,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.77: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.78: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.77'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.77">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.78'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.78">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.77"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.77'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.78"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.78'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v80'/);
+  assert.match(sw, /const CACHE = 'kujira-v81'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

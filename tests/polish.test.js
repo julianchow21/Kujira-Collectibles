@@ -533,6 +533,129 @@ test('bulk bar focus: Delete selected on Sales and Clear anywhere hand focus to 
   assert.match(clearSrc, /updateBulkBar\(table\);\n[^\n]*\n?  if \(typeof kjrBulkBarFocusRescue === 'function'\) kjrBulkBarFocusRescue\(table\);\n\}/);
 });
 
+// ══ 3h (bulk, eBay). the eBay bar hands focus to its heading too (v3.78) ═════════════════════════════════
+// Clear and Move to next status both end with the selection empty, so the bar hides while keyboard focus sits on the button that was
+// pressed. kjrBulkBarFocusRescue knew Singles, Slabs and Sales; the eBay bar (bulk-bar-ebay, page-ebay) was not in KJR_BULK_PAGES, so focus
+// was left on a control that is no longer shown. The eBay path stands aside for an open dialog, and Move to next status can open the
+// completion modal (kjrOpenCompleteModal), so the rescue runs before that, after the redraw, and the modal's own focus wins from there.
+async function ebayBarEnv(rows) {
+  const app = await loadApp({ seed: makeSeed({ singles: [], ebayPurchases: rows }) });
+  const doc = app.document;
+  const focusLog = [];
+  const bar = doc.getElementById('bulk-bar-ebay');
+  const button = (name) => ({ tagName: 'BUTTON', isConnected: true, name, focus() { doc.activeElement = this; focusLog.push('bar:' + name); }, closest: (sel) => (sel === '.page' ? { id: 'page' } : null) });
+  const clear = button('clear');
+  const advance = button('advance');
+  bar.contains = (el) => el === clear || el === advance;
+  const page = doc.getElementById('page-ebay');
+  page.classList.add('active');
+  const heading = { className: 'section-title', tagName: 'DIV', isConnected: true, _attrs: {}, hasAttribute(k) { return k in this._attrs; }, setAttribute(k, v) { this._attrs[k] = v; }, focus() { doc.activeElement = this; focusLog.push('heading'); } };
+  page.querySelector = (sel) => (sel === '.section-title' ? heading : null);
+  // the stub document answers every selector with an element, so the open dialog is modelled: the completion dialog, once it is open
+  const completion = doc.getElementById('kjr-complete-back');
+  doc.querySelector = (sel) => (sel === 'dialog[open]' && completion.open ? completion : null);
+  app.ctx.toast = () => {};
+  const runFrames = () => { const fns = [...app.rafState.calls.values()]; app.rafState.calls.clear(); fns.forEach((f) => f()); };
+  return Object.assign(app, { doc, focusLog, bar, clear, advance, heading, page, completion, runFrames });
+}
+const ebayRow = (id, status) => ({ id, product: 'Synthetic card ' + id, status, priceUsd: 10, freightSgd: 2, totalSgd: 20, lastUpdated: 1 });
+const ebayStatuses = (e) => plain(e.ctx.DB.ebayPurchases.map((r) => r.status));
+
+test('eBay bulk bar focus: Clear, with focus on the Clear button, hands focus to the eBay section title', async () => {
+  const e = await ebayBarEnv([ebayRow('e1', 'Paid'), ebayRow('e2', 'At Buyandship')]);
+  e.ctx.kjrEbayToggleRow('e1', true);
+  e.ctx.kjrEbayToggleRow('e2', true);
+  assert.equal(e.bar.classList.contains('show'), true, 'the bar shows while rows are selected');
+  e.doc.activeElement = e.clear;
+  e.ctx.kjrEbayClearSelection();
+  assert.equal(e.bar.classList.contains('show'), false, 'the bar hid');
+  assert.deepEqual(e.focusLog, ['heading'], 'focus went to the heading, not left on the hidden Clear button');
+  assert.equal(e.heading._attrs.tabindex, '-1', 'made focusable on the spot (the markup has no tabindex on this title)');
+  assert.equal(e.doc.activeElement, e.heading);
+  assert.equal(e.ctx._kjrEbaySel.size, 0);
+  assert.deepEqual(ebayStatuses(e), ['Paid', 'At Buyandship'], 'Clear changes no row');
+});
+
+test('eBay bulk bar focus: Move to next status, with no dialog opened, hands focus to the eBay section title too', async () => {
+  const e = await ebayBarEnv([ebayRow('e1', 'Paid'), ebayRow('e2', 'At Buyandship')]);
+  e.ctx.kjrEbayToggleRow('e1', true);
+  e.ctx.kjrEbayToggleRow('e2', true);
+  e.doc.activeElement = e.advance;
+  e.ctx.kjrEbayBulkAdvanceSelected();
+  assert.deepEqual(ebayStatuses(e), ['Shipping to Buyandship', 'Ready to Consolidate'], 'each row moved one step');
+  assert.equal(e.bar.classList.contains('show'), false);
+  assert.equal(e.completion.open, false, 'no dialog opened');
+  assert.deepEqual(e.focusLog, ['heading']);
+  assert.equal(e.doc.activeElement, e.heading);
+});
+
+test('eBay bulk bar focus: a row ticked off by hand, a bar that still shows and an open dialog all leave focus where it is', async () => {
+  const e = await ebayBarEnv([ebayRow('e1', 'Paid'), ebayRow('e2', 'Paid')]);
+  // focus on the row's own box when the last tick goes: not the bar's business
+  const box = { tagName: 'INPUT', focus() {} };
+  e.ctx.kjrEbayToggleRow('e1', true);
+  e.doc.activeElement = box;
+  e.ctx.kjrEbayToggleRow('e1', false);
+  assert.equal(e.bar.classList.contains('show'), false);
+  assert.equal(e.ctx.kjrBulkBarFocusRescue('ebay'), false);
+  assert.deepEqual(e.focusLog, []);
+  assert.equal(e.doc.activeElement, box);
+  // the bar still shows (a second row is selected): its button keeps focus
+  e.ctx.kjrEbayToggleRow('e1', true);
+  e.ctx.kjrEbayToggleRow('e2', true);
+  e.doc.activeElement = e.clear;
+  assert.equal(e.ctx.kjrBulkBarFocusRescue('ebay'), false);
+  assert.equal(e.doc.activeElement, e.clear);
+  // a dialog is open when the bar empties: the dialog owns focus, so the eBay path does not touch it
+  e.completion.open = true;
+  const inDialog = { tagName: 'BUTTON', focus() { e.doc.activeElement = this; e.focusLog.push('dialog'); } };
+  e.ctx._kjrEbaySel.clear();
+  e.ctx._kjrEbayUpdateBulkBar();
+  e.doc.activeElement = inDialog;
+  assert.equal(e.ctx._kjrEbayBulkBarFocus(), false);
+  e.doc.activeElement = e.clear;
+  assert.equal(e.ctx._kjrEbayBulkBarFocus(), false, 'even with focus on the hidden button, while a dialog is open');
+  assert.deepEqual(e.focusLog, []);
+  assert.equal(e.doc.activeElement, e.clear);
+  // the same call without the dialog does hand it over
+  e.completion.open = false;
+  assert.equal(e.ctx._kjrEbayBulkBarFocus(), true);
+  assert.deepEqual(e.focusLog, ['heading']);
+});
+
+test('eBay bulk bar focus: when Move to next status opens the completion modal, focus goes to the heading first and the modal gets it back to the heading on close', async () => {
+  const e = await ebayBarEnv([ebayRow('e1', 'Shipping to Singapore'), ebayRow('e2', 'Paid')]);
+  e.ctx.kjrEbayToggleRow('e1', true);
+  e.ctx.kjrEbayToggleRow('e2', true);
+  e.doc.activeElement = e.advance;
+  e.ctx.kjrEbayBulkAdvanceSelected();
+  assert.deepEqual(ebayStatuses(e), ['Shipping to Singapore', 'Shipping to Buyandship'], 'e1 waits for its confirmation, e2 moved');
+  assert.equal(e.completion.open, true, 'the completion modal opened for e1');
+  assert.deepEqual(e.focusLog, ['heading'], 'the button was not left holding focus, and nothing fought the modal for it');
+  // the modal was opened from the heading, so closing it hands focus back to a control that is on screen, not to the hidden button
+  e.focusLog.length = 0;
+  e.ctx.kjrCloseCompleteModal();
+  e.runFrames();
+  assert.equal(e.completion.open, false);
+  assert.deepEqual(e.focusLog, ['heading']);
+  assert.equal(e.doc.activeElement, e.heading);
+});
+
+test('eBay bulk bar focus: the wiring is the heading of #page-ebay, called after the bar updates, and it reads and focuses only', () => {
+  assert.match(features, /var KJR_BULK_PAGES = \{ singles: 'page-inventory', slabs: 'page-slabs', sales: 'page-sales', ebay: 'page-ebay' \};/);
+  assert.match(html, /<div id="page-ebay" class="page">\s*<div class="section-title">eBay Purchases<\/div>/, 'the first .section-title in the page is the heading');
+  assert.match(html, /<div class="bulk-bar" id="bulk-bar-ebay">/);
+  const clearSrc = features.slice(features.indexOf('function kjrEbayClearSelection()'), features.indexOf('function _kjrEbayUpdateBulkBar()'));
+  assert.match(clearSrc, /_kjrEbayUpdateBulkBar\(\);\n[^\n]*\n  _kjrEbayBulkBarFocus\(\);\n\}/);
+  const advanceSrc = features.slice(features.indexOf('function kjrEbayBulkAdvance(ids)'), features.indexOf('// Open the confirmation modal for one row.'));
+  assert.match(advanceSrc, /renderEbayPurchases\(\);\n[^\n]*\n[^\n]*\n  _kjrEbayBulkBarFocus\(\);\n/);
+  assert.ok(advanceSrc.indexOf('_kjrEbayBulkBarFocus();') < advanceSrc.indexOf('kjrOpenCompleteModal('), 'before the completion modal opens, so the modal returns focus to the heading');
+  const wrapper = features.slice(features.indexOf('function _kjrEbayBulkBarFocus()'), features.indexOf('function kjrEbayBulkAdvanceSelected()'));
+  assert.match(wrapper, /document\.querySelector\('dialog\[open\]'\)/);
+  assert.match(wrapper, /return kjrBulkBarFocusRescue\('ebay'\);/);
+  assert.doesNotMatch(wrapper, /markDirty\(|saveData\(|saveAllToSupabase\(|snapshotForUndo\(|DB\.[a-zA-Z]+\s*=[^=]|localStorage\.setItem|fetch\(/, 'reads and focuses only');
+});
+
 // ══ 3i. a linked row is shown where it is on screen ═════════════════════════════════════════════
 // The Dealer Desk's "Open linked Singles/Slabs copy" runs viewSourceItem (app.js), its Sales link and its fallback run
 // focusCoreRow (dealer-production-ui.js). Both outline the row for 2.5 seconds after scrolling it to the middle. In the grid the

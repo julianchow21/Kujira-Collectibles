@@ -369,9 +369,16 @@ function kjrEscape(s){ return esc(s); } // alias, esc() in the HELPERS section i
 // formatting before parseFloat. Returns 0 for empty / invalid input.
 // Critical because parseFloat("1,250") returns 1 (stops at the comma) -
 // pasting a comma-formatted value used to silently truncate the price.
+// Two steps, in this order: _kjrPlainNumber (app.js) reads a clean number, exponent
+// form included ("1e3" is 1000, "-1.5e2" is -150, "S$1,250" is 1250), and only text that
+// is not a clean number falls to the strip-the-junk regex below, so "(50)" is still 50 and
+// "12-5" still 12. Without step one a <input type="number"> value of "1e3" lost its
+// letter and became 13. kjrNumOrNull, kjrMoneyStr and _kjrFmtCurrency run the same two steps.
 function kjrNum(n){
   if (n == null || n === '') return 0;
   if (typeof n === 'number') return isFinite(n) ? n : 0;
+  const plain = _kjrPlainNumber(n);
+  if (plain !== null) return plain;
   const x = parseFloat(String(n).replace(/[^0-9.\-]/g, ''));
   return isNaN(x) ? 0 : x;
 }
@@ -384,6 +391,8 @@ function kjrNum(n){
 function kjrNumOrNull(n){
   if (n == null) return null;
   if (typeof n === 'number') return isFinite(n) ? n : null;
+  const plain = _kjrPlainNumber(n);
+  if (plain !== null) return plain;
   const cleaned = String(n).replace(/[^0-9.\-]/g, '');
   if (!/\d/.test(cleaned)) return null; // '', '-', '.', '--', 'abc', '$'
   const x = parseFloat(cleaned);
@@ -393,6 +402,8 @@ function kjrNumOrNull(n){
 // STRING (or '' for empty) for storage in DB fields that round-trip as text.
 function kjrMoneyStr(val){
   if (val == null || val === '') return '';
+  const plain = _kjrPlainNumber(val);
+  if (plain !== null) return String(plain);
   const cleaned = String(val).replace(/[^0-9.\-]/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '.') return '';
   const n = parseFloat(cleaned);
@@ -403,9 +414,12 @@ function kjrMoneyStr(val){
 // explicit numeric zero visible, while blank and non-numeric values stay blank.
 function _kjrFmtCurrency(n, prefix){
   if (n == null || String(n).trim() === '') return '';
-  const cleaned = String(n).replace(/[^0-9.\-]/g, '');
-  if (cleaned === '' || cleaned === '-' || cleaned === '.') return '';
-  const x = parseFloat(cleaned);
+  let x = _kjrPlainNumber(n);
+  if (x === null) {
+    const cleaned = String(n).replace(/[^0-9.\-]/g, '');
+    if (cleaned === '' || cleaned === '-' || cleaned === '.') return '';
+    x = parseFloat(cleaned);
+  }
   if (!Number.isFinite(x)) return '';
   return prefix + Math.round(x).toLocaleString('en-SG');
 }
@@ -1709,6 +1723,8 @@ function kjrEbayClearSelection(){
     tr.style.background = '';
   });
   _kjrEbayUpdateBulkBar();
+  // The bar hides now. If its Clear button had keyboard focus, the page heading takes it.
+  _kjrEbayBulkBarFocus();
 }
 function _kjrEbayUpdateBulkBar(){
   const bar = document.getElementById('bulk-bar-ebay');
@@ -1716,6 +1732,16 @@ function _kjrEbayUpdateBulkBar(){
   if (!bar || !count) return;
   if (_kjrEbaySel.size > 0) { bar.classList.add('show'); count.textContent = _kjrEbaySel.size + ' selected'; }
   else { bar.classList.remove('show'); }
+}
+// The eBay bar hides with the selection, like the Singles, Slabs and Sales bars, so Clear and Move to next status can leave keyboard
+// focus on a button that is no longer shown. kjrBulkBarFocusRescue (below) hands it to the page heading. It stands aside while a
+// dialog is open: Move to next status can open the completion modal, and a dialog's focus must win. (A browser gives the match
+// open true. The check reads open !== false only so a document stub that answers every selector with a closed element is not
+// taken for an open dialog.)
+function _kjrEbayBulkBarFocus(){
+  const dlg = document.querySelector('dialog[open]');
+  if (dlg && dlg.open !== false) return false;
+  return kjrBulkBarFocusRescue('ebay');
 }
 function kjrEbayBulkAdvanceSelected(){
   if (_kjrEbaySel.size === 0) { toast && toast('Nothing selected'); return; }
@@ -2230,6 +2256,9 @@ function kjrEbayBulkAdvance(ids){
   });
   if (pipelineMoved) saveData();
   renderEbayPurchases();
+  // The redraw hid the bar (the selection was cleared first). If Move to next status had keyboard focus, the page heading takes
+  // it now, before any completion modal opens, so that modal's own focus wins and hands focus back to the heading when it closes.
+  _kjrEbayBulkBarFocus();
   if (pipelineMoved) toast && toast('Advanced ' + pipelineMoved + ' row(s)');
   // Drain the completion queue one row at a time.
   _kjrCompleteQueue = completeIds.slice();
@@ -3158,7 +3187,8 @@ document.addEventListener('DOMContentLoaded', () => {
         badge.style.display = 'flex';
       }
 
-      var levelColor = { error: 'var(--red)', fatal: '#ff4444', warning: '#f59e0b', info: 'var(--accent)', debug: 'var(--text3)' };
+      // The level colours are tokens (--lvl-*, styles.css) so the light theme can swap the two that were hardcoded hex and unreadable on its rows.
+      var levelColor = { error: 'var(--lvl-error)', fatal: 'var(--lvl-fatal)', warning: 'var(--lvl-warning)', info: 'var(--lvl-info)', debug: 'var(--lvl-debug)' };
       body.innerHTML = issues.map(function(issue) {
         var col = levelColor[issue.level] || 'var(--text3)';
         var link = typeof issue.permalink === 'string' && /^https:\/\/sentry\.io\//.test(issue.permalink) ? issue.permalink : 'https://sentry.io/';
@@ -6673,10 +6703,11 @@ function kjrBulkDeleteFocusPlan(table, ids) {
   for (var i = 0; i < list.length; i++) { if (gone[String(list[i])]) return { table: table, at: i }; }
   return { table: table, at: -1 };
 }
-// The bulk bars (Singles, Slabs, Sales) hide once nothing is selected. When keyboard focus sits on one of their buttons, Clear or
-// Delete selected, it would be left on a control that is no longer shown, so it goes to the page heading, which takes focus without
-// a ring (tabindex -1, set here when the markup lacks it). It acts only when focus is inside a bar that is hidden.
-var KJR_BULK_PAGES = { singles: 'page-inventory', slabs: 'page-slabs', sales: 'page-sales' };
+// The bulk bars (Singles, Slabs, Sales, eBay) hide once nothing is selected. When keyboard focus sits on one of their buttons, Clear,
+// Delete selected or Move to next status, it would be left on a control that is no longer shown, so it goes to the page heading, which
+// takes focus without a ring (tabindex -1, set here when the markup lacks it). It acts only when focus is inside a bar that is hidden.
+// The eBay bar calls it through _kjrEbayBulkBarFocus (above), which also stands aside for an open dialog.
+var KJR_BULK_PAGES = { singles: 'page-inventory', slabs: 'page-slabs', sales: 'page-sales', ebay: 'page-ebay' };
 function kjrBulkBarFocusRescue(table) {
   var bar = document.getElementById('bulk-bar-' + table);
   var ae = document.activeElement;

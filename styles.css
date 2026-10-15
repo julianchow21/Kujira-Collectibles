@@ -59,6 +59,8 @@ button,input,select,textarea{font-family:inherit;font-variant-numeric:inherit}
   --pill-pending-bg:#2A2312;--pill-pending-fg:#F5C25B;--pill-pending-bd:#4D3E1A;
   --pill-received-bg:#10261D;--pill-received-fg:#34D399;--pill-received-bd:#1B4A38;
   --complete-summary-pos-bd:#1B4A38;--complete-summary-neg-bd:#54272F;--complete-summary-amber-bd:#4D3E1A;
+  /* Sentry issue level colours (v3.78): the errors drawer reads these instead of hardcoded hex. Dark is the colour each level had. */
+  --lvl-error:var(--red);--lvl-fatal:#ff4444;--lvl-warning:#f59e0b;--lvl-info:var(--accent);--lvl-debug:var(--text3);
   /* Elevation tokens (dark), tinted with pure black */
   --shadow-sm:0 1px 3px rgba(0,0,0,0.35);
   --shadow-md:0 4px 16px rgba(0,0,0,0.45);
@@ -107,6 +109,9 @@ html.light{
   --pill-pending-bg:#FBF0D9;--pill-pending-fg:#946200;--pill-pending-bd:#E1CDA3;
   --pill-received-bg:#E3F4EC;--pill-received-fg:#0F7A55;--pill-received-bd:#AED6C6;
   --complete-summary-pos-bd:#AED6C6;--complete-summary-neg-bd:#EFBEC6;--complete-summary-amber-bd:#E1CDA3;
+  /* Sentry level colours (light, v3.78): fatal and warning were the hex #ff4444 and #f59e0b, 3.02:1 and 1.90:1 on the --bg3 row. The red
+     and amber text tokens are 4.65:1 there. --amber2 is the deeper amber for the hovered row (--bg4), where --amber is 4.29:1. */
+  --lvl-fatal:var(--red);--lvl-warning:var(--amber);--amber2:#855800;
   /* Elevation tokens (light) */
   --shadow-sm:0 1px 3px rgba(0,0,0,0.08);
   --shadow-md:0 4px 16px rgba(0,0,0,0.10);
@@ -966,6 +971,10 @@ dialog.cmd-overlay::backdrop{background:var(--backdrop)}
 .cmd-input-wrap{display:flex;align-items:center;gap:10px;padding:16px 16px;border-bottom:1px solid var(--border)}
 .cmd-input-wrap svg{width:18px;height:18px;color:var(--text3);flex-shrink:0}
 .cmd-input{flex:1;background:transparent;border:none;color:var(--text);font-size:15px;font-family:inherit;outline:none}
+/* The global input focus ring (box-shadow, further down) outranks the outline:none above and drew a ring inside the palette's own row.
+   The row carries the cue instead: its bottom line turns accent while the field has focus, so a keyboard user still sees where focus is. */
+.cmd-input:focus-visible{box-shadow:none}
+.cmd-input-wrap:focus-within{border-bottom-color:var(--accent)}
 .cmd-input::placeholder{color:var(--text3)}
 .cmd-kbd{font-size:10px;color:var(--text3);background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 6px;white-space:nowrap;flex-shrink:0}
 .cmd-preview{max-height:340px;overflow-y:auto;overscroll-behavior:contain}
@@ -2226,8 +2235,10 @@ body{padding-left:var(--kjr-side-w)}
 .nav:hover::-webkit-scrollbar-thumb{background:var(--border2)}
 /* A nav that has to scroll says so. Two cover gradients are attached to the content (local) and hide two shadows that are attached
    to the box, one at the very top and one at the very bottom. So a shadow shows only on an edge that has more to see, and nothing
-   shows while the nav fits. It is the nav's own background, from tokens, with no filter or extra element. */
-.nav{--kjr-shade:color-mix(in srgb,var(--text) 18%,transparent);background-image:linear-gradient(var(--sidebar) 30%,transparent),linear-gradient(transparent,var(--sidebar) 70%),radial-gradient(farthest-side at 50% 0,var(--kjr-shade),transparent),radial-gradient(farthest-side at 50% 100%,var(--kjr-shade),transparent);background-repeat:no-repeat;background-position:0 0,0 100%,0 0,0 100%;background-size:100% 28px,100% 28px,100% 12px,100% 12px;background-attachment:local,local,scroll,scroll}
+   shows while the nav fits. It is the nav's own background, from tokens, with no filter or extra element. On the 64px rail the scrollbar
+   is hidden, so this fade is the only cue (v3.78): the shadows are 20px tall at 36%, where 12px at 18% was too faint to notice. The covers
+   grew with them (48px) so a shadow is still gone at the very top or bottom, with under 0.5% of it left showing. */
+.nav{--kjr-shade:color-mix(in srgb,var(--text) 36%,transparent);background-image:linear-gradient(var(--sidebar) 30%,transparent),linear-gradient(transparent,var(--sidebar) 70%),radial-gradient(farthest-side at 50% 0,var(--kjr-shade),transparent),radial-gradient(farthest-side at 50% 100%,var(--kjr-shade),transparent);background-repeat:no-repeat;background-position:0 0,0 100%,0 0,0 100%;background-size:100% 48px,100% 48px,100% 20px,100% 20px;background-attachment:local,local,scroll,scroll}
 .kjr-nav-group{display:flex;flex-direction:column;gap:2px}
 .kjr-nav-label{padding:0 10px 4px;font-size:12px;font-weight:500;line-height:16px;color:var(--text3)}
 .nav-btn{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:40px;margin:0;padding:0 10px;border:0;border-radius:10px;background:transparent;color:var(--text2);font:inherit;font-size:14px;font-weight:500;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer;transition:background 0.16s ease-out,color 0.16s ease-out}
@@ -2527,6 +2538,8 @@ body{padding-left:var(--kjr-side-w)}
 
 /* ── Singles and Slabs headings take focus after the last row of a list is deleted, and a heading is not a control, so no ring ── */
 .section-title:focus,.section-title:focus-visible{outline:none}
+/* The sign-in gate moves focus to its state heading (an h2 with tabindex -1) so a screen reader announces it, and a heading is not a control, so no ring */
+#kjr-auth-gate [tabindex="-1"]:focus,#kjr-auth-gate [tabindex="-1"]:focus-visible{outline:none}
 
 /* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
 @media (hover: none) {
@@ -2541,15 +2554,31 @@ body{padding-left:var(--kjr-side-w)}
 .kjr-tile:has(.kjr-slab) .kjr-tile-set{font-family:var(--font-mono)}
 #msl-cert{font-family:var(--font-mono)}
 
+/* ── Light theme, resting states (v3.78): small text clears 4.5:1 without help from a hover ──
+   A selected dealer card sits on the accent glow (25% violet over its white list), and its status and set lines were --text3 there, 3.60:1.
+   They are --text2 now, 5.04:1 over the list and 4.55:1 over --bg3, the worst base. A Sold row dimmed every cell to 55% opacity, which put the
+   grey, green, red and amber text inside it under 4.5:1. In light it stays at full strength and its plain text steps down to --text2 instead
+   (7.37:1 on white), so the cells that name their own colour keep it. The phone table dimmed the row as well as its cells, so that lifts too.
+   The dark theme still dims. The hover and press block after this one stays the last in the file. tests/light-contrast.test.js computes each
+   pair from this file. */
+html.light .dealer-production-card.selected :is(span,small){color:var(--text2)}
+html.light tr.sold-row td{opacity:1;color:var(--text2)}
+@media (max-width: 600px){
+  html.light body:not(.force-tables) .page .tbl-wrap>table>tbody>tr.sold-row{opacity:1}
+}
+
 /* ── Light theme, hover and press only: small text clears 4.5:1 on the fill it lands on ──
    The light --text3, --red and --amber are 4.31, 4.30 and 4.29:1 on --bg4, the hover fill of a .btn, a Chart Builder pill and a Sentry
    issue row. While one of those is hovered, the grey inside it reads as --text2 and red as --red2, the deeper red the token set already
-   holds. Inline styles read the same variables, so they follow. The two amber controls hover onto the amber soft fill instead of grey,
+   holds. Inline styles read the same variables, so they follow. The Sentry level colours (--lvl-*) are resolved where they are declared,
+   so the --red and --text3 swap above never reaches them: the hovered row sets them itself, error and fatal on --red2, debug on --text2
+   and warning on --amber2. The two amber controls hover onto the amber soft fill instead of grey,
    the quick sale remove button onto the red soft fill, and a hovered dealer card's small lines are --text2 on its accent tint. A sold row
    comes up to full strength under the pointer or a press (the phone table dims the row as well as its cells, so both lift), and the two
-   pills that dimmed while pressed keep their strength on a --bg3 fill. The tokens, the dark theme and every resting state are as they
-   were. tests/light-contrast.test.js computes each pair from this file. */
+   pills that dimmed while pressed keep their strength on a --bg3 fill. The tokens, the dark theme and the resting states are as the block
+   above leaves them. tests/light-contrast.test.js computes each pair from this file. */
 html.light :is(.btn,.cb-field-pill,.sentry-issue):hover{--text3:var(--text2);--red:var(--red2)}
+html.light .sentry-issue:hover{--lvl-error:var(--red2);--lvl-fatal:var(--red2);--lvl-warning:var(--amber2);--lvl-debug:var(--text2)}
 html.light #singles-unresolved-filter-chip:hover,html.light .skipped-toggle:hover{background:var(--amber-soft)}
 html.light .sell-cart-remove:hover{background:var(--red-soft)}
 html.light .dealer-production-card:hover :is(span,small){color:var(--text2)}

@@ -43,7 +43,7 @@ test('production fixture serves the real page with a loopback-only synthetic tra
   assert.match(html, /DEALER FIXTURE/);
   assert.doesNotMatch(html, /<script[^>]+src="https?:\/\//i);
   assert.doesNotMatch(html, /<link[^>]+href="https?:\/\//i);
-  assert.match(html, /dealer-production-ui\.js\?v=3\.81/);
+  assert.match(html, /dealer-production-ui\.js\?v=3\.82/);
   assert.match(html, /#kjr-production-fixture-tools\{bottom:96px!important/);
   assert.match(html, /production command contract accepts candidate fields at the/);
   assert.match(html, /mode === 'existing' \? 'Fixture Graded Charizard' : 'Fixture golden candidate'/);
@@ -57,7 +57,7 @@ test('production fixture serves only allowlisted app assets', () => {
   assert.equal(pageResponse.status, 200);
   assert.match(pageResponse.headers['Content-Security-Policy'], /connect-src 'self'/);
   const appResponse = fakeResponse();
-  preview.handleRequest({ method: 'GET', url: '/app.js?v=3.81' }, appResponse);
+  preview.handleRequest({ method: 'GET', url: '/app.js?v=3.82' }, appResponse);
   assert.equal(appResponse.status, 200);
   const blockedResponse = fakeResponse();
   preview.handleRequest({ method: 'GET', url: '/not-an-asset.js' }, blockedResponse);
@@ -170,4 +170,26 @@ test('production fixture mirrors SQL-shaped plan and settled money results', asy
   assert.equal(review.actual.contribution, 10);
   assert.equal(review.planVariance.delta, 1);
   assert.equal(review.targetVariance.delta, 5);
+});
+
+// v3.82: the page's first FX source moved to Frankfurter v2 (an array, one object per quote). The fixture's in-page fetch must answer the
+// URLs app.js really asks, in that shape, or the first source fails inside the fixture and the page quietly takes the second one.
+test('production fixture answers the Frankfurter v2 URLs app.js asks, in the v2 array shape', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(preview.ROOT, 'app.js'), 'utf8');
+  const urls = [...src.matchAll(/fetch\('(https:\/\/api\.frankfurter\.dev\/v2\/rates\?[^']+)'/g)].map((m) => m[1]);
+  assert.equal(urls.length, 2, 'app.js asks Frankfurter twice, USD and EUR');
+  const fixture = fixtureWindow('golden');
+  for (const [url, base, rate] of [[urls[0], 'USD', 1.35], [urls[1], 'EUR', 1.45]]) {
+    assert.match(url, new RegExp('[?&]base=' + base + '&quotes=SGD$'));
+    const response = await fixture.fetch(url, {});
+    assert.equal(response.ok, true, url);
+    const body = await response.json();
+    assert.equal(Array.isArray(body), true, url + ' answers an array');
+    assert.equal(body.length, 1);
+    assert.equal(body[0].quote, 'SGD');
+    assert.equal(body[0].base, base);
+    assert.equal(body[0].rate, rate);
+  }
 });

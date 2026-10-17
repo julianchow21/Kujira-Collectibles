@@ -835,7 +835,7 @@ test('art-ja: a Japanese single with an id makes zero price calls in refreshPric
   const toasts = [];
   app.ctx.toast = (m) => toasts.push(String(m));
   app.fetchMock.route('/ppt/cards', () => jsonResponse({ data: [{ name: 'Charizard', number: '6', prices: { market: 99 } }] }));
-  app.fetchMock.route('frankfurter.dev', () => jsonResponse({ rates: { SGD: 1 } }));
+  app.fetchMock.route('frankfurter.dev', () => jsonResponse([{ quote: 'SGD', rate: 1 }]));
   await app.ctx.refreshPrice('j1', 'singles');
   assert.equal(app.fetchMock.calls.length, 0, 'no TCGdex, no PPT, not even an FX lookup: ' + app.urls().join(', '));
   assert.deepEqual(toasts, ['Manual price, no free source for this language']);
@@ -858,7 +858,7 @@ for (const manual of [false, true]) {
     app.fetchMock.calls.length = 0;
     app.urls = () => app.fetchMock.calls.map((c) => decodeURIComponent(c.url));
     app.fetchMock.route('/cards/sv3-199', () => jsonResponse({ id: 'sv3-199', pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } }));
-    app.fetchMock.route('frankfurter.dev', () => jsonResponse({ rates: { SGD: 1 } }));
+    app.fetchMock.route('frankfurter.dev', () => jsonResponse([{ quote: 'SGD', rate: 1 }]));
     app.fetchMock.route('/ppt/cards', () => jsonResponse({ data: [{ name: 'Charizard', number: '6', prices: { market: 99 } }] }));
     app.fetchMock.route('/ja/', () => jsonResponse([{ id: 'SV2a-006', localId: '006', name: 'リザードンex' }]));
     app.ctx.toast = () => {};

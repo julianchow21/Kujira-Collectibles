@@ -17196,6 +17196,10 @@ async function _kjrResolveJa(item, num, setHint, report) {
 // which pricing never does: a Japanese row is manual-priced, so the price lane never calls this for one. opts.report (art only) is
 // an object that gets .transient = true (and .why: 'net', 'map' or 'sets') when the answer was "could not tell" (a transport
 // failure, the species map or the set list would not load), so the caller does not record it as a 7-day miss.
+// v3.82: the English path says the same ('net'), it used to hand every failure back as a plain null, which the caller could not tell
+// from "no such card" and cached for 7 days. A rejected request or a timeout, an HTTP error other than 404 (5xx, 429, 403) and a body
+// that is not a card list are "could not tell". A 404, an empty list, an ambiguous list (also when the set list would not load, as
+// before) and a card with no id are still plain nulls, a real "no match".
 // Pricing passes no opts, so a priced card resolves exactly as it always has.
 async function resolveTcgdexId(item, opts) {
   if (item.tcgdexId) return item.tcgdexId;
@@ -17206,21 +17210,26 @@ async function resolveTcgdexId(item, opts) {
   const setHint = opts && opts.set != null ? String(opts.set).trim() : '';
   const art = !!(opts && opts.art);
   if (art && lang === 'ja') return _kjrResolveJa(item, num, setHint, opts.report);
+  // without opts (pricing) there is no report, so flag() only returns null and every branch below answers as it always did
+  const report = art && opts.report && typeof opts.report === 'object' ? opts.report : null;
+  const flag = (why) => { if (report) { report.transient = true; report.why = why; } return null; };
   try {
     const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
     const r = await fetch(url);
-    if (!r.ok) return null; // transport failure - treat as unresolved, PPT fallback picks it up
+    // transport failure - unresolved, PPT fallback picks it up. 404 is TCGdex saying there is nothing there, any other status says nothing about the card
+    if (!r.ok) return r.status === 404 ? null : flag('net');
     const data = await r.json();
-    if (!Array.isArray(data) || !data.length) return null; // zero results - unresolved, never guess
+    if (!Array.isArray(data)) return flag('net'); // not a card list at all (a gateway page, a changed shape)
+    if (!data.length) return null; // zero results - unresolved, never guess
     const sets = art && lang === 'en' ? await _kjrArtSets('en', item.name, setHint, data.length) : null;
     let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data, sets);
     if (setHint) card = _tcgdexSetHintPick(card, data, setHint, sets);
-    if (!card) return null; // several candidates and the set name didn't narrow it to one - still ambiguous
+    if (!card) return null; // several candidates and the set name didn't narrow it to one - still ambiguous (also when the set list would not load)
     if (!card.id) return null;
     item.tcgdexId = card.id;
     if (card.name) item._tcgdexResolvedName = card.name; // for a confirm tooltip in the edit modal
     return card.id;
-  } catch (e) { return null; } // network error - unresolved, not a thrown exception
+  } catch (e) { return flag('net'); } // network error or timeout - unresolved, not a thrown exception
 }
 
 // Does the card's stored name mark it as a reverse-holo printing? Checked
@@ -19206,6 +19215,16 @@ async function searchEbay() {
 // =========== SGD/USD EXCHANGE RATE (dynamic, cached daily) ===========
 let _sgdRate = null; // SGD per 1 USD  e.g. 1.35 means $1 USD = S$1.35
 
+// Frankfurter v2 answers GET /v2/rates?base=USD&quotes=SGD with an array, one object per quote: [{ date, base, quote, rate }] (checked
+// 17/10/2026). An error is an object ({ status: 422, message }), not an array. This is the rate of `quote`, or undefined for anything
+// else (not an array, an empty one, no element for that quote, a rate that is not a finite number), and an undefined rate counts as a
+// failed source, so the next one runs exactly as it does for a source that is down.
+function _kjrFrankfurterRate(body, quote) {
+  if (!Array.isArray(body)) return undefined;
+  const row = body.find(x => x && x.quote === quote);
+  return row && typeof row.rate === 'number' && Number.isFinite(row.rate) ? row.rate : undefined;
+}
+
 async function getSgdRate() {
   const cacheKey = 'pokeinv_fxrate';
   const cached = (() => { try { return JSON.parse(localStorage.getItem(cacheKey)); } catch(e) { return null; } })();
@@ -19219,12 +19238,14 @@ async function getSgdRate() {
 
   // Try three independent free FX sources in sequence. The first moved to
   // api.frankfurter.dev/v1 on 13/10/2026: the old .app host only 301s to it
-  // with no CORS header, so a browser blocks that redirect.
+  // with no CORS header, so a browser blocks that redirect. It moved again to
+  // /v2/rates on 17/10/2026: v1 now sends a deprecation header and a link to
+  // /v2/rates as its successor, and v2 answers an array (_kjrFrankfurterRate).
   const sources = [
     async () => {
-      const r = await fetch('https://api.frankfurter.dev/v1/latest?from=USD&to=SGD', { signal: AbortSignal.timeout(4000) });
+      const r = await fetch('https://api.frankfurter.dev/v2/rates?base=USD&quotes=SGD', { signal: AbortSignal.timeout(4000) });
       const d = await r.json();
-      return d.rates?.SGD;
+      return _kjrFrankfurterRate(d, 'SGD');
     },
     async () => {
       const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(4000) });
@@ -19303,9 +19324,9 @@ async function getEurSgdRate() {
 
   const sources = [
     async () => {
-      const r = await fetch('https://api.frankfurter.dev/v1/latest?from=EUR&to=SGD', { signal: AbortSignal.timeout(4000) });
+      const r = await fetch('https://api.frankfurter.dev/v2/rates?base=EUR&quotes=SGD', { signal: AbortSignal.timeout(4000) });
       const d = await r.json();
-      return d.rates?.SGD;
+      return _kjrFrankfurterRate(d, 'SGD');
     },
     async () => {
       const r = await fetch('https://open.er-api.com/v6/latest/EUR', { signal: AbortSignal.timeout(4000) });

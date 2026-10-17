@@ -2580,9 +2580,15 @@ body{padding-left:var(--kjr-side-w)}
    grey, green, red and amber text inside it under 4.5:1. In light it stays at full strength and its plain text steps down to --text2 instead
    (7.37:1 on white), so the cells that name their own colour keep it. The phone table dimmed the row as well as its cells, so that lifts too.
    The dark theme still dims. The hover and press block after this one stays the last in the file. tests/light-contrast.test.js computes each
-   pair from this file. */
+   pair from this file.
+   v3.82: the editable money cells of a Sold row are inputs, and every renderer writes color:var(--text) on them inline, so they stayed darker
+   than the --text2 name beside them. They take --text2 too. An inline style outranks any selector, so these two rules need !important, the
+   way .kjr-inline:focus does for its fill, and a focused input goes back to --text (16.5:1 on its --accent-soft fill) so what is being
+   typed is at full strength. The input's own fill is transparent, background, caret, ring and placeholder are untouched. */
 html.light .dealer-production-card.selected :is(span,small){color:var(--text2)}
 html.light tr.sold-row td{opacity:1;color:var(--text2)}
+html.light tr.sold-row td :is(input,select){color:var(--text2) !important}
+html.light tr.sold-row td :is(input,select):focus{color:var(--text) !important}
 @media (max-width: 600px){
   html.light body:not(.force-tables) .page .tbl-wrap>table>tbody>tr.sold-row{opacity:1}
 }

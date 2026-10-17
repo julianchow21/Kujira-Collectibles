@@ -6,19 +6,22 @@
 // table is still an allowlist.
 // v3.78: the Cloud Sync diagnostics fixture (sync-preview.cjs) and the password fixture (password-preview.cjs) keep route tables of their own and
 // had the same five 404s (the password one had no /sw.js either), so both are pinned here too.
+// v3.82: the Dealer Desk production fixture (dealer-production-preview.cjs) keeps a route table of its own as well. It already served the
+// stylesheet, both scripts, the five Dealer Desk scripts and sw.js, but nothing pinned it, so a dropped route would have gone unseen.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-// [file, the path its page is served from]: the first three serve the index through preview-server.cjs's route table, the last two keep their own
+// [file, the path its page is served from]: the first three serve the index through preview-server.cjs's route table, the last three keep their own
 const FIXTURES = [
   ['preview-server.cjs', '/'],
   ['ebay-date-preview.cjs', '/'],
   ['dealer-preview.cjs', '/'],
   ['sync-preview.cjs', '/'],
   ['password-preview.cjs', '/auth-preview.html'],
+  ['dealer-production-preview.cjs', '/'],
 ];
 const DEALER_SCRIPTS = ['dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js'];
 
@@ -70,7 +73,7 @@ test('preview-server.cjs: the five Dealer Desk scripts are served for GET and HE
   const fixture = require('./preview-server.cjs');
   for (const script of DEALER_SCRIPTS) {
     const bytes = fs.readFileSync(path.join(ROOT, script));
-    const get = call(fixture, 'GET', '/' + script + '?v=3.81');
+    const get = call(fixture, 'GET', '/' + script + '?v=3.82');
     assert.equal(get.status, 200, script);
     assert.equal(get.headers['Content-Length'], bytes.length, script);
     assert.equal(get.headers['Cache-Control'], 'no-store', script);

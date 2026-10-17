@@ -3551,6 +3551,10 @@ async function exportXlsx() {
 // the exact localId, set narrowing, a unique hit only: resolveTcgdexId opts.art). On a hit the id is written onto the row ONCE
 // with markDirty, as the English price lane does, and the image is drawn. Its misses live in the same `kjr_slab_card_ids` map
 // under "s:<id>". Japanese pricing is still manual, nothing here makes a price call.
+// v3.82: only an answer is cached as a miss, in either language. A request that is rejected, times out or comes back with an HTTP error
+// other than 404 (5xx, 429, 403) is "could not tell": cooled down for a minute in this session (kjrImgUnanswered, kjrImgCoolDown),
+// asked again next session, never written to the map. The 7-day misses are a 404, an empty or ambiguous candidate list, and a card
+// page with no usable image.
 var KJR_IMG_KEY = 'kjr_card_images';
 var KJR_SLAB_LINK_KEY = 'kjr_slab_card_ids';
 var KJR_IMG_HOST = 'https://assets.tcgdex.net/';

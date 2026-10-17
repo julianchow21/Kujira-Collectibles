@@ -64,7 +64,7 @@ test('reprice-noop: refreshPrice - a freshly-resolved tcgdexId with an UNCHANGED
   });
   fetchMock.route('/en/cards?name=', { ok: true, json: [{ id: 'sv3-199', name: 'Pikachu' }] }); // unique candidate, auto-accepted
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
   await ctx.refreshPrice('s1', 'singles');
   const { DB, _dirty } = grab('DB', '_dirty');
   const row = DB.singles.find(r => r.id === 's1');
@@ -104,7 +104,7 @@ test('reprice-noop: refreshPrice - identical fetched price on an already-cached 
     seed: { singles: [{ id: 's1', name: 'Pikachu 25', language: 'EN', marketPrice: '45', tcgdexId: 'sv3-199', priceHistory: [], status: 'Available' }] },
   });
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } }); // rate=1 keeps maxSgd === maxUsd, easy to predict
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] }); // rate=1 keeps maxSgd === maxUsd, easy to predict
   await ctx.refreshPrice('s1', 'singles');
   const { DB, _dirty } = grab('DB', '_dirty');
   const row = DB.singles.find(r => r.id === 's1');
@@ -118,7 +118,7 @@ test('reprice-noop: refreshPrice - a different fetched price appends history and
     seed: { singles: [{ id: 's1', name: 'Pikachu 25', language: 'EN', marketPrice: '45', tcgdexId: 'sv3-199', priceHistory: [], status: 'Available' }] },
   });
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 99 } } } } });
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
   await ctx.refreshPrice('s1', 'singles');
   const { DB, _dirty } = grab('DB', '_dirty');
   const row = DB.singles.find(r => r.id === 's1');

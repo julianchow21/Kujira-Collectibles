@@ -8,6 +8,9 @@
 // accent glow, 3.60:1), the Sentry level pills (fatal and warning were the hex #ff4444 and #f59e0b, 3.02:1 and 1.90:1 on the --bg3 row) and
 // a Sold row (every cell at 55% opacity). Light only again, the dark theme is as it was apart from five new level tokens. The hover and
 // press block is still the last one in the file, so the resting block sits above it.
+// v3.82: the editable money cells of a Sold row are inputs with color:var(--text) written inline, so they stayed darker than the --text2
+// name beside them. Two more resting rules in the same block give them --text2 (and --text back while focused), with !important because
+// an inline style outranks any selector. Light only, the dark theme is as it was.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -18,6 +21,7 @@ const raw = fs.readFileSync(ROOT + '/styles.css', 'utf8');
 const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
 const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 const features = fs.readFileSync(ROOT + '/features.js', 'utf8');
+const appJs = fs.readFileSync(ROOT + '/app.js', 'utf8');
 const dealerUi = fs.readFileSync(ROOT + '/dealer-production-ui.js', 'utf8');
 
 // ── the tokens ──
@@ -160,7 +164,8 @@ test('light contrast: every new rule is light only and hover or press only, toke
   assert.ok(restAt > css.indexOf('#msl-cert{') && restAt < at, 'the resting rules sit between the last older rule and the hover block');
   const rest = css.slice(restAt, at);
   const restSelectors = [...rest.matchAll(/(?:^|[\n}])\s*([^{}@\n][^{}]*)\{/g)].map((m) => m[1].trim());
-  assert.equal(restSelectors.length, 3);
+  // the selected dealer card, the Sold row's cells, the phone table's Sold row (v3.78), and the Sold row's inputs at rest and focused (v3.82)
+  assert.equal(restSelectors.length, 5);
   for (const s of restSelectors) assert.match(s, /^html\.light /, 'light only: ' + s);
   assert.doesNotMatch(rest, /#[0-9a-fA-F]{3,8}\b|rgba?\(/, 'no literal colour, tokens only');
 });
@@ -347,4 +352,65 @@ test('light contrast (v3.78): a Sold row at rest keeps its full strength and ste
     if (t !== '--blue') assert.ok(ratio(fade(light[t], 0.55, card), card) < 4.5, 'why: ' + t + ' at 55%');
   }
   assert.ok(ratio(fade(light['--text2'], 0.55 * 0.55, card), card) < ratio(fade(light['--text2'], 0.55, card), card), 'on a phone the row and its cells dimmed together');
+});
+
+// ═══ v3.82: the inputs in a Sold row ═══
+
+test('light contrast (v3.82): the inline inputs of a Sold row read --text2 like the name beside them, 4.5:1 or better on every fill behind them, and a focused one is back at --text', () => {
+  const important = (decl) => { assert.match(decl.color, / !important$/); return decl.color.replace(/ !important$/, ''); };
+  const inputs = rule('html.light tr.sold-row td :is(input,select)');
+  const focused = rule('html.light tr.sold-row td :is(input,select):focus');
+  assert.deepEqual(inputs, { color: 'var(--text2) !important' });
+  assert.deepEqual(focused, { color: 'var(--text) !important' });
+  const ink = resolve(important(inputs), light);
+  const focusInk = resolve(important(focused), light);
+
+  // why !important: every one of these inputs carries color:var(--text) in its own style attribute, and a style attribute outranks any
+  // selector. The Singles and Slabs renderers (app.js) write cost, market and list price, the three sealed ones (features.js) market and
+  // Carousell price. The rule has to win over exactly that, so it is pinned next to the markup it overrides.
+  const inlineText = (src) => [...src.matchAll(/<input class="kjr-inline" style="[^"]*;color:var\(--text\);[^"]*"/g)].length;
+  assert.ok(inlineText(appJs) >= 6, 'Singles and Slabs: three money inputs each, found ' + inlineText(appJs));
+  assert.ok(inlineText(features) >= 6, 'ETBs, Booster Boxes and Booster Packs: two each, found ' + inlineText(features));
+  assert.match(appJs, /<input class="kjr-inline" style="width:72px;background:transparent;border:none;color:var\(--text\);font-family:inherit;font-size:12px" value="' \+ esc\(i\.costPrice/, 'the Singles cost input, its colour and its transparent fill');
+
+  // it is exactly the colour of the text beside it: the row's cells are --text2 and the name button inherits that
+  assert.equal(ink, resolve(rule('html.light tr.sold-row td').color, light));
+  assert.equal(ink, light['--text2']);
+  assert.equal(rule('.kjr-name-btn').color, 'inherit');
+  assert.equal(focusInk, light['--text']);
+
+  // light only. Both are written with the html.light prefix, nothing else in the file styles an :is(input,select) in a Sold row, so
+  // the dark theme keeps the --text its inputs have always had
+  const all = [...css.matchAll(/([^{}\n]*):is\(input,select\)(?::focus)?\{/g)].map((m) => m[0].trim());
+  assert.deepEqual(all, ['html.light tr.sold-row td :is(input,select){', 'html.light tr.sold-row td :is(input,select):focus{']);
+  assert.doesNotMatch(css, /sold-row[^{]*::placeholder/, 'the placeholder is left to the browser');
+  // the focus ring and fill are exactly what they were: only the colour of the typed text changes
+  assert.deepEqual(rule('.kjr-inline:focus'), { outline: 'none', background: 'var(--accent-soft) !important', 'border-radius': '4px', 'box-shadow': '0 0 0 1px var(--accent)' });
+
+  // both outrank nothing but the inline colour: they sit on the input itself, and focus outranks rest when both are !important
+  assert.deepEqual(specificity('html.light tr.sold-row td :is(input,select)'), [0, 2, 4]);
+  assert.deepEqual(specificity('html.light tr.sold-row td :is(input,select):focus'), [0, 3, 4]);
+
+  // the numbers. The input paints no fill at rest (its inline background is transparent), so what is behind it is the row: the card at
+  // rest, the hover fill under the pointer, the same fill under a touch press, the accent tint of a selected row, and its own
+  // --accent-soft once focused (an !important fill, so it wins over the row's).
+  const fills = {
+    'at rest, on the card': resolve(rule('.card').background, light),
+    'under the pointer': resolve(rule('tbody tr:hover td').background, light),
+    'under a touch press': resolve(rule('body:not(.force-tables) .tbl-wrap>table>tbody>tr:active>td').background, light),
+    'in a selected row': resolve(rule('tr.row-selected td').background.replace(/ !important$/, ''), light),
+    'on its focus fill': resolve(rule('.kjr-inline:focus').background.replace(/ !important$/, ''), light),
+  };
+  assert.equal(fills['at rest, on the card'], light['--bg2']);
+  assert.equal(fills['under the pointer'], light['--bg3']);
+  assert.equal(fills['in a selected row'], light['--accent-soft']);
+  assert.equal(fills['on its focus fill'], light['--accent-soft']);
+  for (const [where, fill] of Object.entries(fills)) passes('sold row input, --text2, ' + where, ink, fill);
+  assert.ok(ratio(ink, fills['at rest, on the card']) >= 7, 'at rest it reads like the row\'s plain text, 7:1 on white');
+  // focused: --text, on the fill it makes for itself and on the fill of a selected row it may sit in
+  passes('sold row input, focused, --text', focusInk, fills['on its focus fill']);
+  passes('sold row input, focused, --text, selected row', focusInk, fills['in a selected row']);
+  // why the pair is worth pinning: the inline --text it replaces is a different, darker colour than the name beside it
+  assert.notEqual(light['--text'], light['--text2']);
+  assert.ok(ratio(light['--text'], fills['at rest, on the card']) > ratio(ink, fills['at rest, on the card']) + 10, 'the old inline colour read far darker than the name');
 });

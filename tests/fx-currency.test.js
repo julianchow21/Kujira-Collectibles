@@ -38,7 +38,7 @@ test('fx-currency: getSgdRate - today\'s cached rate is returned immediately, wi
 test('fx-currency: getSgdRate - an out-of-sanity-band rate (9.9) from the first source is rejected, falls to the next source', async () => {
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 9.9 } } }); // out of the (0.5, 5) sanity band
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 9.9 }] }); // out of the (0.5, 5) sanity band
   fetchMock.route('open.er-api.com', { ok: true, json: { rates: { SGD: 1.35 } } }); // in-band, second source
   const rate = await ctx.getSgdRate();
   assert.strictEqual(rate, 1.35, 'the out-of-band first source is skipped in favour of the in-band second source');
@@ -71,40 +71,127 @@ test('fx-currency: getSgdRate - all sources fail AND there is no cache at all ->
 // v3.77: the first source moved from api.frankfurter.app to api.frankfurter.dev/v1. The old host now answers every request with a 301
 // to the new one and sends no Access-Control-Allow-Origin on that redirect, so a browser on github.io blocks it (CORS) and the rate
 // silently fell through to the second source. The new host answers 200 with access-control-allow-origin: * (checked 13/10/2026).
-// The response shape is the same ({ rates: { SGD } }), so the sanity band, the daily cache and the fallbacks are untouched.
-const NEW_USD = 'https://api.frankfurter.dev/v1/latest?from=USD&to=SGD';
-const NEW_EUR = 'https://api.frankfurter.dev/v1/latest?from=EUR&to=SGD';
+// v3.82: v1 now sends a deprecation header and a link to /v2/rates as its successor, so the first source moved again, to
+// GET /v2/rates?base=USD&quotes=SGD (checked 17/10/2026, access-control-allow-origin: * still). v2 answers an ARRAY, one object per quote:
+// [{ "date": "2026-10-17", "base": "USD", "quote": "SGD", "rate": 1.2808 }], and an error is an object ({ "status": 422, "message": ... }).
+// The sanity band, the 4 second timeout, the daily cache, the other two sources and their order are untouched.
+const NEW_USD = 'https://api.frankfurter.dev/v2/rates?base=USD&quotes=SGD';
+const NEW_EUR = 'https://api.frankfurter.dev/v2/rates?base=EUR&quotes=SGD';
+const ER_USD = 'https://open.er-api.com/v6/latest/USD';
+const ER_EUR = 'https://open.er-api.com/v6/latest/EUR';
 const callUrls = (fetchMock) => fetchMock.calls.map((c) => c.url);
+const v2 = (base, rate) => [{ date: '2026-10-17', base, quote: 'SGD', rate }];
 
-test('fx-currency: getSgdRate - the first source is api.frankfurter.dev/v1, one call, cached for today, no other source touched', async () => {
+test('fx-currency: getSgdRate - the first source is api.frankfurter.dev/v2/rates, one call, cached for today, no other source touched', async () => {
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('frankfurter.dev', { ok: true, json: { amount: 1, base: 'USD', date: '2026-10-12', rates: { SGD: 1.2802 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: v2('USD', 1.2808) });
   const rate = await ctx.getSgdRate();
-  assert.strictEqual(rate, 1.2802);
+  assert.strictEqual(rate, 1.2808);
   assert.deepStrictEqual(callUrls(fetchMock), [NEW_USD], 'exactly one request, to the new host and path');
+  assert.ok(fetchMock.calls[0].opts && fetchMock.calls[0].opts.signal, 'the 4 second timeout signal is still passed');
   const cached = JSON.parse(localStorage.getItem('pokeinv_fxrate'));
-  assert.strictEqual(cached.rate, 1.2802);
+  assert.strictEqual(cached.rate, 1.2808);
   assert.strictEqual(cached.date, new Date().toISOString().slice(0, 10));
   // the second call the same day is served from the cache, no request at all
   fetchMock.calls.length = 0;
-  assert.strictEqual(await ctx.getSgdRate(), 1.2802);
+  assert.strictEqual(await ctx.getSgdRate(), 1.2808);
   assert.strictEqual(fetchMock.calls.length, 0);
 });
 
-test('fx-currency: getEurSgdRate - the first source is api.frankfurter.dev/v1, one call, cached for today, no other source touched', async () => {
+test('fx-currency: getEurSgdRate - the first source is api.frankfurter.dev/v2/rates, one call, cached for today, no other source touched', async () => {
   const { ctx, fetchMock, localStorage } = await loadApp();
   fetchMock.calls.length = 0;
-  fetchMock.route('frankfurter.dev', { ok: true, json: { amount: 1, base: 'EUR', date: '2026-10-12', rates: { SGD: 1.4314 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: v2('EUR', 1.4381) });
   const rate = await ctx.getEurSgdRate();
-  assert.strictEqual(rate, 1.4314);
+  assert.strictEqual(rate, 1.4381);
   assert.deepStrictEqual(callUrls(fetchMock), [NEW_EUR]);
+  assert.ok(fetchMock.calls[0].opts && fetchMock.calls[0].opts.signal, 'the 4 second timeout signal is still passed');
   const cached = JSON.parse(localStorage.getItem('pokeinv_fxrate_eur'));
-  assert.strictEqual(cached.rate, 1.4314);
+  assert.strictEqual(cached.rate, 1.4381);
   assert.strictEqual(cached.date, new Date().toISOString().slice(0, 10));
   fetchMock.calls.length = 0;
-  assert.strictEqual(await ctx.getEurSgdRate(), 1.4314);
+  assert.strictEqual(await ctx.getEurSgdRate(), 1.4381);
   assert.strictEqual(fetchMock.calls.length, 0);
+});
+
+test('fx-currency: the v2 array is read by its quote, not by position: the SGD element is found among others, a repeated SGD takes the first', async () => {
+  const { ctx, fetchMock } = await loadApp();
+  fetchMock.calls.length = 0;
+  fetchMock.route('frankfurter.dev', { ok: true, json: [
+    { date: '2026-10-17', base: 'USD', quote: 'EUR', rate: 0.8905 },
+    { date: '2026-10-17', base: 'USD', quote: 'SGD', rate: 1.2808 },
+    { date: '2026-10-17', base: 'USD', quote: 'SGD', rate: 1.9 },
+  ] });
+  assert.strictEqual(await ctx.getSgdRate(), 1.2808);
+  assert.strictEqual(await ctx.getEurSgdRate(), 1.2808, 'the same body read for the EUR base: the quote is what is matched');
+  assert.deepStrictEqual(callUrls(fetchMock), [NEW_USD, NEW_EUR]);
+});
+
+// A first source that answers but gives no usable SGD rate counts as a failed source: the second one runs next, exactly as it does for
+// a source that is down, and the third is never touched when the second answers.
+const NO_SGD_RATE = {
+  'an empty array': [],
+  'an array with no SGD element': [{ date: '2026-10-17', base: 'USD', quote: 'EUR', rate: 0.8905 }],
+  'an SGD element with no rate': [{ date: '2026-10-17', base: 'USD', quote: 'SGD' }],
+  'a rate of null': v2('USD', null),
+  'a text rate': v2('USD', 'abc'),
+  'a numeric string rate': v2('USD', '1.2808'),
+  'a rate of NaN': v2('USD', NaN),
+  'a rate of Infinity': v2('USD', Infinity),
+  'a rate of an object': v2('USD', { value: 1.28 }),
+  'a lower-case quote': [{ date: '2026-10-17', base: 'USD', quote: 'sgd', rate: 1.2808 }],
+  'junk elements only': [null, 5, 'SGD', [], { quote: 'SGD' }],
+  'the retired v1 shape': { amount: 1, base: 'USD', date: '2026-10-12', rates: { SGD: 1.2802 } },
+  'the v2 error object': { status: 422, message: 'invalid currency: SGD' },
+  'null': null,
+  'a number': 1.2808,
+  'text': 'SGD',
+};
+test('fx-currency: a v2 answer with no usable SGD rate is a failed source: getSgdRate and getEurSgdRate fall to the second source in order', async () => {
+  for (const [label, body] of Object.entries(NO_SGD_RATE)) {
+    const { ctx, fetchMock, localStorage } = await loadApp();
+    fetchMock.calls.length = 0;
+    fetchMock.route('frankfurter.dev', { ok: true, json: body });
+    fetchMock.route(ER_USD, { ok: true, json: { rates: { SGD: 1.31 } } });
+    fetchMock.route(ER_EUR, { ok: true, json: { rates: { SGD: 1.52 } } });
+    assert.strictEqual(await ctx.getSgdRate(), 1.31, label);
+    assert.strictEqual(await ctx.getEurSgdRate(), 1.52, label);
+    assert.deepStrictEqual(callUrls(fetchMock), [NEW_USD, ER_USD, NEW_EUR, ER_EUR], label + ': the second source answered, the third was not asked');
+    assert.strictEqual(JSON.parse(localStorage.getItem('pokeinv_fxrate')).rate, 1.31, label + ': the second source\'s rate is the one cached');
+    assert.strictEqual(JSON.parse(localStorage.getItem('pokeinv_fxrate_eur')).rate, 1.52, label);
+  }
+});
+
+test('fx-currency: a v2 answer with no usable SGD rate, with every other source down, ends on the stale cache and then the hardcoded rates, as before', async () => {
+  const stale = { date: '2020-01-01', rate: 1.3 };
+  // a spread of the cases rather than all of them, each of these ends in a console warning
+  for (const label of ['an empty array', 'an array with no SGD element', 'a text rate', 'the retired v1 shape', 'the v2 error object']) {
+    const body = NO_SGD_RATE[label];
+    const withCache = await loadApp({ localStorage: { pokeinv_fxrate: JSON.stringify(stale), pokeinv_fxrate_eur: JSON.stringify({ date: '2020-01-01', rate: 1.6 }) } });
+    withCache.fetchMock.calls.length = 0;
+    withCache.fetchMock.route('frankfurter.dev', { ok: true, json: body });
+    assert.strictEqual(await withCache.ctx.getSgdRate(), 1.3, label + ': stale cache');
+    assert.strictEqual(await withCache.ctx.getEurSgdRate(), 1.6, label + ': stale cache');
+    const bare = await loadApp();
+    bare.fetchMock.calls.length = 0;
+    bare.fetchMock.route('frankfurter.dev', { ok: true, json: body });
+    assert.strictEqual(await bare.ctx.getSgdRate(), 1.27, label + ': hardcoded USD');
+    assert.strictEqual(await bare.ctx.getEurSgdRate(), 1.45, label + ': hardcoded EUR');
+    assert.strictEqual(bare.localStorage.getItem('pokeinv_fxrate'), null, label + ': a failed lookup caches nothing');
+  }
+});
+
+test('fx-currency: the Frankfurter calls name /v2/rates with base and quotes, keep the 4 second timeout, and no v1 URL is left in the FX functions', () => {
+  const src = require('node:fs').readFileSync(require('./harness.js').ROOT + '/app.js', 'utf8');
+  const fx = src.slice(src.indexOf('async function getSgdRate()'), src.indexOf('function eurToSgd('));
+  assert.ok(fx.length > 1000 && fx.includes('getEurSgdRate'), 'the slice is both waterfalls');
+  for (const base of ['USD', 'EUR']) {
+    assert.ok(fx.includes("fetch('https://api.frankfurter.dev/v2/rates?base=" + base + "&quotes=SGD', { signal: AbortSignal.timeout(4000) })"), base);
+  }
+  assert.strictEqual((fx.match(/api\.frankfurter\.dev\//g) || []).length, 3, 'two calls, and the comment that tells the move');
+  assert.doesNotMatch(fx, /fetch\('https:\/\/api\.frankfurter\.dev\/v1/, 'no call goes to v1');
+  assert.doesNotMatch(fx, /[?&](?:from|to|symbols)=/, 'v1 and v2 spell their parameters differently: base and quotes, not from, to or symbols');
 });
 
 test('fx-currency: no request ever goes to the retired api.frankfurter.app host, even when the new host is down', async () => {
@@ -140,7 +227,7 @@ test('fx-currency: getEurSgdRate - an out-of-band rate from the new host (0.4, 9
   for (const bad of [0.4, 9]) {
     const { ctx, fetchMock } = await loadApp();
     fetchMock.calls.length = 0;
-    fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: bad } } });
+    fetchMock.route('frankfurter.dev', { ok: true, json: v2('EUR', bad) });
     assert.strictEqual(await ctx.getEurSgdRate(), 1.45, 'a rate of ' + bad + ' is outside the (1.0, 2.5) band');
   }
 });

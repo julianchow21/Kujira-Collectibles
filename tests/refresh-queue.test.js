@@ -115,7 +115,7 @@ test('refresh-queue: _runTcgdexLane - a single-item lane that resolves applies t
   });
   fetchMock.route('/cards?name=', { ok: true, json: [{ id: 'sv3-199' }] });
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
 
   const today = new Date().toISOString().slice(0, 10);
   const q = { items: [{ lane: 'tcgdex', id: 's1', table: 'singles', name: 'Pikachu 25', language: 'EN', tcgdexId: null, copyTargets: [] }] };
@@ -156,7 +156,7 @@ test('refresh-queue: _runTcgdexLane - a TWO item lane exercises the inter-item g
   fetchMock.route('/cards?name=Pikachu', { ok: true, json: [{ id: 'sv3-199' }] });
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
   fetchMock.route('/cards?name=Eevee', { ok: true, json: [] }); // miss
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } });
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
 
   const today = new Date().toISOString().slice(0, 10);
   const q = {
@@ -193,7 +193,7 @@ test('refresh-queue: _runRefreshQueueBody - PPT lane classifies ok vs data-miss 
   fetchMock.route('search=Charizard', { ok: true, json: { data: [{ name: 'Charizard', number: '4', ebay: { psa10: { avg: 800 } } }] } });
   fetchMock.route('search=Blastoise', { ok: false, status: 500, text: 'server error' }); // transport failure, never burns a credit
   fetchMock.route('search=Venusaur', { ok: true, json: { data: [] } }); // clean "no match" data miss
-  fetchMock.route('frankfurter.dev', { ok: true, json: { rates: { SGD: 1 } } }); // rate=1 keeps maxSgd === maxUsd, easy to predict
+  fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] }); // rate=1 keeps maxSgd === maxUsd, easy to predict
 
   const today = new Date().toISOString().slice(0, 10);
   const q = {

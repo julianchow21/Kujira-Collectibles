@@ -6634,6 +6634,440 @@ function kjrInspectBindRows() {
   kjrIntroMain().catch(function (e) { introKillSwitch = introKillSwitch || 'error'; kjrIntroForceRemove(e); });
 })();
 
+/* ===== Sign-in gate whale drift (v3.81) =====
+   A short Three.js scene for the gate's loading state, drawn into #kjr-auth-scene over the static whale <img> that index.html and
+   styles.css already show. It is decoration and nothing waits on it: kjrAuthBoot is unchanged, and app.js has one line in
+   _kjrShowAuthState (kjrGateSceneState, every state change) and one in _kjrSetAuthGate (kjrGateSceneStop, when the gate hides).
+   Any failure leaves the static whale on screen. It shares nothing with the launch intro above, ignores kujira_intro_enabled,
+   adds no window pointer or key listener and does not touch the toasts or the sign-in form.
+   Start: the loading state must still be showing 250ms after it appeared, prefers-reduced-motion must not be set and WebGL must
+   exist (a throwaway canvas probe whose context is released at once, before anything is fetched). Then three.js is imported (4s ceiling, the URL the intro uses, so
+   sw.js already precaches it) and the whale image is loaded. The scene is orthographic and measured in CSS pixels: the whale on a
+   plane (60% of the box width and 90% of its height at most, aspect kept) bobbing 6px on a 3.2s sine with a 2 degree tilt, an
+   accent glow sprite behind it that breathes, and 40 foil motes in the accent and the whale's pastels drifting up and wrapping.
+   The canvas fades in over 260ms after its first frame, the static whale fades out under it.
+   Stop: on any other gate state and when the gate hides. If the box is still on screen the canvas fades out for 260ms first, but
+   the loading state is already display:none when either hook runs, so in practice everything is disposed on the spot: each
+   geometry, material and texture, the renderer, its WebGL context (forceContextLoss), the canvas and both listeners (window
+   resize, document visibilitychange). No WebGL context outlives the loading state.
+   Debug: window.__gateSceneDebug.info() (phase, why it fell back, counters, timings from the moment the loading state showed). */
+var KJR_GATE_SCENE_DELAY_MS = 250;   // the loading state must still show this long after it appeared, so a quick session check never starts a scene
+var KJR_GATE_SCENE_IMPORT_MS = 4000; // ceiling on the three.js import, past it the static whale stays
+var KJR_GATE_SCENE_FADE_MS = 260;    // canvas fade in and out, the figure the stylesheet transition uses
+var KJR_GATE_SCENE_MOTES = 40;
+var KJR_GATE_SCENE_BOB_PX = 6;       // whale bob, amplitude in CSS pixels
+var KJR_GATE_SCENE_BOB_S = 3.2;      // and its period in seconds
+var KJR_GATE_SCENE_TILT_RAD = 2 * Math.PI / 180;
+var KJR_GATE_SCENE_MARGIN_PX = 8;    // motes wrap this far outside the box, so a wrap is never seen
+var KJR_GATE_SCENE_IMG = './Assets/whale-icon.png';
+// The whale's own pastels (cyan, pink, yellow, lavender, coral). Normal blending on the light box would wash them out, so light takes
+// the same hues one step deeper. The accent is read from --accent (the glow and one mote in six), these are the fallbacks.
+var KJR_GATE_SCENE_PASTELS_DARK = [0x7FE3F0, 0xFF9FD2, 0xFFF08A, 0xB3A5FF, 0xFFA5A0];
+var KJR_GATE_SCENE_PASTELS_LIGHT = [0x1FA9BD, 0xD6408F, 0xC99A00, 0x7A69E0, 0xD9605A];
+var _kjrGateScene = {
+  phase: 'idle',   // idle, pending (start timer armed), loading (import or image in flight), running, stopping (fading out before the dispose)
+  token: 0,        // every stop bumps it, an async step that resumes under an older token drops its work and builds nothing
+  timer: 0, stopTimer: 0, raf: 0,
+  paused: false,   // the tab is hidden, no frame is queued
+  last: 0, time: 0, // previous frame timestamp (0 after a pause) and seconds of animation played, which only advances by a capped frame delta
+  live: false,     // the first frame has rendered
+  onResize: null, onVis: null,
+  res: null,       // what this run built, null whenever nothing is built
+  reason: '',      // why the last run fell back to the static whale, '' for a running scene
+  marks: { shown: 0, start: 0, imported: 0, built: 0, firstFrame: 0 },
+  stats: { starts: 0, frames: 0, contextLosses: 0, disposed: { geometries: 0, materials: 0, textures: 0, renderers: 0 } }
+};
+
+// The seam for the library: one call site, so a test can replace this global.
+function kjrGateSceneImport() { return import('./Assets/lib/three.module.js?v=3.31'); }
+
+function kjrGateSceneWarn(err) {
+  try { console.warn('[gate-scene] stopped:', err); } catch (e) { /* logging must never be the thing that throws */ }
+}
+
+function kjrGateSceneError(reason, message) {
+  var e = new Error(message || reason);
+  e.gateReason = reason;
+  return e;
+}
+
+// The loading state is on screen: a real gate (app.js tells a harness without one by the tag, section) with its loading state shown.
+function kjrGateSceneLoadingVisible() {
+  var gate = document.getElementById('kjr-auth-gate');
+  if (!gate || gate.tagName !== 'SECTION' || gate.hidden) return false;
+  var loading = document.getElementById('kjr-auth-loading');
+  return !!loading && !loading.hidden;
+}
+
+// A throwaway canvas is asked for a context. That context is real, so it is released on the spot (WEBGL_lose_context) rather than left
+// for the garbage collector: the only context the scene may leave open is the renderer's, and kjrGateSceneFinalise loses that one.
+function kjrGateSceneHasWebGL() {
+  try {
+    var c = document.createElement('canvas');
+    var gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return false;
+    try {
+      var lose = typeof gl.getExtension === 'function' ? gl.getExtension('WEBGL_lose_context') : null;
+      if (lose && typeof lose.loseContext === 'function') lose.loseContext();
+    } catch (e) { /* a probe that will not let go is left to the garbage collector */ }
+    return true;
+  } catch (e) { return false; }
+}
+
+// '' when a scene may start, else the reason it must not. Cheapest first, and nothing is fetched until all of them pass.
+function kjrGateSceneSkipReason() {
+  if (!kjrGateSceneLoadingVisible()) return 'left-loading';
+  try {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 'reduced-motion';
+  } catch (e) { /* no media query support, treated as no preference */ }
+  if (!document.getElementById('kjr-auth-scene')) return 'no-box';
+  if (!kjrGateSceneHasWebGL()) return 'no-webgl';
+  return '';
+}
+
+// The hook app.js calls from _kjrShowAuthState with the id it is showing. The loading state arms the start timer, any other state stops
+// the scene. A scene must never be able to break the gate, so nothing in here throws.
+function kjrGateSceneState(stateId) {
+  try {
+    var S = _kjrGateScene;
+    if (stateId !== 'kjr-auth-loading') { kjrGateSceneStop(); return; }
+    if (S.phase === 'stopping') kjrGateSceneStop(true);
+    if (S.phase !== 'idle') return; // armed, loading or running already
+    S.marks = { shown: performance.now(), start: 0, imported: 0, built: 0, firstFrame: 0 }; // a new run, so the timings are its own
+    S.timer = setTimeout(function () { S.timer = 0; kjrGateSceneStart(); }, KJR_GATE_SCENE_DELAY_MS);
+    S.phase = 'pending';
+  } catch (e) { kjrGateSceneWarn(e); }
+}
+
+function kjrGateSceneStart() {
+  try {
+    var S = _kjrGateScene;
+    if (S.phase === 'stopping') kjrGateSceneStop(true);
+    if (S.phase === 'loading' || S.phase === 'running') return; // a second start while one runs is a no-op
+    if (S.timer) { clearTimeout(S.timer); S.timer = 0; }
+    S.phase = 'idle';
+    if (!S.marks.shown) S.marks.shown = performance.now();
+    var skip = kjrGateSceneSkipReason();
+    if (skip) { S.reason = skip; return; }
+    var token = ++S.token;
+    S.phase = 'loading';
+    S.reason = '';
+    S.stats.starts++;
+    S.marks.start = performance.now();
+    kjrGateSceneLoadThree().then(function (THREE) {
+      if (token !== S.token) return; // the state moved on while the library came in
+      S.marks.imported = performance.now();
+      return kjrGateSceneLoadImage().then(function (img) {
+        if (token !== S.token) return;
+        kjrGateSceneBuild(THREE, img);
+      });
+    }).catch(function (e) {
+      if (token !== S.token) return;
+      kjrGateSceneFail((e && e.gateReason) || 'error', e, !(e && e.gateReason)); // an import or image failure is expected offline, only the rest is worth a warning
+    });
+  } catch (e) { kjrGateSceneFail('error', e, true); }
+}
+
+function kjrGateSceneLoadThree() {
+  return new Promise(function (resolve, reject) {
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      reject(kjrGateSceneError('import-timeout', 'three.js import took longer than ' + KJR_GATE_SCENE_IMPORT_MS + 'ms'));
+    }, KJR_GATE_SCENE_IMPORT_MS);
+    function settle(fn, value) { if (done) return; done = true; clearTimeout(timer); fn(value); }
+    try {
+      Promise.resolve(kjrGateSceneImport()).then(
+        function (ns) { settle(resolve, ns); },
+        function (e) { settle(reject, kjrGateSceneError('import-failed', e && e.message)); }
+      );
+    } catch (e) { settle(reject, kjrGateSceneError('import-failed', e && e.message)); }
+  });
+}
+
+function kjrGateSceneLoadImage() {
+  return new Promise(function (resolve, reject) {
+    var img = new Image();
+    img.onload = function () { resolve(img); };
+    img.onerror = function () { reject(kjrGateSceneError('image-failed', 'whale image did not load')); };
+    img.src = KJR_GATE_SCENE_IMG;
+  });
+}
+
+// A soft white round, tinted by each material's colour. One texture serves the glow sprite and the motes.
+function kjrGateSceneSoftCanvas() {
+  var s = 64;
+  var c = document.createElement('canvas');
+  c.width = c.height = s;
+  var g = c.getContext('2d');
+  if (!g) throw new Error('no 2d canvas context');
+  var grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.3, 'rgba(255,255,255,0.7)');
+  grad.addColorStop(0.65, 'rgba(255,255,255,0.2)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+  return c;
+}
+
+function kjrGateSceneAccent(light) {
+  var hex = light ? 0x5B4BD1 : 0x9F8CFF;
+  try {
+    var m = /^#([0-9a-f]{6})$/i.exec(String(getComputedStyle(document.documentElement).getPropertyValue('--accent') || '').trim());
+    if (m) hex = parseInt(m[1], 16);
+  } catch (e) { /* the constants above are the same two values the stylesheet declares */ }
+  return hex;
+}
+
+// Builds the whole scene, then starts the loop. Everything made is recorded in R as it is made, so kjrGateSceneFinalise can free a
+// half-built run too. Any throw ends in the fallback.
+function kjrGateSceneBuild(THREE, img) {
+  var S = _kjrGateScene;
+  var box = document.getElementById('kjr-auth-scene');
+  var W = box ? box.clientWidth : 0, H = box ? box.clientHeight : 0;
+  if (!(W > 0) || !(H > 0)) { kjrGateSceneFail('no-size'); return; }
+  var R = S.res = {
+    THREE: THREE, box: box, W: W, H: H, aspect: 1, canvas: null, renderer: null, scene: null, camera: null,
+    whale: null, glow: null, glowMat: null, glowBase: 0, glowAmp: 0, glowSize: 0, moteAttr: null, positions: null, motes: null,
+    items: { geometries: [], materials: [], textures: [] }
+  };
+  try {
+    var light = document.documentElement.classList.contains('light');
+    var blend = light ? THREE.NormalBlending : THREE.AdditiveBlending;
+    var track = function (kind, obj) { R.items[kind].push(obj); return obj; };
+    var accent = kjrGateSceneAccent(light);
+
+    var renderer = R.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false, powerPreference: 'low-power' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(W, H, false); // the stylesheet sizes the canvas, so no inline width and height
+    R.canvas = renderer.domElement;
+
+    var scene = R.scene = new THREE.Scene();
+    var camera = R.camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 0.1, 100);
+    camera.position.z = 10;
+
+    var soft = track('textures', new THREE.CanvasTexture(kjrGateSceneSoftCanvas()));
+    var whaleTex = track('textures', new THREE.Texture(img));
+    if (THREE.SRGBColorSpace) whaleTex.colorSpace = THREE.SRGBColorSpace;
+    whaleTex.needsUpdate = true;
+    R.aspect = (img && img.naturalWidth > 0 && img.naturalHeight > 0) ? img.naturalWidth / img.naturalHeight : 1;
+
+    // Back to front by renderOrder with no depth test: the glow, then the motes, then the whale.
+    R.glowBase = light ? 0.3 : 0.5;
+    R.glowAmp = light ? 0.08 : 0.12;
+    var glowMat = R.glowMat = track('materials', new THREE.SpriteMaterial({ map: soft, color: accent, transparent: true, opacity: R.glowBase, blending: blend, depthTest: false, depthWrite: false }));
+    var glow = R.glow = new THREE.Sprite(glowMat);
+    glow.renderOrder = 0;
+    scene.add(glow);
+
+    var n = KJR_GATE_SCENE_MOTES;
+    var pastels = light ? KJR_GATE_SCENE_PASTELS_LIGHT : KJR_GATE_SCENE_PASTELS_DARK;
+    var tones = [accent].concat(pastels).map(function (hex) { var c = new THREE.Color(hex); return [c.r, c.g, c.b]; });
+    var positions = R.positions = new Float32Array(n * 3);
+    var colours = new Float32Array(n * 3);
+    var motes = R.motes = { n: n, nx: [], ny: [], speed: [], amp: [], freq: [], phase: [] };
+    for (var i = 0; i < n; i++) {
+      motes.nx.push(Math.random());
+      motes.ny.push(Math.random());
+      motes.speed.push(9 + Math.random() * 17);      // px per second, upward
+      motes.amp.push(1.5 + Math.random() * 3.5);     // px of sideways sway
+      motes.freq.push(0.4 + Math.random() * 0.8);
+      motes.phase.push(Math.random() * Math.PI * 2);
+      var tone = tones[i % tones.length];
+      colours[i * 3] = tone[0]; colours[i * 3 + 1] = tone[1]; colours[i * 3 + 2] = tone[2];
+    }
+    var moteGeo = track('geometries', new THREE.BufferGeometry());
+    var moteAttr = R.moteAttr = new THREE.BufferAttribute(positions, 3);
+    moteGeo.setAttribute('position', moteAttr);
+    moteGeo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+    var moteMat = track('materials', new THREE.PointsMaterial({ size: 4.5, map: soft, vertexColors: true, transparent: true, opacity: light ? 0.85 : 0.9, blending: blend, depthTest: false, depthWrite: false, sizeAttenuation: false }));
+    var points = new THREE.Points(moteGeo, moteMat);
+    points.renderOrder = 1;
+    points.frustumCulled = false; // the points move every frame, the bounding sphere is from their first positions
+    scene.add(points);
+
+    var whaleGeo = track('geometries', new THREE.PlaneGeometry(1, 1));
+    var whaleMat = track('materials', new THREE.MeshBasicMaterial({ map: whaleTex, transparent: true, depthTest: false, depthWrite: false }));
+    var whale = R.whale = new THREE.Mesh(whaleGeo, whaleMat);
+    whale.renderOrder = 2;
+    scene.add(whale);
+
+    kjrGateSceneFit(R);
+    kjrGateSceneAnimate(R, 0, 0);
+    box.appendChild(R.canvas);
+
+    S.onResize = function () { kjrGateSceneGuard(kjrGateSceneResize); };
+    S.onVis = function () { kjrGateSceneGuard(kjrGateSceneVisibility); };
+    window.addEventListener('resize', S.onResize);
+    document.addEventListener('visibilitychange', S.onVis);
+
+    S.marks.built = performance.now();
+    S.time = 0; S.last = 0; S.live = false;
+    S.paused = !!document.hidden;
+    S.phase = 'running';
+    if (!S.paused) S.raf = requestAnimationFrame(kjrGateSceneFrame);
+  } catch (e) { kjrGateSceneFail('error', e, true); }
+}
+
+// The whale fills at most 60% of the box width and 90% of its height, aspect kept (the stylesheet gives the static whale the same
+// box and object-fit: contain, so the two overlap at rest). The glow is a little larger than the whale and never taller than the box.
+function kjrGateSceneFit(R) {
+  var pw = 0.6 * R.W, ph = pw / R.aspect, maxH = 0.9 * R.H;
+  if (ph > maxH) { ph = maxH; pw = ph * R.aspect; }
+  R.whale.scale.set(pw, ph, 1);
+  R.glowSize = Math.min(pw * 1.55, R.H * 1.05);
+}
+
+// One step of the animation at t seconds. dt is the seconds since the last step, the motes drift by it.
+function kjrGateSceneAnimate(R, t, dt) {
+  var s = Math.sin(t * 2 * Math.PI / KJR_GATE_SCENE_BOB_S);
+  R.whale.position.y = s * KJR_GATE_SCENE_BOB_PX;
+  R.whale.rotation.z = s * KJR_GATE_SCENE_TILT_RAD; // nose up as it rises
+  var breathe = Math.sin(t * 2 * Math.PI / 4.8 + 1.1);
+  R.glowMat.opacity = R.glowBase + R.glowAmp * breathe;
+  var gs = R.glowSize * (1 + 0.025 * breathe);
+  R.glow.scale.set(gs, gs, 1);
+  var m = R.motes, pos = R.positions, span = R.H + 2 * KJR_GATE_SCENE_MARGIN_PX;
+  for (var i = 0; i < m.n; i++) {
+    var ny = m.ny[i] + dt * m.speed[i] / span;
+    if (ny >= 1) { ny -= Math.floor(ny); m.nx[i] = Math.random(); } // off the top, back in at the bottom on a fresh column
+    m.ny[i] = ny;
+    pos[i * 3] = (m.nx[i] - 0.5) * R.W + Math.sin(t * m.freq[i] + m.phase[i]) * m.amp[i];
+    pos[i * 3 + 1] = (ny - 0.5) * span;
+    pos[i * 3 + 2] = 0;
+  }
+  R.moteAttr.needsUpdate = true;
+}
+
+function kjrGateSceneFrame(ts) {
+  var S = _kjrGateScene, R = S.res;
+  S.raf = 0;
+  if (!R || S.paused || (S.phase !== 'running' && S.phase !== 'stopping')) return;
+  try {
+    S.raf = requestAnimationFrame(kjrGateSceneFrame);
+    var now = (typeof ts === 'number' && isFinite(ts)) ? ts : performance.now();
+    var dt = S.last ? Math.min(0.1, Math.max(0, (now - S.last) / 1000)) : 0;
+    S.last = now;
+    S.time += dt;
+    kjrGateSceneAnimate(R, S.time, dt);
+    R.renderer.render(R.scene, R.camera);
+    S.stats.frames++;
+    if (!S.live && S.phase === 'running') { // a fade-out that began before the first frame must not fade the canvas in
+      S.live = true;
+      S.marks.firstFrame = performance.now();
+      R.canvas.classList.add('kjr-in');       // the canvas fades in over 260ms
+      R.box.classList.add('kjr-scene-live');  // and the static whale fades out under it
+    }
+  } catch (e) { kjrGateSceneFail('error', e, true); }
+}
+
+function kjrGateSceneGuard(fn) {
+  try { fn(); } catch (e) { kjrGateSceneFail('error', e, true); }
+}
+
+function kjrGateSceneResize() {
+  var R = _kjrGateScene.res;
+  if (!R || !R.box) return;
+  var W = R.box.clientWidth, H = R.box.clientHeight;
+  if (!(W > 0) || !(H > 0)) return;
+  R.W = W; R.H = H;
+  var c = R.camera;
+  c.left = -W / 2; c.right = W / 2; c.top = H / 2; c.bottom = -H / 2;
+  c.updateProjectionMatrix();
+  R.renderer.setSize(W, H, false);
+  kjrGateSceneFit(R);
+}
+
+// A hidden tab queues no frames, and the clock restarts on return so the whale carries on from where it was.
+function kjrGateSceneVisibility() {
+  var S = _kjrGateScene;
+  if (S.phase !== 'running' && S.phase !== 'stopping') return;
+  if (document.hidden) {
+    if (S.raf) { cancelAnimationFrame(S.raf); S.raf = 0; }
+    S.paused = true;
+    S.last = 0;
+  } else if (S.paused) {
+    S.paused = false;
+    S.last = 0;
+    S.raf = requestAnimationFrame(kjrGateSceneFrame);
+  }
+}
+
+// Stops the scene. immediate skips the fade. While the box is still on screen the canvas fades out first and everything is disposed
+// 260ms later, once the box is hidden (the case on both hooks) there is nothing to fade and it is all disposed now.
+function kjrGateSceneStop(immediate) {
+  try {
+    var S = _kjrGateScene;
+    S.token++; // an import or image still in flight resumes under a stale token and builds nothing
+    if (S.timer) { clearTimeout(S.timer); S.timer = 0; }
+    if (S.phase === 'running') {
+      if (immediate === true || !kjrGateSceneLoadingVisible()) { kjrGateSceneFinalise(); return; }
+      S.phase = 'stopping';
+      var canvas = S.res && S.res.canvas;
+      if (canvas && canvas.classList) canvas.classList.remove('kjr-in');
+      S.stopTimer = setTimeout(kjrGateSceneFinalise, KJR_GATE_SCENE_FADE_MS);
+    } else if (S.phase === 'stopping') {
+      if (immediate === true || !kjrGateSceneLoadingVisible()) kjrGateSceneFinalise();
+    } else {
+      S.phase = 'idle'; // armed or loading: nothing is built yet
+    }
+  } catch (e) { kjrGateSceneWarn(e); }
+}
+
+function kjrGateSceneFail(reason, err, warn) {
+  _kjrGateScene.reason = reason;
+  if (warn && err) kjrGateSceneWarn(err);
+  kjrGateSceneFinalise();
+}
+
+// Frees everything the run built and leaves the static whale as the whole picture. Safe at any point, on a half-built run too.
+function kjrGateSceneFinalise() {
+  var S = _kjrGateScene, R = S.res;
+  S.res = null;
+  if (S.timer) { clearTimeout(S.timer); S.timer = 0; }
+  if (S.stopTimer) { clearTimeout(S.stopTimer); S.stopTimer = 0; }
+  if (S.raf) { try { cancelAnimationFrame(S.raf); } catch (e) { /* nothing to cancel */ } S.raf = 0; }
+  if (S.onResize) { try { window.removeEventListener('resize', S.onResize); } catch (e) { /* listener already gone */ } }
+  if (S.onVis) { try { document.removeEventListener('visibilitychange', S.onVis); } catch (e) { /* listener already gone */ } }
+  S.onResize = null; S.onVis = null;
+  S.paused = false; S.last = 0; S.time = 0; S.live = false;
+  if (R) {
+    ['geometries', 'materials', 'textures'].forEach(function (kind) {
+      R.items[kind].forEach(function (obj) {
+        try { obj.dispose(); S.stats.disposed[kind]++; } catch (e) { /* best effort, the context is lost below anyway */ }
+      });
+    });
+    if (R.renderer) {
+      try { R.renderer.dispose(); S.stats.disposed.renderers++; } catch (e) { /* best effort */ }
+      try {
+        if (typeof R.renderer.forceContextLoss === 'function') { R.renderer.forceContextLoss(); S.stats.contextLosses++; }
+      } catch (e) { /* best effort */ }
+    }
+    if (R.canvas && R.canvas.parentNode) { try { R.canvas.parentNode.removeChild(R.canvas); } catch (e) { /* already detached */ } }
+    if (R.box && R.box.classList) R.box.classList.remove('kjr-scene-live');
+  }
+  S.phase = 'idle';
+}
+
+(function kjrGateSceneInit() {
+  window.__gateSceneDebug = {
+    info: function () {
+      var S = _kjrGateScene, m = S.marks;
+      var rel = function (v) { return v && m.shown ? Math.round((v - m.shown) * 10) / 10 : null; };
+      return {
+        phase: S.phase, reason: S.reason, starts: S.stats.starts, frames: S.stats.frames,
+        canvas: !!(S.res && S.res.canvas), contextLosses: S.stats.contextLosses,
+        disposed: { geometries: S.stats.disposed.geometries, materials: S.stats.disposed.materials, textures: S.stats.disposed.textures, renderers: S.stats.disposed.renderers },
+        startMs: rel(m.start), importedMs: rel(m.imported), builtMs: rel(m.built), firstFrameMs: rel(m.firstFrame)
+      };
+    }
+  };
+  // app.js shows the loading state at the end of its own script, before this file has run, so the hook above has not seen it. Pick it up here.
+  try { if (kjrGateSceneLoadingVisible()) kjrGateSceneState('kjr-auth-loading'); } catch (e) { kjrGateSceneWarn(e); }
+})();
+
 // ═════════════ Polish and leftovers (v3.74) ═════════════
 // Redesign Step 6b. Three small features share this section: the holo shine, the focus after a delete and the phone sort. The
 // rail's long-press labels sit beside the rail tooltip (kjrNavTouchTips, above) and the ⌘K palette is in app.js, next to Quick Entry.

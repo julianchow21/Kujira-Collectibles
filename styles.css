@@ -1220,7 +1220,6 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
 .kjr-auth-state[hidden]{display:none}
 .kjr-auth-state p{margin:0}
 .kjr-auth-state .btn{justify-content:center;min-height:42px}
-.kjr-auth-state .hig-spinner{margin:4px auto}
 #kjr-auth-loading{text-align:center}
 #kjr-auth-form .fi,#kjr-auth-recover-form .fi,#kjr-auth-recovery-form .fi{width:100%;min-height:44px}
 #kjr-auth-form .btn,#kjr-auth-recover-form .btn,#kjr-auth-recovery-form .btn{width:100%;justify-content:center}
@@ -2540,6 +2539,27 @@ body{padding-left:var(--kjr-side-w)}
 .section-title:focus,.section-title:focus-visible{outline:none}
 /* The sign-in gate moves focus to its state heading (an h2 with tabindex -1) so a screen reader announces it, and a heading is not a control, so no ring */
 #kjr-auth-gate [tabindex="-1"]:focus,#kjr-auth-gate [tabindex="-1"]:focus-visible{outline:none}
+
+/* ── Sign-in gate whale drift (v3.81) ──
+   #kjr-auth-scene replaces the spinner and the "Checking your session" text in the loading state (the heading stays, as .sr-only, for
+   screen readers and the focus move). The static whale is the fallback and the whole picture on its own: reduced motion, no WebGL, a
+   failed import, a session check that ends inside 250ms. It pulses slowly, and fades out under the canvas once features.js
+   (kjrGateScene) has drawn a first frame. The canvas is transparent, so the box colour shows through it. The whale takes a 60% by 90%
+   area with object-fit: contain, the same fit the scene gives the 3D plane, so the two overlap when the whale is at rest. Tokens only. */
+#kjr-auth-scene{position:relative;width:100%;height:200px;overflow:hidden;border-radius:var(--radius);background:var(--bg3);border:1px solid var(--border)}
+.kjr-auth-scene-fallback{position:absolute;left:50%;top:50%;width:60%;height:90%;transform:translate(-50%,-50%);object-fit:contain;pointer-events:none;user-select:none;animation:kjrGatePulse 2.4s ease-in-out infinite}
+#kjr-auth-scene canvas{position:absolute;inset:0;display:block;width:100%;height:100%;opacity:0;pointer-events:none;transition:opacity .26s ease}
+#kjr-auth-scene canvas.kjr-in{opacity:1}
+#kjr-auth-scene.kjr-scene-live .kjr-auth-scene-fallback{animation:kjrGateFallbackOut .26s ease forwards}
+@keyframes kjrGatePulse{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes kjrGateFallbackOut{from{opacity:.8}to{opacity:0}}
+/* A short landscape phone: the box gives some of its height back so the loading card still fits the screen */
+@media (max-height:480px){#kjr-auth-scene{height:112px}}
+@media (prefers-reduced-motion:reduce){
+  .kjr-auth-scene-fallback{animation:none;opacity:.9}
+  #kjr-auth-scene.kjr-scene-live .kjr-auth-scene-fallback{animation:none;opacity:0}
+  #kjr-auth-scene canvas{transition:none}
+}
 
 /* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
 @media (hover: none) {

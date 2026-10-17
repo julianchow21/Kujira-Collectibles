@@ -4,13 +4,13 @@
    on activate. Cross-origin calls (Supabase, the price Worker, CDNs) are never
    intercepted - they pass straight through to the network.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v83';
+const CACHE = 'kujira-v84';
 // three.core.min.js has no ?v= query: it's the vendored file's own internal
 // import specifier (three.module.js imports "./three.core.min.js" verbatim,
 // no query), so the real runtime request never carries one either - a query
 // here would just make this entry miss its own precache. Busted by CACHE
 // bumping instead, same as every other unversioned CORE entry below.
-const CORE = ['./', './index.html', './styles.css?v=3.80', './app.js?v=3.80', './features.js?v=3.80', './dealer-money.js?v=3.80', './dealer-desk.js?v=3.80', './dealer-ui.js?v=3.80', './dealer-store.js?v=3.80', './dealer-production-ui.js?v=3.80', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/fonts/Geist-Variable.woff2', './Assets/fonts/GeistMono-Variable.woff2', './Assets/lib/three.module.js?v=3.31', './Assets/lib/three.core.min.js'];
+const CORE = ['./', './index.html', './styles.css?v=3.81', './app.js?v=3.81', './features.js?v=3.81', './dealer-money.js?v=3.81', './dealer-desk.js?v=3.81', './dealer-ui.js?v=3.81', './dealer-store.js?v=3.81', './dealer-production-ui.js?v=3.81', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/fonts/Geist-Variable.woff2', './Assets/fonts/GeistMono-Variable.woff2', './Assets/lib/three.module.js?v=3.31', './Assets/lib/three.core.min.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) =>

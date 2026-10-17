@@ -285,6 +285,7 @@ function _kjrSetAuthGate(active) {
   const gate = document.getElementById('kjr-auth-gate');
   document.documentElement.classList.toggle('auth-gated', !!active);
   if (gate) gate.hidden = !active;
+  if (!active && typeof kjrGateSceneStop === 'function') kjrGateSceneStop();
   if (!document.body) return;
   for (const child of document.body.children) {
     if (child === gate || child.id === 'kjr-update-pill') continue;
@@ -579,6 +580,7 @@ function _kjrShowAuthState(id, message) {
   _kjrSetAuthGate(true);
   gate.setAttribute('aria-busy', id === 'kjr-auth-loading' ? 'true' : 'false');
   gate.querySelectorAll('.kjr-auth-state').forEach(el => { el.hidden = el.id !== id; });
+  if (typeof kjrGateSceneState === 'function') kjrGateSceneState(id);
   const copy = document.getElementById(id + '-copy') || document.getElementById('kjr-auth-error-copy');
   if (copy && message) copy.textContent = message;
   setTimeout(() => {

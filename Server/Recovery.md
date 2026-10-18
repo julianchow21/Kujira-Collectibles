@@ -1,6 +1,6 @@
 # CAS Candidate Recovery Note
 
-*Disposable technical verification note for the server candidate. This is not the
+*Technical verification note for the server candidate. This is not the
 production runbook.*
 
 The candidate keeps one owner boundary. The Worker checks the exact browser

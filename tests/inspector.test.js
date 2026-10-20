@@ -323,7 +323,7 @@ test('content: Refresh price is off in a local preview and for a single with no 
   assert.match(ctx.kjrInspectHtml('singles', live, { now: NOW }), /data-insp-act="refresh" aria-disabled="true" title="Price refresh is disabled in local preview/);
 });
 
-test('art: a single shows the high image, the neutral placeholder for no id, a miss or a failed load, and the late fill reads the size off the slot', async () => {
+test('art: a single shows the high image, the whale for no id, a miss or a failed load, and the late fill reads the size off the slot', async () => {
   const seed = makeSeed({ singles: [single({ id: 'u', name: 'Umbreon VMAX 215/203', tcgdexId: 'swsh7-215' })] });
   const { ctx } = await loadApp({ seed });
   const item = (o) => single(Object.assign({ id: 'u', name: 'Umbreon VMAX 215/203', tcgdexId: 'swsh7-215' }, o));
@@ -332,27 +332,29 @@ test('art: a single shows the high image, the neutral placeholder for no id, a m
   assert.match(art(), /<span class="kjr-art kjr-insp-art kjr-art-ph" data-sz="h" data-need="1" data-ik="swsh7-215" data-lg="en" data-tcg="swsh7-215"><\/span>/);
   ctx.kjrRememberCardImage('swsh7-215', BASE, 'en');
   const hit = art();
-  assert.match(hit, /<span class="kjr-art kjr-insp-art" data-sz="h"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/high\.webp" width="245" height="337" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false"><\/span>/);
+  // v3.83: a picture not yet on screen starts in the loading look (shimmer, aria-busy), loads at once with high priority (the open panel is what it
+  // is for, lazy there only waits for the sheet to slide in) and asks for CORS so sw.js can cache it
+  assert.match(hit, /<span class="kjr-art kjr-insp-art kjr-art-loading" data-sz="h" aria-busy="true"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/high\.webp" width="245" height="337" alt="" fetchpriority="high" decoding="async" referrerpolicy="no-referrer" draggable="false" crossorigin="anonymous"><\/span>/);
   assert.match(hit, /<span class="kjr-insp-sheen" aria-hidden="true"><\/span>/);
   assert.match(hit, /^<div class="kjr-insp-stage" aria-hidden="true"><div class="kjr-insp-card">/);
   // the late fill (kjrApplyArt) draws kjrImgTag(base, slot.data-sz): 'h' is the large image, 'c' and 't' are unchanged
   assert.match(ctx.kjrImgTag(BASE, 'h'), /src="[^"]*\/high\.webp" width="245" height="337"/);
   assert.match(ctx.kjrImgTag(BASE, 'c'), /src="[^"]*\/low\.webp" width="245" height="337"/);
   assert.match(ctx.kjrImgTag(BASE, 't'), /src="[^"]*\/low\.webp" width="28" height="39"/);
-  // no id, and a fresh miss: the neutral placeholder, nothing for a lookup to do. A Japanese single is the exception (v3.80): with a
+  // no id, and a fresh miss: the whale, nothing for a lookup to do. A Japanese single is the exception (v3.80): with a
   // card number in its name a lookup can find its card by the Japanese name, so its placeholder carries the row id for that lookup,
-  // and without a number (or in another non-English language) it is the neutral placeholder again
-  assert.match(art({ tcgdexId: '' }), /<span class="kjr-art kjr-insp-art kjr-art-ph" data-sz="h"><\/span>/);
+  // and without a number (or in another non-English language) it is the whale again
+  assert.match(art({ tcgdexId: '' }), /<span class="kjr-art kjr-insp-art kjr-art-ph kjr-art-none" data-sz="h" role="img" aria-label="No image yet" title="No image yet"><\/span>/);
   assert.match(art({ tcgdexId: '', language: 'JP' }), /<span class="kjr-art kjr-insp-art kjr-art-ph" data-sz="h" data-need="1" data-ik="single:u" data-lg="ja" data-single="u"><\/span>/);
-  assert.match(art({ tcgdexId: '', language: 'JP', name: 'Umbreon Custom Card' }), /kjr-art-ph" data-sz="h"><\/span>/);
-  assert.match(art({ tcgdexId: '', language: 'CN' }), /kjr-art-ph" data-sz="h"><\/span>/);
+  assert.match(art({ tcgdexId: '', language: 'JP', name: 'Umbreon Custom Card' }), /kjr-art-ph kjr-art-none" data-sz="h" role="img" aria-label="No image yet" title="No image yet"><\/span>/);
+  assert.match(art({ tcgdexId: '', language: 'CN' }), /kjr-art-ph kjr-art-none" data-sz="h" role="img" aria-label="No image yet" title="No image yet"><\/span>/);
   ctx.kjrRememberCardImageMiss('swsh7-218', 'en');
-  assert.match(art({ tcgdexId: 'swsh7-218' }), /kjr-art-ph" data-sz="h"><\/span>/);
+  assert.match(art({ tcgdexId: 'swsh7-218' }), /kjr-art-ph kjr-art-none" data-sz="h" role="img" aria-label="No image yet" title="No image yet"><\/span>/);
   // a high image that failed to load falls back to the small one, and when that fails too it is the placeholder
   ctx._kjrImgBroken[BASE + '/high.webp'] = true;
-  assert.match(art(), /data-sz="c"><img class="kjr-card-img" src="[^"]*\/low\.webp"/);
+  assert.match(art(), /data-sz="c" aria-busy="true"><img class="kjr-card-img" src="[^"]*\/low\.webp"/);
   ctx._kjrImgBroken[BASE + '/low.webp'] = true;
-  assert.match(art(), /kjr-art-ph" data-sz="h"><\/span>/);
+  assert.match(art(), /kjr-art-ph kjr-art-none" data-sz="h" role="img" aria-label="Image could not load" title="Image could not load"><\/span>/, 'a failed picture says so, on a redraw too (v3.83)');
   assert.match(ctx.kjrInspectArtHtml('singles', item(), true), /^<div class="kjr-insp-stage is-sold"/, 'a sold card dims its art');
 });
 

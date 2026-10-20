@@ -191,7 +191,7 @@ test('names, sets, products, channels and ids are escaped in every Overview list
     sales: [sale({ product: evil, channel: evil })],
   });
   ctx.renderDashboard();
-  for (const id of ['dash-top', 'dash-movers', 'dash-sales']) {
+  for (const id of ['dash-top', 'dash-movers', 'dash-sales', 'dash-exposure-body']) {
     const markup = text(document, id);
     assert.doesNotMatch(markup, /<img/i, id + ' has no raw tag from user data');
     assert.match(markup, /&lt;img/);
@@ -329,7 +329,7 @@ test('hero: an empty collection says so and offers one action', async () => {
   assert.match(hero, /No singles or slabs yet/);
   assert.match(hero, /data-ov-act="add">Add a card/);
   assert.doesNotMatch(hero, /See breakdown|ov-chip/);
-  assert.match(text(document, 'dash-exposure-body'), /Add some inventory to see exposure breakdown/);
+  assert.match(text(document, 'dash-exposure-body'), /Add some inventory to see where the money sits/);
   assert.match(text(document, 'dash-movers'), /Add market prices to see gains and losses/);
   assert.match(text(document, 'dash-sales'), /No sales yet/);
   assert.equal(document.getElementById('dash-top-sec').hidden, true);
@@ -371,9 +371,222 @@ test('header: the age counts in UTC days, because the stored price date is a UTC
   assert.equal(ctx.kjrOverviewCheckedText(0, Date.now()), '');
 });
 
-// ── Where the money sits ────────────────────────────────────────────────────
+// ── Where the money sits (v3.83) ────────────────────────────────────────────
+// One fixture with a bit of everything, in whole dollars so every figure can be checked by hand:
+//   Singles  A x2 (cost 10, price 15): cost 20, value 30 on a price.  B (cost 40, no price): cost 40, value 40 estimated.  C is Sold, left out.
+//   Slabs    D (cost 100, price 150) on a price.  E (cost 200, no price) estimated at 200.
+//   Sealed   ETB (paid 50, price 80).  Booster Box x3 (paid 300, no price) estimated at 300.  Booster Pack x10 (paid 40, price 100).
+//            Three rows that are Sold or Opened are left out.
+//   Singles  3 units, cost 60, market 70 (30 priced, 40 estimated), gain 10
+//   Slabs    2 units, cost 300, market 350 (150 priced, 200 estimated), gain 50
+//   Sealed   14 units, cost 390, market 480 (180 priced, 300 estimated), gain 90
+//   Total    19 units, cost 750, market 900 (360 priced, 540 estimated), gain 150
+function moneyFixture() {
+  return {
+    singles: [
+      single({ id: 'A', name: 'Alpha', qty: 2, costPrice: 10, marketPrice: 15 }),
+      single({ id: 'B', name: 'Bravo', qty: 1, costPrice: 40, marketPrice: '' }),
+      single({ id: 'C', name: 'Charlie sold', qty: 1, costPrice: 500, marketPrice: 900, status: 'Sold' }),
+    ],
+    slabs: [
+      slab({ id: 'D', name: 'Delta slab', costPrice: 100, marketPrice: 150 }),
+      slab({ id: 'E', name: 'Echo slab', costPrice: 200, marketPrice: '' }),
+    ],
+    etbs: [
+      { id: 'e1', product: 'Foxtrot ETB', status: 'In Stock', totalPrice: 50, marketPrice: 80 },
+      { id: 'e2', product: 'Sold ETB', status: 'Sold', totalPrice: 999, marketPrice: 999 },
+    ],
+    boosterBoxes: [
+      { id: 'b1', product: 'Golf Box', status: 'Unopened', qty: 3, unitPrice: 100, totalPrice: 300, marketPrice: '' },
+      { id: 'b2', product: 'Opened Box', status: 'Opened', qty: 1, totalPrice: 888, marketPrice: 888 },
+    ],
+    boosterPacks: [
+      { id: 'p1', product: 'Hotel Pack', status: 'Sealed', qty: 10, unitPrice: 4, totalPrice: 40, marketPrice: 100 },
+      { id: 'p2', product: 'Opened Pack', status: 'Opened', qty: 5, totalPrice: 777, marketPrice: 777 },
+    ],
+  };
+}
+const close = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, (msg || 'value') + ': ' + a + ' is not ' + b);
+// The markup of one type's row: from its data-bucket to the next row or the footer (Sealed's runs on into its sub-rows)
+function moneyRow(markup, key) {
+  const start = markup.indexOf('data-bucket="' + key + '"');
+  assert.ok(start > 0, key + ' row is drawn');
+  const next = markup.slice(start + 1).search(/data-bucket="|class="exp-foot"|<\/div><\/div>$/);
+  return markup.slice(start, next < 0 ? undefined : start + 1 + next);
+}
 
-test('exposure card: keeps the pinned ids, shows amount and share, and the Sealed disclosure keeps its state across a re-render', async () => {
+test('exposure stats: units, cost, market value and gain per type, Sold and not-in-stock rows left out', async () => {
+  const { ctx } = await app(moneyFixture());
+  const s = ctx.kjrOvExposureStats(ctx.DB);
+  const by = key => s.buckets.find(b => b.key === key);
+  assert.deepEqual(Array.from(s.buckets, b => b.key), ['singles', 'slabs', 'sealed'], 'the three types, in card order');
+  assert.deepEqual([by('singles').units, by('singles').cost, by('singles').market, by('singles').gain], [3, 60, 70, 10]);
+  assert.deepEqual([by('slabs').units, by('slabs').cost, by('slabs').market, by('slabs').gain], [2, 300, 350, 50]);
+  assert.deepEqual([by('sealed').units, by('sealed').cost, by('sealed').market, by('sealed').gain], [14, 390, 480, 90]);
+  assert.deepEqual([s.total.units, s.total.cost, s.total.market, s.total.gain], [19, 750, 900, 150]);
+  close(by('singles').gainPct, 10 / 60 * 100, 'singles gain % is on its cost');
+  close(s.total.gainPct, 20, 'total gain %');
+  close(by('singles').share, 70 / 900 * 100, 'a type\'s share is of the total market value');
+  close(by('sealed').share, 480 / 900 * 100);
+  close(Array.from(s.buckets, b => b.share).reduce((a, b) => a + b, 0), 100, 'the three shares make the whole');
+  // the sealed sub-rows add up to the Sealed row, ETBs one unit each, boxes and packs by quantity
+  const parts = by('sealed').parts;
+  assert.deepEqual(Array.from(parts, p => p.label), ['ETBs', 'Booster Boxes', 'Booster Packs']);
+  assert.deepEqual(Array.from(parts, p => p.units), [1, 3, 10]);
+  assert.deepEqual(Array.from(parts, p => p.cost), [50, 300, 40]);
+  assert.deepEqual(Array.from(parts, p => p.market), [80, 300, 100]);
+  assert.equal(parts.reduce((a, p) => a + p.units, 0), by('sealed').units);
+});
+
+test('exposure stats: the same totals as computeDashboardStats, so the card and the hero cannot drift', async () => {
+  const { ctx } = await app(moneyFixture());
+  const s = ctx.kjrOvExposureStats(ctx.DB);
+  const d = ctx.computeDashboardStats();
+  const by = key => s.buckets.find(b => b.key === key);
+  close(by('singles').market, d.mktSingles, 'singles market');
+  close(by('slabs').market, d.mktSlabs, 'slabs market');
+  close(by('sealed').market, d.mktSealed, 'sealed market');
+  close(by('singles').cost, d.invCostSingles, 'singles cost');
+  close(by('slabs').cost, d.invCostSlabs, 'slabs cost');
+  close(by('sealed').cost, d.invCostSealed, 'sealed cost');
+  close(s.total.cost, d.totalInvCost, 'total cost');
+  assert.equal(by('singles').units, d.singlesAvail);
+  assert.equal(by('slabs').units, d.slabsAvail);
+  assert.equal(by('sealed').units, d.sealedItemCount, 'Sealed counts units, the same count the Excel summary uses');
+  assert.equal(s.total.units, d.grandItemCount);
+  // the hero is singles + slabs only, the card says it includes sealed
+  close(by('singles').market + by('slabs').market, d.totalMktValue, 'the hero value is singles plus slabs');
+});
+
+test('exposure stats: priced share is by value, an estimate (cost standing in for a price) never counts as priced', async () => {
+  const { ctx } = await app(moneyFixture());
+  const s = ctx.kjrOvExposureStats(ctx.DB);
+  const by = key => s.buckets.find(b => b.key === key);
+  assert.deepEqual([by('singles').priced, by('singles').estimated], [30, 40]);
+  assert.deepEqual([by('slabs').priced, by('slabs').estimated], [150, 200]);
+  assert.deepEqual([by('sealed').priced, by('sealed').estimated], [180, 300]);
+  close(by('singles').pricedPct, 30 / 70 * 100, 'by value, not by rows (one of two rows is priced, 43% of the value)');
+  close(by('sealed').pricedPct, 37.5);
+  close(s.total.pricedPct, 40);
+  for (const b of s.buckets) close(b.priced + b.estimated, b.market, b.key + ' priced plus estimated is the market value');
+
+  const allEst = ctx.kjrOvExposureStats({ singles: [single({ costPrice: 25, marketPrice: '', qty: 4 })] });
+  assert.equal(allEst.buckets[0].pricedPct, 0, 'all estimate, 0% priced');
+  assert.equal(allEst.buckets[0].market, 100, 'still valued, at cost');
+  assert.equal(allEst.buckets[0].gain, 0);
+  const none = ctx.kjrOvExposureStats({ singles: [single({ costPrice: '', marketPrice: '' })] });
+  assert.equal(none.buckets[0].pricedPct, null, 'no value at all, no percentage to state');
+  assert.equal(none.buckets[0].gainPct, null, 'no cost, no gain percentage');
+  assert.equal(none.top, null, 'and nothing to concentrate');
+});
+
+test('exposure stats: quantity counts for singles, boxes and packs, slabs and ETBs are one unit a row, a bad quantity cannot go negative', async () => {
+  const { ctx } = await app({});
+  const s = ctx.kjrOvExposureStats({
+    singles: [single({ qty: 5, costPrice: 2, marketPrice: 3 }), single({ qty: '4', costPrice: 1, marketPrice: 1 }),
+      single({ qty: 0, costPrice: 10, marketPrice: 10 }), single({ qty: -3, costPrice: 10, marketPrice: 10 }), single({ qty: 'x', costPrice: 10, marketPrice: 10 })],
+    slabs: [slab({ qty: 7, costPrice: 50, marketPrice: 60 })],
+    etbs: [{ product: 'ETB', status: 'In Stock', qty: 9, totalPrice: 10, marketPrice: 12 }],
+    boosterBoxes: [{ product: 'Box', status: 'Unopened', qty: 6, totalPrice: 60, marketPrice: 90 }, { product: 'Box zero', status: 'Unopened', qty: 0, totalPrice: 5 }],
+    boosterPacks: [{ product: 'Pack', status: 'Sealed', qty: '12', totalPrice: 24, marketPrice: 36 }],
+  });
+  const by = key => s.buckets.find(b => b.key === key);
+  assert.equal(by('singles').units, 5 + 4 + 1 + 1 + 1, 'a quantity under 1 or unreadable counts as 1');
+  assert.equal(by('singles').cost, 5 * 2 + 4 * 1 + 10 + 10 + 10, 'cost and value are multiplied by the same quantity');
+  assert.equal(by('singles').market, 5 * 3 + 4 * 1 + 10 + 10 + 10);
+  assert.equal(by('slabs').units, 1, 'a slab is one unit whatever the row says');
+  assert.deepEqual(Array.from(by('sealed').parts, p => p.units), [1, 6 + 1, 12], 'an ETB row is one unit, boxes and packs go by quantity');
+  assert.equal(by('sealed').market, 12 + 90 + 5 + 36, 'sealed prices are line totals, never multiplied by quantity');
+});
+
+test('exposure stats: concentration is the five largest holdings by value, one row each, with the largest named', async () => {
+  const { ctx } = await app(moneyFixture());
+  const s = ctx.kjrOvExposureStats(ctx.DB);
+  assert.equal(s.holdings, 7, 'seven Available rows (Sold and Opened rows are not holdings)');
+  assert.equal(s.top.n, 5);
+  close(s.top.pct, (300 + 200 + 150 + 100 + 80) / 900 * 100, 'top five: Golf Box 300, Echo 200, Delta 150, Hotel 100, Foxtrot 80');
+  assert.equal(s.top.name, 'Golf Box');
+  assert.equal(s.top.units, 3);
+  assert.equal(s.top.value, 300);
+  close(s.top.bigPct, 300 / 900 * 100);
+
+  const three = ctx.kjrOvExposureStats({
+    singles: [single({ name: 'Big', qty: 1, costPrice: 50, marketPrice: 60 })],
+    slabs: [slab({ name: 'Mid', costPrice: 20, marketPrice: 30 })],
+    etbs: [{ product: 'Small', status: 'In Stock', totalPrice: 8, marketPrice: 10 }],
+  });
+  assert.equal(three.top.n, 3, 'fewer than five holdings: the top N, all of them');
+  close(three.top.pct, 100);
+  assert.equal(three.top.name, 'Big');
+  close(three.top.bigPct, 60);
+  const one = ctx.kjrOvExposureStats({ slabs: [slab({ name: 'Only', costPrice: 20, marketPrice: 30 })] });
+  assert.equal(one.top.n, 1);
+  close(one.top.bigPct, 100);
+
+  // ties keep the order the rows are read in (singles, slabs, sealed), so the named holding never flickers between redraws
+  const tie = ctx.kjrOvExposureStats({ singles: [single({ name: 'First', costPrice: 1, marketPrice: 10 })], slabs: [slab({ name: 'Second', costPrice: 1, marketPrice: 10 })] });
+  assert.equal(tie.top.name, 'First');
+});
+
+test('exposure stats: a missing table, a null row or an unreadable number is skipped, never thrown', async () => {
+  const { ctx } = await app({});
+  let s;
+  assert.doesNotThrow(() => {
+    s = ctx.kjrOvExposureStats({ singles: [null, undefined, { status: 'Available', qty: 2, costPrice: 'abc', marketPrice: 'Infinity', name: null }], slabs: null, etbs: [null], boosterBoxes: undefined });
+  });
+  assert.equal(s.total.units, 2, 'the readable row still counts as units');
+  assert.equal(s.total.market, 0, 'an unreadable or infinite price adds nothing');
+  assert.ok(Number.isFinite(s.total.cost) && Number.isFinite(s.total.gain));
+  assert.doesNotThrow(() => ctx.kjrOvExposureStats(), 'no argument reads the live DB');
+  assert.equal(ctx.kjrOvExposureHtml(null).includes('exp-empty'), true, 'a missing stats object draws the empty state');
+});
+
+test('exposure card: total with the gain, "Incl. sealed", and a row per type with value, cost, priced share and gain', async () => {
+  const { ctx, document } = await app(moneyFixture());
+  ctx.renderDashboard();
+  const markup = text(document, 'dash-exposure-body');
+  // total block: includes sealed (900), the hero does not (singles + slabs = 420)
+  assert.match(markup, /class="exp-tag">Incl\. sealed</);
+  assert.match(markup, /class="exp-total-val">S\$900</);
+  assert.match(markup, /class="ov-chip pos"><span aria-hidden="true">▲<\/span> \+S\$150 · \+20\.0%/);
+  assert.match(markup, /class="exp-total-sub">on S\$750 cost · 40% of value priced</);
+  assert.match(text(document, 'dash-hero'), /class="ov-hero-value">S\$420</, 'the hero stays singles plus slabs');
+
+  const singles = moneyRow(markup, 'singles');
+  assert.match(singles, /Singles<span class="exp-count"> · 3 units<\/span>/);
+  assert.match(singles, /class="exp-val">S\$70</);
+  assert.match(singles, /on S\$60 cost · <span class="exp-priced" title="[^"]*">43% priced<\/span>/);
+  assert.match(singles, /class="exp-gain pos"><span aria-hidden="true">▲<\/span> \+S\$10 · \+16\.7%/);
+  assert.match(singles, /class="exp-share">8%/);
+  assert.match(singles, /class="exp-fill exp-seg-singles" style="width:7\.78%"><span class="exp-solid" style="flex-grow:42\.86"><\/span><span class="exp-est" style="flex-grow:57\.14"><\/span>/);
+
+  const slabs = moneyRow(markup, 'slabs');
+  assert.match(slabs, /Slabs<span class="exp-count"> · 2 units<\/span>/);
+  assert.match(slabs, /class="exp-val">S\$350</);
+  assert.match(slabs, /on S\$300 cost · <span class="exp-priced"[^>]*>43% priced</);
+  assert.match(slabs, /\+S\$50 · \+16\.7%/);
+  assert.match(slabs, /class="exp-share">39%/);
+
+  const sealed = moneyRow(markup, 'sealed');
+  assert.match(sealed, /Sealed<span class="exp-count"> · 14 units<\/span>/, 'sealed counts units, not rows (3 rows here)');
+  assert.match(sealed, /class="exp-val">S\$480</);
+  assert.match(sealed, /on S\$390 cost · <span class="exp-priced"[^>]*>38% priced</);
+  assert.match(sealed, /\+S\$90 · \+23\.1%/);
+  assert.match(sealed, /exp-fill exp-seg-sealed" style="width:53\.33%"><span class="exp-solid" style="flex-grow:37\.50"><\/span><span class="exp-est" style="flex-grow:62\.50">/);
+
+  // the sub-rows, in the same units
+  assert.match(sealed, /ETBs<span class="exp-count"> · 1 unit<\/span><\/span><span class="exp-sub-val">S\$80<\/span><span class="exp-gain pos"><span aria-hidden="true">▲<\/span> \+S\$30 · \+60\.0%/);
+  assert.match(sealed, /Booster Boxes<span class="exp-count"> · 3 units<\/span><\/span><span class="exp-sub-val">S\$300<\/span><span class="exp-gain flat"[^>]*>at cost</);
+  assert.match(sealed, /Booster Packs<span class="exp-count"> · 10 units<\/span><\/span><span class="exp-sub-val">S\$100<\/span><span class="exp-gain pos"><span aria-hidden="true">▲<\/span> \+S\$60 · \+150%/);
+
+  // the key and the concentration line
+  assert.match(markup, /class="exp-key"><span class="exp-swatch" aria-hidden="true"><\/span>Market price/);
+  assert.match(markup, /class="exp-swatch est" aria-hidden="true"><\/span>Estimated from cost/);
+  assert.match(markup, /Top 5 holdings are <b>92%<\/b> of value/);
+  assert.match(markup, /Largest: <span class="exp-conc-name" title="Golf Box ×3">Golf Box ×3<\/span><span class="exp-conc-pct">\(33%\)<\/span>/);
+});
+
+test('exposure card: keeps the pinned ids, and the Sealed disclosure keeps its state across a re-render', async () => {
   const { ctx, document } = await app({
     singles: [single({ costPrice: 600, marketPrice: 700 })],
     slabs: [slab({ costPrice: 300, marketPrice: 350 })],
@@ -383,10 +596,12 @@ test('exposure card: keeps the pinned ids, shows amount and share, and the Seale
   const markup = text(document, 'dash-exposure-body');
   assert.match(markup, /id="exp-toggle-sealed"/);
   assert.match(markup, /id="exp-sub-sealed" class="exp-sub" style="display:none"/);
-  assert.match(markup, /class="exp-amt">S\$600<\/span><span class="exp-pct">60%/);
-  assert.match(markup, /class="exp-amt">S\$300<\/span><span class="exp-pct">30%/);
-  assert.match(markup, /class="exp-amt">S\$100<\/span><span class="exp-pct">10%/);
-  assert.match(markup, /class="ov-seg exp-seg-singles"/);
+  assert.match(markup, /class="exp-val">S\$700</);
+  assert.match(markup, /class="exp-val">S\$350</);
+  assert.match(markup, /class="exp-val">S\$120</);
+  assert.match(markup, /class="exp-fill exp-seg-singles"/);
+  assert.match(markup, /<button type="button" class="exp-item exp-item-toggle"[^>]*id="exp-toggle-sealed" aria-controls="exp-sub-sealed" aria-expanded="false"/, 'Sealed is the one native disclosure');
+  assert.equal((markup.match(/<button/g) || []).length, 1, 'and the only button in the card');
 
   document.getElementById('exp-sub-sealed').style.display = 'none'; // what the browser has after the first render
   ctx._toggleExposureSub('sealed');
@@ -394,18 +609,214 @@ test('exposure card: keeps the pinned ids, shows amount and share, and the Seale
   const open = text(document, 'dash-exposure-body');
   assert.match(open, /id="exp-toggle-sealed"[^>]*aria-expanded="true"/);
   assert.match(open, /id="exp-sub-sealed" class="exp-sub" style="display:block"/);
+  assert.match(open, /id="exp-caret-sealed" aria-hidden="true" style="transform:rotate\(90deg\)"/, 'the caret stays turned');
   ctx._toggleExposureSub('sealed');
   ctx.renderDashboard();
   assert.match(text(document, 'dash-exposure-body'), /id="exp-toggle-sealed"[^>]*aria-expanded="false"/);
 });
 
-test('exposure card: a type with nothing in it is a plain muted row, not a disclosure', async () => {
+test('exposure card: the Sealed disclosure gets keyboard focus back when a redraw replaces it, and a click on it does nothing else', async () => {
+  const { ctx, document } = await app({ singles: [single()], etbs: [{ id: 'e1', product: 'ETB', status: 'In Stock', totalPrice: 10, marketPrice: 12 }] });
+  ctx.renderDashboard();
+  const body = document.getElementById('dash-exposure-body');
+  assert.match(body.innerHTML, /<button type="button" class="exp-item exp-item-toggle"[^>]*data-ov-act="exposure"[^>]*id="exp-toggle-sealed"/, 'the toggle can be found again after a redraw');
+  // the browser: the old button holds focus, the redraw puts a new one in its place
+  const attrs = { 'data-ov-act': 'exposure' };
+  const holder = { getAttribute: n => (n in attrs ? attrs[n] : null) };
+  let focused = 0;
+  const fresh = { tagName: 'BUTTON', getAttribute: holder.getAttribute, focus: () => { focused += 1; } };
+  document.activeElement = { closest: sel => (sel === '[data-ov-act]' ? holder : null) };
+  body.contains = node => node === document.activeElement;
+  body.querySelectorAll = () => [fresh];
+  ctx._kjrExpSealedOpen = true; // just opened by the keyboard, so the next draw differs from the last
+  ctx.renderDashboard();
+  assert.equal(focused, 1, 'focus goes back to the Sealed button');
+  const calls = [];
+  ctx.showPage = n => calls.push(n);
+  ctx._kjrOvClick({ target: { closest: () => holder } });
+  assert.deepEqual(calls, [], 'the delegated Overview click has no branch for it');
+});
+
+test('exposure card: a type with nothing in it is a plain muted row, not a disclosure, and has no bar', async () => {
   const { ctx, document } = await app({ singles: [single({ costPrice: 50, marketPrice: 60 })] });
   ctx.renderDashboard();
   const markup = text(document, 'dash-exposure-body');
   assert.match(markup, /Slabs<span class="exp-count"> · none<\/span>/);
   assert.match(markup, /Sealed<span class="exp-count"> · none in stock<\/span>/);
   assert.doesNotMatch(markup, /exp-toggle-sealed/);
+  assert.equal((markup.match(/class="exp-track"/g) || []).length, 1, 'only the type that has something draws a bar');
+  assert.match(moneyRow(markup, 'singles'), /class="exp-share">100%/);
+  assert.match(markup, /exp-fill exp-seg-singles" style="width:100\.00%"/, 'the one type fills its track');
+  assert.doesNotMatch(markup, /exp-legend/, 'every bit of value is on a real price, so there are no stripes to explain');
+  assert.match(markup, /Top 1 holding is/, 'the concentration line stays');
+});
+
+test('exposure card: an all-estimate type still draws its bar, fully striped, and says 0% priced and "at cost"', async () => {
+  const { ctx, document } = await app({ singles: [single({ costPrice: 25, marketPrice: '', qty: 4 })] });
+  ctx.renderDashboard();
+  const row = moneyRow(text(document, 'dash-exposure-body'), 'singles');
+  assert.match(row, /class="exp-solid" style="flex-grow:0\.00"><\/span><span class="exp-est" style="flex-grow:100\.00">/, 'all of it striped');
+  assert.match(row, />0% priced</);
+  assert.match(row, /class="exp-gain flat" title="[^"]*">at cost</, 'no market verdict, valued at cost');
+  assert.doesNotMatch(row, /▲|▼/);
+  assert.match(text(document, 'dash-exposure-body'), /class="ov-chip flat"[^>]*>at cost</);
+  assert.match(text(document, 'dash-exposure-body'), /class="exp-swatch est" aria-hidden="true"><\/span>Estimated from cost/, 'the key is there to explain the stripes');
+});
+
+test('exposure card: the gain says up or down with an arrow and a sign, a dash with no cost, "at cost" with no price, "<0.1%" for a speck', async () => {
+  const { ctx } = await app({});
+  const g = (gain, cost, priced) => ctx._kjrOvGainHtml({ gain, cost, priced: priced === undefined ? 1 : priced }, 'exp-gain');
+  assert.match(g(25, 100), /^<span class="exp-gain pos"><span aria-hidden="true">▲<\/span> \+S\$25 · \+25\.0%<\/span>$/);
+  assert.match(g(-25, 100), /^<span class="exp-gain neg"><span aria-hidden="true">▼<\/span> -S\$25 · -25\.0%<\/span>$/);
+  assert.match(g(1500, 100), /\+S\$1,500 · \+1500%/, 'a gain of 100% or more drops the decimal, like the hero');
+  assert.match(g(0, 100), /^<span class="exp-gain flat">S\$0 · 0%<\/span>$/, 'flat has neither arrow nor colour');
+  assert.match(g(0.3, 1000000), /^<span class="exp-gain flat">S\$0 · 0%<\/span>$/, 'under S$0.50 and under 0.05% is flat');
+  assert.match(g(0.3, 100), /\+S\$0 · \+0\.3%/, 'a visible percentage keeps its sign and arrow, the same call the hero chip makes');
+  assert.match(g(37, 1358052), /\+S\$37 · <0\.1%/, 'a real but tiny move never prints a signed 0.0%');
+  assert.match(g(-37, 1358052), /▼<\/span> -S\$37 · <0\.1%/);
+  const none = g(50, 0);
+  assert.match(none, /^<span class="exp-gain flat" title="No cost recorded">–<span class="sr-only"> no cost recorded<\/span><\/span>$/, 'no cost, a dash a screen reader can say');
+  assert.doesNotMatch(none, new RegExp('[' + String.fromCharCode(0x2014, 0x2015) + ']'), 'an en dash, never an em dash or a bar');
+  assert.match(g(0, 100, 0), />at cost</, 'nothing priced, so no gain to claim');
+  assert.match(g(50, 0, 0), /No cost recorded/, 'no cost wins over no price');
+  assert.match(ctx._kjrOvGainHtml({ gain: 5, cost: 50, priced: 5 }, 'ov-chip'), /^<span class="ov-chip pos">/, 'the total uses the hero chip');
+});
+
+test('exposure card: shares round honestly, 100% only ever means all of it', async () => {
+  const { ctx } = await app({});
+  const sh = ctx._kjrOvShare;
+  assert.equal(sh(0), '0%');
+  assert.equal(sh(NaN), '0%');
+  assert.equal(sh(0.4), '<1%');
+  assert.equal(sh(7.78), '8%');
+  assert.equal(sh(50), '50%');
+  assert.equal(sh(99.6), '99%', 'something is left out, so not 100%');
+  assert.equal(sh(99.9999999), '100%', 'float dust is not something left out');
+  assert.equal(sh(100), '100%');
+  assert.equal(ctx._kjrOvUnits(1), '1 unit');
+  assert.equal(ctx._kjrOvUnits(0), '0 units');
+  assert.equal(ctx._kjrOvUnits(1234567), '1,234,567 units');
+});
+
+test('exposure card: concentration line for fewer than five holdings says Top N, one holding is singular', async () => {
+  const three = await app({
+    singles: [single({ name: 'Big', costPrice: 50, marketPrice: 60 })], slabs: [slab({ name: 'Mid', costPrice: 20, marketPrice: 30 })],
+    etbs: [{ id: 'e', product: 'Small', status: 'In Stock', totalPrice: 8, marketPrice: 10 }],
+  });
+  three.ctx.renderDashboard();
+  const a = text(three.document, 'dash-exposure-body');
+  assert.match(a, /Top 3 holdings are <b>100%<\/b> of value/);
+  assert.match(a, /Largest: <span class="exp-conc-name" title="Big">Big<\/span><span class="exp-conc-pct">\(60%\)<\/span>/);
+
+  const one = await app({ slabs: [slab({ name: 'Only', costPrice: 20, marketPrice: 30 })] });
+  one.ctx.renderDashboard();
+  assert.match(text(one.document, 'dash-exposure-body'), /Top 1 holding is <b>100%<\/b> of value/);
+});
+
+test('exposure card: a long name is cut with an ellipsis and carries its full text, escaped, in the title', async () => {
+  const long = 'Pikachu With Grey Felt Hat Black Star Promo Japanese Edition Limited Print Run Signed By The Illustrator 2026';
+  const { ctx, document } = await app({ singles: [single({ name: long + ' <b>"x"</b>', qty: 3, costPrice: 10, marketPrice: 90 })] });
+  ctx.renderDashboard();
+  const markup = text(document, 'dash-exposure-body');
+  const full = long + ' &lt;b&gt;&quot;x&quot;&lt;/b&gt; ×3';
+  assert.ok(markup.includes('class="exp-conc-name" title="' + full + '">' + full + '</span>'), 'the name, its quantity, escaped in both places');
+  assert.doesNotMatch(markup, /<b>"x"<\/b>/);
+  const block = css.slice(css.indexOf('.exp-conc-name{'), css.indexOf('}', css.indexOf('.exp-conc-name{')));
+  assert.match(block, /overflow:hidden/);
+  assert.match(block, /text-overflow:ellipsis/);
+  assert.match(block, /white-space:nowrap/);
+  assert.match(block, /min-width:0/, 'so it can shrink below its text inside the flex line');
+  const blank = await app({ singles: [single({ name: '   ', costPrice: 10, marketPrice: 20 })] });
+  blank.ctx.renderDashboard();
+  assert.match(text(blank.document, 'dash-exposure-body'), /title="Unnamed">Unnamed</, 'a blank name never leaves an empty slot');
+});
+
+test('exposure card: empty and sold-out collections show the empty state, not a card of zeros', async () => {
+  const empty = await app({});
+  empty.ctx.renderDashboard();
+  assert.match(text(empty.document, 'dash-exposure-body'), /^<div class="exp-empty">Add some inventory to see where the money sits\.<\/div>$/);
+
+  const soldOut = await app({ singles: [single({ status: 'Sold' })], slabs: [slab({ status: 'Sold' })], etbs: [{ id: 'x', product: 'Gone', status: 'Sold', totalPrice: 5, marketPrice: 6 }] });
+  soldOut.ctx.renderDashboard();
+  assert.match(text(soldOut.document, 'dash-exposure-body'), /exp-empty/);
+  assert.doesNotMatch(text(soldOut.document, 'dash-exposure-body'), /exp-total|exp-item/);
+});
+
+test('exposure card: inventory with no cost and no price is S$0 with a note, no stripes, no key, no concentration', async () => {
+  const { ctx, document } = await app({ singles: [single({ qty: 2, costPrice: '', marketPrice: '' })] });
+  ctx.renderDashboard();
+  const markup = text(document, 'dash-exposure-body');
+  assert.match(markup, /class="exp-total-val">S\$0</);
+  assert.match(markup, /class="exp-note">No cost or price recorded yet\.</);
+  assert.match(moneyRow(markup, 'singles'), /Singles<span class="exp-count"> · 2 units<\/span>/);
+  assert.doesNotMatch(markup, /exp-fill|exp-legend|exp-conc|priced/, 'nothing to size a bar, state a share or name a holding');
+  assert.match(markup, /class="ov-chip flat" title="No cost recorded">–/, 'no cost, a dash');
+});
+
+test('exposure card: a card with a price and no cost has a gain of a dash, not an invented percentage', async () => {
+  const { ctx, document } = await app({ singles: [single({ costPrice: '', marketPrice: 50 })] });
+  ctx.renderDashboard();
+  const row = moneyRow(text(document, 'dash-exposure-body'), 'singles');
+  assert.match(row, /class="exp-gain flat" title="No cost recorded">–<span class="sr-only"> no cost recorded<\/span>/);
+  assert.match(row, /on S\$0 cost/);
+  assert.doesNotMatch(row, /▲|▼|%<\/span><\/span>$/);
+  assert.match(row, />100% priced</, 'the value itself is a real price');
+});
+
+test('exposure card: a loss reads down and red-signed, and large figures keep their thousands separators', async () => {
+  const { ctx, document } = await app({
+    singles: [single({ name: 'Whale', qty: 12345, costPrice: 100, marketPrice: 90 })],
+    slabs: [slab({ name: 'Grail', costPrice: 1234567, marketPrice: 1500000 })],
+  });
+  ctx.renderDashboard();
+  const markup = text(document, 'dash-exposure-body');
+  assert.match(moneyRow(markup, 'singles'), /class="exp-val">S\$1,111,050</);
+  assert.match(moneyRow(markup, 'singles'), /class="exp-gain neg"><span aria-hidden="true">▼<\/span> -S\$123,450 · -10\.0%/);
+  assert.match(moneyRow(markup, 'singles'), /12,345 units/);
+  assert.match(moneyRow(markup, 'slabs'), /class="exp-val">S\$1,500,000</);
+  assert.match(markup, /class="exp-total-val">S\$2,611,050</);
+});
+
+test('exposure card: markup changes only when the numbers do, so a sync that finds the same data leaves the card alone', async () => {
+  const { ctx, document } = await app(moneyFixture());
+  ctx.renderDashboard();
+  const el = document.getElementById('dash-exposure-body');
+  const first = el.innerHTML;
+  el.__marker = true;
+  ctx.renderDashboard();
+  assert.equal(el.innerHTML, first);
+  ctx.DB.singles[0].marketPrice = 16;
+  ctx.renderDashboard();
+  assert.notEqual(el.innerHTML, first, 'a changed price redraws');
+  assert.match(el.innerHTML, /class="exp-val">S\$72</);
+});
+
+test('exposure card: styles use tokens only, hatch the estimate, and never rely on a media query that could out-rank the base rules', () => {
+  const start = css.indexOf('/* Where the money sits (Overview');
+  const end = css.indexOf('/* Recently-added row highlight', start);
+  assert.ok(start > 0 && end > start, 'the exposure block is found');
+  const block = css.slice(start, end);
+  assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/, 'no hex, rgb or hsl colour in the exposure rules');
+  assert.match(block, /\.exp-est\{[^}]*repeating-linear-gradient\(135deg,var\(--hue\)/, 'the estimate is striped in the type\'s own hue');
+  assert.match(block, /\.exp-solid\{background:var\(--hue\)\}/);
+  assert.match(block, /\.exp-seg-singles\{--hue:var\(--cat1\)\}[\s\S]*\.exp-seg-slabs\{--hue:var\(--cat2\)\}[\s\S]*\.exp-seg-sealed\{--hue:var\(--cat3\)\}/);
+  assert.match(block, /\.exp-track\{[^}]*border-radius:999px[^}]*overflow:hidden/, 'each bar sits on its own rounded track');
+  assert.match(block, /\.exp-fill\{[^}]*min-width:6px/, 'a tiny type is still a visible sliver');
+  assert.doesNotMatch(block, /@media/, 'the rows wrap on their own, nothing depends on a breakpoint');
+  assert.doesNotMatch(block, /\.ov-bar|\.ov-seg|\.exp-row|\.exp-amt|\.exp-pct|\.exp-legend-dot/, 'the old segmented-bar rules are gone');
+  assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{\s*\.ov-mover,\.exp-caret\{transition:none\}/, 'the caret turn still stops for reduced motion');
+});
+
+test('the Overview card row keeps each card at the height of its own content, so a tall Where the money sits leaves no empty box beside it', () => {
+  const selectors = css.match(/\.ov-row3[^{]*\{/g) || [];
+  assert.deepEqual(selectors, ['.ov-row3{'], 'one rule styles the row, so no later or narrower rule can out-rank it');
+  const row = css.match(/\.ov-row3\{[^}]*\}/)[0];
+  assert.match(row, /display:flex/);
+  assert.match(row, /flex-wrap:wrap/);
+  assert.match(row, /align-items:flex-start/, 'the cards are not stretched to the tallest one');
+  assert.doesNotMatch(css, /\.ov-card[^{]*\{[^}]*align-self:\s*(stretch|auto|normal)/, 'and no card opts back in to stretching');
+  const markup = html.slice(html.indexOf('<div class="ov-row3">'), html.indexOf('<!-- REPORTS PAGE'));
+  assert.equal((markup.match(/<section class="ov-card"/g) || []).length, 3, 'the row holds the three cards');
 });
 
 // ── The Overview never reaches into Reports ─────────────────────────────────

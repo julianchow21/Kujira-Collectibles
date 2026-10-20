@@ -73,7 +73,7 @@ test('preview-server.cjs: the five Dealer Desk scripts are served for GET and HE
   const fixture = require('./preview-server.cjs');
   for (const script of DEALER_SCRIPTS) {
     const bytes = fs.readFileSync(path.join(ROOT, script));
-    const get = call(fixture, 'GET', '/' + script + '?v=3.82');
+    const get = call(fixture, 'GET', '/' + script + '?v=3.83');
     assert.equal(get.status, 200, script);
     assert.equal(get.headers['Content-Length'], bytes.length, script);
     assert.equal(get.headers['Cache-Control'], 'no-store', script);

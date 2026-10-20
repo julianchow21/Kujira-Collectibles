@@ -34,6 +34,7 @@ test('card-art: remember stores a TCGdex base under the bare id and kjrCardImage
   assert.equal(ctx.kjrCardImageBase('swsh7-215'), '', 'nothing known yet');
   assert.equal(ctx.kjrRememberCardImage('swsh7-215', BASE + '/', 'en'), true, 'a trailing slash is trimmed, not rejected');
   assert.equal(ctx.kjrCardImageBase('swsh7-215'), BASE);
+  ctx.kjrImgMapFlush(); // v3.83: the map is written once learning settles, a flush is what the timer, pagehide and a hidden tab do
   assert.deepEqual(JSON.parse(localStorage.getItem('kjr_card_images')), { 'swsh7-215': BASE });
   assert.equal(ctx.kjrCardImageUrl(BASE, 'low'), BASE + '/low.webp');
   assert.equal(ctx.kjrCardImageUrl(BASE, 'high'), BASE + '/high.webp');
@@ -49,6 +50,7 @@ test('card-art: only https URLs on the TCGdex asset host and clean ids are ever 
   for (const badId of ['', ' ', '__proto__', 'a b', 'x'.repeat(60), null, undefined]) {
     assert.equal(ctx.kjrRememberCardImage(badId, BASE, 'en'), false, 'rejected id: ' + String(badId));
   }
+  ctx.kjrImgMapFlush();
   assert.equal(localStorage.getItem('kjr_card_images'), null, 'nothing was written');
   // a tampered stored value is never handed out as an image source
   localStorage.setItem('kjr_card_images', JSON.stringify({ 'swsh7-215': 'https://evil.example/x', 'swsh7-218': { miss: iso(0) } }));
@@ -61,6 +63,7 @@ test('card-art: non-English printings get a language-prefixed key so two printin
   const { ctx, localStorage } = await loadApp();
   ctx.kjrRememberCardImage('SV2a-001', 'https://assets.tcgdex.net/ja/SV/SV2a/001', 'ja');
   ctx.kjrRememberCardImage('SV2a-001', BASE, 'en');
+  ctx.kjrImgMapFlush();
   const stored = JSON.parse(localStorage.getItem('kjr_card_images'));
   assert.deepEqual(Object.keys(stored).sort(), ['SV2a-001', 'ja:SV2a-001']);
   assert.equal(ctx.kjrCardImageBase('SV2a-001', 'ja'), 'https://assets.tcgdex.net/ja/SV/SV2a/001');
@@ -71,6 +74,7 @@ test('card-art: a miss is dated today, counts for 7 days, then expires. It never
   const { ctx, localStorage } = await loadApp();
   assert.equal(ctx.kjrCardImageMissed('zz-1'), false);
   assert.equal(ctx.kjrRememberCardImageMiss('zz-1'), true);
+  ctx.kjrImgMapFlush();
   assert.deepEqual(JSON.parse(localStorage.getItem('kjr_card_images')), { 'zz-1': { miss: iso(0) } });
   assert.equal(ctx.kjrCardImageMissed('zz-1'), true);
   assert.equal(ctx.kjrCardImageBase('zz-1'), '');
@@ -161,6 +165,7 @@ test('card-art: an image that failed to load drops to the placeholder and is not
   ctx.kjrImgOnError({ target: img });
   assert.ok(removed && classes.has('kjr-art-ph'));
   assert.equal(ctx.kjrArtState(row, 'singles').state, 'none', 'the broken URL is remembered for the session only');
+  ctx.kjrImgMapFlush();
   assert.equal(JSON.parse(ctx.localStorage.getItem('kjr_card_images'))['swsh7-215'], BASE, 'the stored base is untouched');
   // not an art image, or offline: ignored / not remembered
   assert.doesNotThrow(() => ctx.kjrImgOnError({ target: { tagName: 'IMG', classList: { contains: () => false } } }));
@@ -313,6 +318,7 @@ test('card-art (v3.82): an English slab whose search answers 503 writes no miss,
   await drain(app);
   assert.equal(fetchMock.calls.length, 1, 'the search was tried, and there is no card page without an id');
   assert.equal(localStorage.getItem('kjr_slab_card_ids'), null, 'a 503 says nothing about the card: no 7-day miss');
+  ctx.kjrImgMapFlush();
   assert.equal(localStorage.getItem('kjr_card_images'), null);
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').state, 'need', 'the placeholder stays a candidate for the next lookup');
   assert.ok(ctx._kjrImgCool['slab:p1'] > Date.now(), 'it is cooled down for this session');
@@ -396,6 +402,7 @@ test('card-art (v3.82): the card page is the same for any row and either languag
       await drain(app);
       const where = lang + ', ' + label;
       assert.equal(app.ctx.kjrCardImageMissed('zz-1', lang), false, where + ': not a miss');
+      app.ctx.kjrImgMapFlush();
       assert.equal(app.localStorage.getItem('kjr_card_images'), null, where + ': nothing written');
       assert.ok(app.ctx._kjrImgCool[prefix + 'zz-1'] > Date.now(), where + ': cooled down');
       coolDownOver(app.ctx);
@@ -411,6 +418,7 @@ test('card-art (v3.82): the card page is the same for any row and either languag
       app.ctx.kjrQueueCardImage({ key: prefix + 'zz-1', tcg: 'zz-1', lang });
       await drain(app);
       assert.equal(app.ctx.kjrCardImageMissed('zz-1', lang), true, lang + ', ' + label + ': the 7-day miss');
+      app.ctx.kjrImgMapFlush();
       assert.deepEqual(JSON.parse(app.localStorage.getItem('kjr_card_images')), { [prefix + 'zz-1']: { miss: iso(0) } }, lang + ', ' + label);
     }
   }
@@ -425,6 +433,7 @@ test('card-art (v3.82): the search found the card but its page failed: the link 
   ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
   await drain(app);
   assert.deepEqual(JSON.parse(localStorage.getItem('kjr_slab_card_ids')), { p1: { id: 'swsh7-215', n: 'Umbreon VMAX 215/203|en' } }, 'the id it found is kept');
+  ctx.kjrImgMapFlush();
   assert.equal(localStorage.getItem('kjr_card_images'), null, 'a 429 on the page is no image miss');
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').state, 'need', 'the card page is still to fetch');
   coolDownOver(ctx);
@@ -594,6 +603,7 @@ test('card-art: a link the old rule resolved for a slab that has a set is looked
   await drain(app);
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'resolved again with its set: base1-4');
   assert.deepEqual(JSON.parse(localStorage.getItem('kjr_slab_card_ids')).p1, { id: 'base1-4', n: 'Charizard 4|en|set:Base Set' });
+  ctx.kjrImgMapFlush();
   assert.deepEqual(Object.keys(JSON.parse(localStorage.getItem('kjr_card_images'))).sort(), ['base1-4', 'base4-4', 'swsh7-215'], 'no image entry is dropped');
   assert.equal(fetchMock.calls.length, 1, 'one resolve, the image was already on file');
   // a slab with no set keeps its old link: the rule resolves it the same way, so it costs no request
@@ -603,31 +613,33 @@ test('card-art: a link the old rule resolved for a slab that has a set is looked
 });
 
 // ── the throttled queue ─────────────────────────────────────────────────────────────────────
-test('card-art: the queue runs at most 3 lookups at once, about 150ms apart, one per card', async () => {
+test('card-art: the queue runs at most 6 lookups at once, about 50ms apart, one per card (v3.83, was 3 and 150ms)', async () => {
   const { ctx, fetchMock, timers, settle } = await loadApp();
+  assert.equal(ctx.KJR_IMG_CONCURRENCY, 6);
+  assert.equal(ctx.KJR_IMG_GAP_MS, 50);
   fetchMock.calls.length = 0;
   const pending = [];
   fetchMock.route('/cards/', (url) => new Promise((resolve) => pending.push({ url, resolve })));
   for (let n = 1; n <= 7; n++) ctx.kjrQueueCardImage({ key: 'zz-' + n, tcg: 'zz-' + n, lang: 'en' });
   assert.equal(ctx.kjrQueueCardImage({ key: 'zz-1', tcg: 'zz-1', lang: 'en' }), false, 'a card already queued is not queued twice');
   await settle();
-  assert.equal(fetchMock.calls.length, 1, 'only the first starts at once, the rest wait for the 150ms gap');
+  assert.equal(fetchMock.calls.length, 1, 'only the first starts at once, the rest wait for the 50ms gap');
   const gap = timers.pending.get(ctx._kjrImgQ.timer);
-  assert.ok(gap && gap.delay > 0 && gap.delay <= 150, 'a gap timer of at most 150ms is pending');
+  assert.ok(gap && gap.delay > 0 && gap.delay <= 50, 'a gap timer of at most 50ms is pending');
 
   const step = async () => {
     const id = ctx._kjrImgQ.timer;
     if (id) { ctx._kjrImgQ.lastStart -= 1000; timers.invoke(id); }
     await settle();
   };
-  for (let i = 0; i < 6; i++) await step();
-  assert.equal(fetchMock.calls.length, 3, 'never more than 3 at once');
-  assert.equal(ctx._kjrImgQ.active, 3);
-  assert.equal(ctx._kjrImgQ.jobs.length, 4);
+  for (let i = 0; i < 8; i++) await step();
+  assert.equal(fetchMock.calls.length, 6, 'never more than 6 at once');
+  assert.equal(ctx._kjrImgQ.active, 6);
+  assert.equal(ctx._kjrImgQ.jobs.length, 1, 'the seventh waits for a free slot');
 
   pending[0].resolve(jsonResponse({ id: 'zz-1', image: 'https://assets.tcgdex.net/en/x/y/zz-1', pricing: {} }));
   await settle(); await step();
-  assert.equal(fetchMock.calls.length, 4, 'a finished lookup frees a slot for the next');
+  assert.equal(fetchMock.calls.length, 7, 'a finished lookup frees a slot for the next');
   assert.equal(ctx.kjrCardImageBase('zz-1'), 'https://assets.tcgdex.net/en/x/y/zz-1');
   const all = fetchMock.calls.map(c => c.url);
   assert.equal(new Set(all).size, all.length, 'no card is requested twice');
@@ -691,7 +703,8 @@ test('card-art: a lookup that scrolled away before its turn is dropped, one stil
 test('card-art: kjrObserveCardImages needs an IntersectionObserver and watches only placeholders that could be filled', async () => {
   const { ctx } = await loadApp();
   const slotA = { id: 'a' }, slotB = { id: 'b' };
-  const root = { querySelectorAll: (sel) => { assert.equal(sel, '.kjr-art[data-need]'); return [slotA, slotB]; } };
+  // v3.83: the same call also sweeps loading slots and watches lazy pictures (their own selectors, tested below), so only the lookup selector answers here
+  const root = { querySelectorAll: (sel) => (sel === '.kjr-art[data-need]' ? [slotA, slotB] : []) };
   assert.equal(ctx.kjrObserveCardImages(root, 'singles'), 0, 'no IntersectionObserver in this sandbox: a quiet no-op');
   const watched = [];
   ctx.IntersectionObserver = class { constructor(cb, opts) { this.opts = opts; } observe(el) { watched.push(el); } disconnect() {} };
@@ -952,7 +965,9 @@ test('card-art: list rows get the thumbnail inside the name cell, set underneath
   ctx.kjrRememberCardImage('swsh7-215', BASE, 'en');
   ctx.renderSingles(); ctx.renderSlabs();
   const row = document.getElementById('singles-body').innerHTML;
-  assert.match(row, /<td data-col-key="name"[^>]*><div class="kjr-name-cell"><span class="kjr-art kjr-thumb" data-sz="t"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp" width="28" height="39" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/);
+  // v3.83: a picture not yet on screen this session is in the loading look (shimmer, aria-busy). Thumbnails keep native lazy loading (the rows
+  // are all on the page at once) and ask for CORS so sw.js can cache them
+  assert.match(row, /<td data-col-key="name"[^>]*><div class="kjr-name-cell"><span class="kjr-art kjr-thumb kjr-art-loading" data-sz="t" aria-busy="true"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp" width="28" height="39" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false" crossorigin="anonymous"><\/span>/);
   assert.match(row, /<div class="kjr-name-set" title="Evolving Skies">Evolving Skies<\/div>/);
   assert.equal((row.match(/data-col-key="/g) || []).length, 9, 'no new column: the same nine cells as before');
   assert.doesNotMatch(row, /<img[^>]*\son(error|load)=/i);
@@ -984,6 +999,7 @@ test('card-art: fetchPriceFromTcgdex keeps the image base it already fetched and
   fetchMock.route('/cards/swsh7-215', () => jsonResponse({ id: 'swsh7-215', image: BASE, pricing: { cardmarket: { avg: 20 } } }));
   const res2 = await ctx.fetchPriceFromTcgdex({ name: 'Umbreon VMAX 215/203', language: 'EN', tcgdexId: 'swsh7-215' });
   assert.deepEqual(plain(res2), { priceEur: 20, unit: 'EUR', source: 'TCGdex (Cardmarket)', confidence: 'high', creditsUsed: 0 });
+  ctx.kjrImgMapFlush();
   assert.ok(localStorage.getItem('kjr_card_images'));
 });
 

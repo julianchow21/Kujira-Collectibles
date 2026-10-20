@@ -62,6 +62,8 @@ const kjrModalCtrl = (() => {
       dialog.addEventListener('click', (e) => { if (e.target === dialog) close(dialog); });
     }
     dialog.showModal();
+    // v3.83: where overflow:clip is missing (iOS before 16), showModal's focus can scroll the dialog and cancel the slide, so reset it
+    dialog.scrollTop = 0;
     if (typeof trapFocus === 'function') trapFocus(dialog);
     if (!pushed) { history.pushState({ kjrModal: 1 }, ''); pushed = true; }
     syncScroll();
@@ -14819,41 +14821,170 @@ function kjrOvSalesHtml(rows) {
   }).join('') + '</div>';
 }
 
-// Where the money sits: capital (cost, sealed included). A thin segmented bar in the --cat tokens, then one
-// legend row per segment with count, amount and share. Sealed is the only row that discloses its sub-rows.
-function kjrOvExposureHtml(s) {
-  const total = s.totalInvCost;
-  if (!(total > 0)) return '<div class="exp-empty">Add some inventory to see exposure breakdown.</div>';
-  const sealedCount = s.etbInStock.length + s.bbInStock.length + s.bpInStock.length;
-  const segments = [
-    { key: 'singles', label: 'Singles', count: s.singlesAvail, amt: s.invCostSingles, cls: 'exp-seg-singles', none: 'none' },
-    { key: 'slabs',   label: 'Slabs',   count: s.slabsAvail,   amt: s.invCostSlabs,   cls: 'exp-seg-slabs',   none: 'none' },
-    { key: 'sealed',  label: 'Sealed',  count: sealedCount,    amt: s.invCostSealed,  cls: 'exp-seg-sealed',  none: 'none in stock',
-      subRows: [
-        { label: 'ETBs',          count: s.etbInStock.length, amt: s.invCostEtb },
-        { label: 'Booster Boxes', count: s.bbInStock.length,  amt: s.invCostBb },
-        { label: 'Booster Packs', count: s.bpInStock.length,  amt: s.invCostBp },
-      ] },
-  ];
-  const share = amt => { const p = amt / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
-  const bar = segments.filter(x => x.amt > 0).map(x =>
-    '<span class="ov-seg ' + x.cls + '" style="flex-grow:' + (x.amt / total * 100).toFixed(2) + '" title="' + x.label + ' · ' + _kjrOvMoney(x.amt) + ' (' + _kjrOvPlural(x.count, 'unit', 'units') + ' · ' + share(x.amt) + ')"></span>').join('');
-  const rows = segments.map(x => {
-    if (!(x.amt > 0) && !(x.count > 0)) {
-      return '<div class="exp-row exp-row-none"><span class="exp-legend-dot exp-dot-empty"></span><span class="exp-main-label">' + x.label + '<span class="exp-count"> · ' + x.none + '</span></span></div>';
+// ── Where the money sits (v3.83) ─────────────────────────────────────
+// kjrOvExposureStats(db) is the one pure read behind the card (db defaults to the live DB, so a test can pass a
+// fixture). Three types: Singles, Slabs and Sealed (ETBs in stock, Booster Boxes unopened, Booster Packs sealed,
+// the status rules computeDashboardStats uses). Each returns units (quantity aware), cost, market value and how
+// much of that value is a real market price. The value is effectiveMarketInfo, the rule the hero uses: a live
+// marketPrice, else the cost as an estimate, so an unpriced row adds to "estimated" and never to "priced".
+// Sealed prices are typed by hand and, like totalPrice, are line totals (no quantity multiplier, and an ETB row has
+// no quantity). The same rows feed the concentration line: the five largest holdings (one row each) as a share of
+// the total market value. A singles quantity is held at 1 or more, so a bad row cannot draw a negative bar.
+function kjrOvExposureStats(db) {
+  const src = db || DB;
+  const num = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const cents = n => Math.round(n * 100) / 100;
+  const bucket = (key, label) => ({ key, label, units: 0, cost: 0, market: 0, priced: 0, estimated: 0 });
+  const holdings = [];
+  const add = (b, name, units, cost, value, real) => {
+    b.units += units; b.cost += cost; b.market += value;
+    if (real) b.priced += value; else b.estimated += value;
+    holdings.push({ name, units, value });
+  };
+  const singles = bucket('singles', 'Singles'), slabs = bucket('slabs', 'Slabs');
+  const etb = bucket('etb', 'ETBs'), bb = bucket('bb', 'Booster Boxes'), bp = bucket('bp', 'Booster Packs');
+  const available = r => r && (r.status || 'Available') === 'Available';
+  (src.singles || []).forEach(r => {
+    if (!available(r)) return;
+    const q = Math.max(1, parseInt(r.qty) || 1), mi = effectiveMarketInfo(r);
+    add(singles, r.name, q, num(r.costPrice) * q, num(mi.value) * q, !mi.isEstimate);
+  });
+  (src.slabs || []).forEach(r => {
+    if (!available(r)) return;
+    const mi = effectiveMarketInfo(r);
+    add(slabs, r.name, 1, num(r.costPrice), num(mi.value), !mi.isEstimate);
+  });
+  // A sealed row keeps what was paid in totalPrice, so it stands in for costPrice in the shared pricing rule.
+  const sealedRows = (b, rows, inStock, hasQty) => (rows || []).forEach(r => {
+    if (!r || !inStock.test(r.status || '')) return;
+    const mi = effectiveMarketInfo({ marketPrice: r.marketPrice, costPrice: r.totalPrice });
+    add(b, r.product, hasQty ? Math.max(1, parseInt(r.qty) || 1) : 1, num(r.totalPrice), num(mi.value), !mi.isEstimate);
+  });
+  sealedRows(etb, src.etbs, /in\s*stock/i, false);
+  sealedRows(bb, src.boosterBoxes, /unopened/i, true);
+  sealedRows(bp, src.boosterPacks, /sealed/i, true);
+
+  const sum = (b, parts) => {
+    parts.forEach(p => { b.units += p.units; b.cost += p.cost; b.market += p.market; b.priced += p.priced; b.estimated += p.estimated; });
+    return b;
+  };
+  const sealed = sum(bucket('sealed', 'Sealed'), [etb, bb, bp]);
+  sealed.parts = [etb, bb, bp];
+  const buckets = [singles, slabs, sealed];
+  const total = sum(bucket('total', 'Total'), buckets);
+  const finish = b => {
+    b.cost = cents(b.cost); b.market = cents(b.market); b.priced = cents(b.priced); b.estimated = cents(b.estimated);
+    b.gain = cents(b.market - b.cost);
+    b.gainPct = b.cost > 0 ? b.gain / b.cost * 100 : null;          // no cost recorded, no honest percentage
+    b.pricedPct = b.market > 0 ? b.priced / b.market * 100 : null;  // the share of this VALUE on real prices, not of the rows
+    b.share = total.market > 0 ? b.market / total.market * 100 : 0; // its slice of the total market value
+  };
+  finish(total); // first, the others read the rounded total
+  [singles, slabs, sealed, etb, bb, bp].forEach(finish);
+
+  holdings.sort((a, b) => b.value - a.value); // stable, so equal values keep the singles, slabs, sealed order
+  const n = Math.min(5, holdings.length);
+  let top = null;
+  if (n > 0 && total.market > 0) {
+    const topValue = holdings.slice(0, n).reduce((s, h) => s + h.value, 0);
+    const big = holdings[0];
+    top = {
+      n, pct: Math.min(100, topValue / total.market * 100),
+      name: big.name == null ? '' : String(big.name), units: big.units, value: cents(big.value),
+      bigPct: Math.min(100, big.value / total.market * 100),
+    };
+  }
+  return { buckets, total, holdings: holdings.length, top };
+}
+
+// 12 -> "12%", under 1 -> "<1%". A share that only rounds up to 100 reads 99%, so "100%" always means all of it.
+function _kjrOvShare(p) {
+  if (!(p > 0)) return '0%';
+  if (p < 1) return '<1%';
+  const r = Math.round(p);
+  return (r >= 100 && p < 99.995 ? 99 : r) + '%';
+}
+function _kjrOvUnits(n) { return n.toLocaleString('en-SG') + (n === 1 ? ' unit' : ' units'); }
+
+// Gain on cost for one type, one sealed line or the whole card (b is a stats bucket): arrow, sign, S$ and %, so the
+// direction never rests on green or red alone. With no cost recorded there is no honest percentage, so it reads as a
+// dash. With no real price on any of it, the "market value" is only the cost, so it says "at cost" rather than a
+// flat S$0 that reads like a market verdict. cls is the text or pill class.
+function _kjrOvGainHtml(b, cls) {
+  if (!(b.cost > 0)) return '<span class="' + cls + ' flat" title="No cost recorded">–<span class="sr-only"> no cost recorded</span></span>';
+  if (!(b.priced > 0)) return '<span class="' + cls + ' flat" title="No market price yet, so this is valued at cost">at cost</span>';
+  const a = Math.abs(b.gain / b.cost * 100);
+  const pct = a.toFixed(a >= 100 ? 0 : 1);
+  if (Math.round(Math.abs(b.gain)) === 0 && Number(pct) === 0) return '<span class="' + cls + ' flat">S$0 · 0%</span>';
+  const up = b.gain > 0, sign = up ? '+' : '-';
+  // A real move too small for one decimal (S$37 on S$1.2m) reads "<0.1%", never a signed 0.0%
+  return '<span class="' + cls + (up ? ' pos' : ' neg') + '"><span aria-hidden="true">' + (up ? '▲' : '▼') + '</span> ' +
+    sign + _kjrOvMoney(b.gain) + ' · ' + (Number(pct) === 0 ? '<0.1' : sign + pct) + '%</span>';
+}
+
+// The share bar. The fill's width is the type's slice of the total market value. Inside it the solid part is value on
+// real market prices and the striped part is value standing in at cost. The track is decoration (the numbers beside
+// it say the same), so it is hidden from assistive tech and carries the full wording as a tooltip.
+function _kjrOvBarHtml(b) {
+  const fill = b.market > 0 ? Math.min(100, b.share) : 0;
+  const solid = b.market > 0 ? Math.min(100, b.priced / b.market * 100) : 0;
+  const tip = b.label + ' is ' + _kjrOvShare(b.share) + ' of the total market value' +
+    (b.pricedPct == null ? '' : ', ' + _kjrOvShare(b.pricedPct) + ' of it on market prices and the rest estimated from cost');
+  return '<span class="exp-bar"><span class="exp-track" aria-hidden="true" title="' + esc(tip) + '">' +
+    (fill > 0 ? '<span class="exp-fill exp-seg-' + b.key + '" style="width:' + fill.toFixed(2) + '%"><span class="exp-solid" style="flex-grow:' + solid.toFixed(2) + '"></span><span class="exp-est" style="flex-grow:' + (100 - solid).toFixed(2) + '"></span></span>' : '') +
+    '</span><span class="exp-share">' + _kjrOvShare(b.share) + '<span class="sr-only"> of total value</span></span></span>';
+}
+
+// x is kjrOvExposureStats(). A total block (market value, gain on cost, "Incl. sealed"), one row per type with
+// its share bar, then a footer with the bar key and the concentration line. Sealed is the only row that opens.
+function kjrOvExposureHtml(x) {
+  if (!x || !x.total || !(x.total.units > 0)) return '<div class="exp-empty">Add some inventory to see where the money sits.</div>';
+  const t = x.total;
+  const priced = b => '<span class="exp-priced" title="' + esc(_kjrOvShare(b.pricedPct) + ' of this value is on market prices. The rest is estimated from cost.') + '">' + _kjrOvShare(b.pricedPct) + ' priced</span>';
+  const subRow = p => p.units > 0
+    ? '<div class="exp-sub-row"><span class="exp-sub-name">' + p.label + '<span class="exp-count"> · ' + _kjrOvUnits(p.units) + '</span></span><span class="exp-sub-val">' + _kjrOvMoney(p.market) + '</span>' + _kjrOvGainHtml(p, 'exp-gain') + '</div>'
+    : '<div class="exp-sub-row exp-sub-none"><span class="exp-sub-name">' + p.label + '<span class="exp-count"> · none</span></span></div>';
+  const row = b => {
+    if (!(b.units > 0)) {
+      return '<div class="exp-item exp-item-none" data-bucket="' + b.key + '"><span class="exp-head"><span class="exp-name">' + b.label + '<span class="exp-count"> · ' + (b.parts ? 'none in stock' : 'none') + '</span></span></span></div>';
     }
-    const cells = '<span class="exp-legend-dot ' + x.cls + '"></span>' +
-      '<span class="exp-main-label">' + x.label + '<span class="exp-count"> · ' + x.count + '</span></span>' +
-      '<span class="exp-amt">' + _kjrOvMoney(x.amt) + '</span><span class="exp-pct">' + share(x.amt) + '</span>';
-    if (!x.subRows) return '<div class="exp-row">' + cells + '<span class="exp-caret-slot"></span></div>';
-    const open = x.key === 'sealed' && _kjrExpSealedOpen;
-    return '<button type="button" class="exp-row exp-row-toggle" id="exp-toggle-' + x.key + '" aria-controls="exp-sub-' + x.key + '" aria-expanded="' + open + '" onclick="_toggleExposureSub(\'' + x.key + '\')">' + cells +
-        '<span class="exp-caret" id="exp-caret-' + x.key + '" aria-hidden="true"' + (open ? ' style="transform:rotate(90deg)"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span></button>' +
-      '<div id="exp-sub-' + x.key + '" class="exp-sub" style="display:' + (open ? 'block' : 'none') + '">' +
-        x.subRows.map(r => '<div class="exp-sub-row"><span>' + r.label + '</span><span>' + _kjrOvMoney(r.amt) + '</span><span>' + _kjrOvPlural(r.count, 'unit', 'units') + '</span></div>').join('') +
-      '</div>';
-  }).join('');
-  return '<div class="ov-bar" role="img" aria-label="Share of capital by type">' + bar + '</div><div class="exp-list">' + rows + '</div>';
+    const open = !!b.parts && _kjrExpSealedOpen;
+    const caret = b.parts
+      ? '<span class="exp-caret" id="exp-caret-' + b.key + '" aria-hidden="true"' + (open ? ' style="transform:rotate(90deg)"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span>'
+      : '<span class="exp-caret-slot"></span>';
+    const body = '<span class="exp-head"><span class="exp-name">' + b.label + '<span class="exp-count"> · ' + _kjrOvUnits(b.units) + '</span></span>' +
+        '<span class="exp-valwrap"><span class="exp-val">' + _kjrOvMoney(b.market) + '</span>' + caret + '</span></span>' +
+      _kjrOvBarHtml(b) +
+      '<span class="exp-meta"><span class="exp-meta-l">on ' + _kjrOvMoney(b.cost) + ' cost' + (b.pricedPct == null ? '' : ' · ' + priced(b)) + '</span>' + _kjrOvGainHtml(b, 'exp-gain') + '</span>';
+    if (!b.parts) return '<div class="exp-item" data-bucket="' + b.key + '">' + body + '</div>';
+    // data-ov-act has no branch in _kjrOvClick, it only lets _kjrOvSet hand keyboard focus back to the button when a redraw replaces it
+    return '<button type="button" class="exp-item exp-item-toggle" data-bucket="' + b.key + '" data-ov-act="exposure" id="exp-toggle-' + b.key + '" aria-controls="exp-sub-' + b.key + '" aria-expanded="' + open + '" onclick="_toggleExposureSub(\'' + b.key + '\')">' + body + '</button>' +
+      '<div id="exp-sub-' + b.key + '" class="exp-sub" style="display:' + (open ? 'block' : 'none') + '">' + b.parts.map(subRow).join('') + '</div>';
+  };
+
+  const head = '<div class="exp-total"><div class="exp-total-label"><span>Market value</span><span class="exp-tag">Incl. sealed</span></div>' +
+    '<div class="exp-total-row"><span class="exp-total-val">' + _kjrOvMoney(t.market) + '</span>' + _kjrOvGainHtml(t, 'ov-chip') + '</div>' +
+    '<div class="exp-total-sub">on ' + _kjrOvMoney(t.cost) + ' cost' + (t.pricedPct == null ? '' : ' · ' + _kjrOvShare(t.pricedPct) + ' of value priced') + '</div></div>';
+  // Nothing to size a bar against: units exist, but no cost and no price is recorded on any of them.
+  const note = t.market > 0 ? '' : '<div class="exp-note">No cost or price recorded yet.</div>';
+
+  // Footer: the key to the bar, then the concentration line. Both need a value to talk about, and the key only
+  // explains stripes, so it is left out while every bit of value is on a real price.
+  let foot = '';
+  if (t.market > 0) {
+    const key = t.estimated > 0
+      ? '<div class="exp-legend"><span class="exp-key"><span class="exp-swatch" aria-hidden="true"></span>Market price</span><span class="exp-key"><span class="exp-swatch est" aria-hidden="true"></span>Estimated from cost</span></div>'
+      : '';
+    let conc = '';
+    if (x.top) {
+      const c = x.top;
+      const name = (String(c.name || '').trim() || 'Unnamed') + (c.units > 1 ? ' ×' + c.units : '');
+      conc = '<p class="exp-conc"><span class="exp-conc-lead">Top ' + c.n + (c.n === 1 ? ' holding is ' : ' holdings are ') + '<b>' + _kjrOvShare(c.pct) + '</b> of value<span class="sr-only">.</span></span>' +
+        '<span class="exp-conc-big">Largest: <span class="exp-conc-name" title="' + esc(name) + '">' + esc(name) + '</span><span class="exp-conc-pct">(' + _kjrOvShare(c.bigPct) + ')</span></span></p>';
+    }
+    foot = key || conc ? '<div class="exp-foot">' + key + conc + '</div>' : '';
+  }
+  return '<div class="exp">' + head + note + '<div class="exp-list">' + x.buckets.map(row).join('') + '</div>' + foot + '</div>';
 }
 
 // ── Rendering ────────────────────────────────────────────────────────
@@ -14941,8 +15072,7 @@ function _kjrOvTry(label, build, fallback) {
 function renderDashboard() {
   if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73): the Overview redraws after a dialog closes, so an add or a sale shows
   const {
-    invCostSingles, invCostSlabs, etbInStock, bbInStock, bpInStock,
-    invCostEtb, invCostBb, invCostBp, invCostSealed, totalInvCost,
+    invCostSingles, invCostSlabs,
     totalMktValue, unrealisedPL,
     allTimeSales, allTimeProfit, allTimePendingDealerSales, roiPct,
     singlesAvail, slabsAvail,
@@ -15094,10 +15224,7 @@ function renderDashboard() {
   _kjrOvSet('dash-top', topHtml);
 
   // ── Where the money sits, best and worst against cost, recent sales
-  _kjrOvSet('dash-exposure-body', _kjrOvTry('exposure', () => kjrOvExposureHtml({
-    totalInvCost, invCostSingles, invCostSlabs, invCostSealed, invCostEtb, invCostBb, invCostBp,
-    etbInStock, bbInStock, bpInStock, singlesAvail, slabsAvail,
-  }), failed));
+  _kjrOvSet('dash-exposure-body', _kjrOvTry('exposure', () => kjrOvExposureHtml(kjrOvExposureStats(DB)), failed));
   _kjrOvSet('dash-movers', _kjrOvTry('movers', () => kjrOvMoversHtml(kjrOverviewMovers()), failed));
   _kjrOvSet('dash-sales', _kjrOvTry('recent sales', () => kjrOvSalesHtml(kjrOverviewRecentSales(3)), failed));
 
@@ -21108,6 +21235,7 @@ function kjrConfirm(msg, opts) {
     dlg.showModal();
     trapFocus(dlg);
     okBtn.focus();
+    dlg.scrollTop = 0; // v3.83, as in kjrModalCtrl.open: last, because the two focus calls above are what can scroll it
   });
 }
 

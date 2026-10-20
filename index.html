@@ -16,6 +16,10 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Kujira">
+<!-- Card art (v3.83): open the TCGdex connections early. assets serves the pictures (asked for with crossorigin=anonymous, so the preconnect carries it too),
+     api serves the card lookups (fetch, CORS). -->
+<link rel="preconnect" href="https://assets.tcgdex.net" crossorigin>
+<link rel="preconnect" href="https://api.tcgdex.net" crossorigin>
 <script>/* Cosmetic pre-paint theme read: if localStorage is blocked or unreadable here, the page just paints in the default (dark) theme instead of light. */try{if(localStorage.getItem('pokeinv_theme')==='light')document.documentElement.classList.add('light')}catch(e){}document.documentElement.classList.add('auth-gated');(function(){var clean=function(){try{history.replaceState(null,'',location.pathname)}catch(e){}};try{var h=location.hash.slice(1),q=location.search.slice(1),pattern=/(?:^|&)(?:access_token|error|error_description|refresh_token|type|code)=/,hasH=pattern.test(h),hasQ=pattern.test(q);if(hasH||hasQ){try{sessionStorage.setItem('_kjrAuthCallback',hasH&&hasQ?h+'&'+q:(hasH?h:q))}catch(e){}clean()}}catch(e){clean()}})()</script>
 <!-- ═══════════════════════════════════════════════════════════
      SENTRY - JS error monitoring (DSN configured, active on prod).
@@ -37,7 +41,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.82',
+    release: 'kujira-collectibles@3.83',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -73,7 +77,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
 <!-- Geist is self-hosted (Assets/fonts, the @font-face rules sit at the top of styles.css). Only the sans is preloaded: it is on screen at first paint, Geist Mono is not. -->
 <link rel="preload" href="Assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="styles.css?v=3.82">
+<link rel="stylesheet" href="styles.css?v=3.83">
 </head>
 <body>
 
@@ -272,7 +276,7 @@
       <span class="kjr-sync-dot" aria-hidden="true"></span>
       <span class="kjr-sync-text">
         <span class="kjr-sync-line1" id="sync-label">Not synced yet</span>
-        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.82 (17 Oct)</span></span>
+        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.83 (20 Oct)</span></span>
       </span>
     </button>
     <span class="sr-only" id="sync-live" role="status"></span>
@@ -724,7 +728,7 @@
     </section>
 
     <div class="ov-row3">
-      <!-- Where the money sits: capital (cost incl. sealed). The ids below are pinned by tests. -->
+      <!-- Where the money sits (v3.83): market value, gain and price coverage by type, sealed included. The ids below are pinned by tests. -->
       <section class="ov-card" id="dash-exposure-card" aria-labelledby="dash-exp-h">
         <h2 class="ov-h2" id="dash-exp-h">Where the money sits</h2>
         <div id="dash-exposure-body"></div>
@@ -2131,12 +2135,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.82"></script>
-<script src="features.js?v=3.82"></script>
-<script src="dealer-money.js?v=3.82"></script>
-<script src="dealer-desk.js?v=3.82"></script>
-<script src="dealer-ui.js?v=3.82"></script>
-<script src="dealer-store.js?v=3.82"></script>
-<script src="dealer-production-ui.js?v=3.82"></script>
+<script src="app.js?v=3.83"></script>
+<script src="features.js?v=3.83"></script>
+<script src="dealer-money.js?v=3.83"></script>
+<script src="dealer-desk.js?v=3.83"></script>
+<script src="dealer-ui.js?v=3.83"></script>
+<script src="dealer-store.js?v=3.83"></script>
+<script src="dealer-production-ui.js?v=3.83"></script>
 </body>
 </html>

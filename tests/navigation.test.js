@@ -110,12 +110,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.82 \(17 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.83 \(20 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.82 \(17 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.83 \(20 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -364,7 +364,7 @@ test('Holdings row: a button with the art, the name, the set and language, the v
   ctx.kjrRememberCardImage('swsh7-215', BASE, 'en');
   const row = ctx.kjrHoldRowHtml(single({ id: 'u1', name: 'Umbreon VMAX 215/203', set: 'Evolving Skies', language: 'EN', tcgdexId: 'swsh7-215', costPrice: 100, marketPrice: 150 }), 'singles', false);
   assert.match(row, /^<button type="button" class="kjr-hold-row" data-table="singles" data-id="u1" aria-label="[^"]*">/);
-  assert.match(row, /<span class="kjr-art kjr-thumb" data-sz="t"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp"/, 'the thumbnail is kjrThumbHtml');
+  assert.match(row, /<span class="kjr-art kjr-thumb kjr-art-loading" data-sz="t" aria-busy="true"><img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp"/, 'the thumbnail is kjrThumbHtml, in the loading look until its picture has been on screen (v3.83)');
   assert.match(row, /<span class="kjr-hold-name">Umbreon VMAX 215\/203<\/span>/);
   assert.match(row, /<span class="kjr-hold-sub">Evolving Skies · <span class="kjr-hold-lang">EN<\/span><\/span>/, 'set · language, the language tag is the mono one');
   assert.match(row, /<span class="kjr-hold-price">S\$150<\/span>/);
@@ -1094,14 +1094,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.82: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.83: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.82'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.82">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.83'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.83">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.82"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.82'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.83"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.83'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v85'/);
+  assert.match(sw, /const CACHE = 'kujira-v86'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

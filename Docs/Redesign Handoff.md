@@ -250,7 +250,7 @@ Step 3 shipped on `redesign` as v3.70 on 10/10/2026: the Overview and the Report
 **Overview (still `#page-dashboard`)**
 - `renderDashboard()` is a pure-selector Overview built on `computeDashboardStats()`, whose return shape is unchanged
 - Hero band: value, gain, cost basis, realised profit and Needs attention
-- Below the band: Top of the collection (`kjrTileHtml`), allocation (the exposure markup is kept and test-pinned), best and worst against cost, and recent sales
+- Below the band: Top of the collection (`kjrTileHtml`), allocation (the exposure markup was redesigned in v3.83, only its ids stay test-pinned), best and worst against cost, and recent sales
 - No value chart, per Julian
 - The subtitle uses the newest `priceHistory` date
 - The Overview redraws on any dialog `close` while it is active

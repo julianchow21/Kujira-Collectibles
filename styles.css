@@ -279,7 +279,8 @@ select.filter-sel:focus{outline:none;border-color:var(--accent)}
 /* MODAL */
 .overlay{display:none;position:fixed;inset:0;background:var(--backdrop);z-index:200;align-items:center;justify-content:center;padding:20px}
 .overlay.open{display:flex}
-dialog.overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;align-items:center;justify-content:center;margin:0;position:fixed;inset:0}
+/* v3.83: a modal dialog scrolls itself by default, and a focus into its off-screen start-state box scrolled it and cancelled the slide. Clip, never scroll (hidden first for iOS before 16). Same on the four other dialog wrappers below. */
+dialog.overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;align-items:center;justify-content:center;margin:0;position:fixed;inset:0;overflow:hidden;overflow:clip}
 dialog.overlay[open]{display:flex}
 dialog.overlay::backdrop{background:var(--backdrop);transition:background 0.22s ease}
 @starting-style{dialog.overlay[open]::backdrop{background:rgba(0,0,0,0)}}
@@ -453,7 +454,7 @@ button,.btn,.nav-btn,.btb-item,.nav-dd-item,.col-toggle-item,
 }
 
 /* ── Bottom sheet (shared: More menu + mobile modals) ── */
-dialog.sheet-overlay{border:none;background:transparent;padding:0;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-end;justify-content:center}
+dialog.sheet-overlay{border:none;background:transparent;padding:0;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:flex-end;justify-content:center;overflow:hidden;overflow:clip}
 @supports (height:100dvh){dialog.sheet-overlay{height:100dvh}}
 dialog.sheet-overlay[open]{display:flex}
 dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 0.28s ease}
@@ -1102,35 +1103,74 @@ thead tr.filter-row th{padding-top:4px;padding-bottom:6px;background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:#444}
 
-/* Where the money sits (Overview, redesign Step 3, v3.70). A thin segmented bar in the --cat tokens, then one
-   legend row per segment: dot, label and count, amount, share. Sealed is the only row that opens (a native
-   button, its ids are pinned by tests). The dots reuse the segment colours. */
-.ov-bar{display:flex;gap:3px;height:10px}
-.ov-seg{flex:1 1 0;min-width:6px;border-radius:999px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 14%,transparent)}
-.exp-seg-singles{background:var(--cat1)}
-.exp-seg-slabs{background:var(--cat2)}
-.exp-seg-sealed{background:var(--cat3)}
-.exp-list{display:flex;flex-direction:column;margin-top:14px}
+/* Where the money sits (Overview, redesigned v3.83 from the v3.70 allocation list). A total block (market value, gain on
+   cost, "Incl. sealed"), then one row per type: units and market value, a share bar on its own track, the cost with how
+   much of the value is a real price, and the gain. The fill's width is the type's slice of the total market value.
+   Inside it the solid part is value on real market prices and the striped part (the same hue, thinner and fainter) is
+   value standing in at cost, so an estimate never reads as a price. A footer holds the key and the concentration line.
+   Sealed is the only row that opens (a native button, its ids are pinned by tests). Rows wrap before they clip, so a
+   phone stacks the gain under the cost. The hues are the --cat tokens. */
+.exp{display:flex;flex-direction:column;gap:12px;min-width:0}
 .exp-empty{padding:12px 0;color:var(--text3);font-size:13px;line-height:18px}
-.exp-row{-webkit-appearance:none;appearance:none;display:grid;grid-template-columns:10px minmax(0,1fr) auto 44px 16px;align-items:center;column-gap:10px;width:100%;margin:0;padding:10px 0;border:0;border-top:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;font-size:14px;line-height:20px;text-align:left}
-.exp-list>.exp-row:first-child{border-top:0}
-.exp-row-toggle{cursor:pointer}
-.exp-row-toggle:hover .exp-caret{color:var(--text)}
-.exp-row-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
-.exp-legend-dot{width:10px;height:10px;border-radius:3px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 14%,transparent)}
-.exp-dot-empty{background:transparent;box-shadow:inset 0 0 0 1px var(--control-border)}
-.exp-main-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.exp-count{color:var(--text3)}
-.exp-row-none .exp-main-label{grid-column:2/-1;color:var(--text3)}
-.exp-amt{font-weight:600;font-variant-numeric:tabular-nums}
-.exp-pct{text-align:right;color:var(--text3);font-variant-numeric:tabular-nums}
+.exp-note{font-size:13px;line-height:18px;color:var(--text3)}
+.exp-total{display:flex;flex-direction:column;gap:2px}
+.exp-total-label{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:13px;line-height:18px;color:var(--text3)}
+.exp-tag{display:inline-flex;align-items:center;height:18px;padding:0 8px;border-radius:999px;background:var(--bg3);color:var(--text2);font-size:12px;font-weight:500;line-height:16px;white-space:nowrap}
+.exp-total-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.exp-total-val{font-size:28px;line-height:34px;font-weight:600;letter-spacing:-0.02em;color:var(--text);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.exp-total-sub{font-size:13px;line-height:18px;color:var(--text3)}
+.exp-list{display:flex;flex-direction:column;border-top:1px solid var(--border)}
+.exp-item{-webkit-appearance:none;appearance:none;display:flex;flex-direction:column;gap:6px;width:100%;min-width:0;margin:0;padding:12px 0;border:0;border-top:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;font-size:14px;line-height:20px;text-align:left}
+.exp-list>.exp-item:first-child{border-top:0}
+.exp-item-toggle{cursor:pointer}
+.exp-item-toggle:hover .exp-caret{color:var(--text)}
+.exp-item-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
+.exp-item-none{padding:10px 0;color:var(--text3)}
+.exp-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;min-width:0}
+.exp-name{flex:1 1 auto;min-width:0;font-weight:500}
+.exp-count{font-weight:400;color:var(--text3)}
+.exp-valwrap{display:inline-flex;align-items:center;gap:6px;margin-left:auto}
+.exp-val{font-size:16px;line-height:22px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .exp-caret{display:inline-flex;align-items:center;justify-content:center;color:var(--text3);transition:transform 0.16s ease-out,color 0.16s ease-out}
 .exp-caret svg{width:16px;height:16px}
-.exp-sub{padding:2px 0 8px 20px}
-.exp-sub-row{display:flex;align-items:baseline;gap:12px;padding:5px 0;font-size:13px;line-height:18px}
-.exp-sub-row>span:first-child{flex:1;min-width:0;color:var(--text2)}
-.exp-sub-row>span:nth-child(2){font-weight:500;font-variant-numeric:tabular-nums}
-.exp-sub-row>span:nth-child(3){min-width:64px;text-align:right;color:var(--text3)}
+.exp-caret-slot{flex:none;width:16px;height:16px}
+.exp-bar{display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;column-gap:10px}
+.exp-track{display:flex;height:10px;min-width:0;border-radius:999px;background:var(--bg4);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 10%,transparent);overflow:hidden}
+.exp-fill{position:relative;display:flex;flex:none;min-width:6px;max-width:100%;height:100%;border-radius:999px;overflow:hidden}
+/* A hairline over the fill, so the darkest hue (--cat3 in dark) still has an edge against the track */
+.exp-fill::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 20%,transparent);pointer-events:none}
+.exp-seg-singles{--hue:var(--cat1)}
+.exp-seg-slabs{--hue:var(--cat2)}
+.exp-seg-sealed{--hue:var(--cat3)}
+.exp-solid,.exp-est{flex:1 1 0;min-width:0}
+.exp-solid{background:var(--hue)}
+.exp-est{background-color:color-mix(in srgb,var(--hue) 28%,transparent);background-image:repeating-linear-gradient(135deg,var(--hue) 0 2px,transparent 2px 5px)}
+.exp-share{text-align:right;font-size:12px;line-height:16px;color:var(--text3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.exp-meta{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;min-width:0}
+.exp-meta-l{font-size:12px;line-height:16px;color:var(--text3)}
+.exp-priced{color:var(--text2)}
+.exp-gain{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.exp-gain.pos{color:var(--green)}
+.exp-gain.neg{color:var(--red)}
+.exp-gain.flat{font-weight:500;color:var(--text3)}
+.exp-meta .exp-gain{margin-left:auto;font-size:13px;line-height:18px}
+.exp-sub{margin:0 0 8px 2px;padding:2px 0 2px 12px;border-left:2px solid var(--border)}
+.exp-sub-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;padding:6px 0;font-size:13px;line-height:18px}
+.exp-sub-name{flex:1 0 auto;white-space:nowrap;color:var(--text2)}
+.exp-sub-none .exp-sub-name{color:var(--text3)}
+.exp-sub-val{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.exp-sub-row .exp-gain{margin-left:auto;font-size:12px;line-height:16px}
+.exp-foot{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
+.exp-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12px;line-height:16px;color:var(--text3)}
+.exp-key{display:inline-flex;align-items:center;gap:6px}
+.exp-swatch{flex:none;width:16px;height:8px;border-radius:999px;background:var(--cat1)}
+.exp-swatch.est{background-color:color-mix(in srgb,var(--cat1) 28%,transparent);background-image:repeating-linear-gradient(135deg,var(--cat1) 0 2px,transparent 2px 5px)}
+.exp-conc{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin:0;font-size:13px;line-height:18px;color:var(--text2)}
+.exp-conc b{font-weight:600;color:var(--text)}
+.exp-conc-lead{white-space:nowrap}
+.exp-conc-big{display:inline-flex;align-items:baseline;gap:4px;min-width:0;max-width:100%}
+.exp-conc-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.exp-conc-pct{flex:none}
 
 /* Recently-added row highlight - fades to neutral after a refresh */
 tr.recent-add > td:first-child::before{content:"●";color:var(--accent);font-size:8px;margin-right:4px;vertical-align:middle}
@@ -1331,7 +1371,7 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
   .kjr-pill-pending{--kjr-pill-dot:var(--pill-pending-fg)}
   .kjr-pill-received{--kjr-pill-dot:var(--pill-received-fg)}
   .kjr-row-actions{display:inline-flex;gap:4px}
-  dialog.kjr-modal-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
+  dialog.kjr-modal-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center;overflow:hidden;overflow:clip}
   dialog.kjr-modal-back[open]{display:flex}
   dialog.kjr-modal-back::backdrop{background:var(--backdrop)}
   /* Flex column with a scrollable middle so the header (with its close button)
@@ -1356,7 +1396,7 @@ html.auth-gated #kjr-auth-gate{visibility:visible}
     .kjr-modal-actions{flex-direction:column-reverse}
     .kjr-modal-actions .btn{width:100%;justify-content:center;min-height:44px}
   }
-dialog.kjr-confirm-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
+dialog.kjr-confirm-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center;overflow:hidden;overflow:clip}
 dialog.kjr-confirm-back[open]{display:flex}
 dialog.kjr-confirm-back::backdrop{background:var(--backdrop)}
 .kjr-confirm-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:min(380px,92vw);max-height:88vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
@@ -1369,7 +1409,7 @@ dialog.kjr-confirm-back::backdrop{background:var(--backdrop)}
   .kjr-confirm-actions{flex-direction:column-reverse}
   .kjr-confirm-actions .btn{width:100%;justify-content:center}
 }
-dialog.kjr-complete-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
+dialog.kjr-complete-back{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center;overflow:hidden;overflow:clip}
 dialog.kjr-complete-back[open]{display:flex}
 dialog.kjr-complete-back::backdrop{background:var(--backdrop)}
 .kjr-complete-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:var(--modal-lg);max-height:90vh;display:flex;flex-direction:column}
@@ -1672,7 +1712,7 @@ html.dealer-preview-only #page-dealer{display:block!important}
 /* ═══════════ Card art, Grid view and drawn slabs (redesign Step 2, v3.69) ═══════════
    New in this step and last in the file, so the phone overrides come after the base
    rules. Art comes from TCGdex (features.js, "Card art cache"). A card with no art, a
-   miss, or an image that fails to load shows the neutral placeholder. */
+   miss, or an image that fails to load shows the dimmed whale (v3.83, below). */
 
 /* Grader colour hooks, shared by the list thumbnail bar and the drawn slab label */
 .kjr-g-psa{--kjr-gc:var(--grader-psa);--kjr-gfg:var(--grader-fg-light)}
@@ -1681,11 +1721,27 @@ html.dealer-preview-only #page-dealer{display:block!important}
 .kjr-g-tag{--kjr-gc:var(--grader-tag);--kjr-gfg:var(--grader-fg-dark)}
 .kjr-g-other{--kjr-gc:var(--text3);--kjr-gfg:var(--bg)}
 
-/* Card image (any size) and its neutral placeholder */
+/* Card image (any size) and its three looks (v3.83). features.js (kjrArtSet) switches the classes, a slot is never in two.
+   Loading: a lookup is queued or the picture is on its way. A soft band sweeps the slot and the picture waits at opacity 0.
+   No art (no id, a miss, a lookup that could not answer, a failed load): the Kujira whale, dimmed, a signifier and not content.
+   Loaded: neither class, the picture fades in as the loading class comes off.
+   kjr-art-ph still means "nothing drawn here". A placeholder no lookup is queued for yet keeps the plain framed look it always had. */
 .kjr-art{position:relative;overflow:hidden}
-.kjr-card-img{display:block;width:100%;height:100%;object-fit:cover;user-select:none;-webkit-user-drag:none}
+.kjr-card-img{display:block;width:100%;height:100%;object-fit:cover;user-select:none;-webkit-user-drag:none;transition:opacity 0.18s ease-out}
 .kjr-art-ph{background:linear-gradient(160deg,var(--bg4),var(--bg3))}
-.kjr-art-ph::after{content:"";position:absolute;inset:6px;border:1px solid var(--border2);border-radius:5px;pointer-events:none}
+.kjr-art-ph:not(.kjr-art-loading):not(.kjr-art-none)::after{content:"";position:absolute;inset:6px;border:1px solid var(--border2);border-radius:5px;pointer-events:none}
+/* The sweep is a transform on ::after, so it runs on the compositor and costs no repaint per frame. Its band is --bg4 with a touch of --text,
+   a step lighter than the surface in the dark theme and a step darker in the light one, so it reads in both. The 10s animation on the
+   picture is a backstop: were its load event ever missed, the picture still shows. */
+.kjr-art.kjr-art-loading{background:var(--bg3)}
+.kjr-art-loading::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent 20%,color-mix(in srgb,var(--bg4),var(--text) 5%) 50%,transparent 80%);transform:translateX(-100%);animation:kjr-art-sweep 1.4s ease-in-out infinite}
+.kjr-art-loading .kjr-card-img{opacity:0;animation:kjr-art-reveal 0s linear 10s forwards}
+@keyframes kjr-art-sweep{to{transform:translateX(100%)}}
+@keyframes kjr-art-reveal{to{opacity:1}}
+/* The whale is the app icon art (a transparent PNG, the whale spans about 88% of its width), so 56% of the slot makes the whale about half
+   the slot. Light mode darkens it, the pastel strokes would vanish on a pale surface. */
+.kjr-art-none::after{content:"";position:absolute;inset:0;pointer-events:none;background:url("Assets/whale-icon-192.png") center/56% auto no-repeat;opacity:0.3}
+html.light .kjr-art-none::after{opacity:0.4;filter:brightness(0.55) saturate(1.4)}
 
 /* List view: the thumbnail lives inside the name cell, there is no extra column */
 .kjr-name-cell{display:flex;align-items:center;gap:10px;min-width:0}
@@ -1693,7 +1749,9 @@ html.dealer-preview-only #page-dealer{display:block!important}
 .kjr-name-set{margin-top:1px;font-size:12px;font-weight:400;line-height:1.35;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kjr-thumb{flex:none;width:28px;height:39px;border-radius:4px;border:1px solid var(--border2);background:var(--bg3)}
 .kjr-thumb.kjr-art-ph{background:var(--bg3)}
-.kjr-thumb.kjr-art-ph::after{inset:3px;border-radius:2px}
+.kjr-thumb.kjr-art-ph:not(.kjr-art-loading):not(.kjr-art-none)::after{inset:3px;border-radius:2px}
+/* A 28px thumbnail needs most of its width for the whale to read at all */
+.kjr-thumb.kjr-art-none::after{background-size:90% auto}
 /* Slab thumbnails carry a 4px grader bar along the top edge */
 .kjr-thumb-slab::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;z-index:1;background:var(--kjr-gc,var(--text3))}
 .kjr-thumb-slab.kjr-g-tag::before{box-shadow:0 0 0 1px rgba(11,11,14,0.7)}
@@ -1749,7 +1807,8 @@ html.dealer-preview-only #page-dealer{display:block!important}
 .kjr-slab-label>span:last-child{font-size:13px;letter-spacing:0}
 .kjr-slab-label.kjr-g-tag{box-shadow:inset 0 0 0 1px rgba(11,11,14,0.6)}
 .kjr-slab-art{flex:1 1 0;min-height:0;border-radius:4px}
-.kjr-slab-art.kjr-art-ph::after{inset:4px;border-radius:3px}
+.kjr-slab-art.kjr-art-ph:not(.kjr-art-loading):not(.kjr-art-none)::after{inset:4px;border-radius:3px}
+.kjr-slab-art.kjr-art-none::after{background-size:72% auto}
 
 @media(hover:hover){
   .kjr-tile:hover .kjr-tile-art,.kjr-tile:hover .kjr-slab{transform:translateY(-4px)}
@@ -1757,12 +1816,18 @@ html.dealer-preview-only #page-dealer{display:block!important}
 @media(prefers-reduced-motion:reduce){
   .kjr-tile-art,.kjr-slab,.kjr-view-btn{transition:none}
   .kjr-tile:hover .kjr-tile-art,.kjr-tile:hover .kjr-slab{transform:none}
+  /* Loading with no motion: a flat, slightly lighter surface and no sweep, still without the whale, so it never reads as "no art".
+     The picture swaps in with no fade. */
+  .kjr-card-img{transition:none}
+  .kjr-art.kjr-art-loading{background:var(--bg4)}
+  .kjr-art-loading::after{display:none}
 }
 
 /* Phones: 20x28 thumbnails, two-up tiles, the set line gives way to keep rows compact */
 @media(max-width:600px){
   .kjr-name-cell{gap:6px}
   .kjr-thumb{width:20px;height:28px;border-radius:3px}
+  .kjr-thumb.kjr-art-none::after{background-size:104% auto}
   .kjr-name-set{display:none}
   .kjr-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:20px 12px}
   .kjr-tile-name{font-size:13px}
@@ -1834,7 +1899,9 @@ html.dealer-preview-only #page-dealer{display:block!important}
 .ov-top{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
 .ov-top-item{min-width:0;display:flex}
 .ov-top .kjr-tile-note:empty{display:none}
-.ov-row3{display:flex;flex-wrap:wrap;gap:16px}
+/* Each card keeps the height of its own content (v3.83). Where the money sits is the tallest of the three, and a
+   stretched neighbour would show that difference as empty space under its list. */
+.ov-row3{display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px}
 .ov-card{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px;padding:20px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)}
 .ov-card .ov-sec-head{align-items:baseline}
 .ov-empty{padding:8px 0;font-size:13px;line-height:18px;color:var(--text3)}

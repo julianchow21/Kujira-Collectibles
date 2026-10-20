@@ -3542,11 +3542,15 @@ async function exportXlsx() {
 //   1. piggyback: fetchPriceFromTcgdex and the launch intro already fetch /cards/{id},
 //      they hand us data.image
 //   2. lazy backfill: for rows ON SCREEN with no base yet, an IntersectionObserver queues
-//      a lookup, at most 3 at once and about 150ms apart, skipped offline
+//      a lookup, at most 6 at once and about 50ms apart, skipped offline (v3.83, was 3 and 150ms)
 // Rendering itself never fetches. Slabs carry no tcgdexId, so an English or Japanese slab with a card
 // number is resolved on a SHALLOW COPY (resolveTcgdexId writes onto what it is given) and
 // the link is kept in `kjr_slab_card_ids`. A row with no id, a miss (retried after 7 days)
-// or an image that fails to load shows the neutral placeholder. Nothing here guesses.
+// or an image that fails to load shows the dimmed whale. Nothing here guesses.
+// v3.83: an art slot is in one of three looks, never ambiguous (kjrArtSet): loading (a shimmer: a lookup is queued or running for
+// it, or its picture is on the way), no art (the dimmed whale with a name for assistive tech) and loaded (the picture fades in).
+// The picture asks TCGdex for CORS (crossorigin=anonymous, it sends access-control-allow-origin: *), so sw.js can cache it under
+// its real size in `kujira-card-art`, and the learned bases are written to localStorage once per burst, not once per card.
 // v3.80: a Japanese single with no tcgdexId gets an art-only lookup too (the Japanese species name from Assets/species-ja.json,
 // the exact localId, set narrowing, a unique hit only: resolveTcgdexId opts.art). On a hit the id is written onto the row ONCE
 // with markDirty, as the English price lane does, and the image is drawn. Its misses live in the same `kjr_slab_card_ids` map
@@ -3560,16 +3564,26 @@ var KJR_SLAB_LINK_KEY = 'kjr_slab_card_ids';
 var KJR_IMG_HOST = 'https://assets.tcgdex.net/';
 var KJR_IMG_MISS_DAYS = 7;
 var KJR_IMG_MAX_ENTRIES = 4000;
-var KJR_IMG_CONCURRENCY = 3;
-var KJR_IMG_GAP_MS = 150;
+var KJR_IMG_CONCURRENCY = 6;
+var KJR_IMG_GAP_MS = 50;
 var KJR_IMG_COOL_MS = 60000;   // a failed lookup is not retried for a minute (this session only)
 var KJR_IMG_PAUSE_MS = 30000;  // three failures in a row pause the whole queue for 30 seconds
+var KJR_IMG_SAVE_MS = 500;     // the image map is written once learning settles for this long, and at once when the page hides
+var KJR_IMG_AHEAD = '900px 0px'; // how far from the viewport a lazy thumbnail or tile is told to start loading
+var KJR_IMG_SEEN_MAX = 2500;
+var KJR_ART_NONE = 'No image yet';
+var KJR_ART_FAIL = 'Image could not load';
 
 var _kjrImgMem = null;        // parsed kjr_card_images, loaded on first use
+var _kjrImgDirty = false;     // _kjrImgMem holds entries localStorage does not have yet
+var _kjrImgSaveTimer = 0;
 var _kjrSlabMem = null;       // parsed kjr_slab_card_ids, loaded on first use
 var _kjrImgBroken = Object.create(null); // session only: image URLs that failed to load
+var _kjrImgSeen = Object.create(null);   // session only: image URLs that finished loading, so a redraw shows them at once
+var _kjrImgSeenN = 0;
 var _kjrImgCool = Object.create(null);   // session only: job key -> do not retry before this time
 var _kjrImgIO = Object.create(null);     // table -> IntersectionObserver
+var _kjrImgAheadIO = Object.create(null); // table -> IntersectionObserver that wakes lazy pictures early
 var _kjrImgQ = { jobs: [], byKey: Object.create(null), active: 0, lastStart: 0, timer: 0, pauseUntil: 0, fails: 0 };
 
 function kjrOnline() { return typeof navigator === 'undefined' || navigator.onLine !== false; }
@@ -3602,9 +3616,35 @@ function kjrImgMapLoad() {
   _kjrImgMem = m;
   return m;
 }
+// Cache only. Learning bases comes in bursts (a screenful of lookups answers within a second or two) and the whole map, up to 4000
+// entries, is rewritten each time, so a change only marks the map dirty and the write goes out once the burst has been quiet for
+// KJR_IMG_SAVE_MS. kjrImgMapFlush writes at once and is what pagehide and a hidden tab call, so nothing learned waits on the timer
+// past the moment the page can go away. If storage is blocked or full the map still serves this session from memory.
 function kjrImgMapSave() {
-  // Cache only. If storage is blocked or full the map still serves this session from memory.
-  try { localStorage.setItem(KJR_IMG_KEY, JSON.stringify(_kjrImgMem || {})); return true; } catch (e) { return false; }
+  _kjrImgDirty = true;
+  if (!_kjrImgSaveTimer) _kjrImgSaveTimer = setTimeout(kjrImgMapFlush, KJR_IMG_SAVE_MS);
+  return true;
+}
+function kjrImgMapFlush() {
+  if (_kjrImgSaveTimer) { clearTimeout(_kjrImgSaveTimer); _kjrImgSaveTimer = 0; }
+  if (!_kjrImgDirty || !_kjrImgMem) return false; // nothing waiting (a map dropped by a storage event has nothing of ours in it)
+  try { localStorage.setItem(KJR_IMG_KEY, JSON.stringify(_kjrImgMem)); _kjrImgDirty = false; return true; } catch (e) { return false; }
+}
+// Another tab wrote the map while this one still held unwritten entries: keep ours on top of theirs, so neither side loses an
+// answer. A miss of ours never replaces an image of theirs. The merged map is written at the next flush.
+function kjrImgMapMerge(raw) {
+  var theirs = {};
+  try {
+    var parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) theirs = parsed;
+  } catch (e) { theirs = {}; }
+  var mine = _kjrImgMem || {};
+  Object.keys(mine).forEach(function (k) {
+    if (k === '__proto__') return;
+    if (kjrCleanImageBase(theirs[k]) && !kjrCleanImageBase(mine[k])) return;
+    theirs[k] = mine[k];
+  });
+  _kjrImgMem = theirs;
 }
 function kjrImgRoom(m, key) {
   if (Object.prototype.hasOwnProperty.call(m, key)) return true;
@@ -3797,10 +3837,12 @@ function kjrArtState(item, table) {
   var key = kjrCardImageKey(id, lang);
   if (!key) return none;
   var base = kjrCardImageBase(id, lang);
-  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? none : { state: 'hit', base: base, key: key };
+  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? { state: 'none', why: 'fail' } : { state: 'hit', base: base, key: key };
   if (kjrCardImageMissed(id, lang)) return none;
   return { state: 'need', key: key, tcg: id, lang: lang };
 }
+// A state without a picture, as a slot reads it: its name, and why (only a picture that failed to load carries one).
+function kjrStateOf(st) { return st.why ? { state: st.state, why: st.why } : { state: st.state }; }
 // The same question for a placeholder already on the page, from its data attributes alone.
 function kjrSlotState(el) {
   var tcg = el.getAttribute('data-tcg') || '';
@@ -3813,7 +3855,7 @@ function kjrSlotState(el) {
     var srow = kjrSingleRow(single);
     if (!srow) return { state: 'none' };
     var sst = kjrArtState(srow, 'singles');
-    return sst.state === 'hit' ? { state: 'hit', base: sst.base } : { state: sst.state };
+    return sst.state === 'hit' ? { state: 'hit', base: sst.base } : kjrStateOf(sst);
   }
   if (!tcg && sid) {
     // A slab placeholder asks the row as it is now, through kjrArtState: its own tcgdexId wins, and a link is used only while
@@ -3821,33 +3863,89 @@ function kjrSlotState(el) {
     var row = kjrSlabRow(sid);
     if (!row) return { state: 'none' };
     var st = kjrArtState(row, 'slabs');
-    return st.state === 'hit' ? { state: 'hit', base: st.base } : { state: st.state };
+    return st.state === 'hit' ? { state: 'hit', base: st.base } : kjrStateOf(st);
   }
   if (!tcg) return { state: 'none' };
   var base = kjrCardImageBase(tcg, lang);
-  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? { state: 'none' } : { state: 'hit', base: base };
+  if (base) return _kjrImgBroken[kjrCardImageUrl(base, 'low')] ? { state: 'none', why: 'fail' } : { state: 'hit', base: base };
   return kjrCardImageMissed(tcg, lang) ? { state: 'none' } : { state: 'need' };
 }
 // sz: 't' thumbnail (28x39), 'c' tile (low.webp), 'h' the card inspector's large art (high.webp, v3.72). The late fill
 // in kjrApplyArt reads the size off the slot's data-sz, so a placeholder drawn as 'h' is filled with the large image.
+// v3.83: crossorigin=anonymous, TCGdex answers every picture with access-control-allow-origin: *, and a CORS response is the one sw.js can cache
+// under its real size (an opaque one is padded to megabytes in the storage quota). The page never reads the pixels. A refusal is retried
+// once as a plain picture (kjrImgOnError). Thumbnails and tiles keep native lazy loading, because every row is on the page at once (no
+// pagination, 788 singles and 159 slabs at the last count) and the observer below only gates LOOKUPS, so eager loading would fetch the lot
+// on the first draw. kjrImgWatchAhead wakes the ones near the viewport early instead. The inspector's large art is what its open panel is for,
+// so it loads at once with high priority: lazy there only waits for the sheet to slide into view.
+function kjrImgSrc(base, sz) { return kjrCardImageUrl(base, sz === 'h' ? 'high' : 'low'); }
 function kjrImgTag(base, sz) {
   var big = sz === 'c' || sz === 'h';
   var w = big ? 245 : 28, h = big ? 337 : 39;
-  return '<img class="kjr-card-img" src="' + kjrEscape(kjrCardImageUrl(base, sz === 'h' ? 'high' : 'low')) + '" width="' + w + '" height="' + h +
-    '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">';
+  return '<img class="kjr-card-img" src="' + kjrEscape(kjrImgSrc(base, sz)) + '" width="' + w + '" height="' + h +
+    '" alt="" ' + (sz === 'h' ? 'fetchpriority="high" ' : 'loading="lazy" ') + 'decoding="async" referrerpolicy="no-referrer" draggable="false" crossorigin="anonymous">';
 }
-// One art slot: the picture when a base is known, else the neutral placeholder. A placeholder
-// that a lookup could still fill carries data-need plus what the lookup needs.
+// One art slot: the picture when a base is known, else a placeholder. A picture that has not been on screen yet this session starts in
+// the loading look (the shimmer, aria-busy), one that has is drawn plainly, so a redraw never flashes. A placeholder that a lookup
+// could still fill carries data-need plus what the lookup needs and the plain frame, kjrQueueCardImage gives it the shimmer once a
+// lookup is really queued for it. Anything else is the whale with its name.
 function kjrArtSlot(st, sz, cls) {
   var c = 'kjr-art ' + cls;
-  if (st.state === 'hit') return '<span class="' + c + '" data-sz="' + sz + '">' + kjrImgTag(st.base, sz) + '</span>';
-  var attrs = '';
-  if (st.state === 'need') {
-    attrs = ' data-need="1" data-ik="' + kjrEscape(st.key) + '" data-lg="' + kjrEscape(st.lang) + '"' +
-      (st.tcg ? ' data-tcg="' + kjrEscape(st.tcg) + '"' : '') + (st.slab ? ' data-slab="' + kjrEscape(st.slab) + '"' : '') +
-      (st.single ? ' data-single="' + kjrEscape(st.single) + '"' : '');
+  if (st.state === 'hit') {
+    var wait = !_kjrImgSeen[kjrImgSrc(st.base, sz)];
+    return '<span class="' + c + (wait ? ' kjr-art-loading' : '') + '" data-sz="' + sz + '"' + (wait ? ' aria-busy="true"' : '') + '>' + kjrImgTag(st.base, sz) + '</span>';
   }
-  return '<span class="' + c + ' kjr-art-ph" data-sz="' + sz + '"' + attrs + '></span>';
+  if (st.state === 'need') {
+    return '<span class="' + c + ' kjr-art-ph" data-sz="' + sz + '" data-need="1" data-ik="' + kjrEscape(st.key) + '" data-lg="' + kjrEscape(st.lang) + '"' +
+      (st.tcg ? ' data-tcg="' + kjrEscape(st.tcg) + '"' : '') + (st.slab ? ' data-slab="' + kjrEscape(st.slab) + '"' : '') +
+      (st.single ? ' data-single="' + kjrEscape(st.single) + '"' : '') + '></span>';
+  }
+  var label = st.why === 'fail' ? KJR_ART_FAIL : KJR_ART_NONE; // a picture that failed to load this session says so, the same on a redraw
+  return '<span class="' + c + ' kjr-art-ph kjr-art-none" data-sz="' + sz + '" role="img" aria-label="' + label + '" title="' + label + '"></span>';
+}
+
+// ── The three looks of an art slot. Classes plus aria, so a glance at the page says which one a slot is in:
+//   loading  kjr-art-loading + aria-busy: a lookup is queued or running for it, or its picture is still on the way. Shimmers, and
+//            the picture (if any) waits at opacity 0
+//   none     kjr-art-none + role=img with a name: no id, a fresh miss, a lookup that could not answer, a picture that failed. The whale
+//   loaded   neither: the picture shows, fading in as the loading class comes off
+// kjr-art-ph keeps its old meaning, nothing is drawn here. why 'fail' words the name as a failure instead of "no image yet".
+function kjrArtSet(el, state, why) {
+  if (!el || !el.classList) return;
+  try {
+    var cl = el.classList;
+    if (state === 'loading') {
+      cl.remove('kjr-art-none'); cl.add('kjr-art-loading');
+      el.setAttribute('aria-busy', 'true');
+      el.removeAttribute('role'); el.removeAttribute('aria-label'); el.removeAttribute('title');
+    } else if (state === 'none') {
+      var label = why === 'fail' ? KJR_ART_FAIL : KJR_ART_NONE;
+      cl.remove('kjr-art-loading'); cl.add('kjr-art-ph'); cl.add('kjr-art-none');
+      el.removeAttribute('aria-busy');
+      el.setAttribute('role', 'img'); el.setAttribute('aria-label', label); el.setAttribute('title', label);
+    } else {
+      cl.remove('kjr-art-loading'); cl.remove('kjr-art-none');
+      el.removeAttribute('aria-busy'); el.removeAttribute('role'); el.removeAttribute('aria-label'); el.removeAttribute('title');
+    }
+  } catch (e) { /* a look is cosmetic, it must never break a render or a lookup */ }
+}
+function kjrImgSeenAdd(src) {
+  if (!src) return;
+  if (_kjrImgSeen[src]) return;
+  if (++_kjrImgSeenN > KJR_IMG_SEEN_MAX) { _kjrImgSeen = Object.create(null); _kjrImgSeenN = 1; }
+  _kjrImgSeen[src] = true;
+}
+// A picture the browser already holds is complete the moment it is in the page: show it now, not a frame later when its load event arrives.
+function kjrArtCheck(slot) {
+  try {
+    var img = slot.querySelector('img.kjr-card-img');
+    if (img && img.complete && img.naturalWidth > 0) { kjrImgSeenAdd(img.getAttribute('src')); kjrArtSet(slot, 'loaded'); }
+  } catch (e) { /* cosmetic */ }
+}
+function kjrArtSweep(root) {
+  var slots = root.querySelectorAll('.kjr-art-loading');
+  for (var i = 0; i < slots.length; i++) kjrArtCheck(slots[i]);
+  return slots.length;
 }
 function kjrSlabMeta(item) {
   var r = typeof _resolveGrader === 'function'
@@ -3874,8 +3972,10 @@ function kjrThumbHtml(item, table) {
   return kjrArtSlot(kjrArtState(item, table), 't', 'kjr-thumb');
 }
 
-// ── Draw a freshly learned image on every matching placeholder in place.
-function kjrApplyArt(keys) {
+// ── Draw a freshly learned image on every matching placeholder in place. settled is true when a lookup for these keys has just ended
+// (kjrImgStart): a slot still waiting after that has no answer coming until it is asked again, so it stops shimmering and shows the
+// whale, unless another lookup for its key is still queued or running.
+function kjrApplyArt(keys, settled) {
   if (typeof document === 'undefined' || !document.querySelectorAll) return 0;
   var slots = document.querySelectorAll('.kjr-art[data-need]');
   var drawn = 0;
@@ -3883,31 +3983,63 @@ function kjrApplyArt(keys) {
     var el = slots[i];
     if (keys && keys.indexOf(el.getAttribute('data-ik')) < 0) continue;
     var st = kjrSlotState(el);
-    if (st.state === 'need') continue;
+    if (st.state === 'need') {
+      if (settled && !_kjrImgQ.byKey[el.getAttribute('data-ik')]) kjrArtSet(el, 'none', 'fail');
+      continue;
+    }
     el.removeAttribute('data-need');
     if (st.state === 'hit') {
+      var sz = el.getAttribute('data-sz');
       el.classList.remove('kjr-art-ph');
-      el.insertAdjacentHTML('afterbegin', kjrImgTag(st.base, el.getAttribute('data-sz')));
+      el.insertAdjacentHTML('afterbegin', kjrImgTag(st.base, sz));
+      kjrArtSet(el, _kjrImgSeen[kjrImgSrc(st.base, sz)] ? 'loaded' : 'loading');
+      kjrArtCheck(el);
       drawn++;
+    } else {
+      kjrArtSet(el, 'none', st.why); // an answered miss, or a picture that failed
     }
   }
   return drawn;
 }
-// One delegated capture-phase listener: an image that fails to load drops back to the placeholder.
+// One delegated capture-phase listener: an image that fails to load drops back to the placeholder, now the whale.
 // The failed URL is remembered for this session only, so a flaky moment never costs a week.
+// The picture asks for CORS so sw.js can cache it. If a CORS request is ever refused (TCGdex dropping its header) it is tried once
+// more as a plain picture, which keeps the art working, only uncached. Offline there is nothing to retry.
 function kjrImgOnError(e) {
   var img = e && e.target;
   if (!img || img.tagName !== 'IMG' || !img.classList || !img.classList.contains('kjr-card-img')) return;
+  if (kjrOnline() && !img._kjrPlain && typeof img.hasAttribute === 'function' && img.hasAttribute('crossorigin')) {
+    img._kjrPlain = true;
+    img.removeAttribute('crossorigin');
+    img.setAttribute('src', img.getAttribute('src') || '');
+    return;
+  }
   if (kjrOnline()) _kjrImgBroken[img.getAttribute('src') || ''] = true;
   var slot = img.parentNode;
   img.remove();
   if (slot && slot.classList) slot.classList.add('kjr-art-ph');
+  kjrArtSet(slot, 'none', 'fail');
+}
+// And one for the picture that arrives: the slot leaves the loading look (the picture fades in, see styles.css) and the URL is
+// remembered, so a redraw of the same picture is drawn without the shimmer.
+function kjrImgOnLoad(e) {
+  var img = e && e.target;
+  if (!img || img.tagName !== 'IMG' || !img.classList || !img.classList.contains('kjr-card-img')) return;
+  kjrImgSeenAdd(img.getAttribute('src') || '');
+  kjrArtSet(img.parentNode, 'loaded');
 }
 document.addEventListener('error', kjrImgOnError, true);
+document.addEventListener('load', kjrImgOnLoad, true);
 window.addEventListener('storage', function (e) {
-  if (e && e.key === KJR_IMG_KEY) _kjrImgMem = null;
+  if (e && e.key === KJR_IMG_KEY) {
+    if (_kjrImgDirty && _kjrImgMem) kjrImgMapMerge(e.newValue); else _kjrImgMem = null;
+  }
   if (e && e.key === KJR_SLAB_LINK_KEY) _kjrSlabMem = null;
 });
+// Whatever the debounce still holds is written the moment the page can go away.
+function kjrImgOnVisibility() { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') kjrImgMapFlush(); }
+window.addEventListener('pagehide', function () { kjrImgMapFlush(); });
+document.addEventListener('visibilitychange', kjrImgOnVisibility);
 window.addEventListener('online', function () { kjrImgPump(); });
 
 // ── Lazy backfill. Only rows on screen are looked up, at most KJR_IMG_CONCURRENCY at once and
@@ -3925,9 +4057,35 @@ function kjrImgOnIntersect(entries) {
     if (el._kjrVis && el.hasAttribute('data-need')) kjrQueueCardImage(kjrImgJobFromEl(el), el);
   }
 }
-function kjrObserveCardImages(root, table) {
+// Native lazy loading decides for itself how far ahead of the viewport a picture starts (a few screens in Chrome, about 100px in Safari
+// as far as the one source found says), so on a phone a fast scroll through a list can outrun the pictures. Each lazy picture's slot is
+// watched with a KJR_IMG_AHEAD margin and, once inside it, told to load now. A slot in the hidden table (the phone draws Holdings rows
+// instead) never intersects, so it is never fetched. No IntersectionObserver means the browser's own lazy loading, as before.
+function kjrImgOnAhead(entries, io) {
+  for (var i = 0; i < entries.length; i++) {
+    if (!entries[i].isIntersecting) continue;
+    var slot = entries[i].target;
+    try { if (io && typeof io.unobserve === 'function') io.unobserve(slot); } catch (e) { /* observer already gone */ }
+    var img = typeof slot.querySelector === 'function' ? slot.querySelector('img.kjr-card-img[loading="lazy"]') : null;
+    if (img) img.setAttribute('loading', 'eager');
+  }
+}
+function kjrImgWatchAhead(root, table) {
   if (typeof IntersectionObserver !== 'function') return 0;
+  var io = _kjrImgAheadIO[table];
+  if (io) { try { io.disconnect(); } catch (e) { /* observer already gone */ } }
+  var imgs = root.querySelectorAll('.kjr-art > img.kjr-card-img[loading="lazy"]');
+  if (!imgs.length) return 0;
+  if (!io) io = _kjrImgAheadIO[table] = new IntersectionObserver(kjrImgOnAhead, { rootMargin: KJR_IMG_AHEAD });
+  for (var i = 0; i < imgs.length; i++) io.observe(imgs[i].parentNode);
+  return imgs.length;
+}
+function kjrObserveCardImages(root, table) {
   if (!root || typeof root.querySelectorAll !== 'function') return 0;
+  // The last step of every render: pictures the browser already holds show at once, lazy ones near the viewport are woken. Cosmetic,
+  // never allowed to break the render that called this.
+  try { kjrArtSweep(root); kjrImgWatchAhead(root, table); } catch (e) { /* cosmetic */ }
+  if (typeof IntersectionObserver !== 'function') return 0;
   var io = _kjrImgIO[table];
   if (io) { try { io.disconnect(); } catch (e) { /* observer already gone */ } }
   var slots = root.querySelectorAll('.kjr-art[data-need]');
@@ -3951,18 +4109,26 @@ function kjrJobSettled(job) {
   var row = kjrSlabRow(job.slab);
   return !row || kjrArtState(row, 'slabs').state !== 'need';
 }
+// The slot's look follows what the queue does with it: shimmering while a lookup is queued or running for it, the whale when none is
+// coming (cooling down after a failure, or offline: the job still waits and the slot shimmers again when it starts). Only a slot that
+// is still a placeholder a lookup could fill takes a look from the queue, one that has been drawn since is never touched.
+function kjrArtQueued(el, state, why) {
+  if (!el || typeof el.hasAttribute !== 'function' || !el.hasAttribute('data-need')) return;
+  kjrArtSet(el, state, why);
+}
 function kjrQueueCardImage(job, el) {
   if (!job || !job.key) return false;
   var q = _kjrImgQ;
   var queued = q.byKey[job.key];
-  if (queued) { if (el && queued.els.indexOf(el) < 0) queued.els.push(el); return false; }
+  if (queued) { if (el && queued.els.indexOf(el) < 0) queued.els.push(el); kjrArtQueued(el, kjrOnline() ? 'loading' : 'none'); return false; }
   var cool = _kjrImgCool[job.key];
-  if (cool && cool > Date.now()) return false;
+  if (cool && cool > Date.now()) { kjrArtQueued(el, 'none', 'fail'); return false; }
   if (kjrJobSettled(job)) { kjrApplyArt([job.key]); return false; }
   job.els = el ? [el] : [];
   job.viewport = !!el; // a lookup that came from the viewport is dropped if its row scrolls away first
   q.byKey[job.key] = job;
   q.jobs.push(job);
+  kjrArtQueued(el, kjrOnline() ? 'loading' : 'none');
   kjrImgPump();
   return true;
 }
@@ -3995,10 +4161,11 @@ function kjrImgStart(job) {
   var keys = [job.key];
   q.active++;
   q.lastStart = Date.now();
+  (job.els || []).forEach(function (el) { kjrArtQueued(el, 'loading'); }); // a slot that showed the whale while offline shimmers again now that it is asked
   kjrImgRun(job, keys).catch(function () { /* kjrImgRun handles its own failures */ }).then(function () {
     q.active--;
     delete q.byKey[job.key];
-    try { kjrApplyArt(keys); } catch (e) { /* drawing is cosmetic */ }
+    try { kjrApplyArt(keys, true); } catch (e) { /* drawing is cosmetic */ }
     kjrImgPump();
   });
 }

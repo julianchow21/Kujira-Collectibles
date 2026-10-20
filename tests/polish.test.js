@@ -156,7 +156,11 @@ test('fonts: the @font-face rules sit at the top of styles.css, swap, a declared
   for (const [name, src] of [['index.html', html], ['styles.css', css], ['sw.js', sw], ['app.js', appSrc], ['features.js', features]]) {
     assert.doesNotMatch(src, /fonts\.googleapis\.com|fonts\.gstatic\.com/, name + ' has no Google Fonts origin');
   }
-  assert.doesNotMatch(html, /rel="preconnect"/, 'and no preconnect left');
+  assert.doesNotMatch(html, /rel="preconnect"[^>]*fonts\./, 'and no font preconnect left');
+  // v3.83: the only preconnects are the two TCGdex hosts the card art comes from (pictures and lookups), crossorigin because the pictures are
+  // asked for with crossorigin=anonymous and the lookups are CORS fetches
+  assert.deepEqual([...html.matchAll(/<link rel="preconnect" href="([^"]+)" crossorigin>/g)].map((m) => m[1]), ['https://assets.tcgdex.net', 'https://api.tcgdex.net']);
+  assert.equal((html.match(/rel="preconnect"/g) || []).length, 2, 'nothing else is preconnected');
   assert.doesNotMatch(html, /<link[^>]+href="https?:\/\/fonts/);
   // the sans is preloaded, and only the sans, ahead of the stylesheet
   const links = [...html.matchAll(/<link rel="preload"[^>]*>/g)].map((m) => m[0]);
@@ -168,8 +172,8 @@ test('fonts: the @font-face rules sit at the top of styles.css, swap, a declared
   assert.match(core[0], /'\.\/Assets\/fonts\/Geist-Variable\.woff2', '\.\/Assets\/fonts\/GeistMono-Variable\.woff2'/);
   assert.equal((sw.match(/const CORE = \[/g) || []).length, 1);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its version');
-  // the preview fixtures strip http links, the relative preload and the file survive that
-  assert.doesNotMatch(html, /<link[^>]+href="https?:\/\/[^"]*"[^>]*>/, 'no external link element at all');
+  // the preview fixtures strip http links (the preconnects included, tests/preview-server.cjs), the relative preload and the file survive that
+  assert.doesNotMatch(html, /<link(?![^>]*rel="preconnect")[^>]+href="https?:\/\/[^"]*"[^>]*>/, 'no external link element except the two preconnects');
 });
 
 // ══ 3e. the dead tooltip code ═══════════════════════════════════════════════════════════════════

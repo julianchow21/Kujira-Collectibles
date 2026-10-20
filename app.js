@@ -25,6 +25,60 @@ const kjrModalCtrl = (() => {
     document.body.style.overflow = (stack.length > 0 || sentryOpen) ? 'hidden' : '';
   }
 
+  // One discard prompt per dialog at a time (v3.84). Esc, a tap on the backdrop and a script can all ask to close the same dirty
+  // dialog, and a second kjrConfirm on top of the first left its promise orphaned. Whoever asks while a prompt is up shares it, so
+  // one dismiss is one prompt and one answer. The field that had focus is remembered before the prompt takes it, for the way back.
+  function askDiscard(dialog) {
+    if (!dialog._kjrAsk) {
+      dialog._kjrFocus = document.activeElement;
+      const p = Promise.resolve(kjrConfirm('Discard unsaved changes?', { ok: 'Discard', danger: true }));
+      dialog._kjrAsk = p;
+      const clear = () => { if (dialog._kjrAsk === p) dialog._kjrAsk = null; };
+      p.then(clear, clear);
+    }
+    return dialog._kjrAsk;
+  }
+
+  // Puts a dialog the browser closed back on screen, typed values and all (v3.84). It is shown again, not opened again: its entry on the
+  // stack, the scroll lock and the history entry were never undone. One attempt, no retry, and showModal's own failure (a dialog
+  // taken out of the page) is caught, so this cannot loop. Returns whether the dialog is open.
+  function reopen(dialog) {
+    if (dialog.open) return true;
+    if (dialog._kjrReopening || dialog.isConnected === false) return false;
+    dialog._kjrReopening = true;
+    try {
+      dialog.showModal();
+      dialog.scrollTop = 0;
+      if (typeof trapFocus === 'function') trapFocus(dialog);
+      // showModal focuses the first field, the person was somewhere else in the form
+      const was = dialog._kjrFocus;
+      dialog._kjrFocus = null;
+      if (was && typeof was.focus === 'function' && was.isConnected !== false && typeof dialog.contains === 'function' && dialog.contains(was)) {
+        try { was.focus(); } catch (_) { /* focus is a nicety */ }
+      }
+      return true;
+    } catch (e) {
+      console.error('[kjrModalCtrl] could not bring a dialog back after the browser closed it:', e);
+      return false;
+    } finally {
+      dialog._kjrReopening = false;
+    }
+  }
+
+  // The browser shut a dialog by itself while it is still on the stack (v3.84). It does that when Esc fires a 'cancel' that cannot be
+  // cancelled (Chromium with no recent tap or key press, or a second Esc in a row): the cancel handler below runs, but its
+  // preventDefault changes nothing and the dialog closes anyway, with its stack entry, the scroll lock and the history entry left
+  // behind and nothing on screen to bring the form back. close() takes the entry off the stack BEFORE it shuts a dialog, so an entry
+  // still there with the dialog shut means the browser did it. While a discard prompt is up the prompt decides (Discard finishes the
+  // close, Keep editing brings the form back once the prompt has gone, see close()). With no prompt up a form with unsaved changes
+  // comes back at once, typed values are never dropped silently, and a clean one gets the ordinary teardown.
+  function closedByBrowser(dialog) {
+    if (dialog.open || !stack.some(s => s.dialog === dialog)) return;
+    if (dialog._kjrAsk) return;
+    if (dialog.dataset.dirty === '1' && reopen(dialog)) return;
+    close(dialog, true);
+  }
+
   // opts is optional: { trigger, onClose }. onClose (if given) is stored per
   // dialog and invoked by close() on EVERY close path (explicit close/cancel
   // button, ESC/'cancel' event, backdrop click) so callers that need to run
@@ -56,10 +110,14 @@ const kjrModalCtrl = (() => {
     // Backdrop click: the dialog element itself is the full-viewport flex
     // wrapper, the .modal sits inside it, so a click landing on the dialog
     // node (not a descendant) is a backdrop click.
+    // v3.84: these are the ONLY bindings of cancel and click on a dialog (features.js used to add a second pair to every dialog in
+    // the page, which asked the Discard question twice and also swallowed Esc on the Discard prompt itself). 'close' catches the
+    // dialog the browser shuts by itself, a cancel that cannot be cancelled (closedByBrowser).
     if (!dialog._kjrCtlBound) {
       dialog._kjrCtlBound = true;
       dialog.addEventListener('cancel', (e) => { e.preventDefault(); close(dialog); });
       dialog.addEventListener('click', (e) => { if (e.target === dialog) close(dialog); });
+      dialog.addEventListener('close', () => closedByBrowser(dialog));
     }
     dialog.showModal();
     // v3.83: where overflow:clip is missing (iOS before 16), showModal's focus can scroll the dialog and cancel the slide, so reset it
@@ -75,12 +133,21 @@ const kjrModalCtrl = (() => {
   // and by closeAll/popstate teardown paths that must not get stuck open).
   // Returns a Promise<boolean> - true if the dialog was closed.
   async function close(dialog, force) {
+    if (stack.findIndex(s => s.dialog === dialog) === -1) return true;
+    if (!force && dialog.dataset.dirty === '1' && typeof kjrConfirm === 'function') {
+      const ok = await askDiscard(dialog);
+      if (!ok) {
+        // Keep editing (v3.84). Normally the dialog never closed and there is nothing to do. If the browser shut it while the prompt
+        // was up (closedByBrowser), it comes back now, after the prompt has gone so it does not cover the prompt, with its values.
+        // Should it not be able to come back, the page is unlocked rather than left behind a dialog nobody can reach.
+        if (!dialog.open && stack.some(s => s.dialog === dialog) && !reopen(dialog)) return close(dialog, true);
+        return false;
+      }
+    }
+    // Found again after the prompt, never by where it was before: the stack can change while a prompt is up (a Back press, closeAll,
+    // another dialog), and a stale index would take a different dialog's entry off the stack. Gone already means someone else closed it.
     const idx = stack.findIndex(s => s.dialog === dialog);
     if (idx === -1) return true;
-    if (!force && dialog.dataset.dirty === '1' && typeof kjrConfirm === 'function') {
-      const ok = await kjrConfirm('Discard unsaved changes?', { ok: 'Discard', danger: true });
-      if (!ok) return false;
-    }
     const entry = stack.splice(idx, 1)[0];
     dialog.dataset.dirty = '0';
     if (dialog.open) dialog.close();
@@ -8107,6 +8174,12 @@ function _cmdFindRender(total) {
   const raw = String(inp ? inp.value : '').trim();
   const has = cmdFindResults.length > 0;
   if (list) { list.hidden = !has; list.innerHTML = has ? cmdFindListHtml(cmdFindResults, cmdFindIdx, total) : ''; }
+  // v3.84: the thumbnails are art slots like the ones on the pages, and a render that draws slots ends the way theirs do: the ones a
+  // lookup could fill are watched, so each gets its shimmer, then its picture or the whale. Until now nothing watched these, a card
+  // with no art known yet kept the bare frame for ever. It is the palette's own observer ('palette'), a redraw drops the old watch
+  // and starts afresh, and the queue keeps one job per card however many keys are pressed (kjrQueueCardImage). An empty list
+  // watches nothing, which also lets the last watch go.
+  if (list && typeof kjrObserveCardImages === 'function') kjrObserveCardImages(list, 'palette');
   if (status) {
     status.hidden = has;
     // textContent, never innerHTML: what was typed is shown back, so it must never be read as markup
@@ -9142,7 +9215,7 @@ function clLoad() {
 // or _updatedAt. CURRENCY fields are formatted with S$, dates with their
 // canonical "D MMM YYYY" format.
 const CL_FIELDS_BY_TABLE = {
-  singles:        ['name','set','language','type','condition','qty','costPrice','marketPrice','listPrice','datePurchased','status','notes','priceAlert','ebayUrl','carousellUrl'],
+  singles:        ['name','set','language','type','condition','qty','costPrice','marketPrice','listPrice','datePurchased','status','notes','priceAlert','ebayUrl','carousellUrl','customCard'],
   slabs:          ['name','grader','grade','certNo','rank','language','set','costPrice','marketPrice','listPrice','dateListed','status','notes','priceAlert','ebayUrl','carousellUrl'],
   sales:          ['dateSold','product','buyer','costPrice','totalCollected','shippingCost','profit','margin','inventoryId','inventoryTable'],
   etbs:           ['product','status','totalPrice','marketPrice','condition','date','notes'],
@@ -12017,23 +12090,44 @@ function _parseHistDate(dateStr) {
   return null;
 }
 
+// 'YYYY-MM-DD' of a local-midnight timestamp, the form price dates are stored in
+function _kjrIsoDay(ts) {
+  const d = new Date(ts);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Whole calendar days from the day a price was checked to today, 0 for today or a date ahead of it. ts is the local midnight of a stored
+// price date, and those dates are UTC dates (the price code writes toISOString().slice(0,10)), so today is read as the UTC day too: a
+// price checked an hour ago is "today" in the first 8 hours of a Singapore morning as well, not "1 day ago". Every freshness reader
+// counts age with this one function (the Overview text, the list dot, the summary strip dot, the inspector line and the Overview
+// tooltip), so none of them can name a different day for the same check.
+function kjrCheckedDays(ts, now) {
+  const n = new Date(now || Date.now());
+  const d = new Date(ts);
+  return Math.max(0, Math.round((Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000));
+}
+
 function _mktFreshDot(item) {
   const hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
-  if (!hist.length || !item.marketPrice) return '';
-  const last = hist[hist.length - 1];
-  const d = _parseHistDate(last && last.date);
+  // The age is the newest CHECK of this price, a same-value re-check included (kjrPriceCheckedTs, the one reading every freshness
+  // display shares), not only the last history entry: a re-price to the stored value appends none, so a card re-checked today could
+  // still read amber or red here while the Overview said "Prices checked today". Source and confidence below still describe the
+  // last price written.
+  const ts = kjrPriceCheckedTs(item);
+  if (!item.marketPrice || (!hist.length && !ts)) return '';
+  const last = hist.length ? hist[hist.length - 1] : null;
   // A 'low' confidence entry (PPT's base-name fallback fired, no card number
   // matched) is always shown amber regardless of age - the number could be
   // stale AND wrong, so age-based green never applies to a fuzzy match.
   const isLow = last && last.confidence === 'low';
-  if (!d) return '<span style="width:6px;height:6px;border-radius:50%;background:#444;display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0" title="Price age unknown"></span>';
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (!ts) return '<span style="width:6px;height:6px;border-radius:50%;background:#444;display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0" title="Price age unknown"></span>';
+  const days = kjrCheckedDays(ts);
   const color = isLow ? '#f59e0b' : (days <= 30 ? '#22c55e' : days <= 90 ? '#f59e0b' : '#ef4444');
   const ago = days === 0 ? 'today' : days === 1 ? '1 day ago' : days + ' days ago';
-  const sourceNote = last.source ? (' · ' + last.source) : '';
-  const confNote = last.confidence ? (' · ' + last.confidence + ' confidence') : '';
+  const sourceNote = last && last.source ? (' · ' + last.source) : '';
+  const confNote = last && last.confidence ? (' · ' + last.confidence + ' confidence') : '';
   const lowNote = isLow ? ' · approx, fuzzy match' : '';
-  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + (last.date||'') + ' (' + ago + ')' + sourceNote + confNote + lowNote + '"></span>';
+  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + _kjrIsoDay(ts) + ' (' + ago + ')' + sourceNote + confNote + lowNote + '"></span>';
 }
 
 // Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
@@ -12049,6 +12143,7 @@ function _mktEmptyCellTitle(item) {
   const isSlab = !!item.grader;
   const lang = (item.language||'EN').toString().trim().toUpperCase();
   const isEnglish = lang === 'EN' || lang === '';
+  if (!isSlab && kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)'; // the owner's own reason wins
   if (!isSlab && !isEnglish) return 'Manual price, no free source for this language';
   if (!isSlab && !item.tcgdexId) {
     const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
@@ -12060,15 +12155,15 @@ function _mktEmptyCellTitle(item) {
 // Returns a freshness dot for the Market Price KPI card, based on the oldest
 // price refresh among all items that have one. Shows green/yellow/red.
 function _statMktFreshDot(items) {
+  // each card's newest CHECK, a same-value re-check included (kjrPriceCheckedTs), and the oldest of those
   let oldest = null;
   (items || []).forEach(i => {
-    const hist = Array.isArray(i.priceHistory) ? i.priceHistory : [];
-    if (!hist.length || !i.marketPrice) return;
-    const d = _parseHistDate(hist[hist.length - 1]?.date);
-    if (d && (!oldest || d < oldest)) oldest = d;
+    if (!i.marketPrice) return;
+    const ts = kjrPriceCheckedTs(i);
+    if (ts && (oldest === null || ts < oldest)) oldest = ts;
   });
-  if (!oldest) return '';
-  const days = Math.floor((Date.now() - oldest.getTime()) / 86400000);
+  if (oldest === null) return '';
+  const days = kjrCheckedDays(oldest);
   const color = days <= 30 ? '#22c55e' : days <= 90 ? '#f59e0b' : '#ef4444';
   const ago = days === 0 ? 'today' : days === 1 ? '1 day ago' : days + ' days ago';
   return '<span style="width:7px;height:7px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:6px;vertical-align:middle;cursor:help" title="Oldest refresh: ' + ago + '"></span>';
@@ -12114,6 +12209,10 @@ function _renderUnresolvedBanner() {
   const el = document.getElementById('singles-unresolved-banner');
   if (!el) return;
   const n = (typeof _kjrUnresolvedSingles === 'function') ? _kjrUnresolvedSingles().length : 0;
+  // The review sheet, when it is open, follows the data (an edit saved on top of it, a card marked custom, a price pass)
+  if (typeof kjrCustomReviewRefresh === 'function') kjrCustomReviewRefresh();
+  // The last unmatched card was handled while the list was filtered to them: the filter would only show an empty list now
+  if (n === 0 && _kjrSinglesUnresolvedOnly) _kjrSinglesUnresolvedOnly = false;
   if (n === 0 || _kjrUnresolvedBannerDismissed) { el.classList.remove('show'); return; }
   document.getElementById('singles-unresolved-text').textContent =
     n + ' card' + (n!==1?'s':'') + ' could not be matched automatically. Open a card and add its set code and number, or a TCGdex ID, for exact pricing.';
@@ -12129,6 +12228,7 @@ function _renderUnresolvedBanner() {
 let _kjrSinglesUnresolvedOnly = false;
 function _kjrShowUnresolvedOnly() {
   _kjrSinglesUnresolvedOnly = true;
+  _kjrUnresolvedBannerDismissed = false; // asked for these cards on purpose (Overview link, Show in list): the banner and its Review button come back
   showPage('inventory'); // showPage('inventory') renders the Singles grid
 }
 function _kjrClearUnresolvedFilter() {
@@ -12138,6 +12238,239 @@ function _kjrClearUnresolvedFilter() {
 function _updateUnresolvedFilterChip() {
   const chip = document.getElementById('singles-unresolved-filter-chip');
   if (chip) chip.style.display = _kjrSinglesUnresolvedOnly ? '' : 'none';
+}
+
+// ═════════════ Custom card flag and the review sheet ═════════════
+// customCard: true on a single says "this card has no TCGdex match by design" (a hand-made or fan card). It is an ordinary field on
+// the row, with no underscore, so it syncs: collectibles_clean_data (Server/CAS.sql) drops only _-prefixed keys and the row's data
+// column is jsonb, so there is no schema change, unlike the local-only _tcgdexMissDate and _tcgdexPricedDate markers. It changes how
+// the app treats the card and nothing else. _queueLaneFor sends it to the 'manual' lane (zero requests, no miss stamps),
+// _kjrUnresolvedSingles leaves it out of the Singles banner, the Overview "Needs attention" row and the Settings count, and
+// applyPriceToGroup never writes a price onto it. Valuation is untouched, it keeps whatever market price was typed in. Strictly
+// === true, so a stray string like "false" from some other writer is not a flag. Singles only: the banner and the unmatched
+// lane never covered slabs (they are always the PPT lane).
+function kjrIsCustomCard(item) { return !!item && item.customCard === true; }
+
+// The Singles banner's Review button opens the sheet in index.html (#kjr-custom-overlay, through kjrModalCtrl). It lists the cards
+// _kjrUnresolvedSingles flags, each with Open (the edit form, to add a set code and number or a TCGdex ID) and Custom card (set the
+// flag). A card marked here moves to "Marked custom just now" with an Undo, so a mis-tap is one tap to put back. The list is redrawn
+// by renderSingles (the hook in _renderUnresolvedBanner), so an edit saved over the sheet takes its card off the list.
+let _kjrCustomJustMarked = []; // ids marked custom since the sheet opened, newest first
+const KJR_CUSTOM_SHEET_MAX = 100; // rows drawn at once, the next ones appear as these are handled
+const KJR_CUSTOM_JUST_MAX = 50;
+
+function _kjrCustomFindSingle(id) {
+  const key = String(id);
+  return (DB.singles || []).find(r => r && String(r.id) === key) || null;
+}
+// Why a card is on the list: a name with a card number was looked up and TCGdex found no single match, one without a number was never looked up
+function _kjrCustomReason(item) {
+  return _baseCardName(item.name) && _tcgdexNumber(item.name) ? 'TCGdex found no unique match' : 'No card number in the name';
+}
+// One <li>. Every value from the row is escaped. The buttons are read by one delegated click handler on the dialog, so no id
+// is ever put inside an inline script.
+function _kjrCustomRowHtml(item, done) {
+  const name = String(item.name == null || item.name === '' ? '-' : item.name);
+  const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  const bits = ['<span class="badge b-lang">' + esc(lang) + '</span>'];
+  if (item.set) bits.push('<span class="kjr-cr-set">' + esc(item.set) + '</span>');
+  if (!done) bits.push('<span class="kjr-cr-why">' + esc(_kjrCustomReason(item)) + '</span>');
+  const id = ' data-cr-id="' + esc(item.id) + '"';
+  const acts = done
+    ? '<button type="button" class="btn btn-sm" data-cr-act="undo"' + id + ' aria-label="Undo custom card for ' + esc(name) + '">Undo</button>'
+    : '<button type="button" class="btn btn-sm" data-cr-act="open"' + id + ' aria-label="Open ' + esc(name) + '">Open</button>' +
+      '<button type="button" class="btn btn-sm" data-cr-act="mark"' + id + ' aria-label="Mark ' + esc(name) + ' as a custom card">Custom card</button>';
+  return '<li class="kjr-cr-row' + (done ? ' is-done' : '') + '"><div class="kjr-cr-info"><div class="kjr-cr-name">' + esc(name) + '</div>' +
+    '<div class="kjr-cr-meta">' + bits.join('') + '</div></div><div class="kjr-cr-acts">' + acts + '</div></li>';
+}
+// The sheet body for the cards still unmatched and the ones just marked. Pure: it reads nothing but its arguments.
+function kjrCustomReviewHtml(cards, marked) {
+  const n = cards.length;
+  let html = '';
+  if (n === 0) {
+    html += '<div class="hig-empty kjr-cr-empty"><div class="hig-empty-icon" aria-hidden="true">✓</div>' +
+      '<div class="hig-empty-title">All cards matched or marked custom</div>' +
+      '<div class="hig-empty-sub">Custom cards keep the price you set.</div></div>';
+  } else {
+    html += '<p class="kjr-cr-lead">' + n + ' card' + (n !== 1 ? 's' : '') + ' could not be matched. Open one to add its set code and number, or a TCGdex ID. ' +
+      'A custom card is priced by hand and never flagged. <button type="button" class="kjr-cr-link" data-cr-act="filter">Show in list</button></p>' +
+      '<ul class="kjr-cr-list" aria-label="Unmatched cards">' + cards.slice(0, KJR_CUSTOM_SHEET_MAX).map(c => _kjrCustomRowHtml(c, false)).join('') + '</ul>';
+    if (n > KJR_CUSTOM_SHEET_MAX) {
+      html += '<p class="kjr-cr-more">Showing the first ' + KJR_CUSTOM_SHEET_MAX + ' of ' + n + '. The rest appear as you handle these.</p>';
+    }
+  }
+  if (marked.length) {
+    html += '<h4 class="kjr-cr-sub">Marked custom just now</h4><ul class="kjr-cr-list" aria-label="Marked custom just now">' +
+      marked.map(c => _kjrCustomRowHtml(c, true)).join('') + '</ul>';
+  }
+  return html;
+}
+function _kjrCustomUnmatchedSorted() {
+  return _kjrUnresolvedSingles().slice().sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' }) || String(a.id).localeCompare(String(b.id)));
+}
+// Keyboard focus survives a redraw: the button pressed is gone after it, so remember which kind of button and which row it was in.
+function _kjrCustomFocusSnapshot() {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  const body = document.getElementById('kjr-custom-body');
+  const el = typeof document !== 'undefined' ? document.activeElement : null;
+  // anywhere in the sheet: a row's buttons, or the Undo in the bar under the list
+  if (!dlg || !body || !el || typeof el.getAttribute !== 'function' || typeof dlg.contains !== 'function' || !dlg.contains(el)) return null;
+  const act = el.getAttribute('data-cr-act');
+  if (!act) return null;
+  const row = typeof el.closest === 'function' ? el.closest('.kjr-cr-row') : null;
+  const rows = typeof body.querySelectorAll === 'function' ? Array.from(body.querySelectorAll('.kjr-cr-row')) : [];
+  return { act, id: el.getAttribute('data-cr-id'), index: Math.max(0, rows.indexOf(row)) };
+}
+function _kjrCustomFocusRestore(snap) {
+  const body = document.getElementById('kjr-custom-body');
+  if (!snap || !body || typeof body.querySelectorAll !== 'function') return;
+  const pick = (sel) => { const list = Array.from(body.querySelectorAll(sel)); return list.length ? list : null; };
+  const byId = (act) => (pick('[data-cr-act="' + act + '"]') || []).find(b => b.getAttribute('data-cr-id') === snap.id);
+  const opens = pick('[data-cr-act="open"]');
+  // the same kind of button on the same card; an Undo is followed to the card it put back (its Open button); else the card that moved
+  // into its place, else the first button left, else the title
+  const target = byId(snap.act) || (snap.act === 'undo' && byId('open')) || (opens && opens[Math.min(snap.index, opens.length - 1)]) ||
+    (pick('[data-cr-act]') || [])[0] || document.getElementById('kjr-custom-title');
+  if (target && typeof target.focus === 'function') target.focus();
+}
+// force: draw even if the markup is the one already drawn (opening the sheet). Otherwise an unchanged list is left alone, so a price pass
+// that redraws Singles behind the sheet does not replace the button someone is pressing.
+function kjrCustomReviewRender(force) {
+  const body = document.getElementById('kjr-custom-body');
+  if (!body) return;
+  const cards = _kjrCustomUnmatchedSorted();
+  const marked = _kjrCustomJustMarked.map(_kjrCustomFindSingle).filter(r => r && kjrIsCustomCard(r));
+  const html = kjrCustomReviewHtml(cards, marked);
+  if (force || body._kjrCrHtml !== html) { body._kjrCrHtml = html; body.innerHTML = html; }
+  const live = document.getElementById('kjr-custom-live');
+  if (live) live.textContent = cards.length ? cards.length + ' card' + (cards.length !== 1 ? 's' : '') + ' left to review' : 'All cards matched or marked custom';
+}
+// Redraw the sheet when it is open. Called from _renderUnresolvedBanner, i.e. after every renderSingles.
+function kjrCustomReviewRefresh() {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  if (dlg && dlg.open) kjrCustomReviewRender();
+}
+function _kjrCustomReviewClick(e) {
+  const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-cr-act]') : null;
+  if (!t) return;
+  const act = t.getAttribute('data-cr-act');
+  const id = t.getAttribute('data-cr-id');
+  if (act === 'open') kjrCustomOpenCard(id);
+  else if (act === 'mark') kjrCustomMark(id);
+  else if (act === 'undo') kjrCustomUnmark(id);
+  else if (act === 'filter') kjrCustomShowList();
+}
+function kjrCustomReviewOpen() {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  if (!dlg) return;
+  if (dlg.open) { kjrCustomReviewRender(); return; } // showModal() on an open dialog throws
+  _kjrCustomJustMarked = [];
+  _kjrCustomToastHide();
+  if (!dlg._kjrCrBound) { dlg._kjrCrBound = true; dlg.addEventListener('click', _kjrCustomReviewClick); }
+  kjrCustomReviewRender(true);
+  kjrModalCtrl.open(dlg, { onClose: () => { _kjrCustomJustMarked = []; _kjrCustomToastHide(); } });
+}
+function kjrCustomReviewClose() {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  if (dlg) kjrModalCtrl.close(dlg, true);
+}
+// Open: the edit form goes on top of the sheet, so a card can be fixed and the next one picked straight after. Focus is parked on the
+// sheet title first: the edit form gives focus back to what was focused when it opened, and the Open button will have been redrawn by then.
+function kjrCustomOpenCard(id) {
+  const item = _kjrCustomFindSingle(id);
+  if (!item) { toast('That card is no longer in your collection'); kjrCustomReviewRender(); return; }
+  const title = document.getElementById('kjr-custom-title');
+  if (title && typeof title.focus === 'function') title.focus();
+  openEditSingle(item.id);
+}
+function kjrCustomShowList() {
+  kjrCustomReviewClose();
+  _kjrShowUnresolvedOnly();
+}
+// A flag change is a synced edit: snapshot for Ctrl+Z, markDirty, the local save, the changelog line, then await the flush so a
+// refused or failed cloud write is said out loud (the row stays dirty and retries either way).
+async function _kjrCustomFlush() {
+  try {
+    const res = await _flushDirtyToSupabase();
+    if (res && (res.status === 'error' || res.status === 'blocked')) toast('⚠ Saved on this device. Cloud sync will retry, check the sync indicator.', 5000);
+  } catch (e) {
+    console.error('[custom card] cloud flush failed:', e);
+    toast('⚠ Saved on this device. Cloud sync will retry, check the sync indicator.', 5000);
+  }
+}
+async function kjrCustomMark(id) {
+  const item = _kjrCustomFindSingle(id);
+  if (!item) { toast('That card is no longer in your collection'); kjrCustomReviewRender(); return false; }
+  if (kjrIsCustomCard(item)) return false;
+  if (kjrDealerWriteGuard('singles', item, 'edit')) return false;
+  const snap = _kjrCustomFocusSnapshot();
+  snapshotForUndo();
+  item.customCard = true;
+  markDirty('singles', item.id);
+  saveData();
+  clLog('edit', 'singles', item.name || String(item.id), 'customCard: ∅ → true');
+  _kjrCustomJustMarked = [item.id].concat(_kjrCustomJustMarked.filter(x => x !== item.id)).slice(0, KJR_CUSTOM_JUST_MAX);
+  renderSingles(); // the banner count (or its disappearance) and the sheet, through the hook in _renderUnresolvedBanner
+  _kjrCustomFocusRestore(snap);
+  _kjrCustomUndoToast(item);
+  await _kjrCustomFlush();
+  return true;
+}
+async function kjrCustomUnmark(id) {
+  const item = _kjrCustomFindSingle(id);
+  if (!item || !kjrIsCustomCard(item)) { kjrCustomReviewRender(); return false; }
+  if (kjrDealerWriteGuard('singles', item, 'edit')) return false;
+  const snap = _kjrCustomFocusSnapshot();
+  snapshotForUndo();
+  delete item.customCard; // an unflagged row carries no key at all, as every row did before the flag
+  markDirty('singles', item.id);
+  saveData();
+  clLog('edit', 'singles', item.name || String(item.id), 'customCard: true → ∅');
+  _kjrCustomJustMarked = _kjrCustomJustMarked.filter(x => x !== item.id);
+  _kjrCustomToastHide();
+  renderSingles();
+  _kjrCustomFocusRestore(snap);
+  if (!_kjrCustomSheetOpen()) toast('Custom card undone: ' + (item.name || 'card')); // the open sheet shows it in its list
+  await _kjrCustomFlush();
+  return true;
+}
+// The Undo toast. A modal dialog makes everything outside it inert, so the page's #toast sits on top of the open sheet but can not be
+// pressed (a tap on it lands on the backdrop and closes the sheet). While the sheet is open the toast is therefore drawn INSIDE it, a
+// bar between the list and Done that hides itself after a few seconds, and the page toast with an Undo button is the path for any
+// other caller (it is reachable when no dialog is open). The sheet's "Marked custom just now" rows keep an Undo after the bar is gone.
+const KJR_CUSTOM_TOAST_MS = 6000;
+let _kjrCustomToastTimer = null;
+function _kjrCustomSheetOpen() {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  return !!(dlg && dlg.open);
+}
+function _kjrCustomToastHide() {
+  if (_kjrCustomToastTimer) { clearTimeout(_kjrCustomToastTimer); _kjrCustomToastTimer = null; }
+  const bar = document.getElementById('kjr-custom-toast');
+  if (bar) { bar.hidden = true; bar.innerHTML = ''; }
+}
+function _kjrCustomUndoToast(item) {
+  const text = 'Marked "' + (item.name || 'card') + '" as a custom card.';
+  const bar = document.getElementById('kjr-custom-toast');
+  if (_kjrCustomSheetOpen() && bar) {
+    if (_kjrCustomToastTimer) clearTimeout(_kjrCustomToastTimer);
+    bar.innerHTML = '<span class="kjr-cr-toast-msg">' + esc(text) + '</span>' +
+      '<button type="button" class="toast-undo" data-cr-act="undo" data-cr-id="' + esc(item.id) + '">Undo</button>';
+    bar.hidden = false;
+    _kjrCustomToastTimer = setTimeout(_kjrCustomToastHide, KJR_CUSTOM_TOAST_MS);
+    return;
+  }
+  toast(text + ' ', KJR_CUSTOM_TOAST_MS);
+  const msg = document.getElementById('toast-msg');
+  if (!msg || typeof document.createElement !== 'function') return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-undo';
+  btn.textContent = 'Undo';
+  const id = item.id;
+  btn.addEventListener('click', () => { kjrCustomUnmark(id); });
+  msg.appendChild(btn);
 }
 
 function renderSingles() {
@@ -13341,6 +13674,7 @@ function openAddSingle(opts) {
   document.getElementById('ms-cond').value = 'Near Mint';
   document.getElementById('ms-status').value = 'Available';
   document.getElementById('ms-tcgdex-resolved').textContent = '';
+  document.getElementById('ms-custom').checked = false;
   openModal('modal-single', opts);
 }
 
@@ -13366,6 +13700,7 @@ function openEditSingle(id) {
   document.getElementById('ms-ebay-url').value = item.ebayUrl||'';
   document.getElementById('ms-carousell-url').value = item.carousellUrl||'';
   document.getElementById('ms-tcgdexid').value = item.tcgdexId||'';
+  document.getElementById('ms-custom').checked = kjrIsCustomCard(item);
   // Show the auto-resolved card name (if we have one) as a confirm check -
   // helps the user spot a mis-match without having to trust the id blindly.
   document.getElementById('ms-tcgdex-resolved').textContent = item._tcgdexResolvedName ? ('Resolved to: ' + item._tcgdexResolvedName) : '';
@@ -13441,6 +13776,9 @@ function _saveSingleNow(id) {
   const _cost   = document.getElementById('ms-cost').value;
   const _market = document.getElementById('ms-market').value;
   const _msDate = document.getElementById('ms-date').value;
+  // The "Custom card, price by hand" switch. Checked saves customCard: true, unchecked saves no key at all (as every row had before the
+  // flag), so a plain card is never carrying a customCard: false. The form owns the key, see the edit branch below.
+  const _msCustom = document.getElementById('ms-custom').checked === true;
   const item = {
     id: id || genId('s'),
     name, set: _validated.set,
@@ -13458,7 +13796,8 @@ function _saveSingleNow(id) {
     ebayUrl: document.getElementById('ms-ebay-url').value,
     carousellUrl: document.getElementById('ms-carousell-url').value,
     tcgdexId: document.getElementById('ms-tcgdexid').value,
-    priceHistory: []
+    priceHistory: [],
+    ...(_msCustom ? { customCard: true } : {})
   };
   // Run through the unified normalizer so manual input matches the table
   // format (dates → "D MMM YYYY", numbers → number, language UPPER, etc.).
@@ -13474,6 +13813,7 @@ function _saveSingleNow(id) {
       _preserveModalEditStamp(norm, _modalEditContexts.singles);
       _preserveModalListingMeta(norm, DB.singles[editIndex]);
       _preserveModalOffFormKeys('singles', norm, DB.singles[editIndex]);
+      if (!_msCustom) delete norm.customCard; // the line above copies a key the form did not set, an unchecked switch has to clear it
       _preserveUnreadableModalDate(norm, DB.singles[editIndex], 'datePurchased', _msDate);
       // Keep the resolved-name confirm tooltip only while the id itself is
       // unchanged - a manual override to a different id invalidates the old
@@ -14628,17 +14968,37 @@ function _kjrOvPct(market, cost) {
 }
 
 // "today", "yesterday", "3 days ago", then the plain date. ts is the local midnight of a priceHistory date. Those
-// dates are UTC dates (the price code writes toISOString().slice(0,10)), so the age is counted in UTC days,
+// dates are UTC dates (the price code writes toISOString().slice(0,10)), so the age is counted in UTC days (kjrCheckedDays),
 // otherwise a price checked an hour ago would read "yesterday" for the first 8 hours of a Singapore morning.
 function kjrOverviewCheckedText(ts, now) {
   if (!(ts > 0)) return '';
-  const n = new Date(now || Date.now());
   const d = new Date(ts);
-  const days = Math.round((Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  const days = kjrCheckedDays(ts, now);
   if (days <= 0) return 'today';
   if (days === 1) return 'yesterday';
   if (days < 7) return days + ' days ago';
   return d.getDate() + ' ' + MONTHS_ABBR[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+// The newest day a card's price was CHECKED, as the local midnight of that day (the unit kjrOverviewCheckedText takes), 0 when never.
+// That is the last priceHistory date or the day of the last same-value re-check, whichever is newer. A re-price to the value already
+// stored appends no history on purpose (the no-op rule in applyPriceToGroup and refreshPrice, so two devices do not trade phantom
+// sync conflicts), it only stamps the row's _tcgdexPricedDate. That one marker is written by every pricing path (the TCGdex lane
+// and the PPT lane both go through applyPriceToGroup), so there is no separate PPT marker to read. The marker is DEVICE-LOCAL: it is
+// never synced and never marked dirty, so a device that did not run the pass reads the older date from its history, and the device
+// that did reads today. Freshness and "Prices checked" describe the last look this device made, which is what this reports.
+// EVERY freshness reader goes through this one function (the Overview, the list's per-row dot _mktFreshDot, the summary strip's dot
+// _statMktFreshDot and the card inspector's "checked" line), so they can not disagree. Dates are read with _parseHistDate, which also
+// takes the legacy day-month labels older rows carry.
+function kjrPriceCheckedTs(item) {
+  const dayTs = (s) => {
+    const d = typeof s === 'string' ? _parseHistDate(s) : null;
+    const t = d ? d.getTime() : NaN;
+    return Number.isFinite(t) ? t : 0;
+  };
+  const hist = Array.isArray(item && item.priceHistory) ? item.priceHistory : [];
+  const last = hist.length ? hist[hist.length - 1] : null;
+  return Math.max(dayTs(last && last.date), dayTs(item && item._tcgdexPricedDate));
 }
 
 // ── Selectors (pure reads of DB) ─────────────────────────────────────
@@ -15127,15 +15487,15 @@ function renderDashboard() {
   // stalled "5% priced" reads as "the vendor key is blocked" not "app broken".
   const _queuePaused = _queueState && _queueState.lastPausedReason;
   const _queueKeyBlocked = _queuePaused && /403|401|blocked|abuse|invalid|unauthor|key/i.test(_queuePaused);
-  // Latest priceHistory entry across all priced items → "freshness".
+  // Newest price check across all priced items → "freshness" and "Prices checked". kjrPriceCheckedTs reads the last priceHistory
+  // date AND the device-local _tcgdexPricedDate marker: a same-value re-price appends no history (the no-op rule), so history
+  // alone read a successful full pass as stale. The marker is local to this device and is not marked dirty for this (see the helper).
   const sevenDaysAgo = Date.now() - 7*24*3600*1000;
   let latestTs = 0;
   let freshIn7d = 0;
   pricedItems.forEach(({ item }) => {
-    const hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
-    if (hist.length === 0) return;
-    const last = hist[hist.length - 1];
-    const ts = last && last.date ? new Date(last.date + 'T00:00:00').getTime() : 0;
+    const ts = kjrPriceCheckedTs(item);
+    if (!ts) return;
     if (ts > latestTs) latestTs = ts;
     if (ts >= sevenDaysAgo) freshIn7d++;
   });
@@ -15143,7 +15503,7 @@ function renderDashboard() {
   // Human-readable "X ago"
   const agoFromTs = (ts) => {
     if (!ts) return 'never';
-    const days = Math.floor((Date.now() - ts) / (24*3600*1000));
+    const days = kjrCheckedDays(ts);
     if (days === 0) return 'today';
     if (days === 1) return 'yesterday';
     if (days < 7)   return days + 'd ago';
@@ -15181,7 +15541,9 @@ function renderDashboard() {
     _chipClass = ''; // amber
   }
   // Compact TCGdex-lane note appended to the one-line tooltip below.
-  const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending'));
+  const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending')) +
+    // cards TCGdex never answered on the last pass, waiting unstamped for the next run (see _runTcgdexLane)
+    ((_queueState && Array.isArray(_queueState.tcgdexRetry) && _queueState.tcgdexRetry.length) ? ' · ' + _queueState.tcgdexRetry.length + ' waiting to retry' : '');
   const _chipText = (_queuePaused
     ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · ' + (_queueKeyBlocked ? '⚠ price API key blocked' : '⏸ paused, will retry')
     : (!_queueExists
@@ -17327,7 +17689,10 @@ async function _kjrResolveJa(item, num, setHint, report) {
 // from "no such card" and cached for 7 days. A rejected request or a timeout, an HTTP error other than 404 (5xx, 429, 403) and a body
 // that is not a card list are "could not tell". A 404, an empty list, an ambiguous list (also when the set list would not load, as
 // before) and a card with no id are still plain nulls, a real "no match".
-// Pricing passes no opts, so a priced card resolves exactly as it always has.
+// Pricing passes no art opts, so a priced card resolves exactly as it always has. Only fetchPriceFromTcgdex hands in opts.priceReport,
+// a separate object that gets the same transient/why plus .status (the HTTP status of the failure) and .timedOut, so the price lane
+// can tell "could not tell" from "no match" (a network blip must not stamp a miss) and can treat a 400 as the answer it is.
+// opts.timeoutMs turns a stalled request into a thrown one. The art report keeps its exact shape, tests/card-art.test.js pins it.
 async function resolveTcgdexId(item, opts) {
   if (item.tcgdexId) return item.tcgdexId;
   const name = _baseCardName(item.name);
@@ -17337,14 +17702,19 @@ async function resolveTcgdexId(item, opts) {
   const setHint = opts && opts.set != null ? String(opts.set).trim() : '';
   const art = !!(opts && opts.art);
   if (art && lang === 'ja') return _kjrResolveJa(item, num, setHint, opts.report);
-  // without opts (pricing) there is no report, so flag() only returns null and every branch below answers as it always did
+  // without a report flag() only returns null and every branch below answers as it always did
   const report = art && opts.report && typeof opts.report === 'object' ? opts.report : null;
-  const flag = (why) => { if (report) { report.transient = true; report.why = why; } return null; };
+  const priceReport = opts && opts.priceReport && typeof opts.priceReport === 'object' ? opts.priceReport : null;
+  const flag = (why, status) => {
+    if (report) { report.transient = true; report.why = why; }
+    if (priceReport) { priceReport.transient = true; priceReport.why = why; if (status) priceReport.status = status; }
+    return null;
+  };
   try {
     const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
-    const r = await fetch(url);
+    const r = await fetch(url, _tcgdexFetchOpts(opts && opts.timeoutMs));
     // transport failure - unresolved, PPT fallback picks it up. 404 is TCGdex saying there is nothing there, any other status says nothing about the card
-    if (!r.ok) return r.status === 404 ? null : flag('net');
+    if (!r.ok) return r.status === 404 ? null : flag('net', r.status);
     const data = await r.json();
     if (!Array.isArray(data)) return flag('net'); // not a card list at all (a gateway page, a changed shape)
     if (!data.length) return null; // zero results - unresolved, never guess
@@ -17356,7 +17726,11 @@ async function resolveTcgdexId(item, opts) {
     item.tcgdexId = card.id;
     if (card.name) item._tcgdexResolvedName = card.name; // for a confirm tooltip in the edit modal
     return card.id;
-  } catch (e) { return flag('net'); } // network error or timeout - unresolved, not a thrown exception
+  } catch (e) {
+    // network error or timeout - unresolved, not a thrown exception
+    if (priceReport && e && (e.name === 'TimeoutError' || e.name === 'AbortError')) priceReport.timedOut = true;
+    return flag('net');
+  }
 }
 
 // Does the card's stored name mark it as a reverse-holo printing? Checked
@@ -17369,6 +17743,25 @@ async function resolveTcgdexId(item, opts) {
 // fetchPriceFromTcgdex prefers below.
 function _isReverseHoloName(name) {
   return /(?:^|[^a-z])rh(?![a-z])|reverse|rev[\s-]?holo/i.test(String(name || ''));
+}
+
+// ── TCGdex answers: "no match" versus "could not tell" ──
+// A card TCGdex has no answer for is a miss (the lane stamps it so it is not asked again today). A request that never got an answer
+// says nothing about the card: the fetch threw (offline, DNS, TLS, CORS), it timed out, or TCGdex answered a status that means "not
+// now": 408 and 425 (timeouts), 429 (rate limit), any 5xx, and 403 (a blocked or rate-limited client, checked 20/10/2026: a missing
+// card is a 404 on /cards/{id} and a 200 with [] on /cards?name=, never a 403). fetchPriceFromTcgdex marks those { transient: true }
+// and _runTcgdexLane neither stamps a miss nor gives up on the card. Any other status (400, 401, 410 ...) answers this very request
+// and stays a plain error, which the lane stamps like any miss.
+const TCGDEX_TIMEOUT_MS = 15000;
+function _tcgdexStatusTransient(status) {
+  return status === 403 || status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+// fetch options carrying the timeout, or none where AbortSignal.timeout is missing (the request then waits as it always did)
+function _tcgdexFetchOpts(ms) {
+  try {
+    if (ms > 0 && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return { signal: AbortSignal.timeout(ms) };
+  } catch (_) { /* no timeout, the request is simply unbounded as before */ }
+  return undefined;
 }
 
 // Fetch a raw single's market price from TCGdex. Price source by language
@@ -17386,14 +17779,22 @@ function _isReverseHoloName(name) {
 // miss, never a fabricated number. Any unexpected response shape is also
 // treated as "not found" rather than thrown, so a malformed/unknown payload
 // falls through to PPT instead of crashing the caller.
+// A request that got no answer is NOT a miss: the result then carries transient:true (see the block above), with an error that
+// names it ('HTTP 503', 'timeout', 'network error'). Only a definitive no-match (the resolver found no card, a 404, a card with no
+// price) is a plain { error: 'not found' }.
 async function fetchPriceFromTcgdex(item) {
   try {
-    const id = await resolveTcgdexId(item);
-    if (!id) return { error: 'not found' };
+    const report = {};
+    const id = await resolveTcgdexId(item, { priceReport: report, timeoutMs: TCGDEX_TIMEOUT_MS });
+    if (!id) {
+      if (!report.transient) return { error: 'not found' };
+      if (report.status && !_tcgdexStatusTransient(report.status)) return { error: 'HTTP ' + report.status }; // TCGdex answered this request with a client error: no match
+      return { error: report.status ? 'HTTP ' + report.status : (report.timedOut ? 'timeout' : 'network error'), transient: true };
+    }
     const lang = _tcgdexLang(item.language);
-    const r = await fetch(TCGDEX_BASE + '/' + lang + '/cards/' + encodeURIComponent(id));
+    const r = await fetch(TCGDEX_BASE + '/' + lang + '/cards/' + encodeURIComponent(id), _tcgdexFetchOpts(TCGDEX_TIMEOUT_MS));
     if (r.status === 404) return { error: 'not found' };
-    if (!r.ok) return { error: 'HTTP ' + r.status };
+    if (!r.ok) return _tcgdexStatusTransient(r.status) ? { error: 'HTTP ' + r.status, transient: true } : { error: 'HTTP ' + r.status };
     const data = await r.json();
     // Card art cache (v3.69): the card object already carries its image base, so keep it for the
     // Singles/Slabs thumbnails at no extra request. Local map only (kjr_card_images), never a data
@@ -17433,7 +17834,11 @@ async function fetchPriceFromTcgdex(item) {
       }
       return { error: 'not found' };
     }
-  } catch (e) { return { error: 'not found' }; } // never throw - unknown shape/network error is a clean miss
+  } catch (e) {
+    // never throw. The fetch rejected (offline, DNS, TLS, CORS), it timed out, or a 200 body was not JSON (a gateway page): nothing was
+    // learnt about the card, so this is "could not tell", never a miss. Every shape check above already returns its own plain 'not found'.
+    return { error: e && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'network error', transient: true };
+  }
 }
 
 (function() {
@@ -17538,7 +17943,7 @@ function openApiSettings() {
           <div style="border-top:1px solid var(--border);padding-top:16px">
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">📅 Scheduled Refresh Queue</div>
             <div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg3);border-radius:8px">
-              <strong style="color:var(--text)">Exact (TCGdex):</strong> free, unthrottled, runs a full pass on every raw single once a day<br>
+              <strong style="color:var(--text)">Exact (TCGdex):</strong> free, unthrottled, a full pass over every English raw single the first time the app opens each day, Run Today's Batch repeats it now<br>
               <strong style="color:var(--text)">Search (PPT):</strong> slabs, plus any TCGdex miss, high cost → low, capped at ${DAILY_LIMIT}/day<br>
               <strong style="color:var(--text)">Deduplication:</strong> Same card name = fetch once, copy to all duplicates<br>
               <strong style="color:var(--text)">Auto-runs</strong> when you open the app
@@ -17860,10 +18265,12 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
 //   SLAB (has grader): PPT's eBay graded lane, unchanged behaviour - TCGdex
 //        has no graded prices at all. tcgdexOnly has no effect here.
 // Returns { maxUsd|maxEur, maxSgd, source, confidence, creditsUsed,
-//   tcgdexError, pptError, resolvedTcgdexId, resolvedCardName }. classifyResult/
+//   tcgdexError, tcgdexTransient, pptError, resolvedTcgdexId, resolvedCardName }. classifyResult/
 // tallyErrors (in the refresh queue) read the tcgdexError/pptError pair with
 // the NON_ATTEMPT sentinel-stripping rule below - keep that intact whenever
-// this shape changes.
+// this shape changes. tcgdexTransient is the TCGdex source's own verdict that it could not tell
+// (fetchPriceFromTcgdex, transient:true): the free lane reads that flag, never the error text or the
+// 'not applicable' PPT sentinel, so a sentinel can not turn a transport failure into a miss.
 async function fetchMarketPrice(descriptor) {
   const { name, grader, grade, language, tcgdexId, tcgdexOnly } = descriptor || {};
   const isSlab = !!(grader && grade);
@@ -17903,6 +18310,7 @@ async function fetchMarketPrice(descriptor) {
         source: null, confidence: 'none',
         creditsUsed: 0,
         tcgdexError: tcgdexRes.error,
+        tcgdexTransient: !!tcgdexRes.transient, // could not tell (network, 408/425/429/403/5xx), not "no match"
         pptError: 'not applicable', // PPT deliberately never tried - tcgdexOnly
         resolvedTcgdexId: pseudoItem.tcgdexId || null,
         resolvedCardName: pseudoItem._tcgdexResolvedName || null,
@@ -17922,6 +18330,7 @@ async function fetchMarketPrice(descriptor) {
         confidence: pptRes.usedFallback ? 'low' : 'medium',
         creditsUsed: pptRes._ppt_requests || 0,
         tcgdexError: tcgdexRes.error,
+        tcgdexTransient: !!tcgdexRes.transient,
         pptError: null,
         resolvedTcgdexId: pseudoItem.tcgdexId || null,
         resolvedCardName: pseudoItem._tcgdexResolvedName || null,
@@ -17933,6 +18342,7 @@ async function fetchMarketPrice(descriptor) {
       source: null, confidence: 'none',
       creditsUsed: pptRes._ppt_requests || 0,
       tcgdexError: tcgdexRes.error,
+      tcgdexTransient: !!tcgdexRes.transient,
       pptError: pptRes.error,
       resolvedTcgdexId: pseudoItem.tcgdexId || null,
       resolvedCardName: pseudoItem._tcgdexResolvedName || null,
@@ -17995,6 +18405,7 @@ async function refreshPrice(id, table) {
   if (lane === 'manual') {
     const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
     toast(isSlab ? 'Add the grader and grade to price this slab'
+      : kjrIsCustomCard(item) ? 'Custom card, price by hand (no auto-match)'
       : lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing');
     return;
   }
@@ -18054,16 +18465,19 @@ async function refreshPrice(id, table) {
     // A miss is a data outcome. Only a freshly resolved tcgdexId is worth syncing, so a pure
     // miss no longer queues a phantom upsert. On the free lane the miss is stamped the way
     // _runTcgdexLane stamps it, local and never synced, so the "needs a card number" list
-    // and the queue both know the card was tried today.
+    // and the queue both know the card was tried today. A request TCGdex never answered (network, 408/425/429/403/5xx) is not
+    // a miss: it says nothing about the card, so it stamps nothing and the card is tried again on the next click or pass.
+    const couldNotTell = lane === 'tcgdex' && !!r.tcgdexTransient;
     let changed = idIsNew;
-    if (lane === 'tcgdex' && item._tcgdexMissDate !== today) { item._tcgdexMissDate = today; changed = true; }
+    if (lane === 'tcgdex' && !couldNotTell && item._tcgdexMissDate !== today) { item._tcgdexMissDate = today; changed = true; }
     if (idIsNew) markDirty(table, id); // a resolved tcgdexId may still need to sync even on a miss
     if (changed) {
       saveData();
       if (table === 'singles') renderSingles();
       if (table === 'slabs') renderSlabs();
     }
-    toastError('No price found · TCGdex: ' + (r.tcgdexError||'?') + ' · PPT: ' + (r.pptError||'?'));
+    if (couldNotTell) toastError('Could not reach TCGdex (' + (r.tcgdexError || 'network error') + '). Nothing was marked as unmatched, try again in a moment.');
+    else toastError('No price found · TCGdex: ' + (r.tcgdexError||'?') + ' · PPT: ' + (r.pptError||'?'));
   }
 }
 
@@ -18104,6 +18518,10 @@ const REQUEST_GAP_MS  = 6000;
 // whole-lane skip gate trusted it blindly. Bumping this version for the fix
 // forces every existing user's stale queue to discard and rebuild fresh on
 // their next load, recovering them without any manual "Rebuild Queue" click.
+// Not bumped for the customCard flag (_queueLaneFor routes it to 'manual'), for q.tcgdexRetry or for the free lane reading the live
+// inventory every run (_tcgdexLaneItems): a bump would also throw away today's dayCreditsUsed and re-spend PPT credits, and none of
+// them needs it. The fields are optional and the lane never trusts a stored entry over the row, so an older queue is simply
+// refreshed (its lane entries are dropped, the PPT entries and cursor are kept) and never prices a custom card.
 const QUEUE_SCHEMA_VERSION = 2;
 
 // Discards and returns null for a queue built under an old schema version
@@ -18148,9 +18566,14 @@ function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeI
 // 'ppt' lane contains ONLY slabs - every raw single is either 'tcgdex' or
 // 'manual'. A numberless EN card is still surfaced to the user though (see
 // _kjrUnresolvedSingles), since adding a card number is a real fix that
-// moves it into the tcgdex lane.
+// moves it into the tcgdex lane. A single the owner flagged as a custom card
+// (kjrIsCustomCard, the synced customCard field) is 'manual' too, whatever its
+// name, language or a cached tcgdexId say: zero API calls, no miss stamps, and
+// it leaves the "could not be matched" list. The flag only says "do not
+// auto-match, do not nag", the card keeps whatever market price was typed in.
 function _queueLaneFor(item) {
   if (item.grader) return 'ppt'; // slab - TCGdex has no graded prices, language rule doesn't apply
+  if (kjrIsCustomCard(item)) return 'manual'; // custom card: priced by hand, never matched
   const lang = (item.language || 'EN').toString().trim().toUpperCase();
   const isEnglish = lang === 'EN' || lang === '';
   if (!isEnglish) return 'manual'; // JP/CN/ID/KR/anything non-EN - never auto-priced, zero API calls
@@ -18173,7 +18596,8 @@ function buildRefreshQueue() {
   const singles = DB.singles
     .filter(i => (i.status||'Available') === 'Available')
     .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
-    .map(i => ({ id: i.id, table: 'singles', name: i.name, grader: null, grade: null, language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0 }));
+    .map(i => ({ id: i.id, table: 'singles', name: i.name, grader: null, grade: null, language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0,
+      ...(kjrIsCustomCard(i) ? { customCard: true } : {}) })); // carried only when set, so _queueLaneFor below sees it and a plain row's queue entry is unchanged
 
   // Combine: slabs first, then singles
   const all = [...slabs, ...singles];
@@ -18185,14 +18609,17 @@ function buildRefreshQueue() {
   // different cards with different market prices, so they must fetch and price
   // separately. Without language in the key they collapsed into one lookup and
   // shared a single (wrong for one of them) price. Untagged cards default to
-  // EN so they still dedupe together.
+  // EN so they still dedupe together. A custom card (priced by hand) is part of the key
+  // too: it must neither lend its manual lane to a plain duplicate nor take a copied price.
   const seen = new Map(); // uniqueKey → id of the primary (first) item
   const queue = [];
   for (const item of all) {
-    const key = item.name.trim().toLowerCase() +
+    // a row with no name reads as an empty one (buildRefreshQueue is now a pure read the free lane calls every run, it must never throw)
+    const key = String(item.name == null ? '' : item.name).trim().toLowerCase() +
       '|' + (item.language ? item.language.toString().toUpperCase() : 'EN') +
       (item.grader ? '|' + item.grader.toLowerCase() : '') +
-      (item.grade  ? '|' + item.grade  : '');
+      (item.grade  ? '|' + item.grade  : '') +
+      (item.customCard ? '|custom' : '');
     if (!seen.has(key)) {
       seen.set(key, item.id);
       queue.push({ ...item, isPrimary: true, copyTargets: [], uniqueKey: key, lane: _queueLaneFor(item) });
@@ -18245,6 +18672,9 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
   const applyToItem = (id, table) => {
     const item = DB[table]?.find(i => i.id === id);
     if (!item) return;
+    // A row flagged as a custom card after this queue was built (a persisted queue, or a fetch that was in flight) is priced by
+    // hand: it takes no auto price, copied or not.
+    if (kjrIsCustomCard(item)) return;
     const newPrice = priceSgd.toFixed(0);
     const idIsNew = !!(resolvedTcgdexId && !item.tcgdexId);
     // Genuine no-op re-price: same value, no new id to cache. Skip history
@@ -18448,48 +18878,91 @@ function _tcgdexMissedToday(item, today) {
   return !!row && row._tcgdexMissDate === today;
 }
 
-// True when at least one tcgdex-lane item still needs an attempt today (not
-// yet priced today, and didn't already miss today). Lets the outer
-// runRefreshQueue gate distinguish "lastTcgdexPass stamp says today but an
-// interrupted pass left cards unattempted" (self-heal: still has work, must
-// re-enter even on an auto/page-load run) from "genuinely fully done today"
-// (no work, safe to skip until tomorrow).
-function _tcgdexLaneHasWork(q, today) {
-  return q.items.some(i => i.lane === 'tcgdex' && !_tcgdexPricedToday(i, today) && !_tcgdexMissedToday(i, today));
+// Who the free lane asks TCGdex about this run. It reads the LIVE INVENTORY every time, not the queue's own lane entries. The lane used
+// to be built once, with the queue, and a pass dropped its items from q.items (_runRefreshQueueBody), so after the first pass nothing
+// asked TCGdex again until the queue was rebuilt: not the next day, not on "run now". buildRefreshQueue is the one place that decides
+// who is a free-lane card (an Available English raw single with a number or an id, not a custom card) and which rows are copies of one
+// lookup, so it is called here as a pure read. Nothing in it is saved, the queue is not replaced and the PPT lane's cursor and
+// dayCreditsUsed are never touched. An entry the persisted queue already holds for the same row is reused (it may carry a miss stamp)
+// and takes the fresh fields, an entry for a row that is no longer a free-lane card (custom, non-English, sold, deleted) is dropped.
+// Cards a past pass could not get an answer for (q.tcgdexRetry) are added when they are not in already (a copy of another lookup counts
+// as in), each checked against its live row first and taking the row's current name, language and id.
+function _tcgdexLaneItems(q) {
+  const persisted = new Map();
+  ((q && Array.isArray(q.items)) ? q.items : []).forEach(i => { if (i && i.lane === 'tcgdex') persisted.set(i.table + ':' + i.id, i); });
+  const items = buildRefreshQueue().items.filter(i => i.lane === 'tcgdex').map(fresh => {
+    const old = persisted.get(fresh.table + ':' + fresh.id);
+    return old ? Object.assign(old, fresh, { tcgdexId: fresh.tcgdexId || old.tcgdexId || null }) : fresh;
+  });
+  const known = new Set();
+  items.forEach(i => { known.add(i.table + ':' + i.id); (i.copyTargets || []).forEach(t => known.add(t.table + ':' + t.id)); });
+  for (const item of (q && Array.isArray(q.tcgdexRetry)) ? q.tcgdexRetry : []) {
+    if (!item || known.has(item.table + ':' + item.id)) continue;
+    const row = DB[item.table]?.find(r => r.id === item.id);
+    if (!row || (row.status || 'Available') !== 'Available' || _queueLaneFor(row) !== 'tcgdex') continue;
+    item.name = row.name;
+    item.language = row.language || null;
+    item.tcgdexId = row.tcgdexId || null;
+    known.add(item.table + ':' + item.id);
+    items.push(item);
+  }
+  return items;
 }
 
-// Free-lane pass: every TCGdex-lane item that still needs an attempt today,
-// in one go, no credit accounting (TCGdex is free, tcgdexOnly:true on the
+// True when at least one free-lane card still needs an attempt today (not yet priced today, and didn't already miss today). Lets the
+// outer runRefreshQueue gate tell "a new day, or a card added or left unattempted since" (work, even on an auto/page-load run) from
+// "genuinely fully done today" (no work, nothing is requested until tomorrow). It reads the live inventory (_tcgdexLaneItems), so a
+// queue that finished its PPT lane long ago still has work every new day.
+function _tcgdexLaneHasWork(q, today) {
+  return _tcgdexLaneItems(q).some(i => !_tcgdexPricedToday(i, today) && !_tcgdexMissedToday(i, today));
+}
+
+// Free-lane pass: every English free-lane card that still needs an attempt
+// today, in one go, no credit accounting (TCGdex is free, tcgdexOnly:true on the
 // fetchMarketPrice call below means this lane NEVER triggers a PPT request -
 // see fetchMarketPrice's tcgdexOnly branch). Runs BEFORE the PPT lane and is
 // entirely decoupled from its cap/pause logic, so a PPT hard-block or
-// daily-limit hit never stops TCGdex items from running - the two lanes only
-// share the same queue array and the same "advance past resolved items"
-// bookkeeping.
+// daily-limit hit never stops TCGdex items from running, and it never touches
+// the PPT lane's cursor, items or dayCreditsUsed.
 //
-// Self-heal, per-card (not per-lane): the old version stamped
-// q.lastTcgdexPass=today after the loop REGARDLESS of outcome and the auto
-// run skipped the WHOLE lane once that stamp matched today - so an
-// interrupted pass (tab closed mid-loop, page reload) that had priced only a
-// couple of cards would stamp "done for today" and go silent on the rest
-// until tomorrow. Now each card is judged individually every time this runs
-// (via _tcgdexPricedToday):
-//   - SKIP a card only if (a) it already has a fresh (today's) price on its
-//     live DB row, or (b) it already missed today (item._tcgdexMissDate ===
-//     today, a per-card marker so a known miss isn't re-requested more than
-//     once per day).
-//   - PROCESS everything else: never-attempted cards (including ones added
-//     mid-pass or left over from an interrupted run) get tried every time
-//     this lane runs, auto or manual, until they're priced or miss today.
-// Once every resolvable EN card is priced (or missed) for today, a re-run
-// finds nothing left to skip-check-fail on and the lane idles near-instantly
-// (all skip, zero fetches) - so re-running is always safe and cheap.
+// It runs EVERY DAY. The cards come from the live inventory (_tcgdexLaneItems),
+// so a queue whose PPT lane finished long ago still gets a full pass on the
+// first auto run (page load) of each new day, and a card added since is picked
+// up without a rebuild. Each card is judged individually every time this runs
+// (via _tcgdexPricedToday and _tcgdexMissedToday), which is also what lets an
+// interrupted pass (tab closed mid-loop, page reload) resume where it stopped:
+//   - an AUTO run SKIPS a card only if (a) it already has a fresh (today's)
+//     price on its live DB row, or (b) it already missed today (a per-card
+//     marker, so a known miss isn't re-requested more than once per day). A
+//     miss from an earlier day is asked again, TCGdex may know the card now.
+//   - a MANUAL "run now" re-attempts EVERYTHING eligible, priced today or not:
+//     it clears today's miss stamps first and asks about every card.
+// Once every eligible card is priced (or missed) for today, an auto re-run
+// finds nothing left to ask and idles near-instantly (zero fetches) - so
+// re-running is always safe and cheap.
+//
+// A miss is only a DEFINITIVE no-match (the resolver found no unique card, a 404, a card with no
+// price, a client error about this request). A request TCGdex never answered (the fetch threw,
+// a timeout, 408/425/429/403/5xx) says nothing about the card, so it is never stamped (a network
+// blip used to block the card for the day). The lane classifies on the TCGdex source's own
+// tcgdexTransient flag only, never on error text or the 'not applicable' PPT sentinel. Those cards
+//   - are asked once more after the lane, one retry round after a backoff (TCGDEX_RETRY_BACKOFF_MS,
+//     three times that when TCGdex said 429 or 403), at most TCGDEX_RETRY_CAP of them,
+//   - and any still without an answer, plus every card not asked because the pass stopped early,
+//     are listed unstamped in q.tcgdexRetry. The next run asks them again with everything else, the
+//     list also feeds the "waiting to retry" hint,
+//   - a streak of TCGDEX_STOP_AFTER unanswered requests stops the pass (network or TCGdex down,
+//     more requests would only repeat it) with a toast, so an outage can not loop or hammer.
+// A custom card is never a free-lane card (_queueLaneFor), so it is never asked: zero requests for it.
+const TCGDEX_STOP_AFTER = 5;
+const TCGDEX_RETRY_CAP = 50;
+const TCGDEX_RETRY_BACKOFF_MS = 2000;
 async function _runTcgdexLane(q, manual, today) {
-  const laneItems = q.items.filter(i => i.lane === 'tcgdex');
+  const laneItems = _tcgdexLaneItems(q);
   // Manual "run now" always retries known misses too (e.g. the user just
   // fixed a card's number and wants it re-attempted immediately, not
-  // deferred until tomorrow's pass) - clear today's miss markers first so
-  // the todo filter below picks them back up. Auto (page-load) runs leave
+  // deferred until tomorrow's pass) - clear today's miss markers first, and
+  // ask about every card below. Auto (page-load) runs leave
   // the markers alone: a known miss stays deferred to tomorrow, only
   // genuinely never-attempted cards self-heal on an auto run.
   // _tcgdexMissDate is stamped on the queue item (for the skip/todo logic
@@ -18507,64 +18980,126 @@ async function _runTcgdexLane(q, manual, today) {
     if (row) row._tcgdexMissDate = val;
   };
   if (manual) laneItems.forEach(item => { if (_tcgdexMissedToday(item, today)) setMissDate(item, null); });
-  const todo = laneItems.filter(item => !_tcgdexPricedToday(item, today) && !_tcgdexMissedToday(item, today));
-  let done = 0, failedData = 0, skipped = laneItems.length - todo.length;
+  const todo = manual ? laneItems.slice() : laneItems.filter(item => !_tcgdexPricedToday(item, today) && !_tcgdexMissedToday(item, today));
+  // Cards an auto run leaves alone because they are already priced today still count as priced in the pass's numbers
+  // ("Exact (TCGdex): 120/120 today"), a same-day re-run must not read as 0 of 120.
+  const asking = new Set(todo);
+  const alreadyPriced = laneItems.filter(item => !asking.has(item) && _tcgdexPricedToday(item, today)).length;
+  let done = 0, failedData = 0, recovered = 0, skipped = laneItems.length - todo.length;
+  let rateLimited = false;
   const errorTally = {};
-  for (let i = 0; i < todo.length; i++) {
-    const item = todo[i];
-    showSyncProgress(i, todo.length, 'Exact (TCGdex): ' + (i+1) + '/' + todo.length);
+  const pause = ms => new Promise(res => setTimeout(res, ms));
+  // Ask TCGdex about one card. 'ok' priced it. 'miss' is a definitive no-match (a data outcome, never a credit-burning retry: TCGdex
+  // costs nothing, so stamp today's date and the card is not re-requested today, a known miss waits for tomorrow's pass, or the user
+  // fixing the card triggers a manual re-run which always re-attempts everything). 'transient' is a request TCGdex never answered:
+  // nothing is stamped, the caller decides about a retry.
+  const ask = async (item) => {
     const r = await fetchMarketPrice({ name: item.name, grader: null, grade: null, language: item.language, tcgdexId: item.tcgdexId||null, tcgdexOnly: true });
     if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
     if (r.maxSgd) {
+      setMissDate(item, null); // clear any stale miss marker now it's priced, before the apply so that its save keeps the clearing
       applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.maxUsd ? 'USD' : 'EUR', r.source, r.confidence, r.resolvedTcgdexId);
-      setMissDate(item, null); // clear any stale miss marker now it's priced
-      done++;
-    } else {
-      // A TCGdex-lane miss (unresolved name/number, or a genuine no-price
-      // common) is a data outcome, never a credit-burning transport retry -
-      // TCGdex costs nothing, so there's no budget to protect by deferring
-      // it. Stamp today's date so this same card isn't re-requested again
-      // today (self-heal only retries NEW/unattempted cards within a day;
-      // a known miss waits for tomorrow's pass, or the user fixing the card
-      // triggers a manual re-run which always re-attempts everything).
-      setMissDate(item, today);
-      failedData++;
-      if (r.tcgdexError) errorTally[r.tcgdexError] = (errorTally[r.tcgdexError]||0) + 1;
+      return 'ok';
     }
-    saveData();
-    if (i < todo.length - 1) await new Promise(res => setTimeout(res, TCGDEX_GAP_MS));
+    if (r.tcgdexError) errorTally[r.tcgdexError] = (errorTally[r.tcgdexError]||0) + 1;
+    if (r.tcgdexTransient) {
+      if (/\b(429|403)\b/.test(r.tcgdexError || '')) rateLimited = true;
+      return 'transient';
+    }
+    setMissDate(item, today);
+    return 'miss';
+  };
+  // One round over a list of cards, each asked once. The label is the progress bar's wording, "checking card N of T" while the counter
+  // beside it counts the cards done, so the two read as one sentence (the label used to run one ahead of the counter).
+  const round = async (list, verb) => {
+    const unanswered = [];
+    let untried = [], streak = 0, stopped = false;
+    for (let i = 0; i < list.length; i++) {
+      showSyncProgress(i, list.length, 'Exact (TCGdex): ' + verb + ' card ' + (i + 1) + ' of ' + list.length);
+      const outcome = await ask(list[i]);
+      if (outcome === 'transient') {
+        unanswered.push(list[i]);
+        streak++;
+        if (streak >= TCGDEX_STOP_AFTER) { stopped = true; untried = list.slice(i + 1); break; }
+      } else {
+        streak = 0;
+        if (outcome === 'ok') { done++; if (verb === 'retrying') recovered++; }
+        else failedData++;
+      }
+      // One save of the whole inventory per card is plenty on a daily pass over hundreds of them: a priced card was saved by
+      // applyPriceToGroup already, a card TCGdex never answered changed nothing, only a miss stamp still needs writing
+      if (outcome === 'miss') saveData();
+      if (i < list.length - 1) await pause(TCGDEX_GAP_MS);
+    }
+    return { unanswered, untried, stopped };
+  };
+  const first = await round(todo, 'checking');
+  let paused = first.stopped;
+  let leftovers = first.unanswered.concat(first.untried);
+  if (!first.stopped && first.unanswered.length) {
+    // One retry round, after a backoff, for the cards the first round got no answer for (a blip, a 429, a 5xx)
+    const again = first.unanswered.slice(0, TCGDEX_RETRY_CAP);
+    await pause(rateLimited ? TCGDEX_RETRY_BACKOFF_MS * 3 : TCGDEX_RETRY_BACKOFF_MS);
+    const second = await round(again, 'retrying');
+    paused = second.stopped;
+    leftovers = second.unanswered.concat(second.untried, first.unanswered.slice(TCGDEX_RETRY_CAP));
   }
-  q.lastTcgdexPass = today;
+  if (leftovers.length) q.tcgdexRetry = leftovers; else delete q.tcgdexRetry;
+  if (paused) toast('⚠ Pricing paused: network trouble, will retry', 6000);
+  // a pass that stopped early did not finish, so it is not stamped as done
+  if (!paused) q.lastTcgdexPass = today;
   // ran:true whenever there was lane work to consider (even if every card was
   // skipped) so the caller still reports/persists an outcome for the status
   // panel - "ran but nothing to do" is a real, reportable state, distinct
-  // from "no tcgdex-lane items exist at all" (laneItems.length === 0).
-  return { done, failedData, skipped, ran: laneItems.length > 0, errorTally, total: laneItems.length };
+  // from "no free-lane cards exist at all" (laneItems.length === 0).
+  return { done, failedData, skipped, alreadyPriced, ran: laneItems.length > 0, errorTally, total: laneItems.length,
+    recovered, paused, unanswered: leftovers.length };
+}
+
+// The free lane's part of a run's summary toast: "Exact (TCGdex): 12/14 priced" (cards priced by this pass plus the ones an auto run
+// found already priced today), plus how many cards TCGdex never answered (they wait for the next run) and whether the pass stopped early.
+function _tcgdexNote(result) {
+  if (!result || !result.ran) return '';
+  return ' · Exact (TCGdex): ' + (result.done + (result.alreadyPriced || 0)) + '/' + result.total + ' priced' +
+    (result.paused ? ' (paused, network trouble, will retry)' : (result.unanswered ? ' (' + result.unanswered + ' waiting to retry)' : ''));
+}
+
+// The pages a pricing pass can change. The pass starts 8 seconds after the app opens, which is usually while the Overview is on screen,
+// so its "Prices checked" line and coverage are drawn again too, or they would keep yesterday's reading until the next page switch.
+function _kjrRenderAfterPricing() {
+  renderSingles();
+  renderSlabs();
+  const dash = document.getElementById('page-dashboard');
+  if (dash && dash.classList && dash.classList.contains('active') && typeof renderDashboard === 'function') renderDashboard();
 }
 
 async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
-  // Free lane first, full pass, decoupled from PPT's cap/pause below. Every
-  // tcgdex-lane item gets a definitive outcome this pass (priced, or a clean
-  // "no price" data miss - TCGdex is free, so there's no transport-failure/
-  // retry-tomorrow concept to preserve for it). Once run, splice the whole
-  // lane out of q.items: it isn't part of the PPT cursor's retry bookkeeping,
-  // and buildRefreshQueue re-derives fresh tcgdex-lane items on every rebuild
-  // anyway, so nothing is lost by not keeping them parked in the array.
-  // q.cursor is adjusted by however many already-passed items sat before it,
-  // so PPT-lane progress made on earlier runs today is preserved exactly.
+  // Free lane first, full pass, decoupled from PPT's cap/pause below, and it
+  // runs EVERY DAY: its cards come from the live inventory (_tcgdexLaneItems),
+  // not from q.items. Every free-lane card gets a definitive outcome this pass
+  // (priced, or a clean "no price" data miss), except a card TCGdex never
+  // answered (network, 429, 5xx): that one is neither priced nor stamped, and
+  // is listed in q.tcgdexRetry (see _runTcgdexLane). The lane's entries are
+  // always spliced out of q.items afterwards, even when this pass found no
+  // card to ask about (a queue built by an older version can still hold some):
+  // they are not part of the PPT cursor's bookkeeping, and the PPT batch below
+  // must see PPT entries only. q.cursor is adjusted by however many
+  // already-passed items sat before it, so PPT-lane progress made on earlier
+  // runs today is preserved exactly. Nothing here changes dayCreditsUsed.
   const tcgdexResult = await _runTcgdexLane(q, manual, today);
   if (tcgdexResult.ran) {
-    // Stash the outcome on the queue itself before splicing the lane's items
-    // out of q.items below - the status panel and dashboard chip read these
-    // persisted counts (they can't just count q.items after a run, since the
-    // whole tcgdex lane is gone from that array by the time they render).
+    // Stash the outcome on the queue itself - the status panel and dashboard
+    // chip read these persisted counts (they can't count q.items, the lane is
+    // never in that array by the time they render). "Done" is the cards priced
+    // today: the ones this pass priced plus the ones it found already priced,
+    // so a second run on the same day reads 120/120 and not 0/120.
     q.lastTcgdexTotal = tcgdexResult.total;
-    q.lastTcgdexDone  = tcgdexResult.done;
-    const beforeCursor = q.items.slice(0, q.cursor).filter(i => i.lane === 'tcgdex').length;
-    q.items = q.items.filter(i => i.lane !== 'tcgdex');
-    q.cursor = Math.max(0, q.cursor - beforeCursor);
-    q.totalItems = q.items.length;
+    q.lastTcgdexDone  = tcgdexResult.done + (tcgdexResult.alreadyPriced || 0);
   }
+  const beforeCursor = q.items.slice(0, q.cursor).filter(i => i.lane === 'tcgdex').length;
+  q.items = q.items.filter(i => i.lane !== 'tcgdex');
+  q.cursor = Math.max(0, q.cursor - beforeCursor);
+  q.totalItems = q.items.length;
   saveQueue(q); // persist lastTcgdexPass + splice + any resolved tcgdexId/prices immediately
 
   // PPT lane: unchanged cursor/credit mechanics - q.items is now purely the
@@ -18586,8 +19121,8 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
     // The free lane may have priced cards even when the PPT lane has nothing
     // left to do today (either cause), so re-render + report its outcome
     // rather than going silent just because the capped lane is empty.
-    if (tcgdexResult.ran && (tcgdexResult.done || tcgdexResult.failedData)) { renderSingles(); renderSlabs(); }
-    const tcgdexNote = tcgdexResult.ran ? ' · Exact (TCGdex): ' + tcgdexResult.done + '/' + tcgdexResult.total + ' priced' : '';
+    if (tcgdexResult.ran && (tcgdexResult.done || tcgdexResult.failedData)) _kjrRenderAfterPricing();
+    const tcgdexNote = _tcgdexNote(tcgdexResult);
     if (manual) {
       if (pptLaneExhausted) toast('All cards refreshed!' + tcgdexNote + ' Reset queue to start a new cycle.');
       else toast('PPT daily limit reached.' + tcgdexNote + ' PPT resumes tomorrow.');
@@ -18738,8 +19273,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   _queueRunning = false;
 
   // Re-render affected tables
-  renderSingles();
-  renderSlabs();
+  _kjrRenderAfterPricing();
 
   // Build the toast - surface the dominant error so the user understands
   // *why* nothing was priced. Previously the message was just
@@ -18754,9 +19288,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
                                             ? ' · ⚠ key invalid - check Settings, then API settings'
     : /429|rate/i.test(errSummary)          ? ' · ⏰ rate-limited - slows down'
     : '';
-  const tcgdexNote = tcgdexResult.ran
-    ? ' · Exact (TCGdex): ' + tcgdexResult.done + '/' + tcgdexResult.total + ' priced'
-    : '';
+  const tcgdexNote = _tcgdexNote(tcgdexResult);
   const msg = 'Queue: ' + done + ' fetched' + tcgdexNote +
     (copied ? ', ' + copied + ' copies updated' : '') +
     (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') +
@@ -18793,10 +19325,14 @@ function _kjrManualLangCards() {
 // _runTcgdexLane's self-heal loop, cleared automatically once the card is
 // priced or the date rolls over). Never counts JP/CN/ID/KR cards - those are
 // manual by design (_kjrManualLangCards above), not "unresolved". Mirrors
-// _queueLaneFor's resolvability check for the no-number case.
+// _queueLaneFor's resolvability check for the no-number case. A custom card
+// (kjrIsCustomCard) is never unresolved, whatever its name or a stale miss
+// stamp say: the owner told us it has no match by design, so it must not count
+// in the Singles banner, the Overview "Needs attention" row or the Settings panel.
 function _kjrUnresolvedSingles() {
   return (DB.singles || []).filter(i => {
     if ((i.status||'Available') !== 'Available') return false;
+    if (kjrIsCustomCard(i)) return false; // priced by hand on purpose, never nags
     if (i.tcgdexId) return false; // already resolved
     const lang = (i.language||'EN').toString().trim().toUpperCase();
     if (lang !== 'EN' && lang !== '') return false; // manual language, not "fixable" by adding a number
@@ -18845,7 +19381,7 @@ function _renderQueueStatus() {
       <div style="height:6px;width:${pct}%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:10px">
-      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Raw singles priced free via TCGdex (TCGplayer/Cardmarket), matched by card number and language. Runs a full pass once a day.">
+      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Raw English singles priced free via TCGdex (TCGplayer/Cardmarket), matched by card number. A full pass runs the first time the app opens each day, and Run Today's Batch runs it again now.">
         <div style="color:var(--text3);margin-bottom:2px">Exact (TCGdex)</div>
         <div style="font-weight:600">${tcgdexRanToday ? tcgdexDone + '/' + tcgdexTotal + ' today' : (tcgdexTotal ? tcgdexDone + '/' + tcgdexTotal + ' (last run)' : 'not run yet')}</div>
       </div>
@@ -18944,7 +19480,8 @@ async function bulkRefreshPrices(table) {
   // so a key missing from this browser only blocks with the proxy off (v3.75). The same
   // test runRefreshQueue and refreshPrice make.
   if (table === 'slabs' && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
-  const items = DB[table].filter(i => (i.status||'Available') === 'Available');
+  // A custom card is priced by hand and takes no automatic price, so the bulk path leaves it alone as the queue does
+  const items = DB[table].filter(i => (i.status||'Available') === 'Available' && !(table === 'singles' && kjrIsCustomCard(i)));
   if (!items.length) { toast('No available items to refresh'); return; }
   if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
   _bulkRefreshRunning = true;

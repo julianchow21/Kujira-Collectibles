@@ -7,13 +7,13 @@
    assets.tcgdex.net are immutable files, so they are served cache-first from
    their own cache, `kujira-card-art`, which survives version bumps.
    Bump CACHE when you want to force every client to drop its old shell. */
-const CACHE = 'kujira-v86';
+const CACHE = 'kujira-v87';
 // three.core.min.js has no ?v= query: it's the vendored file's own internal
 // import specifier (three.module.js imports "./three.core.min.js" verbatim,
 // no query), so the real runtime request never carries one either - a query
 // here would just make this entry miss its own precache. Busted by CACHE
 // bumping instead, same as every other unversioned CORE entry below.
-const CORE = ['./', './index.html', './styles.css?v=3.83', './app.js?v=3.83', './features.js?v=3.83', './dealer-money.js?v=3.83', './dealer-desk.js?v=3.83', './dealer-ui.js?v=3.83', './dealer-store.js?v=3.83', './dealer-production-ui.js?v=3.83', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/fonts/Geist-Variable.woff2', './Assets/fonts/GeistMono-Variable.woff2', './Assets/lib/three.module.js?v=3.31', './Assets/lib/three.core.min.js'];
+const CORE = ['./', './index.html', './styles.css?v=3.84', './app.js?v=3.84', './features.js?v=3.84', './dealer-money.js?v=3.84', './dealer-desk.js?v=3.84', './dealer-ui.js?v=3.84', './dealer-store.js?v=3.84', './dealer-production-ui.js?v=3.84', './Assets/manifest.webmanifest', './Assets/whale-icon.png', './Assets/apple-touch-icon.png', './Assets/whale-icon-192.png', './Assets/fonts/Geist-Variable.woff2', './Assets/fonts/GeistMono-Variable.woff2', './Assets/lib/three.module.js?v=3.31', './Assets/lib/three.core.min.js'];
 
 // Card art (v3.83). The page asks for each picture with crossorigin=anonymous and TCGdex answers with access-control-allow-origin: *, so the
 // response the worker sees is a readable CORS one. Only that kind is stored: an opaque one (a plain cross-origin <img>) is padded to

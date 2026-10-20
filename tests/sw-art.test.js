@@ -136,7 +136,7 @@ test('sw art: everything else cross-origin is left to the network: the TCGdex lo
   assert.equal((await w.fetchEvent(req(ART, { method: 'HEAD' }))).intercepted, false);
   assert.deepEqual(w.fetched, [], 'the worker fetched nothing for any of them');
   // and same-origin traffic still takes the old paths: the shell cache for assets, network-first for the page
-  const own = await w.fetchEvent(req('https://julianchow21.github.io/Kujira-Collectibles/styles.css?v=3.83', { mode: 'no-cors', destination: 'style' }));
+  const own = await w.fetchEvent(req('https://julianchow21.github.io/Kujira-Collectibles/styles.css?v=3.84', { mode: 'no-cors', destination: 'style' }));
   assert.equal(own.intercepted, true);
   assert.ok(w.caches.stores.has(SHELL), 'static assets go to the shell cache');
   assert.equal(w.caches.stores.has('kujira-card-art'), false);

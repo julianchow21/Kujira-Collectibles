@@ -822,6 +822,36 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
 /* Singles: unresolved-card warning (Market Price rework Phase 5) */
 .unresolved-banner{display:none;padding:8px 12px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--radius);font-size:12px;color:var(--amber);margin-bottom:10px;align-items:center;gap:8px}
 .unresolved-banner.show{display:flex}
+.unresolved-banner-text{flex:1;min-width:0;cursor:pointer;text-decoration:underline dotted}
+.unresolved-banner-acts{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none}
+
+/* Custom card: the review sheet from the Singles banner (app.js kjrCustomReviewHtml), the Undo button in a toast. A dialog.overlay,
+   so it is a centred modal on desktop and a bottom sheet on phones through the .overlay rules above, only the body scrolls. */
+.kjr-custom-modal{max-width:var(--modal-sm);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+.kjr-custom-modal .modal-head{flex-shrink:0}
+.kjr-custom-modal .modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.kjr-custom-modal .modal-foot{flex-shrink:0}
+.kjr-cr-lead{margin:0 0 12px;font-size:13px;line-height:1.5;color:var(--text2)}
+.kjr-cr-link{padding:0;border:0;background:none;color:var(--link);font:inherit;text-decoration:underline;cursor:pointer}
+.kjr-cr-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+.kjr-cr-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.kjr-cr-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 12px;border:1px solid var(--border2);border-radius:var(--radius)}
+.kjr-cr-info{flex:1 1 200px;min-width:0}
+.kjr-cr-name{font-size:13px;font-weight:600;line-height:1.4;color:var(--text);overflow-wrap:anywhere}
+.kjr-cr-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:4px;font-size:11px;line-height:1.4;color:var(--text3)}
+.kjr-cr-acts{display:flex;gap:6px;flex:none}
+.kjr-cr-acts .btn{min-height:34px;justify-content:center}
+.kjr-cr-row.is-done .kjr-cr-name{font-weight:500;color:var(--text2)}
+.kjr-cr-sub{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--text2)}
+.kjr-cr-more{margin:10px 0 0;font-size:11px;color:var(--text3)}
+.kjr-cr-empty{padding:28px 12px}
+/* The Undo bar: the page toast can not be pressed over an open modal, so the sheet draws its own between the list and Done */
+.kjr-cr-toast{flex-shrink:0;display:flex;align-items:center;gap:10px;margin:0 20px 12px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border2);border-left:3px solid var(--accent);border-radius:var(--radius);font-size:12px;line-height:1.4;color:var(--text)}
+.kjr-cr-toast[hidden]{display:none}
+.kjr-cr-toast-msg{flex:1;min-width:0;overflow-wrap:anywhere}
+@media(max-width:480px){.kjr-cr-acts{flex:1 1 100%}.kjr-cr-acts .btn{flex:1;min-height:44px}}
+.toast-undo{margin-left:6px;padding:2px 10px;border:0;border-radius:4px;background:var(--accent);color:var(--accent-fg);font:inherit;font-size:12px;cursor:pointer;vertical-align:middle}
+.kjr-cr-toast .toast-undo{flex:none;margin-left:0;min-height:28px}
 
 /* ── Custom Chart Builder ── */
 .cb-drop-zone{border:1.5px dashed var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:12px;color:var(--text3);transition:all 0.15s;cursor:default;min-height:42px;display:flex;align-items:flex-start;gap:4px;background:var(--bg2);flex-wrap:wrap}
@@ -1045,8 +1075,10 @@ dialog.cmd-overlay::backdrop{background:var(--backdrop)}
 .cl-time{font-size:11px;color:var(--text3);white-space:nowrap;flex-shrink:0;margin-top:2px}
 .cl-badge{font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;flex-shrink:0;margin-top:2px}
 
-/* VERSION HISTORY */
-dialog.ver-overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center}
+/* VERSION HISTORY. v3.84: nothing here may be wider than the dialog, at 320 the foot's input (its own width, 20 characters) pushed Save Version
+   40px out of the box and the dialog scrolled sideways. The input shrinks (min-width:0) and a long version name wraps (min-width:0 on the
+   flex child it sits in, overflow-wrap). The wrapper clips, never scrolls, like the five other dialog wrappers (v3.83): the list inside is the one that scrolls. */
+dialog.ver-overlay{border:none;background:transparent;padding:20px;max-width:none;max-height:none;width:100vw;height:100vh;margin:0;position:fixed;inset:0;align-items:center;justify-content:center;overflow:hidden;overflow:clip}
 dialog.ver-overlay[open]{display:flex}
 dialog.ver-overlay::backdrop{background:var(--backdrop)}
 .ver-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:var(--modal-sm);max-height:80vh;display:flex;flex-direction:column}
@@ -1056,12 +1088,12 @@ dialog.ver-overlay::backdrop{background:var(--backdrop)}
 .ver-item{display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--border);font-size:13px;transition:background 0.1s}
 .ver-item:last-child{border:none}
 .ver-item:hover{background:var(--bg3)}
-.ver-item-info{flex:1}
-.ver-item-name{font-weight:500;color:var(--text)}
-.ver-item-meta{font-size:11px;color:var(--text3);margin-top:2px}
+.ver-item-info{flex:1;min-width:0}
+.ver-item-name{font-weight:500;color:var(--text);overflow-wrap:anywhere}
+.ver-item-meta{font-size:11px;color:var(--text3);margin-top:2px;overflow-wrap:anywhere}
 .ver-item-actions{display:flex;gap:6px;flex-shrink:0}
 .ver-foot{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center}
-.ver-foot input{flex:1;padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit}
+.ver-foot input{flex:1;min-width:0;padding:7px 10px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit}
 .ver-foot input:focus{outline:none;border-color:var(--accent)}
 .sa-item{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;display:flex;align-items:flex-start;gap:10px;font-size:12px}
 .sa-item.sa-slab{border-left:3px solid var(--blue)}

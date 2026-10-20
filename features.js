@@ -358,10 +358,10 @@
     return _orig.apply(this, arguments);
   };
 })();
-document.querySelectorAll('dialog[id]').forEach(dlg => {
-  dlg.addEventListener('cancel', e => { e.preventDefault(); kjrModalCtrl.close(dlg); });
-  dlg.addEventListener('click', e => { if (e.target === dlg) kjrModalCtrl.close(dlg); });
-});
+// v3.84: no cancel or click bindings on dialogs here. kjrModalCtrl.open() (app.js) binds Esc and the backdrop tap once per dialog it
+// opens. This file used to bind a second pair on every dialog in the page (left from v2.5, before the controller did it), so one Esc on a
+// dirty form asked the Discard question twice, and its cancel handler also swallowed Esc on the Discard prompt itself, a dialog the
+// controller never opens, because it called preventDefault for a close nothing would then perform.
 // ═════════════ Shared helpers ═════════════
 function kjrId(p){ return genId(p); }
 function kjrEscape(s){ return esc(s); } // alias, esc() in the HELPERS section is the single escaping implementation
@@ -3831,6 +3831,7 @@ function kjrArtState(item, table) {
   // gives them an id), Chinese and the rest stay placeholders, a sealed product has no card number to resolve.
   if (!id && table === 'singles' && lang === 'ja' && item.id != null && item.type !== 'sealed') {
     if (kjrSingleDealerOwned(item)) return none; // Dealer Desk owns the writes to its rows, a background id would change one
+    if (kjrIsCustomCard(item)) return none; // a custom card has no match by design: no lookup, and no guessed id written onto it (one with an id of its own never gets here, it keeps its art)
     if (kjrSingleMissFresh(item)) return none;
     return resolvable() ? { state: 'need', key: 'single:' + item.id, single: String(item.id), lang: lang } : none;
   }
@@ -4857,15 +4858,18 @@ function kjrInspectSourceText(source) {
 function kjrInspectPriceLine(table, item, now) {
   var hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
   var last = hist.length ? hist[hist.length - 1] : null;
+  // "Checked" is the newest check of the price, a same-value re-check included (kjrPriceCheckedTs, the one reading the Overview and the
+  // list dots share). A re-price to the stored value appends no history, so the last entry's date alone said "checked 49 days ago"
+  // for a card that was checked today.
+  var ts = typeof kjrPriceCheckedTs === 'function' ? kjrPriceCheckedTs(item) : 0;
+  var ago = ts && typeof kjrOverviewCheckedText === 'function' ? kjrOverviewCheckedText(ts, now) : '';
   if (last && typeof last === 'object') {
     var text = kjrInspectSourceText(last.source) || 'Price source not recorded';
-    var d = typeof _parseHistDate === 'function' ? _parseHistDate(last.date) : null;
-    var ago = d && typeof kjrOverviewCheckedText === 'function' ? kjrOverviewCheckedText(d.getTime(), now) : '';
     return ago ? text + ' · checked ' + ago : text;
   }
   var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
   if (table !== 'slabs' && lang !== 'EN') return 'Manual price, no free source for this language';
-  if (parseFloat(item.marketPrice) > 0) return 'Manual price';
+  if (parseFloat(item.marketPrice) > 0) return ago ? 'Manual price · checked ' + ago : 'Manual price';
   var why = typeof _mktEmptyCellTitle === 'function' ? _mktEmptyCellTitle(item) : '';
   return why || 'No market price checked yet';
 }
@@ -4936,6 +4940,7 @@ function kjrInspectRefreshInfo(table, item) {
     return { ok: false, why: 'Price refresh is disabled in local preview (sync off). Use the live site.' };
   }
   if (table === 'singles' && typeof _queueLaneFor === 'function' && _queueLaneFor(item) === 'manual') {
+    if (kjrIsCustomCard(item)) return { ok: false, why: 'Custom card, price by hand (no auto-match)' };
     var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
     return { ok: false, why: lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing' };
   }
@@ -4997,6 +5002,9 @@ function kjrInspectHtml(table, item, view) {
   var chips = '<span class="badge b-lang">' + E(lang) + '</span>';
   if (!isSlab && item.condition) chips += '<span class="kjr-insp-chip">' + E(item.condition) + '</span>';
   if (!isSlab && item.type === 'sealed') chips += '<span class="kjr-insp-chip">Sealed</span>';
+  // A custom card is priced by hand and never matched (the Custom card switch in the edit form). The chip says so in words, so the
+  // missing auto price is explained and not shown by colour alone. Clearing it is the same switch in Edit.
+  if (!isSlab && kjrIsCustomCard(item)) chips += '<span class="kjr-insp-chip" title="Priced by hand, never matched to TCGdex">Custom card</span>';
   chips += '<span class="kjr-insp-chip has-dot ' + (sold ? 'sold' : 'stock') + '">' + (sold ? 'Sold' : 'In stock') + '</span>';
   if (!sold && listed.carousell) chips += '<span class="kjr-insp-chip has-dot listed">' + E(listed.carousell) + '</span>';
   if (!sold && listed.ebay) chips += '<span class="kjr-insp-chip has-dot listed">' + E(listed.ebay) + '</span>';

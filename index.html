@@ -41,7 +41,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.83',
+    release: 'kujira-collectibles@3.84',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -77,7 +77,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
 <!-- Geist is self-hosted (Assets/fonts, the @font-face rules sit at the top of styles.css). Only the sans is preloaded: it is on screen at first paint, Geist Mono is not. -->
 <link rel="preload" href="Assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="styles.css?v=3.83">
+<link rel="stylesheet" href="styles.css?v=3.84">
 </head>
 <body>
 
@@ -276,7 +276,7 @@
       <span class="kjr-sync-dot" aria-hidden="true"></span>
       <span class="kjr-sync-text">
         <span class="kjr-sync-line1" id="sync-label">Not synced yet</span>
-        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.83 (20 Oct)</span></span>
+        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.84 (21 Oct)</span></span>
       </span>
     </button>
     <span class="sr-only" id="sync-live" role="status"></span>
@@ -345,8 +345,11 @@
   <div class="section-title" tabindex="-1">Singles Inventory</div>
   <div class="unresolved-banner" id="singles-unresolved-banner">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    <span id="singles-unresolved-text" role="button" tabindex="0" style="cursor:pointer;text-decoration:underline dotted" title="Click to filter Singles to just these cards" onclick="_kjrShowUnresolvedOnly()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_kjrShowUnresolvedOnly()}"></span>
-    <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="_dismissUnresolvedBanner()" aria-label="Dismiss">✕</button>
+    <span id="singles-unresolved-text" class="unresolved-banner-text" title="Review these cards" onclick="kjrCustomReviewOpen()"></span>
+    <span class="unresolved-banner-acts">
+      <button class="btn btn-sm" type="button" onclick="kjrCustomReviewOpen()">Review</button>
+      <button class="btn btn-ghost btn-sm" type="button" style="padding:2px 8px;font-size:11px" onclick="_dismissUnresolvedBanner()" aria-label="Dismiss">✕</button>
+    </span>
   </div>
   <div class="inv-strip-host" id="singles-stats"></div>
   <div class="toolbar">
@@ -1492,6 +1495,14 @@
         <div class="form-group"><label class="lbl" for="ms-ebay-url">eBay Listing URL</label><input class="fi" id="ms-ebay-url" placeholder="https://www.ebay.com/itm/..."></div>
         <div class="form-group"><label class="lbl" for="ms-carousell-url">Carousell Listing URL</label><input class="fi" id="ms-carousell-url" placeholder="https://www.carousell.sg/p/..."></div>
         <div class="form-group full"><label class="lbl" for="ms-tcgdexid">TCGdex ID</label><input class="fi" id="ms-tcgdexid" placeholder="sv03-223"><div id="ms-tcgdex-resolved" style="font-size:11px;color:var(--text3);margin-top:4px"></div><div style="font-size:11px;color:var(--text3);margin-top:4px">Auto-filled, override only if the wrong card was matched.</div></div>
+        <div class="form-group full">
+          <label class="kjr-switch" for="ms-custom">
+            <input type="checkbox" role="switch" id="ms-custom" aria-describedby="ms-custom-hint">
+            <span class="kjr-switch-ui" aria-hidden="true"></span>
+            <span class="kjr-switch-text">Custom card, price by hand (no auto-match)</span>
+          </label>
+          <span class="kjr-switch-hint" id="ms-custom-hint">Skips TCGdex matching and the unmatched-cards banner. The market price you enter stays.</span>
+        </div>
         <div class="form-group full"><label class="lbl" for="ms-notes">Notes</label><textarea class="fi" id="ms-notes" rows="2"></textarea></div>
       </div>
     </div>
@@ -1535,6 +1546,23 @@
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('modal-slab')">Cancel</button>
       <button class="btn btn-primary" onclick="kjrGuardSave(this, saveSlab)">Save</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- CUSTOM CARD REVIEW. The cards the Singles banner says could not be matched, each with Open (the edit form) and Custom card
+     (priced by hand, never matched). A bottom sheet on phones like every .overlay. app.js: kjrCustomReviewOpen and friends. -->
+<dialog class="overlay" id="kjr-custom-overlay" aria-labelledby="kjr-custom-title">
+  <div class="modal kjr-custom-modal">
+    <div class="modal-head">
+      <h3 id="kjr-custom-title" tabindex="-1">Unmatched cards</h3>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="kjrCustomReviewClose()" aria-label="Close">✕</button>
+    </div>
+    <div class="sr-only" id="kjr-custom-live" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="modal-body" id="kjr-custom-body"></div>
+    <div class="kjr-cr-toast" id="kjr-custom-toast" role="status" aria-live="polite" hidden></div>
+    <div class="modal-foot">
+      <button class="btn" type="button" onclick="kjrCustomReviewClose()">Done</button>
     </div>
   </div>
 </dialog>
@@ -2135,12 +2163,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.83"></script>
-<script src="features.js?v=3.83"></script>
-<script src="dealer-money.js?v=3.83"></script>
-<script src="dealer-desk.js?v=3.83"></script>
-<script src="dealer-ui.js?v=3.83"></script>
-<script src="dealer-store.js?v=3.83"></script>
-<script src="dealer-production-ui.js?v=3.83"></script>
+<script src="app.js?v=3.84"></script>
+<script src="features.js?v=3.84"></script>
+<script src="dealer-money.js?v=3.84"></script>
+<script src="dealer-desk.js?v=3.84"></script>
+<script src="dealer-ui.js?v=3.84"></script>
+<script src="dealer-store.js?v=3.84"></script>
+<script src="dealer-production-ui.js?v=3.84"></script>
 </body>
 </html>

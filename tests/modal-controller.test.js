@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { loadApp, ROOT } = require('./harness.js');
+const { loadApp, plain, ROOT } = require('./harness.js');
 
 const appSrc = fs.readFileSync(ROOT + '/app.js', 'utf8');
 
@@ -315,4 +315,294 @@ test('modal controller: one history.back() in the controller, inside goBack, and
   const listener = ctrlSrc.slice(ctrlSrc.indexOf("window.addEventListener('popstate'"));
   assert.ok(listener.indexOf('if (selfPopAt)') > 0 && listener.indexOf('if (selfPopAt)') < listener.indexOf('if (stack.length === 0) return;'), 'the marker is checked before anything is closed');
   assert.match(listener, /if \(!\(history\.state && history\.state\.kjrModal\)\) history\.pushState\(\{ kjrModal: 1 \}, ''\);/);
+});
+
+// ── a dirty form, Esc, and a dialog the browser shuts by itself (v3.84) ──────────────────────────────────────────────────────────────
+// Chromium fires Esc's 'cancel' with cancelable:false when the page has had no recent tap or key press (and for a second Esc in a row),
+// so preventDefault changes nothing: the handlers run, then the browser shuts the dialog itself. On a dirty form that used to leave the
+// Discard prompt up over a dead dialog: Keep editing could not bring the form back, and its stack entry, the scroll lock and the history
+// entry stayed behind. features.js also bound a second cancel and click handler on every dialog, so one Esc asked the question twice.
+// nativeEsc is that browser: the handlers run first, then the default action shuts the dialog and its 'close' event follows. The stub
+// dialogs send 'close' at once when they are closed, the browser sends it a moment later, so a test that needs the gap holds it back.
+function nativeEsc(dlg) {
+  dlg.dispatchEvent({ type: 'cancel', cancelable: false, preventDefault() {} });
+  dlg.open = false;
+  dlg.dispatchEvent({ type: 'close' });
+}
+// A kjrConfirm the test answers by hand: answer(true) is Discard, answer(false) is Keep editing. asked collects every question put.
+function handAnswered(ctx) {
+  const h = { asked: [], answer: null };
+  ctx.kjrConfirm = (msg, opts) => { h.asked.push({ msg, opts }); return new Promise((resolve) => { h.answer = resolve; }); };
+  return h;
+}
+
+test('modal controller: one dismiss of a dirty form asks the Discard question once, whoever asks and however many ask while it is up', async () => {
+  const app = await loadApp();
+  const b = browser(app, 'at call');
+  const { ctx, document: doc } = app;
+  const form = doc.getElementById('modal-single');
+  const h = handAnswered(ctx);
+  ctx.kjrModalCtrl.open(form);
+  form.dataset.dirty = '1';
+  const bound = (type) => (form._listeners.get(type) || []).length;
+  assert.equal(bound('cancel'), 1, 'Esc has one handler on a dialog, the controller\'s');
+  assert.equal(bound('click'), 1, 'so has a tap on the backdrop');
+  assert.equal(bound('close'), 1, 'and the close event, for a dialog the browser shuts');
+  form.dispatchEvent({ type: 'cancel', preventDefault() {} }); // Esc
+  assert.equal(h.asked.length, 1, 'Esc asks once');
+  assert.equal(h.asked[0].msg, 'Discard unsaved changes?');
+  assert.deepEqual(plain(h.asked[0].opts), { ok: 'Discard', danger: true });
+  form.dispatchEvent({ type: 'click', target: form }); // a tap on the backdrop while the question is up
+  ctx.kjrModalCtrl.close(form); // and a script closing it too
+  assert.equal(h.asked.length, 1, 'a second ask while the question is up shares it, no second prompt on top of the first');
+  h.answer(false);
+  await app.settle();
+  assert.equal(form.open, true, 'Keep editing leaves it open');
+  assert.equal(form.dataset.dirty, '1', 'with its unsaved-changes flag');
+  form.dispatchEvent({ type: 'cancel', preventDefault() {} }); // a fresh dismiss after the answer is a fresh question
+  assert.equal(h.asked.length, 2);
+  h.answer(true);
+  await app.settle();
+  assert.equal(form.open, false, 'Discard closes it');
+  assert.equal(overflow(app), '');
+  b.settle();
+  assert.equal(b.index, 0, 'and gives its history entry back');
+});
+
+test('modal controller: the controller is the only code that binds Esc (cancel) on a dialog, features.js and the Dealer Desk scripts do not', () => {
+  const bindings = (src) => (src.match(/addEventListener\(\s*['"]cancel['"]/g) || []).length;
+  const read = (f) => fs.readFileSync(ROOT + '/' + f, 'utf8');
+  assert.equal(bindings(appSrc), 1, 'app.js: the controller\'s, in open()');
+  const features = read('features.js');
+  assert.equal(bindings(features), 0, 'features.js bound a second pair on every dialog in the page, so one Esc on a dirty form asked twice');
+  assert.doesNotMatch(features, /querySelectorAll\(\s*['"]dialog\[id\]['"]\s*\)/, 'no blanket binding over every dialog');
+  for (const f of ['dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) assert.equal(bindings(read(f)), 0, f);
+  // the Discard prompt's own dialog is not one the controller opens, so a handler that calls preventDefault on its Esc would leave it unable to close
+  assert.equal((appSrc.match(/kjr-confirm-dialog/g) || []).length > 0, true);
+  const ctrlSrc = appSrc.slice(appSrc.indexOf('const kjrModalCtrl = (() => {'), appSrc.indexOf('// =========== DATA ==========='));
+  assert.equal((ctrlSrc.match(/addEventListener\('close'/g) || []).length, 1, 'one close listener in open(), bound with the other two');
+});
+
+for (const mode of MODES) {
+  test('modal controller (' + mode + '): Esc the browser acts on anyway shuts a dirty form, and the prompt decides: Keep editing brings the form back with its data and its focus, Discard finishes the close', async () => {
+    for (const keep of [true, false]) {
+      const app = await loadApp();
+      const b = browser(app, mode);
+      const { ctx, document: doc } = app;
+      const ctrl = ctx.kjrModalCtrl;
+      const form = doc.getElementById('modal-single');
+      const state = { focused: 0, hook: 0, shows: 0 };
+      const field = { value: 'Typed Card 99', isConnected: true, focus() { state.focused++; } };
+      form.contains = (el) => el === field;
+      const realShow = form.showModal;
+      form.showModal = function () { state.shows++; return realShow.call(this); };
+      const h = handAnswered(ctx);
+      ctrl.open(form, { onClose: () => state.hook++ });
+      form.dataset.dirty = '1';
+      doc.activeElement = field; // the person is in a field when Esc is pressed
+      nativeEsc(form);
+      const tag = mode + ', ' + (keep ? 'keep editing' : 'discard') + ': ';
+      assert.equal(h.asked.length, 1, tag + 'one prompt');
+      assert.equal(form.open, false, tag + 'the browser shut it, so it waits for the answer rather than covering the prompt');
+      assert.equal(overflow(app), 'hidden', tag + 'the scroll lock is still held for it');
+      assert.equal(state.hook, 0, tag + 'nothing has been closed yet');
+      doc.activeElement = null; // the prompt took focus
+      h.answer(!keep); // the prompt says true for Discard
+      await app.settle();
+      if (keep) {
+        assert.equal(form.open, true, tag + 'the form is back');
+        assert.equal(state.shows, 2, tag + 'shown again once, after the answer (the first show was the open)');
+        assert.equal(form.dataset.dirty, '1', tag + 'still unsaved');
+        assert.equal(field.value, 'Typed Card 99', tag + 'the typed value was never touched');
+        assert.equal(state.focused, 1, tag + 'focus goes back to the field it was in');
+        assert.equal(overflow(app), 'hidden', tag + 'the page stays locked behind it');
+        assert.equal(state.hook, 0, tag + 'not closed, so no onClose hook');
+        assert.equal(b.index, 1, tag + 'its history entry was never given up');
+        // a live dialog again: the next Esc asks again and Discard then closes it for good
+        nativeEsc(form);
+        assert.equal(h.asked.length, 2, tag + 'asked again');
+        h.answer(true);
+        await app.settle();
+        assert.equal(form.open, false, tag + 'second time Discard');
+        assert.equal(state.hook, 1);
+        assert.equal(overflow(app), '');
+        b.settle();
+        assert.equal(b.index, 0);
+        assert.equal(count(b, 'back'), 1, tag + 'one back() for the whole thing');
+      } else {
+        assert.equal(form.open, false, tag + 'Discard: it stays closed');
+        assert.equal(state.shows, 1, tag + 'and is never shown again');
+        assert.equal(state.hook, 1, tag + 'its onClose hook ran');
+        assert.equal(form.dataset.dirty, '0');
+        assert.equal(overflow(app), '', tag + 'the scroll is unlocked');
+        assert.equal(count(b, 'back'), 1, tag + 'its history entry was given back');
+        b.settle();
+        assert.equal(b.index, 0);
+      }
+    }
+  });
+}
+
+test('modal controller: a dirty form the browser shuts with no prompt up comes back at once, and one that cannot come back is torn down, once, never retried', async () => {
+  const app = await loadApp();
+  const b = browser(app, 'at call');
+  const { ctx, document: doc } = app;
+  const ctrl = ctx.kjrModalCtrl;
+  const h = handAnswered(ctx);
+  const form = doc.getElementById('modal-single');
+  ctrl.open(form);
+  form.dataset.dirty = '1';
+  form.open = false; // shut by something nothing asked about
+  form.dispatchEvent({ type: 'close' });
+  assert.equal(form.open, true, 'never dropped silently: it is shown again');
+  assert.equal(form.dataset.dirty, '1');
+  assert.equal(h.asked.length, 0, 'with no question, nobody asked for a close');
+  assert.equal(overflow(app), 'hidden');
+  assert.equal(b.index, 1);
+  form.dispatchEvent({ type: 'close' }); // a close event for a form that is open (a late one) is nothing
+  assert.equal(form.open, true);
+
+  // a dialog the page took away cannot be shown: one attempt, then the ordinary teardown so the page is not locked behind nothing
+  const gone = await loadApp();
+  const b2 = browser(gone, 'at call');
+  const dlg = gone.document.getElementById('modal-slab');
+  gone.ctx.kjrModalCtrl.open(dlg);
+  dlg.dataset.dirty = '1';
+  let tries = 0, hooks = 0;
+  dlg._kjrOnClose = () => hooks++;
+  dlg.showModal = () => { tries++; throw new Error('InvalidStateError'); };
+  dlg.open = false;
+  dlg.dispatchEvent({ type: 'close' });
+  assert.equal(tries, 1, 'one attempt, no retry');
+  assert.equal(overflow(gone), '', 'the page is unlocked');
+  assert.equal(hooks, 1, 'and its onClose hook ran');
+  assert.ok(gone.consoleErrors.some((m) => /could not bring a dialog back/.test(m)), 'the failure is on the console, not silent');
+  assert.equal(count(b2, 'back'), 1);
+  // Keep editing for a dialog that cannot come back ends the same way, and still says the dialog was not kept open by the question
+  const third = await loadApp();
+  browser(third, 'at call');
+  const d3 = third.document.getElementById('modal-quick-sell');
+  const h3 = handAnswered(third.ctx);
+  third.ctx.kjrModalCtrl.open(d3);
+  d3.dataset.dirty = '1';
+  d3.showModal = () => { throw new Error('InvalidStateError'); };
+  nativeEsc(d3);
+  h3.answer(false);
+  await third.settle();
+  assert.equal(overflow(third), '', 'Keep editing on a dialog that cannot return does not leave the page locked');
+  assert.equal(d3.open, false);
+});
+
+for (const mode of MODES) {
+  test('modal controller (' + mode + '): a clean dialog the browser shuts by itself gets the ordinary teardown, stack, scroll lock, history and onClose hook, once', async () => {
+    const app = await loadApp();
+    const b = browser(app, mode);
+    const { ctx, document: doc } = app;
+    const ctrl = ctx.kjrModalCtrl;
+    const dlg = doc.getElementById('cmd-overlay');
+    let closed = 0;
+    ctrl.open(dlg, { onClose: () => closed++ });
+    assert.equal(overflow(app), 'hidden');
+    assert.equal(b.index, 1);
+    dlg.open = false; // the browser did it
+    dlg.dispatchEvent({ type: 'close' });
+    assert.equal(overflow(app), '', mode + ': the scroll lock is gone');
+    assert.equal(closed, 1, mode + ': its onClose hook ran');
+    assert.equal(count(b, 'back'), 1, mode + ': its history entry is given back');
+    b.settle();
+    assert.equal(b.index, 0);
+    dlg.dispatchEvent({ type: 'close' }); // a second close event finds nothing left to do
+    assert.equal(closed, 1);
+    assert.equal(count(b, 'back'), 1);
+    // the controller's own close is still one teardown (the stub sends 'close' at once, the entry is already off the stack by then)
+    ctrl.open(dlg, { onClose: () => closed++ });
+    await ctrl.close(dlg);
+    assert.equal(closed, 2);
+    assert.equal(count(b, 'back'), 2);
+    b.settle();
+    assert.equal(overflow(app), '');
+    assert.equal(b.index, 0);
+  });
+}
+
+test('modal controller: a dialog shut while another sits above it takes only its own entry, the scroll lock stays for the one still open', async () => {
+  const app = await loadApp();
+  const b = browser(app, 'at call');
+  const { ctx, document: doc } = app;
+  const ctrl = ctx.kjrModalCtrl;
+  const lower = doc.getElementById('more-sheet-overlay'), upper = doc.getElementById('ver-overlay');
+  ctrl.open(lower);
+  ctrl.open(upper);
+  lower.open = false;
+  lower.dispatchEvent({ type: 'close' });
+  assert.equal(upper.open, true);
+  assert.equal(overflow(app), 'hidden', 'one dialog is still open');
+  assert.equal(count(b, 'back'), 0, 'and the history entry is still its');
+  upper.open = false;
+  upper.dispatchEvent({ type: 'close' });
+  assert.equal(overflow(app), '');
+  assert.equal(count(b, 'back'), 1);
+});
+
+test('modal controller: the entry a prompt is about is found again once it is answered, so a dialog closing meanwhile cannot take its place', async () => {
+  const app = await loadApp();
+  browser(app, 'at call');
+  const { ctx, document: doc } = app;
+  const ctrl = ctx.kjrModalCtrl;
+  const under = doc.getElementById('more-sheet-overlay'), form = doc.getElementById('modal-single');
+  const h = handAnswered(ctx);
+  ctrl.open(under);
+  ctrl.open(form);
+  form.dataset.dirty = '1';
+  const closing = ctrl.close(form); // the prompt is up
+  await ctrl.close(under, true); // the dialog beneath goes meanwhile (a Back press, closeAll, a script)
+  h.answer(true);
+  assert.equal(await closing, true, 'it closes (the old code looked the entry up by the index it had before the prompt, found nothing and threw)');
+  assert.equal(form.open, false);
+  assert.equal(overflow(app), '');
+  // and a prompt about a dialog that something else closed while it was up is not an error either
+  const again = doc.getElementById('modal-slab');
+  ctrl.open(again);
+  again.dataset.dirty = '1';
+  const second = ctrl.close(again);
+  await ctrl.close(again, true);
+  h.answer(true);
+  assert.equal(await second, true);
+  assert.equal(overflow(app), '');
+});
+
+test('modal controller: the close event of a dialog the controller itself shut, arriving after it was opened again, tears nothing down', async () => {
+  const app = await loadApp();
+  const b = browser(app, 'at call');
+  const { ctx, document: doc } = app;
+  const ctrl = ctx.kjrModalCtrl;
+  const dlg = doc.getElementById('cmd-overlay');
+  const late = [];
+  dlg.close = function () { this.open = false; late.push(() => this.dispatchEvent({ type: 'close' })); }; // the browser sends 'close' a moment later
+  ctrl.open(dlg);
+  ctrl.close(dlg);
+  ctrl.open(dlg); // closed and opened again in the same breath
+  assert.equal(dlg.open, true);
+  late.forEach((send) => send()); // the first close's event arrives now
+  assert.equal(dlg.open, true, 'still open');
+  assert.equal(overflow(app), 'hidden', 'still locked');
+  b.settle();
+  b.userBack();
+  assert.equal(dlg.open, false, 'a real Back still closes it');
+  assert.equal(overflow(app), '');
+});
+
+test('css: Version History clips like the five other dialog wrappers, and nothing in it can be wider than the dialog (v3.84)', () => {
+  const css = fs.readFileSync(ROOT + '/styles.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const bodies = (sel) => [...css.matchAll(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\{([^}]*)\\}', 'g'))].map((m) => m[1]);
+  const wrappers = ['dialog.overlay', 'dialog.sheet-overlay', 'dialog.kjr-modal-back', 'dialog.kjr-confirm-back', 'dialog.kjr-complete-back', 'dialog.ver-overlay'];
+  for (const sel of wrappers) {
+    assert.ok(bodies(sel).some((b) => /overflow:hidden;overflow:clip/.test(b)), sel + ' clips: a modal dialog scrolls itself by default, and the list inside is what should scroll');
+  }
+  // the foot's input has a width of its own (20 characters), so without min-width:0 it pushed Save Version 40px out of the box at 320
+  assert.ok(bodies('.ver-foot input').some((b) => /flex:1;min-width:0;/.test(b)), 'the input shrinks');
+  assert.ok(bodies('.ver-item-info').some((b) => /flex:1;min-width:0/.test(b)), 'a version\'s text can be narrower than its longest word');
+  assert.ok(bodies('.ver-item-name').some((b) => /overflow-wrap:anywhere/.test(b)), 'a long name wraps');
+  assert.ok(bodies('.ver-item-meta').some((b) => /overflow-wrap:anywhere/.test(b)), 'so does the line under it');
+  assert.ok(bodies('.ver-list').some((b) => /overflow-y:auto/.test(b) && /flex:1/.test(b)), 'the list is the thing that scrolls');
 });

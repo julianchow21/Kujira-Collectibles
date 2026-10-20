@@ -619,3 +619,143 @@ test('css: the palette rows are the existing result rows, the active one carries
   assert.equal(css.lastIndexOf('@media(max-width:900px){') < start, true, 'overview.test.js finds the Overview\'s 900px block with lastIndexOf on the compact form');
   assert.match(css, /\.cmd-result:hover,\.cmd-result\.selected\{background:var\(--bg3\)\}/, 'the tint is the rule Quick Sale already uses');
 });
+
+// ── the thumbnails (v3.84) ──────────────────────────────────────────────────────────────────
+// The rows' thumbnails are card art slots like the ones on the pages. A card with no art known yet is drawn as a plain frame that carries
+// what a lookup needs (data-need), and what turns it into the shimmer, the picture or the whale is the art observer watching it. The
+// palette never handed its list to it, so those rows stayed bare frames for ever. The stub list has no HTML parser, so its art slots are
+// read back out of the markup the render wrote, one fake element per slot, made again for every render the way innerHTML does.
+const ART_BASE = 'https://assets.tcgdex.net/en/swsh/swsh7/215';
+const FAIL = 'Image could not load';
+function fakeSlots(htmlText) {
+  return [...String(htmlText).matchAll(/<span class="(kjr-art [^"]*)"((?: [a-z-]+="[^"]*")*)><\/span>/g)].map((m) => {
+    const cls = new Set(m[1].split(' '));
+    const at = {};
+    for (const a of m[2].matchAll(/ ([a-z-]+)="([^"]*)"/g)) at[a[1]] = a[2];
+    const slot = {
+      _kjrVis: true, isConnected: true, cls, at, inserted: [],
+      classList: { add: (...c) => c.forEach((x) => cls.add(x)), remove: (...c) => c.forEach((x) => cls.delete(x)), contains: (c) => cls.has(c) },
+      getAttribute: (k) => (k in at ? at[k] : null), hasAttribute: (k) => k in at,
+      setAttribute: (k, v) => { at[k] = String(v); }, removeAttribute: (k) => { delete at[k]; },
+      insertAdjacentHTML(pos, h) { slot.inserted.push(h); }, querySelector: () => null,
+    };
+    return slot;
+  });
+}
+async function drainQueue(app) {
+  for (let n = 0; n < 8; n++) {
+    await app.settle(20);
+    const id = app.ctx._kjrImgQ.timer;
+    if (!id) break;
+    app.ctx._kjrImgQ.lastStart -= 1000;
+    app.timers.invoke(id);
+  }
+  await app.settle(20);
+}
+const lookLoading = (s) => s.cls.has('kjr-art-loading') && s.at['aria-busy'] === 'true' && !s.cls.has('kjr-art-none') && !('role' in s.at);
+const lookWhale = (s, label) => s.cls.has('kjr-art-none') && s.at.role === 'img' && s.at['aria-label'] === label && !s.cls.has('kjr-art-loading') && !('aria-busy' in s.at);
+
+test('thumbnails: every render of the results hands its art slots to the observer, each lookup shimmers and ends in the picture or the whale, and typing never queues a card twice', async () => {
+  const e = await env({
+    singles: [
+      single({ id: 'u1', name: 'Umbreon VMAX 215/203', tcgdexId: 'swsh7-215', notes: 'art' }),  // a lookup finds it
+      single({ id: 'r1', name: 'Rayquaza VMAX 218/203', tcgdexId: 'swsh7-218', notes: 'art' }), // a lookup fails
+      single({ id: 'm1', name: 'Mew 8', tcgdexId: '', notes: 'art' }),                         // no id: the whale at once, nothing to look up
+    ],
+    slabs: [],
+  });
+  const { ctx, doc } = e;
+  const list = doc.getElementById('cmd-find-list');
+  let markup = '', slots = [], renders = 0;
+  Object.defineProperty(list, 'innerHTML', {
+    configurable: true,
+    get() { return markup; },
+    set(v) { slots.forEach((s) => { s.isConnected = false; }); markup = v; slots = fakeSlots(v); renders++; },
+  });
+  list.querySelectorAll = (sel) => (sel === '.kjr-art[data-need]' ? slots.filter((s) => s.hasAttribute('data-need')) : []);
+  const otherAll = doc.querySelectorAll;
+  doc.querySelectorAll = (sel) => (sel === '.kjr-art[data-need]' ? slots.filter((s) => s.hasAttribute('data-need')) : otherAll(sel));
+  const made = [];
+  ctx.IntersectionObserver = class {
+    constructor(cb, opts) { this.cb = cb; this.opts = opts; this.watched = []; this.dropped = 0; made.push(this); }
+    observe(el) { this.watched.push(el); } unobserve() {} disconnect() { this.dropped++; this.watched = []; }
+  };
+  e.fetchMock.route('/cards/swsh7-215', { json: { image: ART_BASE } });
+  e.fetchMock.reject('/cards/swsh7-218');
+  const slotOf = (k) => slots.find((s) => s.getAttribute('data-ik') === k);
+  const cardFetches = () => e.fetchMock.calls.filter((c) => /\/cards\/swsh7-/.test(c.url)).length;
+  const onScreen = () => made[0].cb(made[0].watched.map((target) => ({ target, isIntersecting: true })), made[0]);
+
+  e.search('art');
+  assert.equal(made.length, 1, 'one observer');
+  assert.equal(ctx._kjrImgIO.palette, made[0], 'it is the palette\'s own, the observers of the pages are left alone');
+  assert.equal(made[0].opts.rootMargin, '240px 0px');
+  assert.deepEqual(made[0].watched.map((s) => s.getAttribute('data-ik')).sort(), ['swsh7-215', 'swsh7-218'], 'the two slots a lookup could fill are watched, the whale is not');
+  assert.ok(lookWhale(slotOf('swsh7-215') ? fakeSlots(markup).find((s) => !s.hasAttribute('data-need')) : null, 'No image yet'), 'the card with no id is the whale from the first draw');
+  assert.equal(slotOf('swsh7-215').cls.has('kjr-art-loading'), false, 'a watched slot is the plain frame until it is on screen and a lookup is queued');
+  onScreen();
+  assert.ok(lookLoading(slotOf('swsh7-215')) && lookLoading(slotOf('swsh7-218')), 'queued: both shimmer');
+  assert.deepEqual(Object.keys(ctx._kjrImgQ.byKey).sort(), ['swsh7-215', 'swsh7-218']);
+
+  // typing: every key press draws the list again, each new slot is watched, none queues a second lookup
+  for (const q of ['ar', 'a', 'ar', 'art']) { e.search(q); onScreen(); }
+  assert.equal(renders, 5, 'five draws');
+  assert.equal(made.length, 1, 'still the one observer, its watch started afresh each time');
+  assert.equal(made[0].dropped, 4, 'the old watch is dropped before each new one');
+  assert.deepEqual(Object.keys(ctx._kjrImgQ.byKey).sort(), ['swsh7-215', 'swsh7-218'], 'one job per card, however many key presses');
+  assert.ok(ctx._kjrImgQ.jobs.length + ctx._kjrImgQ.active <= 2);
+  assert.equal(cardFetches() <= 1, true, 'and the second job waits for its gap, the first has asked once');
+  assert.ok(lookLoading(slotOf('swsh7-215')) && lookLoading(slotOf('swsh7-218')), 'the slots drawn last shimmer too (they joined the queued jobs)');
+
+  await drainQueue(e);
+  assert.equal(cardFetches(), 2, 'five draws, two cards, two requests');
+  const found = slotOf('swsh7-215');
+  assert.equal(found.hasAttribute('data-need'), false, 'the answer drew the picture into the slot on the page now');
+  assert.match(found.inserted.join(''), /src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp"/);
+  assert.ok(lookLoading(found), 'its picture is on the way (the load event ends the shimmer)');
+  assert.ok(lookWhale(slotOf('swsh7-218'), FAIL), 'the failed one ends as the whale, worded as a failure');
+  assert.equal(ctx.kjrCardImageBase('swsh7-215'), ART_BASE, 'and the base is kept for the next draw');
+
+  // the next key press: the found card is a picture from the start, the failed one is the whale at once and asks nothing (it is cooling down)
+  e.search('art');
+  onScreen();
+  assert.match(e.listHtml(), /<img class="kjr-card-img" src="https:\/\/assets\.tcgdex\.net\/en\/swsh\/swsh7\/215\/low\.webp"/);
+  assert.ok(lookWhale(slotOf('swsh7-218'), FAIL));
+  assert.equal(cardFetches(), 2, 'no new request');
+  assert.equal(Object.keys(ctx._kjrImgQ.byKey).length, 0);
+
+  // nothing but actions: nothing to watch, and the last watch is let go
+  const before = made[0].dropped;
+  e.search('');
+  assert.equal(made[0].watched.length, 0);
+  assert.equal(made[0].dropped, before + 1);
+});
+
+test('thumbnails: the render ends by watching the list under the name "palette", on every path that draws it, and an empty list watches nothing', async () => {
+  const e = await env(FIXTURE());
+  const calls = [];
+  e.ctx.kjrObserveCardImages = (root, table) => { calls.push([root, table]); return 0; };
+  const list = e.doc.getElementById('cmd-find-list');
+  e.search('pika');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], list);
+  assert.equal(calls[0][1], 'palette');
+  e.search('');
+  assert.equal(calls.length, 2, 'an empty search is a draw too: the last watch is let go');
+  // the arrow keys move the active option without a redraw (the option nodes are there to touch), so nothing is watched again
+  e.search('pika');
+  const n = calls.length;
+  const nodes = e.results().map((r, i) => ({ attrs: {}, classList: { toggle() {} }, setAttribute(k, v) { this.attrs[k] = v; }, scrollIntoView() {} }));
+  list.querySelectorAll = (sel) => (sel === '[role="option"]' ? nodes : []);
+  e.ctx.cmdFindKey(e.key('ArrowDown'));
+  assert.equal(calls.length, n);
+  // and without the nodes the key falls back to a redraw, which watches like any other
+  list.querySelectorAll = () => [];
+  e.ctx.cmdFindKey(e.key('ArrowDown'));
+  assert.equal(calls.length, n + 1);
+  // a page without the art code (the observer is a feature of the later script) still draws the list
+  const bare = await env(FIXTURE());
+  bare.ctx.kjrObserveCardImages = undefined;
+  assert.doesNotThrow(() => bare.search('pika'));
+  assert.ok(bare.results().length > 0);
+});

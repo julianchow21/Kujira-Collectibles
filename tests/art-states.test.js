@@ -84,7 +84,7 @@ test('art states: kjrArtSlot draws each state differently, loading with aria-bus
 
   const need = ctx.kjrArtSlot({ state: 'need', key: 'swsh7-215', tcg: 'swsh7-215', lang: 'en' }, 'c', 'kjr-tile-art');
   assert.equal(need, '<span class="kjr-art kjr-tile-art kjr-art-ph" data-sz="c" data-need="1" data-ik="swsh7-215" data-lg="en" data-tcg="swsh7-215"></span>',
-    'no lookup is queued for it yet, so it is neither shimmering nor the whale (a palette row is never observed and stays like this)');
+    'no lookup is queued for it yet, so it is neither shimmering nor the whale (the observer that queues it runs after the render, the palette\'s too since v3.84)');
   const none = ctx.kjrArtSlot({ state: 'none' }, 't', 'kjr-thumb');
   assert.equal(none, '<span class="kjr-art kjr-thumb kjr-art-ph kjr-art-none" data-sz="t" role="img" aria-label="No image yet" title="No image yet"></span>');
 });

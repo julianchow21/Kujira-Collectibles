@@ -2,10 +2,10 @@
  * Kujira Prices + CAS DB Proxy, reproducible server candidate
  * -------------------------------------------------------------
  * Price route:
- *   GET /ppt/cards?search=<name>&limit=3[&includeEbay=true], exact-origin vendor proxy. The two named
- *      parameters are required and limit must be 3. includeEbay=true is the one optional flag, it adds the
- *      graded eBay sold data a slab price is read from. Any other parameter, a repeated one or another
- *      value for includeEbay is refused with HTTP 400 before any vendor call.
+ *   GET /ppt/cards?search=<name>&limit=3[&includeEbay=true][&language=japanese], exact-origin vendor proxy. The two named
+ *      parameters are required and limit must be 3. includeEbay=true adds the graded eBay sold data a slab
+ *      price is read from, language=japanese asks the Japanese card catalogue. Any other parameter, a
+ *      repeated one or another value for either flag is refused with HTTP 400 before any vendor call.
  *
  * Authenticated sync:
  *   POST /sync/v2/pull
@@ -57,7 +57,8 @@ const CACHE_TTL_SECONDS = 21600;
 // The optional vendor flags the price route forwards besides search and limit, each with the one value it may carry. A flag that is
 // not listed, or listed with any other value, is refused, so a caller can never widen a vendor request (and what it costs) by
 // guessing. includeEbay=true adds the graded eBay sold data a slab price is read from, and costs the vendor one more credit per card.
-const PRICE_EXTRA_PARAMS = Object.freeze({ includeEbay: /^true$/ });
+// language=japanese (v3.85) prices Japanese singles from the vendor's Japanese catalogue, at the ordinary credit cost.
+const PRICE_EXTRA_PARAMS = Object.freeze({ includeEbay: /^true$/, language: /^japanese$/ });
 
 export default {
   async fetch(request, env) {

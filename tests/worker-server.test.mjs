@@ -477,6 +477,15 @@ test('price proxy forwards includeEbay=true only, once, and refuses every other 
   assert.equal(response.status, 200);
   assert.equal(calls[1].url, UPSTREAM + 'includeEbay=true&search=Charizard%204%2F102&limit=3');
 
+  // v3.85: language=japanese, alone or with the eBay flag, is forwarded exactly as sent
+  response = await ask('search=Pikachu%20025&limit=3&language=japanese');
+  assert.equal(response.status, 200);
+  assert.equal(calls[2].url, UPSTREAM + 'search=Pikachu%20025&limit=3&language=japanese');
+  response = await ask('search=Pikachu&limit=3&includeEbay=true&language=japanese');
+  assert.equal(response.status, 200);
+  assert.equal(calls[3].url, UPSTREAM + 'search=Pikachu&limit=3&includeEbay=true&language=japanese');
+  calls.splice(2);
+
   // the plain two-parameter shape every released client sends is unchanged
   response = await ask('search=Charizard&limit=3');
   assert.equal(response.status, 200);
@@ -488,7 +497,9 @@ test('price proxy forwards includeEbay=true only, once, and refuses every other 
     'includeEbay=false', 'includeEbay=1', 'includeEbay=TRUE', 'includeEbay=True', 'includeEbay=', 'includeEbay',
     'includeEbay=%20true', 'includeEbay=true%20', 'includeEbay=truee', 'includeEbay=true%0A', 'includeEbay=yes',
     'includeEbay=true&includeEbay=true', 'includeEbay=true&includeEbay=false', 'includeEbay=false&includeEbay=true',
-    'includeebay=true', 'INCLUDEEBAY=true'
+    'includeebay=true', 'INCLUDEEBAY=true',
+    'language=english', 'language=Japanese', 'language=JAPANESE', 'language=', 'language', 'language=japanese%20',
+    'language=jp', 'language=japanese&language=japanese', 'Language=japanese'
   ]) {
     response = await ask('search=Charizard&limit=3&' + bad);
     assert.equal(response.status, 400, bad + ' must be refused');
@@ -496,7 +507,7 @@ test('price proxy forwards includeEbay=true only, once, and refuses every other 
   }
   // every other vendor flag, and the keys a plain object would answer for, are refused as before
   for (const bad of [
-    'includeHistory=true', 'includeBoth=true', 'days=30', 'set=Base', 'fetchAllInSet=true', 'language=japanese', 'tcgPlayerId=1',
+    'includeHistory=true', 'includeBoth=true', 'days=30', 'set=Base', 'fetchAllInSet=true', 'tcgPlayerId=1',
     'sortBy=price', 'maxDataPoints=730', 'extra=1', '__proto__=true', 'constructor=true', 'toString=true', 'hasOwnProperty=true',
     'includeEbay=true&includeHistory=true', 'includeEbay=true&days=30', 'includeEbay=true&extra=1'
   ]) {

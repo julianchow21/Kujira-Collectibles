@@ -129,6 +129,12 @@ body{font-family:var(--font-sans);font-variant-numeric:tabular-nums;background:v
    the light --bg unless we scrim the notch strip. env() is 0 on desktop and
    non-standalone, so this is a no-op there. */
 html.light body::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:rgba(20,25,40,.85);z-index:101;pointer-events:none}
+/* Dark theme at 601px and wider (an iPad with the rail or the sidebar): the shell paints its own strip under the status bar and the page did not, so rows that
+   scrolled up under the clock showed through it (iPad pass, v3.85). A fixed strip in the page colour sits under the shell (z-index 99, the shell is 100). It is
+   0px tall wherever there is no safe area, so a desktop or a browser tab never sees it, and the phone header covers its own strip. */
+@media (min-width: 601px){
+  html:not(.light) body::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:var(--bg);z-index:99;pointer-events:none}
+}
 a{color:var(--link);text-decoration:none}
 a:hover{text-decoration:underline}
 
@@ -206,6 +212,11 @@ th{text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;font-siz
    down INTO the first rows at rest. Stick to the wrap top instead, which
    the wrap never scrolls vertically, so the header simply stays in flow. */
 @media(max-width:1000px){.tbl-wrap thead{top:0}}
+/* A table wider than its card scrolls sideways (iPad pass, v3.85). Above 1000px the wrap is left visible so the header can stick to the
+   page, and the .card around it clips, so on a 1024px iPad with the rail, or beside the open card panel, the columns past the card's edge,
+   Actions among them, had no way to be reached. features.js (kjrTblFit) puts .kjr-wide on a wrap whose table does not fit, and that wrap
+   scrolls the way it does at 1000px and below, header at its own top. A table that fits keeps the sticky header. */
+@media(min-width:1001px){.tbl-wrap.kjr-wide{overflow-x:auto}.tbl-wrap.kjr-wide thead{top:0}}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:left}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:var(--bg3);cursor:default}
@@ -489,6 +500,9 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
      Save/Cancel must stay visible without scrolling to the bottom. */
   .modal-foot{flex-direction:column-reverse;gap:8px;position:sticky;bottom:0;background:var(--bg2);padding-bottom:max(16px,env(safe-area-inset-bottom));z-index:2}
   .modal-foot .btn{width:100%;justify-content:center;min-height:44px}
+  /* The footer pads for the safe area itself, so the sheet does not pad for it a second time. A sticky box stops at the padding edge of its
+     scroller in some engines, and that second padding left a strip under Save and Cancel where the form scrolled by (iPad pass, v3.85). */
+  .overlay .modal:has(.modal-foot){padding-bottom:0}
   .form-grid,.sell-grid{grid-template-columns:1fr}
   /* Command bar (Quick Entry) sits full width near the top */
   dialog.cmd-overlay{padding-top:max(16px,env(safe-area-inset-top));align-items:flex-start}
@@ -2042,6 +2056,19 @@ html.light .kjr-art-none::after{opacity:0.4;filter:brightness(0.55) saturate(1.4
 .kjr-switch input:disabled,.kjr-switch input:disabled~.kjr-switch-text{cursor:not-allowed}
 .kjr-switch input:disabled+.kjr-switch-ui{opacity:0.6}
 .kjr-switch-hint{font-size:12px;line-height:16px;color:var(--text3)}
+/* v3.85 Price API plan toggle */
+/* Two native radios drawn as a segmented control, so the arrow keys, the group name and the checked state all come from the browser. The
+   chosen option carries a tick as well as the accent ring, never colour alone. The options sit side by side when the dialog has room
+   (160px each) and stack to one column when it does not, 375px included. */
+.kjr-plan{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:2px;padding:2px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius)}
+.kjr-plan-opt{position:relative;display:block;min-width:0;cursor:pointer}
+.kjr-plan-opt input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.kjr-plan-txt{display:flex;align-items:center;justify-content:center;gap:6px;min-height:34px;padding:6px 10px;border-radius:calc(var(--radius) - 3px);color:var(--text3);font-size:12px;font-weight:500;line-height:1.35;text-align:center;overflow-wrap:anywhere}
+.kjr-plan-opt:hover .kjr-plan-txt{color:var(--text)}
+.kjr-plan-opt input:checked+.kjr-plan-txt{background:var(--accent-soft);color:var(--text);font-weight:600;box-shadow:inset 0 0 0 1px var(--accent)}
+.kjr-plan-opt input:checked+.kjr-plan-txt::before{content:"\2713";flex:none}
+.kjr-plan-opt input:focus-visible+.kjr-plan-txt{outline:2px solid var(--accent);outline-offset:2px}
+@media(pointer:coarse){.kjr-plan-txt{min-height:44px}}
 /* The toolbar toggle on the Sealed tables and eBay (aria-pressed) */
 .kjr-cf-toggle[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
 .kjr-cf-toggle[aria-disabled="true"]{cursor:not-allowed}
@@ -2663,6 +2690,20 @@ body{padding-left:var(--kjr-side-w)}
 /* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
 @media (hover: none) {
   .topbar .nav-btn,.topbar .kjr-side-search,.topbar .kjr-side-add,.topbar .logo,.topbar #sync-indicator,.topbar #settings-btn{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+}
+
+/* ═══════════ Touch sizes (iPad pass, v3.85) ═══════════
+   After the base rules they lift, and before the light-theme blocks that close the file (tests/light-contrast.test.js pins the hover block as
+   the last one). An earlier coarse-pointer rule loses to a later base rule of the same weight: the 20px row checkbox lost to the 14px one for
+   exactly that reason. On a touch screen every control a finger meets is 24px or more: the row and Listings checkboxes, the cell inputs, the
+   small text buttons, the card-name and cert links, the up and down arrows. They grow in place, the rows were already taller than this and
+   the checkbox column is 10px wider, a mouse sees none of it, and the phone layout (600px and below, its own compact tables) is left as it was. */
+@media (pointer: coarse) and (min-width: 601px){
+  input[type=checkbox].row-cb,input[type=checkbox].lst-tracker-select{width:24px;height:24px}
+  .kjr-inline,.kjr-inline-input{min-height:32px}
+  .eb-declared-button,.unresolved-banner .btn-sm,.col-order-btn,.cb-pill-order-btn{min-width:32px;min-height:32px}
+  .kjr-name-btn,.cert-no{min-height:24px}
+  label:has(#cb-dual-axis){min-height:32px}
 }
 
 /* ── Cert numbers read as codes, in the mono face, wherever a slab shows one ──

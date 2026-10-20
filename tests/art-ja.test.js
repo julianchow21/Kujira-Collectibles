@@ -2,7 +2,8 @@
 // v3.80: card art for Japanese cards and slabs. TCGdex's Japanese catalogue stores Japanese names, so an English name finds nothing on
 // /ja/. A Japanese row's English name is mapped to its katakana species name (Assets/species-ja.json), the /ja/ search is cut to the
 // exact localId, narrowed by the set (the fetched TCGdex set list, static table as the offline floor), and accepted only when exactly
-// one candidate is left. Art only: pricing for Japanese rows stays manual, zero price calls, whatever id a row now carries.
+// one candidate is left. Art only: the lookup makes zero price calls, and an id a row now carries never makes TCGdex a price source (v3.85:
+// the price comes from PPT's Japanese catalogue, see the last tests below and tests/ppt-japanese.test.js).
 // fetch is stubbed (tests/harness.js createFetchMock), nothing here reaches a real API. The responses below are shaped like the live
 // ones captured on 15/10/2026 (GET /ja/cards?name=リザードン&localId=006, /ja/sets).
 const test = require('node:test');
@@ -79,7 +80,8 @@ function singleSlot(id, sz) {
 async function setup(rows, extra) {
   const o = Object.assign({ search: LIVE_SEARCH_006, sets: LIVE_JA_SETS, species: SPECIES, detail: DETAIL_006 }, extra || {});
   const seed = makeSeed({ singles: (rows && rows.singles) || [jp()], slabs: (rows && rows.slabs) || [] });
-  const app = await loadApp(o.localStorage ? { seed, localStorage: o.localStorage } : { seed });
+  // jaLane: the Japanese price lane ships OFF (PPT_JA_LANE_ENABLED), the pricing tests at the end ask the harness for it
+  const app = await loadApp(Object.assign({ seed, jaLane: !!o.jaLane }, o.localStorage ? { localStorage: o.localStorage } : {}));
   app.fetchMock.calls.length = 0;
   app.route = {
     species: () => jsonResponse(o.species),
@@ -824,57 +826,101 @@ test('art-ja: pricing resolves exactly as before, it never reads the species map
   assert.equal(app.urls().filter((u) => u.includes('species-ja') || u.endsWith('/sets')).length, 0);
 });
 
-// ── pricing isolation ───────────────────────────────────────────────────────────────────────────────
-// A Japanese single that now carries an id is still manual-priced: zero price calls in the daily queue, in a manual "run now" and in
-// refreshPrice, with or without the art lookup having just run. An English control row proves the queue really ran.
-test('art-ja: a Japanese single with an id makes zero price calls in refreshPrice, even right after the art lookup wrote it', async () => {
-  const app = await setup({ singles: [jp()] });
+// ── pricing: the art lookup is art only, the price comes from PPT's Japanese catalogue ───────────────────────────────────────────────
+// v3.85: a Japanese single with a card number is priced by the PPT lane's Japanese lane (tests/ppt-japanese.test.js), once that lane is
+// switched on (it ships off, these tests turn it on through the harness). That lane asks the vendor and never TCGdex: the art id a row carries
+// stays art only, so the art lookup makes no price call and the price lane makes no /ja/ call, whatever id the row holds. An English control
+// row proves the queue really ran.
+const JP_CARD = { id: 'jp-006', name: 'Charizard ex', cardNumber: '006/165', setName: '151', prices: { market: 12 }, language: 'Japanese' };
+const pptAnswer = (cards) => jsonResponse({ data: cards, metadata: { apiCallsConsumed: { total: 3 } } });
+const SEARCH_WAITS = [6000, 250];
+async function drainQueue(fn, timers) {
+  const p = fn();
+  let finished = false;
+  p.then(() => { finished = true; }, () => { finished = true; });
+  for (let i = 0; i < 80 && !finished; i++) {
+    await new Promise((r) => setImmediate(r));
+    timers.flush((e) => SEARCH_WAITS.includes(e.delay));
+  }
+  return p;
+}
+
+test('art-ja: the art lookup makes no price call, and refreshPrice then asks PPT\'s Japanese catalogue, never TCGdex for a price', async () => {
+  const app = await setup({ singles: [jp()] }, { jaLane: true });
   await app.runSingle('j1');
   assert.equal(app.single('j1').tcgdexId, 'SV2a-006');
+  assert.deepEqual(app.urls().filter((u) => u.includes('/ppt/') || u.includes('frankfurter')), [], 'the art lookup made no price call');
   app.fetchMock.calls.length = 0;
   const toasts = [];
   app.ctx.toast = (m) => toasts.push(String(m));
-  app.fetchMock.route('/ppt/cards', () => jsonResponse({ data: [{ name: 'Charizard', number: '6', prices: { market: 99 } }] }));
+  app.fetchMock.route('/ppt/cards', () => pptAnswer([JP_CARD]));
   app.fetchMock.route('frankfurter.dev', () => jsonResponse([{ quote: 'SGD', rate: 1 }]));
   await app.ctx.refreshPrice('j1', 'singles');
-  assert.equal(app.fetchMock.calls.length, 0, 'no TCGdex, no PPT, not even an FX lookup: ' + app.urls().join(', '));
-  assert.deepEqual(toasts, ['Manual price, no free source for this language']);
+  const urls = app.urls();
+  assert.equal(urls.filter((u) => u.includes('/ppt/cards')).length, 1, 'one PPT search: ' + urls.join(', '));
+  assert.match(urls.find((u) => u.includes('/ppt/cards')), /language=japanese/, 'in the Japanese catalogue');
+  assert.deepEqual(urls.filter((u) => u.includes('api.tcgdex.net')), [], 'TCGdex is not asked for a price, the art id does not make it a price source');
   const row = app.single('j1');
-  assert.equal(Number(row.marketPrice), 30, 'the hand-set price is untouched');
-  assert.equal((row.priceHistory || []).length, 0);
-  assert.equal(app.ctx._queueLaneFor(row), 'manual', 'the lane stays language-based, an id does not move it');
-  assert.equal(app.ctx._queueLaneFor(Object.assign({}, row, { tcgdexId: '' })), 'manual');
+  assert.equal(row.marketPrice, '12', 'the card\'s TCGplayer market');
+  assert.equal(row.priceHistory.length, 1);
+  assert.equal(row.priceHistory[0].source, 'PPT (Japanese)');
+  assert.equal(row.tcgdexId, 'SV2a-006', 'and the art id is untouched');
+  assert.equal(app.ctx._queueLaneFor(row), 'ppt', 'the lane is language-based, an id does not move it');
+  assert.equal(app.ctx._queueLaneFor(Object.assign({}, row, { tcgdexId: '' })), 'ppt');
+});
+
+test('art-ja: with the Japanese price lane off, as v3.85 ships, the art id is still art only and the Japanese row is a manual price, no call', async () => {
+  const app = await setup({ singles: [jp()] });
+  await app.runSingle('j1');
+  assert.equal(app.single('j1').tcgdexId, 'SV2a-006', 'the art lookup is unaffected by the switch');
+  app.fetchMock.calls.length = 0;
+  const toasts = [];
+  app.ctx.toast = (m) => toasts.push(String(m));
+  app.fetchMock.route('/ppt/cards', () => pptAnswer([JP_CARD]));
+  await app.ctx.refreshPrice('j1', 'singles');
+  assert.deepEqual(app.urls(), [], 'not one request of any kind');
+  assert.ok(toasts.includes('Manual price, no free source for this language'), JSON.stringify(toasts));
+  assert.equal(app.ctx._queueLaneFor(app.single('j1')), 'manual', 'the id does not move it, nor does the language');
+  assert.equal(app.single('j1').marketPrice, 30, 'the hand-set price is untouched');
+  assert.ok(!(app.single('j1').priceHistory || []).length, 'and no history entry was written');
 });
 
 for (const manual of [false, true]) {
-  test('art-ja: a Japanese single carrying an id makes zero price calls in the ' + (manual ? 'manual "run now"' : 'daily') + ' queue, an English single beside it is priced', async () => {
+  test('art-ja: the ' + (manual ? 'manual "run now"' : 'daily') + ' queue prices Japanese rows from PPT only, no /ja/ or species call, an English single beside it is priced by TCGdex', async () => {
     const seed = makeSeed({ singles: [
-      jp({ tcgdexId: 'SV2a-006', _tcgdexResolvedName: 'リザードンex' }),
+      jp({ tcgdexId: 'SV2a-006', _tcgdexResolvedName: 'リザードンex', name: 'Charizard ex 006' }),
       jp({ id: 'j2', name: 'Pikachu 025', tcgdexId: 'SV2a-025', set: '' }),
-      jp({ id: 'j3', name: 'Mew ex 151', tcgdexId: '' }), // no id yet: still manual, still no call
+      jp({ id: 'j3', name: 'Mew ex 151', tcgdexId: '' }), // no id yet: the lane does not need one
       jp({ id: 'en1', name: 'Pikachu 25', language: 'EN', tcgdexId: 'sv3-199', set: 'Scarlet', marketPrice: '', priceHistory: [] }),
     ] });
-    const app = await loadApp({ seed });
+    const app = await loadApp({ seed, jaLane: true });
     app.fetchMock.calls.length = 0;
     app.urls = () => app.fetchMock.calls.map((c) => decodeURIComponent(c.url));
     app.fetchMock.route('/cards/sv3-199', () => jsonResponse({ id: 'sv3-199', pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } }));
     app.fetchMock.route('frankfurter.dev', () => jsonResponse([{ quote: 'SGD', rate: 1 }]));
-    app.fetchMock.route('/ppt/cards', () => jsonResponse({ data: [{ name: 'Charizard', number: '6', prices: { market: 99 } }] }));
+    // the vendor knows the Charizard only: the other two searches find nothing, which is a miss, never a guess
+    app.fetchMock.route('/ppt/cards', (u) => pptAnswer(/Charizard/.test(decodeURIComponent(u)) ? [JP_CARD] : []));
     app.fetchMock.route('/ja/', () => jsonResponse([{ id: 'SV2a-006', localId: '006', name: 'リザードンex' }]));
     app.ctx.toast = () => {};
     const q = app.ctx.buildRefreshQueue();
     const lanes = Object.fromEntries(plain(q.items).map((i) => [i.id, i.lane]));
-    assert.deepEqual(lanes, { en1: 'tcgdex' }, 'only the English single is in the queue at all, the Japanese rows are manual');
-    const jpBefore = JSON.stringify(app.ctx.DB.singles.filter((r) => r.language === 'JP'));
+    assert.deepEqual(lanes, { en1: 'tcgdex', j1: 'ppt', j2: 'ppt', j3: 'ppt' }, 'the Japanese rows are the PPT lane\'s, whatever ids they carry');
     const dirtyBefore = [...app.ctx._dirty.singles];
-    await app.ctx.runRefreshQueue(manual);
+    await drainQueue(() => app.ctx.runRefreshQueue(manual), app.timers);
     await app.settle(40);
     const urls = app.urls();
     assert.ok(urls.some((u) => u.endsWith('/cards/sv3-199')), 'control: the queue ran and priced the English row');
     assert.equal(app.ctx.DB.singles.find((r) => r.id === 'en1').marketPrice, '45');
-    assert.deepEqual(urls.filter((u) => u.includes('/ja/') || u.includes('/ppt/') || u.includes('species-ja') || u.endsWith('/sets')), [], 'not one Japanese, PPT, species or set call');
-    assert.equal(JSON.stringify(app.ctx.DB.singles.filter((r) => r.language === 'JP')), jpBefore, 'the Japanese rows are byte for byte the same');
-    assert.deepEqual([...app.ctx._dirty.singles].filter((id) => id !== 'en1' && !dirtyBefore.includes(id)), [], 'and none of them is marked dirty');
+    assert.deepEqual(urls.filter((u) => u.includes('/ja/') || u.includes('species-ja') || u.endsWith('/sets')), [], 'not one Japanese TCGdex, species or set call');
+    const ppt = urls.filter((u) => u.includes('/ppt/cards'));
+    assert.equal(ppt.length, 3, 'one PPT search per Japanese row: ' + ppt.join(', '));
+    assert.ok(ppt.every((u) => /language=japanese/.test(u) && /limit=3/.test(u) && !/includeEbay/.test(u)), 'each in the Japanese catalogue, plain (no eBay data)');
+    const row = (id) => app.ctx.DB.singles.find((r) => r.id === id);
+    assert.equal(row('j1').marketPrice, '12', 'the one the vendor has is priced');
+    assert.equal(row('j2').marketPrice, 30, 'a miss leaves the hand-set price alone');
+    assert.equal(row('j2')._tcgdexMissDate, app.ctx.kjrLocalDay(), 'and lists the card in the could-not-be-matched banner');
+    assert.deepEqual(plain(app.ctx._kjrUnresolvedSingles().map((r) => r.id).sort()), ['j2', 'j3']);
+    assert.deepEqual([...app.ctx._dirty.singles].filter((id) => !dirtyBefore.includes(id)).sort(), ['en1', 'j1'], 'only the rows whose price changed are marked dirty, a miss stamp is local');
   });
 }
 

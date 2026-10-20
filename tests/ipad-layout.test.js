@@ -1,0 +1,155 @@
+'use strict';
+// iPad layout pass (v3.85): nothing here was checked on an iPad before. A table wider than its card now scrolls sideways instead of
+// losing its Actions column to the card's clip (kjrTblFit in features.js and the .kjr-wide rule), the dark theme paints the safe-area strip
+// above the page on the rail and sidebar layouts, a bottom sheet's sticky footer is flush with the bottom, and the touch sizes sit last in
+// the stylesheet so they beat the base rules they lift. The harness has no layout engine, so the script is driven with small fakes and the
+// stylesheet is read as text, the way tests/navigation.test.js reads it.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { loadApp, ROOT } = require('./harness.js');
+
+const css = fs.readFileSync(ROOT + '/styles.css', 'utf8');
+const features = fs.readFileSync(ROOT + '/features.js', 'utf8');
+const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+// The text between the braces that open at index `open`, by depth.
+function inner(src, open) {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(open + 1, i);
+  }
+  throw new Error('unbalanced braces from ' + open);
+}
+// The body of the first at-rule that starts with `header`, searched from `from`.
+function atRule(src, header, from) {
+  const at = src.indexOf(header, from || 0);
+  assert.ok(at >= 0, header + ' is in the stylesheet');
+  return { at, body: inner(src, src.indexOf('{', at)) };
+}
+const fakeWrap = (scrollWidth, clientWidth, cls) => {
+  const set = new Set(cls || []);
+  return {
+    scrollWidth, clientWidth,
+    classList: { contains: (c) => set.has(c), toggle: (c, on) => { if (on) set.add(c); else set.delete(c); return on; }, list: () => [...set] },
+    querySelector: (s) => (s === 'table' ? { id: 'table-of-' + scrollWidth } : null),
+  };
+};
+
+// ══ tables that do not fit ═══════════════════════════════════════════════════════════════════════
+test('tables: kjrTblFit puts .kjr-wide on a wrap whose table does not fit and takes it off one that does', async () => {
+  const { ctx } = await loadApp();
+  assert.equal(typeof ctx.kjrTblFit, 'function');
+  // the Slabs table on a 1024px iPad with the rail: 1044 of table in a 910px wrap
+  const slabs = fakeWrap(1044, 910);
+  assert.equal(ctx.kjrTblFit(slabs), true);
+  assert.deepEqual(slabs.classList.list(), ['kjr-wide']);
+  // the window grows, the table now fits: the class goes and the sticky header is back
+  slabs.scrollWidth = 910;
+  assert.equal(ctx.kjrTblFit(slabs), false);
+  assert.deepEqual(slabs.classList.list(), []);
+  // a pixel of rounding is not a reason to scroll
+  assert.equal(ctx.kjrTblFit(fakeWrap(911, 910)), false);
+  assert.equal(ctx.kjrTblFit(fakeWrap(912, 910)), true);
+  // idempotent, and a stale class on a table that fits is cleared
+  const stale = fakeWrap(800, 900, ['kjr-wide']);
+  assert.equal(ctx.kjrTblFit(stale), false);
+  assert.deepEqual(stale.classList.list(), []);
+  // a hidden page has no size at all: not wide
+  assert.equal(ctx.kjrTblFit(fakeWrap(0, 0, ['kjr-wide'])), false);
+  // nothing to measure, nothing thrown
+  assert.equal(ctx.kjrTblFit(null), false);
+  assert.equal(ctx.kjrTblFit({}), false);
+});
+
+test('tables: the installer watches every .tbl-wrap and its table, asks for one frame at a time, and does nothing without ResizeObserver', () => {
+  const start = features.indexOf('function kjrTblFit(wrap)');
+  const iife = features.indexOf('(function kjrTblFitInstall()', start);
+  assert.ok(start > 0 && iife > start, 'both are in features.js');
+  const src = features.slice(start, features.indexOf('\n})();', iife) + 5);
+  const run = (withObserver) => {
+    const wraps = [fakeWrap(1044, 910), fakeWrap(600, 900)];
+    const seen = [], frames = [];
+    let callback = null;
+    const sandbox = {
+      window: {}, document: { querySelectorAll: (s) => (s === '.tbl-wrap' ? wraps : []) },
+      requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+      setTimeout: () => assert.fail('a frame is asked for when there is one'),
+    };
+    if (withObserver) sandbox.ResizeObserver = class { constructor(cb) { callback = cb; } observe(el) { seen.push(el); } };
+    vm.runInNewContext(src, sandbox);
+    return { wraps, seen, frames, ask: () => callback() };
+  };
+  const on = run(true);
+  assert.equal(on.seen.length, 4, 'two wraps and the table inside each');
+  assert.deepEqual(on.seen.filter((el) => el.id).map((el) => el.id), ['table-of-1044', 'table-of-600']);
+  assert.equal(on.frames.length, 1, 'the first look is one frame away, not a layout inside the observer');
+  on.ask(); on.ask(); on.ask();
+  assert.equal(on.frames.length, 1, 'a burst of size changes asks for one frame');
+  on.frames[0]();
+  assert.deepEqual(on.wraps[0].classList.list(), ['kjr-wide']);
+  assert.deepEqual(on.wraps[1].classList.list(), []);
+  on.ask();
+  assert.equal(on.frames.length, 2, 'and the next change asks again');
+  const off = run(false);
+  assert.equal(off.seen.length, 0);
+  assert.equal(off.frames.length, 0);
+  assert.deepEqual(off.wraps[0].classList.list(), [], 'no observer, the stylesheet keeps its own overflow as before');
+});
+
+test('css: a .kjr-wide wrap scrolls above 1000px with its header at its own top, and the sticky rules above it are as they were', () => {
+  // the three rules the sticky header has always had
+  assert.match(css, /@media\(min-width:1001px\)\{\.tbl-wrap\{overflow-x:visible\}\}/);
+  assert.match(css, /\.tbl-wrap thead\{position:sticky;top:env\(safe-area-inset-top\);z-index:5;background:var\(--bg2\)\}/);
+  assert.match(css, /@media\(max-width:1000px\)\{\.tbl-wrap thead\{top:0\}\}/);
+  const wide = css.indexOf('@media(min-width:1001px){.tbl-wrap.kjr-wide{overflow-x:auto}.tbl-wrap.kjr-wide thead{top:0}}');
+  assert.ok(wide > 0, 'the scroll rule and the header offset, together');
+  assert.ok(wide > css.indexOf('@media(max-width:1000px){.tbl-wrap thead{top:0}}'), 'after the rules it lifts');
+  assert.ok(css.indexOf('.tbl-wrap{overflow-x:auto}') < css.indexOf('@media(min-width:1001px){.tbl-wrap{overflow-x:visible}}'));
+  // above 1000px only: at 1000px and below the wrap already scrolls, and the phone's own rules (more specific) are untouched
+  assert.doesNotMatch(bare.replace('@media(min-width:1001px){.tbl-wrap.kjr-wide{overflow-x:auto}.tbl-wrap.kjr-wide thead{top:0}}', ''), /kjr-wide/);
+});
+
+// ══ the sheet footer ═════════════════════════════════════════════════════════════════════════════
+test('css: a bottom sheet with a footer drops its own safe-area padding, the footer pads for it', () => {
+  const sheet = atRule(css, '@media(max-width:768px){\n  .overlay,dialog.overlay{align-items:flex-end;padding:0}');
+  assert.match(sheet.body, /\.overlay \.modal\{[^}]*padding-bottom:env\(safe-area-inset-bottom\);/, 'the sheet pads for the home indicator');
+  assert.match(sheet.body, /\.modal-foot\{[^}]*position:sticky;bottom:0;[^}]*padding-bottom:max\(16px,env\(safe-area-inset-bottom\)\);/, 'and so does its sticky footer');
+  assert.match(sheet.body, /\.overlay \.modal:has\(\.modal-foot\)\{padding-bottom:0\}/, 'so a sheet that has the footer does not pad twice');
+});
+
+// ══ the strip under the status bar ═══════════════════════════════════════════════════════════════
+test('css: the dark theme paints the safe-area strip above the page from 601px, under the shell, and the light scrim is as it was', () => {
+  const light = bare.match(/html\.light body::before\{([^}]*)\}/);
+  assert.ok(light, 'the light scrim');
+  assert.match(light[1], /position:fixed;top:0;left:0;right:0;height:env\(safe-area-inset-top\);background:rgba\(20,25,40,\.85\);z-index:101;pointer-events:none/);
+  const strip = atRule(bare, '@media (min-width: 601px){\n  html:not(.light) body::before');
+  assert.match(strip.body, /html:not\(\.light\) body::before\{content:"";position:fixed;top:0;left:0;right:0;height:env\(safe-area-inset-top\);background:var\(--bg\);z-index:99;pointer-events:none\}/);
+  // the shell is z-index 100 and sits over the strip, the dialogs are in the top layer
+  assert.match(bare, /\.topbar\{position:fixed;top:0;bottom:0;left:0;z-index:100;/);
+  // the phone header covers its own strip, so there is no strip at 600px and below: the one rule is inside the 601px query
+  assert.equal((bare.match(/html:not\(\.light\) body::before/g) || []).length, 1);
+});
+
+// ══ touch sizes ══════════════════════════════════════════════════════════════════════════════════
+test('css: the touch sizes come after the base rules they lift, and only a coarse pointer past 600px sees them (the phone layout is as it was)', () => {
+  const baseCheckbox = css.indexOf('input[type=checkbox].row-cb{width:14px;height:14px;');
+  assert.ok(baseCheckbox > 0, 'the base rule is still 14px for a mouse');
+  const heading = css.indexOf('/* ═══════════ Touch sizes (iPad pass, v3.85)');
+  assert.ok(heading > baseCheckbox, 'the touch block comes after the base rule, which is why the older 20px coarse rule never applied');
+  const block = atRule(css, '@media (pointer: coarse) and (min-width: 601px){', heading);
+  assert.ok(block.at > heading);
+  const rules = Object.fromEntries(block.body.trim().split('\n').map((l) => l.trim()).filter(Boolean).map((l) => [l.slice(0, l.indexOf('{')), l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'))]));
+  assert.equal(rules['input[type=checkbox].row-cb,input[type=checkbox].lst-tracker-select'], 'width:24px;height:24px');
+  assert.equal(rules['.kjr-inline,.kjr-inline-input'], 'min-height:32px');
+  assert.equal(rules['.eb-declared-button,.unresolved-banner .btn-sm,.col-order-btn,.cb-pill-order-btn'], 'min-width:32px;min-height:32px');
+  assert.equal(rules['.kjr-name-btn,.cert-no'], 'min-height:24px');
+  assert.equal(rules['label:has(#cb-dual-axis)'], 'min-height:32px');
+  // every control it names exists in the markup the app writes
+  const sources = fs.readFileSync(ROOT + '/index.html', 'utf8') + fs.readFileSync(ROOT + '/app.js', 'utf8') + features;
+  for (const hook of ['row-cb', 'lst-tracker-select', 'kjr-inline', 'kjr-inline-input', 'eb-declared-button', 'unresolved-banner', 'col-order-btn', 'cb-pill-order-btn', 'kjr-name-btn', 'cert-no', 'cb-dual-axis']) {
+    assert.ok(sources.includes(hook), hook + ' is in the markup');
+  }
+});

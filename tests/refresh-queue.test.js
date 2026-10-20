@@ -21,24 +21,38 @@ async function runWithTimerDrain(fn, timers, maxRounds) {
   return p;
 }
 
-test('refresh-queue: buildRefreshQueue - slabs->ppt lane, EN numbered singles->tcgdex lane, manual-lane cards excluded', async () => {
-  const { ctx } = await loadApp({
-    seed: {
-      slabs: [{ id: 'sl1', name: 'Charizard', grader: 'PSA', grade: '10', costPrice: 500, status: 'Available' }],
-      singles: [
-        { id: 's1', name: 'Pikachu 25', language: 'EN', costPrice: 10, status: 'Available' },   // -> tcgdex
-        { id: 's2', name: 'Eevee 1', language: 'JP', costPrice: 5, status: 'Available' },        // -> manual (non-EN)
-        { id: 's3', name: 'Custom Card', language: 'EN', costPrice: 1, status: 'Available' },    // -> manual (no number)
-      ],
-    },
-  });
+const LANE_SEED = () => ({
+  slabs: [{ id: 'sl1', name: 'Charizard', grader: 'PSA', grade: '10', costPrice: 500, status: 'Available' }],
+  singles: [
+    { id: 's1', name: 'Pikachu 25', language: 'EN', costPrice: 10, status: 'Available' },   // -> tcgdex
+    { id: 's2', name: 'Eevee 1', language: 'JP', costPrice: 5, status: 'Available' },        // -> ppt when the Japanese lane is on (v3.85), manual while it is off
+    { id: 's3', name: 'Custom Card', language: 'EN', costPrice: 1, status: 'Available' },    // -> manual (no number)
+    { id: 's4', name: 'Eevee 1', language: 'KR', costPrice: 1, status: 'Available' },        // -> manual (a language the Japanese lane does not cover)
+    { id: 's5', name: 'Eevee 1', language: 'CN', costPrice: 1, status: 'Available' },        // -> manual, with the Japanese lane on as well
+  ],
+});
+
+test('refresh-queue: buildRefreshQueue - slabs->ppt lane, EN numbered singles->tcgdex lane, every non-English single manual while the Japanese lane is off (as shipped)', async () => {
+  const { ctx } = await loadApp({ seed: LANE_SEED(), jaLane: false });
   const q = plain(ctx.buildRefreshQueue());
-  assert.strictEqual(q.totalRows, 4, 'totalRows counts every eligible row, including manual-lane ones');
+  assert.strictEqual(q.totalRows, 6, 'totalRows counts every eligible row, including manual-lane ones');
   assert.strictEqual(q.totalItems, 2, 'only tcgdex+ppt lane items make it into the ordered queue - manual-lane cards are excluded entirely');
-  const ids = q.items.map((i) => i.id).sort();
-  assert.deepStrictEqual(ids, ['s1', 'sl1']);
+  assert.deepStrictEqual(q.items.map((i) => i.id), ['s1', 'sl1'], 'free lane first, then the PPT slabs, the Japanese single is manual as in v3.84');
   assert.strictEqual(q.items.find((i) => i.id === 'sl1').lane, 'ppt');
   assert.strictEqual(q.items.find((i) => i.id === 's1').lane, 'tcgdex');
+});
+
+test('refresh-queue: buildRefreshQueue - with the Japanese lane on, slabs and Japanese singles->ppt lane, EN numbered singles->tcgdex lane, manual-lane cards excluded', async () => {
+  const { ctx } = await loadApp({ seed: LANE_SEED(), jaLane: true });
+  const q = plain(ctx.buildRefreshQueue());
+  assert.strictEqual(q.totalRows, 6, 'totalRows counts every eligible row, including manual-lane ones');
+  assert.strictEqual(q.totalItems, 3, 'only tcgdex+ppt lane items make it into the ordered queue - manual-lane cards are excluded entirely');
+  const ids = q.items.map((i) => i.id).sort();
+  assert.deepStrictEqual(ids, ['s1', 's2', 'sl1']);
+  assert.strictEqual(q.items.find((i) => i.id === 'sl1').lane, 'ppt');
+  assert.strictEqual(q.items.find((i) => i.id === 's2').lane, 'ppt');
+  assert.strictEqual(q.items.find((i) => i.id === 's1').lane, 'tcgdex');
+  assert.deepStrictEqual(q.items.map((i) => i.id), ['s1', 'sl1', 's2'], 'free lane first, then the PPT slabs, then the PPT singles');
 });
 
 test('refresh-queue: buildRefreshQueue - duplicate name+language singles dedupe to one primary + copyTargets, no duplicate ids', async () => {
@@ -217,5 +231,8 @@ test('refresh-queue: _runRefreshQueueBody - PPT lane classifies ok vs data-miss 
   const remainingIds = plain(q.items).slice(q.cursor).map((i) => i.id);
   assert.deepStrictEqual(remainingIds, ['sl2'], 'the transport-failed item is kept in the queue for a future retry');
 
-  assert.strictEqual(q.dayCreditsUsed[today], 2, 'ok (1 request) + data-miss (1 request) billed; the transport failure billed 0');
+  // v3.85: the budget is PPT credits. These answers carry no metadata.apiCallsConsumed, so each slab search is estimated at 6 (3 cards,
+  // plus eBay): the ok one and the data miss are billed, the transport failure billed 0.
+  assert.strictEqual(q.dayCreditsUsed[today], 12, 'ok (6 credits) + data-miss (6 credits) billed; the transport failure billed 0');
+  assert.strictEqual(q.creditsVersion, 1, 'and the queue now says its figures are credits');
 });

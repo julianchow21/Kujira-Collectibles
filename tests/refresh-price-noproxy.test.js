@@ -61,7 +61,7 @@ test('refresh-price, proxy off: with a local key the slab goes to PPT directly, 
 test('refresh-price, proxy off: singles never needed a key, and a manual single still makes no call', async () => {
   const app = await setup({ singles: [
     { id: 's1', name: 'Pikachu 25', type: 'raw', language: 'EN', tcgdexId: 'sv3-199', marketPrice: '', priceHistory: [], status: 'Available' },
-    { id: 'j1', name: 'Pikachu 25', type: 'raw', language: 'JP', marketPrice: 30, priceHistory: [], status: 'Available' },
+    { id: 'j1', name: 'Pikachu 25', type: 'raw', language: 'KR', marketPrice: 30, priceHistory: [], status: 'Available' },
   ] });
   app.fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
   app.fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });

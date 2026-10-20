@@ -12,8 +12,15 @@ const assert = require('node:assert/strict');
 const { loadApp, jsonResponse, plain } = require('./harness.js');
 
 const QUEUE_KEY = 'pokeinv_refresh_queue';
-const TODAY = () => new Date().toISOString().slice(0, 10);
-const YESTERDAY = () => new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+// v3.85: the free lane's day is the device's LOCAL date, the PPT lane's credits and the price history keep UTC dates (kjrLocalDay). The suite
+// runs as Singapore, where the two dates differ from 00:00 to 08:00, so it has to be right in both halves of the day.
+process.env.TZ = 'Asia/Singapore';
+const pad2 = (n) => String(n).padStart(2, '0');
+const LOCAL_DAY = (ago) => { const d = new Date(); d.setDate(d.getDate() - (ago || 0)); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+const UTC_DAY = (ago) => new Date(Date.now() - (ago || 0) * 86400000).toISOString().slice(0, 10);
+const TODAY = () => LOCAL_DAY(0);
+// the morning after, as every reader sees it: a day before the UTC day (never today or tomorrow in either clock) and before the local day
+const YESTERDAY = () => UTC_DAY(1);
 
 // The lane's own waits (the 250ms gap, the 2s and 6s retry backoffs), not the app's startup timers: flushing those would start its 8s
 // auto-run of the queue in the middle of the test.
@@ -87,7 +94,7 @@ test('free-lane-daily: day 2 re-prices the cards priced on day 1, with no rebuil
   const { ctx, fetchMock, timers, localStorage } = app;
   const today = TODAY();
   // PPT credits already spent today on the new day, and a queue that finished its PPT lane long ago
-  const q2 = moveBackOneDay(app, (q) => { q.dayCreditsUsed = { [today]: 7 }; });
+  const q2 = moveBackOneDay(app, (q) => { q.dayCreditsUsed = { [UTC_DAY()]: 7 }; });
   const createdAt = q2.createdAt;
   assert.equal(ctx._tcgdexLaneHasWork(q2, today), true, 'a new day is work, although the PPT lane is complete');
 
@@ -113,7 +120,7 @@ test('free-lane-daily: day 2 re-prices the cards priced on day 1, with no rebuil
   assert.equal(q3.lastTcgdexTotal, 3);
   assert.equal(q3.createdAt, createdAt, 'the queue was not rebuilt or replaced');
   assert.equal(q3.schemaVersion, 2, 'and QUEUE_SCHEMA_VERSION is not bumped');
-  assert.deepStrictEqual(plain(q3.dayCreditsUsed), { [today]: 7 }, 'the PPT credits spent today are exactly as they were');
+  assert.deepStrictEqual(plain(q3.dayCreditsUsed), { [UTC_DAY()]: 7 }, 'the PPT credits spent today are exactly as they were');
   assert.equal(q3.completed, true);
   assert.equal(q3.cursor, q2.cursor);
   assert.ok(!fetchMock.calls.some((c) => c.url.includes('/ppt/')), 'no PPT request');
@@ -136,7 +143,7 @@ test('free-lane-daily: a manual run after a completed pass makes requests, asks 
   const { ctx, fetchMock, timers, localStorage } = app;
   const today = TODAY();
   const before = savedQueue(localStorage);
-  before.dayCreditsUsed = { [today]: 4 };
+  before.dayCreditsUsed = { [UTC_DAY()]: 4 };
   localStorage.setItem(QUEUE_KEY, JSON.stringify(before));
   rowOf(ctx, 's2')._tcgdexMissDate = today; // a miss stamped earlier today
   app.state.prices['set-2'] = 25;
@@ -146,7 +153,7 @@ test('free-lane-daily: a manual run after a completed pass makes requests, asks 
   assert.equal(rowOf(ctx, 's2').marketPrice, '25', 'including the one that carried a miss stamp today, which is cleared');
   assert.ok(!rowOf(ctx, 's2')._tcgdexMissDate, 'and no stale stamp is left behind');
   const after = savedQueue(localStorage);
-  assert.deepStrictEqual(plain(after.dayCreditsUsed), { [today]: 4 }, 'PPT credits untouched');
+  assert.deepStrictEqual(plain(after.dayCreditsUsed), { [UTC_DAY()]: 4 }, 'PPT credits untouched');
   assert.equal(after.createdAt, before.createdAt, 'no rebuild');
   assert.ok(!fetchMock.calls.some((c) => c.url.includes('/ppt/')));
 });
@@ -167,7 +174,7 @@ test('free-lane-daily: with the PPT budget spent and a PPT entry waiting, the fr
   app.ctx.toast = () => {};
   app.state = { prices: { 'set-1': 10, 'set-2': 20 } };
   app.tcg = tcgdex(app.fetchMock, app.state);
-  const today = TODAY();
+  const today = UTC_DAY(); // the PPT lane's day: this test is about its credits
   const entry = { id: 'sl1', table: 'slabs', name: 'Charizard', grader: 'PSA', grade: '10', language: null, tcgdexId: null, costPrice: 500, isPrimary: true, copyTargets: [], uniqueKey: 'charizard|EN|psa|10', lane: 'ppt' };
   const queue = { schemaVersion: 2, items: [entry], cursor: 0, totalItems: 1, totalRows: 3, createdAt: '2026-10-01T00:00:00.000Z', doneToday: 0, dayCreditsUsed: { [today]: 30 }, lastTcgdexPass: YESTERDAY(), completed: false };
   app.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
@@ -184,16 +191,16 @@ test('free-lane-daily: with the PPT budget spent and a PPT entry waiting, the fr
 
 test('free-lane-daily: a queue from an older version that still holds free-lane entries loses them, keeps its PPT entries and cursor', async () => {
   const slab = { id: 'sl1', name: 'Charizard', grader: 'PSA', grade: '10', language: 'EN', costPrice: 500, status: 'Available', type: 'slab', marketPrice: '', priceHistory: [] };
-  const app = await loadApp({ seed: { singles: [single('s1', 'Alpha 1'), single('c1', 'Custom 9', { customCard: true }), single('jp', 'Pikachu 25', { language: 'JP' })], slabs: [slab] } });
+  const app = await loadApp({ seed: { singles: [single('s1', 'Alpha 1'), single('c1', 'Custom 9', { customCard: true }), single('jp', 'Pikachu 25', { language: 'KR' })], slabs: [slab] } });
   app.ctx.toast = () => {};
   app.state = { prices: { 'set-1': 10 } };
   app.tcg = tcgdex(app.fetchMock, app.state);
-  const today = TODAY();
+  const today = UTC_DAY(); // the PPT lane's day: the stale queue carries credits spent on it
   const ppt = { id: 'sl1', table: 'slabs', lane: 'ppt', name: 'Charizard', grader: 'PSA', grade: '10', copyTargets: [] };
   const stale = [
     { id: 's1', table: 'singles', lane: 'tcgdex', name: 'Alpha 1', language: 'EN', copyTargets: [] },
     { id: 'c1', table: 'singles', lane: 'tcgdex', name: 'Custom 9', language: 'EN', copyTargets: [] }, // flagged since the queue was built
-    { id: 'jp', table: 'singles', lane: 'tcgdex', name: 'Pikachu 25', language: 'JP', copyTargets: [] },
+    { id: 'jp', table: 'singles', lane: 'tcgdex', name: 'Pikachu 25', language: 'KR', copyTargets: [] },
     { id: 'gone', table: 'singles', lane: 'tcgdex', name: 'Deleted 3', language: 'EN', copyTargets: [] },
   ];
   const queue = { schemaVersion: 2, items: stale.concat([ppt]), cursor: 0, totalItems: 5, totalRows: 4, createdAt: '2026-10-01T00:00:00.000Z', dayCreditsUsed: { [today]: 30 }, completed: false };
@@ -204,7 +211,7 @@ test('free-lane-daily: a queue from an older version that still holds free-lane 
   assert.equal(q.cursor, 0);
   assert.equal(rowOf(app.ctx, 's1').marketPrice, '10');
   assert.equal(rowOf(app.ctx, 'c1').marketPrice, '', 'the custom card was not asked about');
-  assert.equal(rowOf(app.ctx, 'jp').marketPrice, '', 'neither was the Japanese one');
+  assert.equal(rowOf(app.ctx, 'jp').marketPrice, '', 'neither was the Korean one (a Japanese, Chinese or Indonesian one is the PPT lane\'s, tests/ppt-japanese.test.js)');
   assert.deepStrictEqual(app.tcg.cards().length, 1, 'one card request in all');
 });
 

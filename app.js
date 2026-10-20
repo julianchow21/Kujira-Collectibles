@@ -208,6 +208,10 @@ const kjrModalCtrl = (() => {
       history.pushState({ kjrModal: 1 }, ''); // restore the entry the back-press just consumed
       kjrConfirm('Discard unsaved changes?', { ok: 'Discard', danger: true }).then(ok => {
         if (!ok) return; // stay open, history already restored above
+        // kjrConfirm shares one prompt between identical questions (v3.85): when the dialog's own close() (Esc, the backdrop) asked the
+        // Discard question first, the same click answered both. It has closed the dialog and given the history entry back by now, so
+        // there is nothing left to close, and a second goBack() here would leave the page.
+        if (stack.length === 0 && !pushed) return;
         popping = true; closeAll(); popping = false;
         pushed = false;
         goBack(); // now actually leave the modal state
@@ -10086,7 +10090,7 @@ function pickHigherCostDuplicate(table, item) {
 // listPrice as a last resort. Used to pre-fill sell modals so the user
 // doesn't have to type the obvious number every time.
 function bestMarketFor(item) {
-  const explicit = parseFloat(item.marketPrice);
+  const explicit = kjrLiveMarketPrice(item); // a stale estimate (kjrIsStaleEstimate) is no quote, the list price stands in for it
   if (!isNaN(explicit) && explicit > 0) return explicit;
   const list = parseFloat(item.listPrice);
   if (!isNaN(list) && list > 0) return list;
@@ -11217,17 +11221,65 @@ function kjrOrderListingCandidates(candidates) {
   }).sort((a, b) => _kjrCompareCreationOrder(a.order, b.order)).map(entry => entry.candidate);
 }
 
+// ── Stale estimates (v3.85) ──
+// Until v3.14 a non-English single was priced by a fuzzy PokemonPriceTracker name search, and a wrong card was easy to match. On
+// 21/10/2026 the live data held 48 available non-English singles carrying such a price, dated 28/05/2026 to 08/07/2026, one of them US$500.99
+// on a card that cost S$2. v3.14 removed the fallback, the stored price and its history entry stayed behind. The Japanese lane replaces
+// them when it finds one unique card. Until it does, and if it never does, they must not count as money.
+// This is a READ rule and nothing more. kjrIsStaleEstimate answers for a row, effectiveMarketInfo then values a stale row at its cost, and every
+// aggregate that reads a market price goes through one of the two. It never deletes or rewrites marketPrice or priceHistory, never marks a row
+// dirty and never saves, so nothing here can reach sync. The flag clears the ordinary way: a new history entry (the lane's, or a hand
+// edit of the inline cell) makes the LATEST entry something else.
+// A non-English single is a stale estimate when its latest history entry
+//   - has the source 'PPT' alone (the old fuzzy lookup, case and spaces aside: the lanes write 'PPT (Japanese)' and 'PPT (PSA 10)') and is dated on or before
+//     08/07/2026, a date that can not be read counts as old (the code writes a readable one today), or
+//   - is the legacy shape, a `ppt` key and no `unit`,
+// and the stored price is still the one that entry wrote. The edit form saves a typed price with no history entry, so a price that differs
+// from both the entry's price (SGD) and its ppt (USD) by more than S$1 is the owner's and counts. An entry carrying neither number can not
+// be compared and is taken as the writer. English singles price from TCGdex, a slab's PPT price is its graded eBay price and sealed rows
+// keep no history, none of those are this problem.
+function kjrIsStaleEstimate(i) {
+  const UNTIL = '2026-07-08'; // inside the function, not a top-level const: this is read while the page is still loading
+  if (!i || typeof i !== 'object') return false;
+  const lang = String(i.language == null ? 'EN' : i.language).trim().toUpperCase() || 'EN';
+  if (lang === 'EN') return false;
+  const hist = Array.isArray(i.priceHistory) ? i.priceHistory : [];
+  const last = hist.length ? hist[hist.length - 1] : null;
+  if (!last || typeof last !== 'object') return false;
+  const legacy = Object.prototype.hasOwnProperty.call(last, 'ppt') && !last.unit;
+  let oldPpt = false;
+  if (!legacy && String(last.source == null ? '' : last.source).trim().toUpperCase() === 'PPT') {
+    const d = _parseHistDate(last.date);
+    oldPpt = !d || _kjrIsoDay(d.getTime()) <= UNTIL;
+  }
+  if (!legacy && !oldPpt) return false;
+  if (i.grader || _kjrSlabGrade(i)) return false; // a slab, never a single
+  const mp = parseFloat(i.marketPrice);
+  if (!(mp > 0)) return false; // no stored price, nothing to ignore
+  const wrote = [parseFloat(last.price), parseFloat(last.ppt)].filter(n => n > 0);
+  return !wrote.length || wrote.some(n => Math.abs(mp - n) <= 1.01);
+}
+// The market price the app counts for a row: the stored one, unless it is a stale estimate. NaN when there is none, so a comparison with it is
+// false, the way a row with no price reads.
+function kjrLiveMarketPrice(i) {
+  const m = parseFloat(i && i.marketPrice);
+  return m > 0 && !kjrIsStaleEstimate(i) ? m : NaN;
+}
+
 // Effective market value/estimate flag, shared by the marketPrice cell
 // render, the sort column, the dashboard aggregate and the chart builder so
 // they never disagree about "the number the user sees" for an unpriced row:
 // real marketPrice when set, else costPrice as a last-resort estimate
 // (flagged so the UI can mark it), else zero (nothing to show at all).
+// A stale estimate (kjrIsStaleEstimate) reads as unpriced: its cost, flagged as an estimate, with stale: true so the cell can say why.
 function effectiveMarketInfo(i) {
   const m = parseFloat(i.marketPrice);
-  if (!isNaN(m) && m > 0) return { value: m, isEstimate: false };
+  const stale = m > 0 && kjrIsStaleEstimate(i);
+  if (!isNaN(m) && m > 0 && !stale) return { value: m, isEstimate: false };
   const c = parseFloat(i.costPrice);
-  if (!isNaN(c) && c > 0) return { value: c, isEstimate: true };
-  return { value: 0, isEstimate: true };
+  const info = !isNaN(c) && c > 0 ? { value: c, isEstimate: true } : { value: 0, isEstimate: true };
+  if (stale) info.stale = true;
+  return info;
 }
 // Thin wrapper for any caller that only needs the bare number (grepped, no
 // other caller currently exists, kept for back-compat/future use).
@@ -12098,7 +12150,9 @@ function _kjrIsoDay(ts) {
 
 // Whole calendar days from the day a price was checked to today, 0 for today or a date ahead of it. ts is the local midnight of a stored
 // price date, and those dates are UTC dates (the price code writes toISOString().slice(0,10)), so today is read as the UTC day too: a
-// price checked an hour ago is "today" in the first 8 hours of a Singapore morning as well, not "1 day ago". Every freshness reader
+// price checked an hour ago is "today" in the first 8 hours of a Singapore morning as well, not "1 day ago". The free lane's
+// _tcgdexPricedDate marker is a LOCAL date since v3.85 (kjrLocalDay), which this reads the same way: in those first 8 hours the marker
+// for a card checked this morning is a day ahead of the UTC day, and "a date ahead of it" is 0, so it still says today. Every freshness reader
 // counts age with this one function (the Overview text, the list dot, the summary strip dot, the inspector line and the Overview
 // tooltip), so none of them can name a different day for the same check.
 function kjrCheckedDays(ts, now) {
@@ -12131,20 +12185,33 @@ function _mktFreshDot(item) {
 }
 
 // Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
-// row. English-only auto-pricing (see _queueLaneFor): a non-EN raw single
-// (JP/CN/ID/KR/...) is manual by product design, not a per-card data problem -
-// distinct from an EN "unresolved" card, which the user CAN fix by adding
-// the card number, fixing it, or setting a TCGdex ID override. Slabs are
+// row. Auto-pricing by language (see _queueLaneFor): a Japanese single with a card
+// number is priced by the Japanese lane (v3.85, once it is switched on), any
+// other non-EN raw single (CN/ID/KR/...) is manual by product design, not a per-card data
+// problem - distinct from an EN "unresolved" card, which the user CAN fix by
+// adding the card number, fixing it, or setting a TCGdex ID override. Slabs are
 // always PPT-lane regardless of language (they have a grader, TCGdex has no
 // graded prices at all - the language rule doesn't apply to them), so a
 // non-EN slab never gets the manual-language title, only raw singles do.
 function _mktEmptyCellTitle(item) {
-  if (item.marketPrice) return ''; // has a price, no explanation needed
-  const isSlab = !!item.grader;
+  // A stale estimate (kjrIsStaleEstimate, v3.85) keeps a stored price that is not counted. With a cost the cell shows that instead, and with no cost
+  // it is empty: a blank cell next to a price the edit form still shows needs a reason, so it gets one, whichever lane the card is on.
+  const stale = !!item.marketPrice && kjrIsStaleEstimate(item);
+  if (item.marketPrice && !stale) return ''; // has a price, no explanation needed
+  const isSlab = !!item.grader || !!_kjrSlabGrade(item); // "PSA 10" typed into the grade field alone is a slab too
   const lang = (item.language||'EN').toString().trim().toUpperCase();
   const isEnglish = lang === 'EN' || lang === '';
   if (!isSlab && kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)'; // the owner's own reason wins
-  if (!isSlab && !isEnglish) return 'Manual price, no free source for this language';
+  if (!isSlab && !isEnglish) {
+    // A Japanese single with a card number is priced by the Japanese lane (v3.85, with the lane on): an empty cell means it has not been asked yet, or
+    // the vendor found no single card for it. A stale estimate says why its stored price is not shown. Without a number a Japanese single is the
+    // same fix as an English card, add one. Every other case, and every non-English single while the lane is off, is a manual price.
+    const onLane = _kjrJapaneseLane(item);
+    if (onLane && item._tcgdexMissDate) return 'No unique match on PokemonPriceTracker, check the name and number';
+    if (stale) return 'The stored price is an old PokemonPriceTracker match that is not counted';
+    if (onLane) return '';
+    return _kjrPptJaLangs().includes(lang) ? 'Add or fix the card number for exact pricing' : 'Manual price, no free source for this language';
+  }
   if (!isSlab && !item.tcgdexId) {
     const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
     if (!hasNameAndNumber || item._tcgdexMissDate) return 'Add or fix the card number for exact pricing';
@@ -12263,9 +12330,11 @@ function _kjrCustomFindSingle(id) {
   const key = String(id);
   return (DB.singles || []).find(r => r && String(r.id) === key) || null;
 }
-// Why a card is on the list: a name with a card number was looked up and TCGdex found no single match, one without a number was never looked up
+// Why a card is on the list: a name with a card number was looked up and TCGdex (or, for a Japanese card, PokemonPriceTracker) found no
+// single match, one without a number was never looked up
 function _kjrCustomReason(item) {
-  return _baseCardName(item.name) && _tcgdexNumber(item.name) ? 'TCGdex found no unique match' : 'No card number in the name';
+  if (!(_baseCardName(item.name) && _tcgdexNumber(item.name))) return 'No card number in the name';
+  return _kjrJapaneseLane(item) ? 'PokemonPriceTracker found no unique match' : 'TCGdex found no unique match';
 }
 // One <li>. Every value from the row is escaped. The buttons are read by one delegated click handler on the dialog, so no id
 // is ever put inside an inline script.
@@ -12512,7 +12581,7 @@ function renderSingles() {
     if (fType && !(i.type||'').toLowerCase().includes(fType)) return false;
     if (fDate && !kjrMatchDateFilter(fDate, i.datePurchased)) return false;
     if (fCost && !kjrMatchNumFilter(fCost, i.costPrice))   return false;
-    if (fMkt  && !kjrMatchNumFilter(fMkt,  i.marketPrice)) return false;
+    if (fMkt  && !kjrMatchNumFilter(fMkt,  kjrIsStaleEstimate(i) ? '' : i.marketPrice)) return false; // a stale estimate reads as unpriced, as its cell does
     if (fList && !kjrMatchNumFilter(fList, i.listPrice))   return false;
     return true;
   };
@@ -12587,14 +12656,14 @@ function renderSingles() {
     // existing blank-cell + reason-title behaviour.
     const mktInfo = effectiveMarketInfo(i);
     const mktCellTitle = (mktInfo.isEstimate && mktInfo.value > 0)
-      ? 'Estimated from cost price, no market price set'
+      ? (mktInfo.stale ? 'Estimated from cost price, the stored price is an old PokemonPriceTracker match that is not counted' : 'Estimated from cost price, no market price set')
       : _mktEmptyCellTitle(i);
     const mktDisplay = mktInfo.value > 0
       ? ((mktInfo.isEstimate ? '~$' : '$') + Math.round(mktInfo.value))
       : '';
     const typeBadge = i.type === 'sealed' ? '<span class="badge b-sealed">Sealed</span>' : '<span class="badge b-raw">Raw</span>';
     const chk = selectedIds.singles.has(i.id);
-    const alertIcon = i.priceAlert && parseFloat(i.marketPrice) >= parseFloat(i.priceAlert)
+    const alertIcon = i.priceAlert && kjrLiveMarketPrice(i) >= parseFloat(i.priceAlert) // a stale estimate never trips an alert
       ? '<span title="🔔 Price alert: target S$' + i.priceAlert + ' reached!" style="color:#f59e0b;cursor:default">🔔</span>' : '';
     const urlIcon = i.ebayUrl || i.carousellUrl
       ? '<span title="Listed on ' + (i.ebayUrl ? 'eBay ' : '') + (i.carousellUrl ? 'Carousell' : '') + '">🔗</span>' : '';
@@ -13992,7 +14061,7 @@ function renderSlabs() {
     // two tables agree on unpriced-row treatment (F2).
     const mktInfo = effectiveMarketInfo(i);
     const mktCellTitle = (mktInfo.isEstimate && mktInfo.value > 0)
-      ? 'Estimated from cost price, no market price set'
+      ? (mktInfo.stale ? 'Estimated from cost price, the stored price is an old PokemonPriceTracker match that is not counted' : 'Estimated from cost price, no market price set')
       : _mktEmptyCellTitle(i);
     const mpDisplay = mktInfo.value > 0
       ? ((mktInfo.isEstimate ? '~$' : '$') + Math.round(mktInfo.value))
@@ -14707,7 +14776,7 @@ function getDateRange() {
 function showMarketValueBreakdown() {
   const contribs = [];
   (DB.singles||[]).filter(i => (i.status||'Available') === 'Available').forEach(i => {
-    const explicit = parseFloat(i.marketPrice);
+    const explicit = kjrLiveMarketPrice(i); // a stale estimate (kjrIsStaleEstimate) is valued at cost below, as the headline values it
     const qty      = parseInt(i.qty)||1;
     let unit = 0, source = '-';
     if (!isNaN(explicit) && explicit > 0)   { unit = explicit; source = 'marketPrice (manual or API)'; }
@@ -14723,7 +14792,7 @@ function showMarketValueBreakdown() {
       const costUnit = parseFloat(i.costPrice) || 0;
       if (costUnit > 0) contribs.push({
         table: 'singles', name: i.name, meta: [i.set, i.language, i.condition].filter(Boolean).join(' · '),
-        unit: costUnit, qty, contrib: costUnit * qty, source: 'cost basis (unpriced)'
+        unit: costUnit, qty, contrib: costUnit * qty, source: kjrIsStaleEstimate(i) ? 'cost basis (old price not counted)' : 'cost basis (unpriced)'
       });
     }
   });
@@ -14967,9 +15036,9 @@ function _kjrOvPct(market, cost) {
   return p > 0 ? { cls: 'pos', text: '▲ +' + txt + '%' } : { cls: 'neg', text: '▼ -' + txt + '%' };
 }
 
-// "today", "yesterday", "3 days ago", then the plain date. ts is the local midnight of a priceHistory date. Those
-// dates are UTC dates (the price code writes toISOString().slice(0,10)), so the age is counted in UTC days (kjrCheckedDays),
-// otherwise a price checked an hour ago would read "yesterday" for the first 8 hours of a Singapore morning.
+// "today", "yesterday", "3 days ago", then the plain date. ts is the local midnight of a priceHistory date (or of the free lane's local
+// _tcgdexPricedDate marker). The history dates are UTC dates (the price code writes toISOString().slice(0,10)), so the age is counted in
+// UTC days (kjrCheckedDays), otherwise a price checked an hour ago would read "yesterday" for the first 8 hours of a Singapore morning.
 function kjrOverviewCheckedText(ts, now) {
   if (!(ts > 0)) return '';
   const d = new Date(ts);
@@ -15027,7 +15096,7 @@ function kjrOverviewTop(limit) {
 function kjrOverviewMovers() {
   const rows = [];
   _kjrOvInventory().forEach(r => {
-    const market = parseFloat(r.item.marketPrice);
+    const market = kjrLiveMarketPrice(r.item); // a stale estimate is no real market price, so it is no gain or loss (kjrIsStaleEstimate)
     const cost = parseFloat(r.item.costPrice);
     if (!(market > 0) || !(cost > 0)) return;
     const qty = r.table === 'slabs' ? 1 : Math.max(1, parseInt(r.item.qty, 10) || 1);
@@ -15440,7 +15509,7 @@ function renderDashboard() {
 
   // ── Market-value data freshness ─────────────────────────────────────
   // Prices on Singles + Slabs come from the two-lane refresh queue (free
-  // TCGdex for raw singles, PPT for slabs and TCGdex misses).
+  // TCGdex for raw English singles, PPT for slabs and, once the Japanese lane is switched on, Japanese singles).
   // Sealed inventory uses manually entered marketPrice and isn't auto-
   // refreshed, so we exclude it from the freshness chip - that's the right
   // semantics for "0% priced" because the queue can't price sealed items.
@@ -15452,7 +15521,7 @@ function renderDashboard() {
   // collect: priced = has a live marketPrice.
   const collect = (i, w) => {
     allItems.push({ item: i, weight: w });
-    const m = parseFloat(i.marketPrice);
+    const m = kjrLiveMarketPrice(i); // a stale estimate (kjrIsStaleEstimate) is valued at cost, so it is not a priced card
     if (!isNaN(m) && m > 0) pricedItems.push({ item: i, weight: w });
   };
   DB.singles.filter(i => (i.status||'Available') === 'Available').forEach(i => collect(i, parseInt(i.qty)||1));
@@ -15463,8 +15532,9 @@ function renderDashboard() {
   // Auto-refresh queue status - surface "queue not built" vs "queue running"
   // so the user knows whether the system is actually trying to price.
   const _queueState = (typeof loadQueue === 'function') ? loadQueue() : null;
-  const _todayStr = new Date().toISOString().slice(0,10);
-  const _queueToday = _queueState && _queueState.dayCreditsUsed?.[_todayStr] || 0;
+  const _todayStr = kjrLocalDay();  // the free lane's day, the device's local date
+  const _utcDayStr = kjrUtcDay();   // the PPT lane's day, the vendor's (credits reset at 00:00 UTC)
+  const _queueToday = _queueState ? kjrCreditsUsedOn(_queueState, _utcDayStr) : 0; // credits, see kjrCreditsUsedOn
   const _queueExists = !!_queueState;
   const _queueDone   = _queueState && _queueState.completed; // PPT lane only - see buildRefreshQueue/lane split
   // PPT/Search lane's remaining count. q.items only becomes PPT-lane-only
@@ -15517,7 +15587,7 @@ function renderDashboard() {
   // Tooltip explains the dot in full so the user can diagnose why
   // "refreshed never" if the queue is stalled. Two lanes now: Exact (TCGdex)
   // is free and runs a full pass once a day; Search (PPT) is capped at
-  // DAILY_LIMIT/day and covers slabs plus any TCGdex miss - the per-lane
+  // kjrDailyCredits() credits a day and covers slabs (plus Japanese singles once that lane is on) - the per-lane
   // wording is built into _chipText/_laneNote below, kept as one flowing line.
   const _unresolvedDiag = _unresolvedCount > 0 ? (' · ' + _unresolvedCount + ' unresolved, add the card number for exact pricing') : '';
   const _manualLangDiag = _manualLangCount > 0 ? (' · ' + _manualLangCount + ' non-English card' + (_manualLangCount!==1?'s':'') + ' priced manually') : '';
@@ -15541,7 +15611,7 @@ function renderDashboard() {
     _chipClass = ''; // amber
   }
   // Compact TCGdex-lane note appended to the one-line tooltip below.
-  const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending')) +
+  const _laneNote = ' · Exact (TCGdex): ' + (_tcgdexRanToday ? (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' today' : 'nothing to check today') : (_tcgdexTotal ? _tcgdexDone + '/' + _tcgdexTotal + ' last run' : 'pending')) +
     // cards TCGdex never answered on the last pass, waiting unstamped for the next run (see _runTcgdexLane)
     ((_queueState && Array.isArray(_queueState.tcgdexRetry) && _queueState.tcgdexRetry.length) ? ' · ' + _queueState.tcgdexRetry.length + ' waiting to retry' : '');
   const _chipText = (_queuePaused
@@ -15551,7 +15621,7 @@ function renderDashboard() {
         : (_queueDone
             ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) complete'
             : (latestTs === 0
-                ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) ' + _queueToday + '/' + DAILY_LIMIT + ' today, ' + _queueLeft + ' left'
+                ? coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · Search (PPT) ' + kjrFmtCredits(_queueToday) + ' of ' + kjrFmtCredits(kjrDailyCredits()) + ' credits today, ' + _queueLeft + ' left'
                 : coveragePct + '% priced (' + pricedCount + '/' + allCount + ') · refreshed ' + agoFromTs(latestTs))))
     ) + (_queueExists ? _laneNote : '') + _unresolvedDiag + _manualLangDiag;
 
@@ -15820,13 +15890,15 @@ function _buildAnalystSnapshot(){
   const sealedMarket = r => kjrNum(r.marketPrice) > 0 ? round(r.marketPrice) : null;
   const sealedRoi = r => kjrNum(r.marketPrice) > 0 ? inventoryRoi(r.totalPrice, r.marketPrice) : null;
 
+  // a stale estimate (kjrIsStaleEstimate) is sent as unpriced, the way the totals count it
+  const liveMarket = i => (kjrIsStaleEstimate(i) ? '' : i.marketPrice);
   const singles = bySgdValue(singlesAll).slice(0, TOP.singles).map(i => ({
     name: trim(i.name, 60), set: i.set, language: i.language, type: i.type,
     qty: parseInt(i.qty)||1, condition: i.condition,
     cost_sgd:        round(i.costPrice),
-    market_sgd:      round(i.marketPrice),
-    unrealised_pnl_sgd: round(num(i.marketPrice) - num(i.costPrice)),
-    roi_on_cost_pct: inventoryRoi(i.costPrice, i.marketPrice)
+    market_sgd:      round(liveMarket(i)),
+    unrealised_pnl_sgd: round(num(liveMarket(i)) - num(i.costPrice)),
+    roi_on_cost_pct: inventoryRoi(i.costPrice, liveMarket(i))
   }));
   // Slabs: include EVERY available slab; sort by ROI descending so the AI
   // sees high-ROI items first in the payload.
@@ -17102,7 +17174,7 @@ function openListingFor(table, id) {
   // Keep market and current inventory asks separate. A suggested ask is
   // loaded from saved listing metadata and never invented from a markup.
   if (item) {
-    let market = parseFloat(item.marketPrice);
+    const market = kjrLiveMarketPrice(item); // a stale estimate shows as no market price
     document.getElementById('lst-market').value = market > 0 ? 'S$' + Math.round(market) : '-';
     const current = _kjrListingPositive(item.listPrice);
     document.getElementById('lst-current-price').value = current === null ? '' : 'S$' + Math.round(current);
@@ -17864,6 +17936,16 @@ function setApiKey(which, val) {
 function openApiSettings() {
   const ppt = getApiKey('ppt');
   const anth = getAnthropicKey();
+  const plan = kjrPptPlan();
+  const limit = kjrFmtCredits(kjrDailyCredits()); // the text the owner reads, 18,000
+  // What the Search (PPT) lane prices, in words that are true for the Japanese lane's switch (PPT_JA_LANE_ENABLED): the Japanese singles are
+  // named only while that lane runs
+  const jaOn = kjrPptJaLaneOn();
+  const pptBlurb = jaOn
+    ? `Slabs are priced from real eBay sold data, and Japanese singles with a card number from the Japanese TCGplayer market, both via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. All convert to SGD automatically, refreshed daily.`
+    : `Slabs are priced from real eBay sold data via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. Both convert to SGD automatically, refreshed daily.`;
+  const pptScope = jaOn ? 'slabs, plus Japanese singles with a card number' : 'slabs';
+  const pptCost = jaOn ? 'a slab search costs up to 6 credits, a single up to 3' : 'a slab search costs up to 6 credits';
   // Remove any existing instance first
   document.getElementById('api-key-modal')?.remove();
   const html = `
@@ -17876,15 +17958,21 @@ function openApiSettings() {
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
 
           <div style="font-size:12px;color:var(--text3);line-height:1.6;padding:10px;background:var(--bg3);border-radius:8px">
-            Raw singles are priced free from <strong style="color:var(--text)">TCGplayer</strong> / <strong style="color:var(--text)">Cardmarket</strong> via <strong style="color:var(--text)">TCGdex</strong>, matched by card number and language - no key needed. Slabs are priced from real eBay sold data via <strong style="color:var(--text)">PokemonPriceTracker</strong>, ${DAILY_LIMIT} lookups a day. Both convert to SGD automatically, refreshed daily.
+            Raw singles are priced free from <strong style="color:var(--text)">TCGplayer</strong> / <strong style="color:var(--text)">Cardmarket</strong> via <strong style="color:var(--text)">TCGdex</strong>, matched by card number and language - no key needed. ${pptBlurb}
           </div>
 
           <div>
             <label for="ppt-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">PokemonPriceTracker API Key</label>
             <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
-              <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free lookups/day
+              <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free credits a day
             </div>
+            <div id="ppt-plan-label" style="font-size:12px;color:var(--text3);font-weight:500;margin:14px 0 6px">Price plan</div>
+            <div class="kjr-plan" id="ppt-plan" role="radiogroup" aria-labelledby="ppt-plan-label" aria-describedby="ppt-plan-help">
+              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="free"${plan === 'free' ? ' checked' : ''} onchange="kjrPptPlanChoose('free')"><span class="kjr-plan-txt">Free (100 credits a day)</span></label>
+              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="paid"${plan === 'paid' ? ' checked' : ''} onchange="kjrPptPlanChoose('paid')"><span class="kjr-plan-txt">Paid (20,000 credits a day)</span></label>
+            </div>
+            <div id="ppt-plan-help" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Switch back to Free after you cancel, or the queue pauses on the first refusal.</div>
           </div>
 
           <div style="border-top:1px solid var(--border);padding-top:16px">
@@ -17944,7 +18032,7 @@ function openApiSettings() {
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">📅 Scheduled Refresh Queue</div>
             <div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg3);border-radius:8px">
               <strong style="color:var(--text)">Exact (TCGdex):</strong> free, unthrottled, a full pass over every English raw single the first time the app opens each day, Run Today's Batch repeats it now<br>
-              <strong style="color:var(--text)">Search (PPT):</strong> slabs, plus any TCGdex miss, high cost → low, capped at ${DAILY_LIMIT}/day<br>
+              <strong style="color:var(--text)">Search (PPT):</strong> ${pptScope}, high cost → low, capped at <span class="ppt-limit">${limit}</span> credits a day on the <span class="ppt-plan-name">${PPT_PLANS[plan].label}</span> plan (${pptCost})<br>
               <strong style="color:var(--text)">Deduplication:</strong> Same card name = fetch once, copy to all duplicates<br>
               <strong style="color:var(--text)">Auto-runs</strong> when you open the app
             </div>
@@ -17979,6 +18067,20 @@ function openApiSettings() {
   modal.addEventListener('click', function(e) { if (e.target === this) closeModal(); });
   trapFocus(modal);
   setTimeout(() => modal.querySelector('input,button,select')?.focus(), 30);
+}
+
+// The plan radios in the Price API settings. Saved the moment one is chosen (it is a choice, not a key to test), on this device only. A plan
+// that can not be saved puts the control back to the plan that is in force.
+function kjrPptPlanChoose(plan) {
+  const ok = kjrPptSetPlan(plan);
+  const now = kjrPptPlan();
+  Array.from(document.querySelectorAll('input[name="ppt-plan"]')).forEach(el => { el.checked = el.value === now; });
+  // the two places the open dialog states the budget (the blurb at the top and the Search (PPT) line) follow the plan at once
+  Array.from(document.querySelectorAll('.ppt-limit')).forEach(el => { el.textContent = kjrFmtCredits(PPT_PLANS[now].credits); });
+  Array.from(document.querySelectorAll('.ppt-plan-name')).forEach(el => { el.textContent = PPT_PLANS[now].label; });
+  if (!ok) { toast('Could not save the price plan on this device'); return; }
+  toast('Price plan: ' + PPT_PLANS[now].label + ', ' + kjrFmtCredits(PPT_PLANS[now].credits) + ' credits a day for the queue');
+  if (typeof _renderQueueStatus === 'function') _renderQueueStatus();
 }
 
 function saveApiKeys() {
@@ -18122,12 +18224,14 @@ function _pickBestMatch(results, query, languageHint) {
   const queryNums = _cardNumberTokens(query);
   let best = null, bestScore = -1;
   for (const c of results) {
-    const candidateText = [c.name, c.setName, c.set?.name, c.number].filter(Boolean).join(' ');
+    // The vendor's number field is cardNumber ("215/203", checked live 21/10/2026), number is what older fixtures and answers used
+    const cNumber = c.cardNumber != null ? c.cardNumber : c.number;
+    const candidateText = [c.name, c.setName, c.set?.name, cNumber].filter(Boolean).join(' ');
     let score = _nameSimilarity(query, candidateText);
 
     // Card-number match - dominant signal.
     if (queryNums.size) {
-      const cNums = _cardNumberTokens(c.number);
+      const cNums = _cardNumberTokens(cNumber);
       if (cNums.size) {
         const hit = [...cNums].some(n => queryNums.has(n));
         score += hit ? 0.4 : -0.25; // right print vs a different-numbered card
@@ -18151,13 +18255,243 @@ function _pickBestMatch(results, query, languageHint) {
   return bestScore >= _SIM_FLOOR ? best : null;
 }
 
-// ── PokemonPriceTracker: fetch single card USD price ──
-// Returns { priceUsd, source, cardName, _ppt_requests } on success, or
-// { error, _ppt_requests } on failure. _ppt_requests is the count of PPT
-// responses that actually returned data (HTTP 2xx) - the queue bills these
-// against the daily limit so the fallback search can't silently overrun it.
-// Transport failures (non-2xx) count 0: PPT either refused (429/403) or
-// crashed (5xx), and we retry tomorrow.
+// ── PokemonPriceTracker (PPT) ──
+// The Worker proxies one route, GET /ppt/cards?search=<text>&limit=3, and two optional flags (Server/worker.js): includeEbay=true adds the
+// graded eBay sold data a slab price is read from, language=japanese searches the vendor's Japanese catalogue. The vendor bills in CREDITS,
+// one per card returned and one more per card with includeEbay, so a search costs up to 3 and a slab search up to 6. The answer's
+// metadata.apiCallsConsumed.total says what it really cost, and when it does not a search is estimated at 3 credits, 6 with eBay.
+// The Worker caches an answer for six hours and replays its metadata with it, so a repeat of the same search can be counted again although
+// the vendor billed nothing. That only ever makes the daily budget stop early, never late.
+const PPT_SEARCH_CREDITS = 3;
+const PPT_EBAY_CREDITS = 3;
+// The pptError of a refusal for credits. The queue, refreshPrice, bulkRefreshPrices and the price check all read creditsExhausted, not this text.
+const PPT_CREDIT_ERROR = 'PPT daily credit limit reached';
+
+// The Japanese lane (v3.85, see "The Japanese lane" below) ships OFF. It waits on a live check of the vendor's Japanese response: the currency a
+// Japanese card is priced in (a yen amount stored as dollars would corrupt real money data), the card names it returns and what its cardNumber
+// looks like. It is switched on in a follow-up, after that check. While this is false every non-English single is manual exactly as in v3.84,
+// nothing sends language=japanese, and no screen says the lane runs. A test turns it on through the harness (loadApp({ jaLane: true }) replaces
+// kjrPptJaLaneOn), it never edits this line.
+const PPT_JA_LANE_ENABLED = false;
+function kjrPptJaLaneOn() { return PPT_JA_LANE_ENABLED === true; }
+
+// The credits one queue item costs when nothing better is known: a slab (it has a grader and a grade) is a search with eBay, anything else a plain one
+function _pptEstimateCredits(item) {
+  return PPT_SEARCH_CREDITS + (item && item.grader && item.grade ? PPT_EBAY_CREDITS : 0);
+}
+
+// What one answer cost, in credits. metadata.apiCallsConsumed is { total, breakdown, costPerCard } (a bare number is read too). Anything else,
+// or a total that cannot be right, falls back to the estimate for the kind of search that was made.
+function _pptCreditsOf(data, includeEbay) {
+  const meta = data && typeof data === 'object' && data.metadata && typeof data.metadata === 'object' ? data.metadata.apiCallsConsumed : undefined;
+  const raw = meta && typeof meta === 'object' ? meta.total : meta;
+  const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
+  if (isFinite(n) && n >= 0 && n <= 1000) return n;
+  return PPT_SEARCH_CREDITS + (includeEbay ? PPT_EBAY_CREDITS : 0);
+}
+
+// The vendor's refusal when the day's credits are gone: { error: 'Daily credit limit exceeded', retryAfter, resetsAt, ... }. It is read from the
+// body whatever the HTTP status says, and a 200 that carries it counts too. It is a pause until the reset, never a verdict on a card.
+function _pptCreditLimitBody(body) {
+  if (!body || typeof body !== 'object') return false;
+  const e = body.error;
+  const text = typeof e === 'string' ? e : (e && typeof e === 'object' && typeof e.message === 'string' ? e.message : (typeof body.message === 'string' ? body.message : ''));
+  return /daily credit limit/i.test(text);
+}
+
+// One search. Through the Worker, which holds the key and answers CORS, or direct with a local key when the proxy is off. The Worker takes
+// exactly limit=3 and the two flags above, nothing else, so that is all this can send.
+//   { transport: 'HTTP 503' }        the vendor or the Worker refused or crashed, nothing billed (or the Japanese lane is off, nothing sent)
+//   { exhausted: true }              the daily credit limit, nothing billed
+//   { cards: [...], credits: N }     an answer (no cards is an answer too), N credits it cost
+async function _pptSearch(query, opts) {
+  const o = opts || {};
+  // The only place language=japanese is built, so the only place the lane's switch (PPT_JA_LANE_ENABLED) has to be enforced. It refuses, it
+  // never drops the flag: the same words asked of the English catalogue would come back as other cards.
+  if (o.japanese && !kjrPptJaLaneOn()) return { transport: 'Japanese lane is off' };
+  const qs = 'search=' + encodeURIComponent(query) + '&limit=3' + (o.includeEbay ? '&includeEbay=true' : '') + (o.japanese ? '&language=japanese' : '');
+  const url = PRICE_PROXY_BASE
+    ? PRICE_PROXY_BASE + '/ppt/cards?' + qs
+    : 'https://www.pokemonpricetracker.com/api/v2/cards?' + qs;
+  const headers = PRICE_PROXY_BASE ? {} : { 'Authorization': 'Bearer ' + (getApiKey('ppt') || '') };
+  const r = await fetch(url, { headers });
+  if (!r.ok) {
+    let body = null;
+    try { body = await r.json(); } catch (e) { /* not JSON, an ordinary refusal */ }
+    return _pptCreditLimitBody(body) ? { exhausted: true } : { transport: 'HTTP ' + r.status }; // refused or crashed: not billed, no fallback search
+  }
+  const data = await r.json();
+  if (_pptCreditLimitBody(data)) return { exhausted: true };
+  const cards = data && Array.isArray(data.data) ? data.data.filter(c => c && typeof c === 'object') : [];
+  return { cards, credits: _pptCreditsOf(data, !!o.includeEbay) };
+}
+
+// ── What a PPT card says: the eBay sold price of a grade ──
+// card.ebay.salesByGrade[key] holds one entry per grade under a key like psa10, cgc9 or bgs9_5: { count, averagePrice, medianPrice,
+// marketPrice7Day, marketPriceMedian7Day, smartMarketPrice: { price, confidence, method }, lastSaleDate } (checked live 21/10/2026). The
+// older answers kept { avg } straight under card.ebay[key], read as the last resort. A key is matched with everything but letters and digits
+// dropped, so a half grade reads the same whether the vendor spells it bgs95, bgs9_5 or bgs9.5.
+function _pptKeyNorm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function _pptMoney(v) {
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+  return isFinite(n) && n > 0 ? n : 0;
+}
+// The best figure of one grade entry, in the vendor's own order of trust: its smart market price, the 7 day median, the median, the average
+function _pptGradeEntryPrice(entry) {
+  if (!entry || typeof entry !== 'object') return 0;
+  const smart = entry.smartMarketPrice && typeof entry.smartMarketPrice === 'object' ? entry.smartMarketPrice.price : undefined;
+  return _pptMoney(smart) || _pptMoney(entry.marketPriceMedian7Day) || _pptMoney(entry.medianPrice) || _pptMoney(entry.averagePrice) || _pptMoney(entry.avg);
+}
+function _pptEbayGradePrice(card, grader, grade) {
+  const eb = card && card.ebay;
+  if (!eb || typeof eb !== 'object') return 0;
+  const want = _pptKeyNorm(grader) + _pptKeyNorm(grade);
+  if (!want) return 0;
+  for (const bucket of [eb.salesByGrade, eb]) {
+    if (!bucket || typeof bucket !== 'object') continue;
+    for (const key of Object.keys(bucket)) {
+      if (_pptKeyNorm(key) !== want) continue;
+      const p = _pptGradeEntryPrice(bucket[key]);
+      if (p) return p;
+    }
+  }
+  return 0;
+}
+
+// ── What a PPT card says: its number ──
+// The vendor's number as text: cardNumber is "215/203", "SV2a 205/165" or "TG11/TG30", number is what older answers called it.
+function _pptCardNumber(c) {
+  const v = c && (c.cardNumber != null ? c.cardNumber : c.number);
+  return v == null ? '' : String(v).trim();
+}
+// "215/203" gives 215, "SV2a 205/165" gives 205, "TG11/TG30" gives TG11: the part before the slash, its last word
+function _pptNumerator(text) {
+  const words = String(text == null ? '' : text).split('/')[0].trim().split(/\s+/);
+  return words[words.length - 1] || '';
+}
+// Does the vendor's number name the card number the row carries (the one _tcgdexNumber reads off its name)? Two plain numbers compare as
+// numbers ("025" is 25), anything else (a promo or gallery number) must match exactly, the rule _kjrLocalIdMatches keeps for TCGdex.
+function _kjrCardNumberMatches(cardNumber, num) {
+  return _kjrLocalIdMatches(_pptNumerator(cardNumber), num);
+}
+
+// ── The Japanese lane (v3.85): a Japanese single with a card number, priced from the vendor's Japanese catalogue ──
+// OFF until a live check of the vendor's answer (PPT_JA_LANE_ENABLED above). The lane covers JAPANESE singles only. The Worker passes one
+// language flag, language=japanese, and a Chinese or Indonesian card's number does not reliably match the Japanese sets, so a price from that
+// catalogue could be another card's, and a wrong card's price is worse than none. Chinese, Indonesian, Korean and every other language stay
+// manual, with the lane on as well. The strict match keeps the Japanese lane honest too (one card whose number is the row's number, whose
+// name and mechanic tags fit, nothing guessed).
+// A function, not a constant, so a render before the queue code has run can not trip over it, and so a test can switch the lane on.
+function _kjrPptJaLangs() { return kjrPptJaLaneOn() ? ['JP'] : []; }
+
+// Words of a card name that are the mechanic (_kjrRowTags reads these) or only describe the printing, neither says which species it is
+const _KJR_PPT_TAG_WORDS = new Set(['ex', 'gx', 'v', 'vmax', 'vstar', 'vunion', 'break', 'lvx', 'lv', 'tag', 'team', 'mega']);
+const _KJR_PPT_PRINTING_WORDS = new Set(['holo', 'holofoil', 'reverse', 'foil', 'promo', 'japanese', 'jp', 'rare', 'full', 'art', 'alternate', 'alt',
+  'secret', 'special', 'illustration', 'parallel', 'master', 'ball', '1st', 'edition']);
+// The part of a card name that says WHICH card it is: accents off, no bracketed or dashed trailer ("Umbreon VMAX (Alternate Art Secret)",
+// "Pikachu - 025/165")
+function _kjrPptCleanName(text) {
+  return String(text == null ? '' : text).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[\(\[][^\)\]]*[\)\]]/g, ' ')
+    .replace(/\s[-\u2013\u2014]\s.*$/, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+// The species words of a cleaned name: no number, no mechanic tag, no printing word
+function _kjrPptSpecies(clean) {
+  const words = clean.replace(/['\u2018\u2019]/g, '').replace(/&/g, ' ').split(/[^a-z0-9]+/).filter(Boolean);
+  const lead = words.length > 1 && words[0] === 'm' ? 1 : 0; // the older "M Charizard EX" is a Mega, _kjrRowTags reads that as the tag
+  return words.slice(lead).filter(w => !/^\d+$/.test(w) && !_KJR_PPT_TAG_WORDS.has(w) && !_KJR_PPT_PRINTING_WORDS.has(w));
+}
+// Can this vendor card be the row's card? Same species words and the same mechanic tags (the plain Charizard is not the Charizard ex, Pikachu
+// is not Pikachu & Zekrom GX). A card with no name, or a row whose name leaves no species word, can not be checked and so is not taken.
+function _kjrPptNameFits(rowBase, cardName) {
+  if (typeof cardName !== 'string' || !cardName.trim()) return false;
+  const a = _kjrPptCleanName(rowBase), b = _kjrPptCleanName(cardName);
+  if (_kjrRowTags(a) !== _kjrRowTags(b)) return false;
+  const sa = new Set(_kjrPptSpecies(a)), sb = new Set(_kjrPptSpecies(b));
+  if (!sa.size || sa.size !== sb.size) return false;
+  for (const w of sa) { if (!sb.has(w)) return false; }
+  return true;
+}
+// A card the vendor labels with another language is not a Japanese card, one with no label is taken at the catalogue's word
+function _kjrPptCardIsJapanese(c) {
+  const v = c.language != null ? c.language : c.lang;
+  if (v == null || String(v).trim() === '') return true;
+  return /^(jp|ja|jpn)$|japan/i.test(String(v).trim());
+}
+// Exactly one card, or none. The cards a search returned are cut to those whose number is the row's number, whose name fits and whose
+// language is Japanese, the same card listed twice (one id) counts once. { card } for exactly one, { ambiguous: n } for several, {} for none.
+// More than one is never resolved by a guess, the row is left unpriced for the owner to look at.
+function _kjrPickJapanese(cards, name) {
+  const base = _baseCardName(name), num = _tcgdexNumber(name);
+  if (!base || !num || !Array.isArray(cards)) return {};
+  const seen = new Set(), ok = [];
+  for (const c of cards) {
+    if (!c || typeof c !== 'object') continue;
+    if (c.id != null) { const id = String(c.id); if (seen.has(id)) continue; seen.add(id); }
+    if (!_kjrCardNumberMatches(_pptCardNumber(c), num) || !_kjrPptNameFits(base, c.name) || !_kjrPptCardIsJapanese(c)) continue;
+    ok.push(c);
+  }
+  return ok.length === 1 ? { card: ok[0] } : (ok.length ? { ambiguous: ok.length } : {});
+}
+// The currency a vendor card prices in: USD unless it names one. A currency field on the card or on its prices block ('currency',
+// 'priceCurrency' or 'currencyCode') is read as a 3 letter code, one that is there but is not a code ("$", "yen") comes back as '?' and
+// the card is not priced, an amount in a currency nobody can read must not become a number in dollars.
+function _pptCurrencyOf(card) {
+  for (const host of [card, card && card.prices]) {
+    if (!host || typeof host !== 'object') continue;
+    for (const key of ['currency', 'priceCurrency', 'currencyCode']) {
+      if (!Object.prototype.hasOwnProperty.call(host, key)) continue;
+      const v = host[key];
+      if (v == null || String(v).trim() === '') continue; // says nothing
+      const code = String(v).trim().toUpperCase();
+      return /^[A-Z]{3}$/.test(code) ? code : '?';
+    }
+  }
+  return 'USD';
+}
+
+// Price a Japanese single: one search of the Japanese catalogue for "<name without its number> <number>", then the one card that fits.
+// Resolves to { amount, currency, source, cardName, _ppt_requests, _ppt_credits } for a price, otherwise { error, ... } with
+//   creditsExhausted   the daily credit limit (nothing is a miss)
+//   pptTransient       the answer never came (HTTP error, network) or can not be used yet (no exchange rate, or the lane is off), nothing is a miss either
+// and neither of those flags for a real miss (no card number, no card, several cards, no price, an unreadable currency).
+// language is the row's own language and must read as Japanese. Anything else is refused before any request is made.
+async function fetchJapanesePriceFromPPT(name, language) {
+  try {
+    // While the lane is off nothing is asked, and with it on only a Japanese card is: a Chinese or Indonesian card's number does not reliably
+    // match the Japanese sets, and a wrong card's price is worse than none. Neither refusal is a verdict on the card.
+    if (!kjrPptJaLaneOn()) return { error: 'Japanese lane is off', pptTransient: true, _ppt_requests: 0 };
+    if (String(language == null ? '' : language).trim().toUpperCase() !== 'JP') return { error: 'not a Japanese card', pptTransient: true, _ppt_requests: 0 };
+    if (!String(name || '').trim()) return { error: 'no card name', _ppt_requests: 0 };
+    const base = _baseCardName(name), num = _tcgdexNumber(name);
+    if (!base || !num) return { error: 'no card number', _ppt_requests: 0 };
+    const res = await _pptSearch(base + ' ' + num, { japanese: true });
+    if (res.exhausted) return { error: PPT_CREDIT_ERROR, creditsExhausted: true, _ppt_requests: 0 };
+    if (res.transport) return { error: res.transport, pptTransient: true, _ppt_requests: 0 };
+    const bill = { _ppt_requests: 1, _ppt_credits: res.credits };
+    const pick = _kjrPickJapanese(res.cards, name);
+    if (!pick.card) return Object.assign({ error: pick.ambiguous ? 'no unique match (' + pick.ambiguous + ' cards fit)' : 'no match' }, bill);
+    const card = pick.card;
+    const currency = _pptCurrencyOf(card);
+    if (currency === '?') return Object.assign({ error: 'unreadable currency' }, bill);
+    const amount = _pptMoney(card.prices && typeof card.prices === 'object' ? card.prices.market : undefined);
+    if (!amount) return Object.assign({ error: 'no price data' }, bill);
+    return Object.assign({ amount, currency, source: 'PPT (Japanese)', cardName: card.name }, bill);
+  } catch (e) {
+    // the request threw (offline, DNS, CORS) or the body was not JSON: nothing was learnt about the card
+    return { error: (e && e.message) || 'network error', pptTransient: true, _ppt_requests: 0 };
+  }
+}
+
+// ── PokemonPriceTracker: one card's USD price (slabs, and the older fuzzy raw lookup) ──
+// Returns { priceUsd, source, cardName, _ppt_requests, _ppt_credits, usedFallback, ambiguous } on success, or { error, _ppt_requests,
+// _ppt_credits } on failure (creditsExhausted: true when the vendor refused for credits). _ppt_requests counts the PPT answers that came
+// back (HTTP 2xx), _ppt_credits what they cost (_pptCreditsOf), the queue bills the credits against the day's budget. Transport failures
+// (non-2xx) count 0: PPT either refused (429/403) or crashed (5xx), and the card is tried again.
+// A slab (grader and grade) asks for the graded eBay data and is priced from that grade alone, never from another grader's number. When
+// the search returns several cards it takes the one whose card number is the slab's. The grader and grade go through _resolveGrader first,
+// so "PSA 10" in either field reads the same, and one that can not be read is a miss with no request at all.
 async function fetchPriceFromPPT(name, grader, grade, language) {
   try {
     // Bias the search toward the right language printing. PPT's index is
@@ -18174,30 +18508,42 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // five-in-a-row auto-pause.
     if (!String(name || '').trim()) return { error: 'no card name', _ppt_requests: 0, usedFallback: false };
 
-    let reqCount = 0;
+    const isSlab = !!(grader && grade);
+    let rg = null;
+    if (isSlab) {
+      rg = _resolveGrader(grader, grade);
+      // no grader the vendor keys by (PSA, CGC, TAG, ACE, BGS, SGC) or no grade to build the key from: a search could only miss, and costs credits
+      if (!rg.grader || !rg.grade) return { error: 'unrecognised grader or grade', _ppt_requests: 0, usedFallback: false };
+    }
+    const wantNum = isSlab ? _tcgdexNumber(name) : '';
+
+    let reqCount = 0, credits = 0;
+    const done = (o) => Object.assign({ _ppt_requests: reqCount, _ppt_credits: credits }, o);
+    // Several cards came back: a slab whose name carries a card number takes only the cards with that number (a card that states no number
+    // is not ruled out, and when none states one there is nothing to check). Every card stating a different number means this is another
+    // card, so nothing is taken. Of the cards left the best name match wins, and when more than one was left the price is marked low confidence.
+    function pick(cards) {
+      let pool = cards, matched = 0;
+      if (wantNum) {
+        const numbered = cards.filter(c => _pptCardNumber(c));
+        const hits = numbered.filter(c => _kjrCardNumberMatches(_pptCardNumber(c), wantNum));
+        if (hits.length) { pool = hits; matched = hits.length; }
+        else if (numbered.length) return null;
+      }
+      const card = _pickBestMatch(pool, name, langWord);
+      return card ? { card, ambiguous: matched > 1 } : null;
+    }
     // One PPT search + fuzzy pick. Candidates are always scored against the
     // FULL original `name` (number + set code included) via _pickBestMatch,
     // so broadening the *search query* never loses precision in the *pick*.
-    // Returns { card } | { empty:true } | { transport:'HTTP nnn' }.
+    // Returns { card, ambiguous } | { empty:true } | { transport:'HTTP nnn' } | { exhausted:true }.
     async function search(query) {
-      // Route through Cloudflare Worker when configured - Worker holds the
-      // key server-side and returns CORS headers the browser will accept.
-      // Direct calls still 4xx on preflight from any browser origin, so the
-      // proxy is the only working path. The Worker accepts exactly limit=3,
-      // so keep the contract here rather than letting a caller send an
-      // unsupported limit.
-      const limit = 3;
-      const url = PRICE_PROXY_BASE
-        ? PRICE_PROXY_BASE + '/ppt/cards?search=' + encodeURIComponent(query) + '&limit=' + limit
-        : 'https://www.pokemonpricetracker.com/api/v2/cards?search=' + encodeURIComponent(query) + '&limit=' + limit;
-      const headers = PRICE_PROXY_BASE ? {} : { 'Authorization': 'Bearer ' + (getApiKey('ppt') || '') };
-      const r = await fetch(url, { headers });
-      if (!r.ok) return { transport: 'HTTP ' + r.status }; // refused/crashed - don't bill, don't fall back
+      const res = await _pptSearch(query, { includeEbay: isSlab });
+      if (res.transport || res.exhausted) return res;
       reqCount++;
-      const data = await r.json();
-      if (!data.data || !data.data.length) return { empty: true };
-      const card = _pickBestMatch(data.data, name, langWord);
-      return card ? { card } : { empty: true };
+      credits += res.credits;
+      if (!res.cards.length) return { empty: true };
+      return pick(res.cards) || { empty: true };
     }
 
     // Primary: full name as-is (+ language word). Preserves matches that
@@ -18205,7 +18551,8 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
     // PPT's catalogued name.
     const primaryQ = langWord ? (name + ' ' + langWord) : name;
     let res = await search(primaryQ);
-    if (res.transport) return { error: res.transport, _ppt_requests: 0 };
+    if (res.exhausted) return done({ error: PPT_CREDIT_ERROR, creditsExhausted: true, usedFallback: false });
+    if (res.transport) return done({ error: res.transport });
 
     // Fallback - ONLY when the primary returned zero usable results (never on
     // a transport error, which would hammer a rate-limited key). Search the
@@ -18222,37 +18569,35 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
       if (base && base.toLowerCase() !== String(name).trim().toLowerCase()) {
         const fbQ = langWord ? (base + ' ' + langWord) : base;
         const res2 = await search(fbQ);
-        if (res2.transport) return { error: res2.transport, _ppt_requests: reqCount };
+        if (res2.exhausted) return done({ error: PPT_CREDIT_ERROR, creditsExhausted: true, usedFallback });
+        if (res2.transport) return done({ error: res2.transport });
         if (res2.card) { res = res2; usedFallback = true; }
       }
     }
-    if (!res.card) return { error: 'no match', _ppt_requests: reqCount, usedFallback };
+    if (!res.card) return done({ error: 'no match', usedFallback });
     const card = res.card;
 
     let priceUsd = null;
     let priceSource = 'PPT';
-    if (grader && grade) {
+    if (isSlab) {
       // Grader-specific price ONLY. Previously fell through to the PSA price
-      // for any grader, which inflated TAG/CGC/ACE valuations (TAG 10 ~60–70%
+      // for any grader, which inflated TAG/CGC/ACE valuations (TAG 10 ~60 to 70%
       // of PSA 10). We now surface a miss to the caller instead of silently
       // substituting a different grader's number.
-      const gradeKey = grader.toLowerCase() + grade.replace('.','');  // e.g. psa10
-      priceUsd = card.ebay?.[gradeKey]?.avg;
-      if (priceUsd) priceSource = 'PPT (' + grader.toUpperCase() + ' ' + grade + ')';
-    }
-    if (!priceUsd && !(grader && grade)) {
+      priceUsd = _pptEbayGradePrice(card, rg.grader, rg.grade);
+      if (priceUsd) priceSource = 'PPT (' + rg.grader + ' ' + rg.grade + ')';
+    } else {
       // No grader requested → NM market price is fine.
       priceUsd = card.prices?.market || card.prices?.NEAR_MINT?.avg || card.tcgplayer?.NEAR_MINT?.avg || card.ebay?.NEAR_MINT?.avg;
     }
-    if (!priceUsd) return { error: grader ? 'no ' + grader + ' ' + grade + ' price' : 'no price data', _ppt_requests: reqCount, usedFallback };
-    return { priceUsd, source: priceSource, cardName: card.name, _ppt_requests: reqCount, usedFallback };
+    if (!priceUsd) return done({ error: isSlab ? 'no ' + rg.grader + ' ' + rg.grade + ' price' : 'no price data', usedFallback });
+    return done({ priceUsd, source: priceSource, cardName: card.name, usedFallback, ambiguous: !!res.ambiguous });
   } catch(e) { return { error: e.message, _ppt_requests: 0, usedFallback: false }; }
 }
 
-// ── Router: TCGdex first for raw singles, PPT for slabs and TCGdex misses ──
-// Takes one descriptor { name, grader, grade, language, tcgdexId, tcgdexOnly }
-// so every caller passes the same shape regardless of which lane ends up
-// serving it.
+// ── Router: TCGdex first for raw singles, PPT for slabs, the Japanese lane for Japanese singles ──
+// Takes one descriptor { name, grader, grade, language, tcgdexId, tcgdexOnly, japanese } so every caller passes the same shape regardless
+// of which lane ends up serving it.
 //   RAW  (no grader): try TCGdex first (exact id match, free, high
 //        confidence). A "not found" or no-price result falls through to PPT -
 //        UNLESS tcgdexOnly is set, in which case it's a clean unpriced miss,
@@ -18263,17 +18608,68 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
 //        PPT into a 403 before the English-only rework - _runTcgdexLane was
 //        calling this router unrestricted and discarding creditsUsed).
 //   SLAB (has grader): PPT's eBay graded lane, unchanged behaviour - TCGdex
-//        has no graded prices at all. tcgdexOnly has no effect here.
-// Returns { maxUsd|maxEur, maxSgd, source, confidence, creditsUsed,
-//   tcgdexError, tcgdexTransient, pptError, resolvedTcgdexId, resolvedCardName }. classifyResult/
+//        has no graded prices at all. tcgdexOnly has no effect here. A grader
+//        with no grade is an incomplete slab and a miss with no request, never a raw card.
+//   JAPANESE (japanese: true, no grader): the PPT lane's Japanese singles (v3.85, off until PPT_JA_LANE_ENABLED is switched on, and Japanese only).
+//        One search of the Japanese catalogue, one card that fits or a miss, TCGdex is never asked. Its price is the card's TCGplayer market,
+//        converted to SGD from the currency it names. While the lane is off, or for any other language, nothing is asked (fetchJapanesePriceFromPPT).
+// Returns { maxUsd|maxEur, maxSgd, unit, source, confidence, creditsUsed, tcgdexError, tcgdexTransient, pptError, pptTransient,
+//   creditsExhausted, resolvedTcgdexId, resolvedCardName }. creditsUsed is in PPT credits (0 for TCGdex). unit is the currency the price
+// came in when it is not the maxUsd or maxEur one. classifyResult/
 // tallyErrors (in the refresh queue) read the tcgdexError/pptError pair with
 // the NON_ATTEMPT sentinel-stripping rule below - keep that intact whenever
 // this shape changes. tcgdexTransient is the TCGdex source's own verdict that it could not tell
 // (fetchPriceFromTcgdex, transient:true): the free lane reads that flag, never the error text or the
 // 'not applicable' PPT sentinel, so a sentinel can not turn a transport failure into a miss.
 async function fetchMarketPrice(descriptor) {
-  const { name, grader, grade, language, tcgdexId, tcgdexOnly } = descriptor || {};
+  const { name, grader, grade, language, tcgdexId, tcgdexOnly, japanese } = descriptor || {};
   const isSlab = !!(grader && grade);
+
+  if (!isSlab && grader) {
+    // A grader with no grade is a slab we can not price. The plain card's TCGdex or fuzzy PPT price would be wrong by a wide margin.
+    return {
+      maxUsd: null, maxEur: null, maxSgd: null,
+      source: null, confidence: 'none',
+      creditsUsed: 0,
+      tcgdexError: 'not applicable',
+      pptError: 'unrecognised grader or grade',
+      resolvedTcgdexId: null, resolvedCardName: null,
+      sgdRate: null
+    };
+  }
+
+  if (!isSlab && japanese) {
+    const pptRes = await fetchJapanesePriceFromPPT(name, language);
+    const credits = pptRes._ppt_credits || 0;
+    const miss = (extra) => Object.assign({
+      maxUsd: null, maxEur: null, maxSgd: null,
+      source: null, confidence: 'none',
+      creditsUsed: credits,
+      tcgdexError: 'not applicable', // TCGdex is never asked for a Japanese price
+      pptError: pptRes.error || 'no price data',
+      resolvedTcgdexId: null, resolvedCardName: null,
+      sgdRate: null
+    }, pptRes.creditsExhausted ? { creditsExhausted: true } : {}, pptRes.pptTransient ? { pptTransient: true } : {}, extra || {});
+    if (!pptRes.amount) return miss();
+    const cur = pptRes.currency;
+    const rate = await getFxToSgd(cur);
+    // No rate, no price: a foreign amount is never stored as if it were dollars. The card is tried again, not marked unmatched.
+    if (!rate) return miss({ pptError: 'no exchange rate for ' + cur, pptTransient: true });
+    return {
+      maxUsd: cur === 'USD' ? pptRes.amount : null,
+      maxEur: cur === 'EUR' ? pptRes.amount : null,
+      maxSgd: pptRes.amount * rate,
+      unit: cur,
+      source: pptRes.source,
+      confidence: 'medium',
+      creditsUsed: credits,
+      tcgdexError: 'not applicable',
+      pptError: null,
+      resolvedTcgdexId: null,
+      resolvedCardName: pptRes.cardName || null,
+      sgdRate: rate
+    };
+  }
 
   if (!isSlab) {
     // RAW lane: TCGdex first. Build a minimal item-shaped object so the
@@ -18328,7 +18724,7 @@ async function fetchMarketPrice(descriptor) {
         // medium when the card-number-bearing primary search matched, low
         // when only the base-name fallback fired (a looser guess).
         confidence: pptRes.usedFallback ? 'low' : 'medium',
-        creditsUsed: pptRes._ppt_requests || 0,
+        creditsUsed: pptRes._ppt_credits || 0,
         tcgdexError: tcgdexRes.error,
         tcgdexTransient: !!tcgdexRes.transient,
         pptError: null,
@@ -18337,17 +18733,17 @@ async function fetchMarketPrice(descriptor) {
         sgdRate: rate
       };
     }
-    return {
+    return Object.assign({
       maxUsd: null, maxEur: null, maxSgd: null,
       source: null, confidence: 'none',
-      creditsUsed: pptRes._ppt_requests || 0,
+      creditsUsed: pptRes._ppt_credits || 0,
       tcgdexError: tcgdexRes.error,
       tcgdexTransient: !!tcgdexRes.transient,
       pptError: pptRes.error,
       resolvedTcgdexId: pseudoItem.tcgdexId || null,
       resolvedCardName: pseudoItem._tcgdexResolvedName || null,
       sgdRate: rate
-    };
+    }, pptRes.creditsExhausted ? { creditsExhausted: true } : {});
   }
 
   // SLAB lane: PPT eBay graded price only, TCGdex has no graded data at all.
@@ -18357,23 +18753,24 @@ async function fetchMarketPrice(descriptor) {
     return {
       maxUsd: pptRes.priceUsd, maxEur: null, maxSgd: pptRes.priceUsd * rate,
       source: pptRes.source,
-      confidence: pptRes.usedFallback ? 'low' : 'medium',
-      creditsUsed: pptRes._ppt_requests || 0,
+      // low when the base-name fallback fired or several cards carried the slab's number (a closer guess than a name, still a guess)
+      confidence: (pptRes.usedFallback || pptRes.ambiguous) ? 'low' : 'medium',
+      creditsUsed: pptRes._ppt_credits || 0,
       tcgdexError: 'not applicable', // TCGdex never applies to graded slabs
       pptError: null,
       resolvedTcgdexId: null, resolvedCardName: null,
       sgdRate: rate
     };
   }
-  return {
+  return Object.assign({
     maxUsd: null, maxEur: null, maxSgd: null,
     source: null, confidence: 'none',
-    creditsUsed: pptRes._ppt_requests || 0,
+    creditsUsed: pptRes._ppt_credits || 0,
     tcgdexError: 'not applicable',
     pptError: pptRes.error,
     resolvedTcgdexId: null, resolvedCardName: null,
     sgdRate: rate
-  };
+  }, pptRes.creditsExhausted ? { creditsExhausted: true } : {});
 }
 
 // ── Refresh one row's price (the card inspector's "Refresh price") ──
@@ -18384,29 +18781,28 @@ async function fetchMarketPrice(descriptor) {
 //     Worker proxy is configured, it holds PPT_KEY as a secret, so a missing key in this
 //     browser must not block it. Only with the proxy off (PRICE_PROXY_BASE falsy) is a
 //     local key required, the same test runRefreshQueue makes.
-//   - a single, English with a card number: the free lane. tcgdexOnly, so a TCGdex miss is
-//     a clean unpriced result with zero PPT calls, never a fuzzy PPT name search.
-//   - a single that is non-English or has no card number, or a slab with no grader:
-//     manual. No API call at all, and the toast says why (the card inspector's own wording
-//     for a single).
+//   - a Japanese single with a card number (v3.85, only while the Japanese lane is switched on, PPT_JA_LANE_ENABLED): the Japanese
+//     lane. One search of the vendor's Japanese catalogue that takes exactly one card or none (fetchJapanesePriceFromPPT), so it
+//     needs the same PPT availability test as a slab. A miss is stamped like the free lane's.
+//   - a single that is non-English (and not that one) or has no card number, or a slab with no
+//     grader: manual. No API call at all, and the toast says why (the card inspector's own
+//     wording for a single, _kjrManualReason).
 // A miss changes nothing worth syncing, so it only marks the row dirty when it resolved a
-// new tcgdexId. On the free lane it is stamped _tcgdexMissDate the way _runTcgdexLane
-// stamps it (local, never synced), and the lane reads that stamp off the row too, so the
-// queue does not try the card again today.
+// new tcgdexId. On the free lane and the Japanese lane it is stamped _tcgdexMissDate the way
+// the queue stamps it (local, never synced), and the free lane reads that stamp off the row
+// too, so the queue does not try the card again today. The vendor refusing for credits is
+// neither a price nor a miss: it says so and writes nothing.
 // The local-preview guard lives in the callers (kjrInspectRefreshInfo, runRefreshQueue).
 async function refreshPrice(id, table) {
   const item = DB[table].find(i => i.id === id);
   if (!item) return;
   const isSlab = table === 'slabs';
-  // buildRefreshQueue never hands a single a grader, so a single is routed without one. A
+  // buildRefreshQueue never hands a single a grader or a grade, so a single is routed without them. A
   // Slabs row goes in as it is: with a grader it is the PPT lane, without one the queue
   // sends it to the free lane or leaves it manual, and so does this.
-  const lane = _queueLaneFor(isSlab ? item : Object.assign({}, item, { grader: null }));
+  const lane = _queueLaneFor(isSlab ? item : Object.assign({}, item, { grader: null, grade: null }));
   if (lane === 'manual') {
-    const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
-    toast(isSlab ? 'Add the grader and grade to price this slab'
-      : kjrIsCustomCard(item) ? 'Custom card, price by hand (no auto-match)'
-      : lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing');
+    toast(isSlab ? 'Add the grader and grade to price this slab' : _kjrManualReason(item));
     return;
   }
   if (lane === 'ppt' && !PRICE_PROXY_BASE && !getApiKey('ppt')) {
@@ -18414,12 +18810,19 @@ async function refreshPrice(id, table) {
     return;
   }
   toast('Fetching market price...');
-  const grader = isSlab ? (item.grader||null) : null;
-  const grade  = isSlab ? (item.grade||null) : null;
-  const today = new Date().toISOString().slice(0,10);
+  // "PSA 10" typed into either field reads as PSA and 10, the way the queue reads it
+  const slabGrade = isSlab ? _kjrSlabGrade(item) : null;
+  const grader = isSlab ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
+  const grade  = isSlab ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
+  const japanese = !isSlab && lane === 'ppt'; // a single only reaches the PPT lane as a Japanese one
+  const today = kjrLocalDay(); // the day the checked and missed markers carry: the device's local date (kjrLocalDay), history keeps UTC dates
   // The router sends a lookup to PPT's graded lane only with a grader AND a grade. Anything
   // else is its raw branch, so tcgdexOnly keeps every such call off the fuzzy PPT search.
-  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) });
+  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) && !japanese, japanese });
+  if (r.creditsExhausted) {
+    toastError('PokemonPriceTracker credits are used up for today. They reset at 8am Singapore time, nothing was changed.');
+    return;
+  }
   // Computed BEFORE the persist block assigns item.tcgdexId - afterwards
   // !item.tcgdexId is always false, the guard below would treat a freshly
   // resolved id as "nothing new" and the id would save locally but never
@@ -18440,18 +18843,19 @@ async function refreshPrice(id, table) {
     // untouched. Still stamp the local priced-today marker. Number() on both
     // sides because the edit modal stores marketPrice as a number while this
     // path writes strings - see applyPriceToGroup.
-    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew) {
+    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
       item._tcgdexPricedDate = today;
       saveData();
       toast('Price unchanged: S$' + newPrice + ' (' + r.source + ')');
       return;
     }
     item.marketPrice = newPrice;
+    item._tcgdexPricedDate = today; // a changed price is a check too, the free lane reads this marker and nothing else (_tcgdexPricedToday)
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({
-      date: new Date().toISOString().slice(0,10),
+      date: kjrUtcDay(),
       price: r.maxSgd,
-      unit: r.maxUsd ? 'USD' : 'EUR',
+      unit: _kjrPriceUnit(r),
       source: r.source,
       confidence: r.confidence
     });
@@ -18467,16 +18871,18 @@ async function refreshPrice(id, table) {
     // _runTcgdexLane stamps it, local and never synced, so the "needs a card number" list
     // and the queue both know the card was tried today. A request TCGdex never answered (network, 408/425/429/403/5xx) is not
     // a miss: it says nothing about the card, so it stamps nothing and the card is tried again on the next click or pass.
-    const couldNotTell = lane === 'tcgdex' && !!r.tcgdexTransient;
+    // The Japanese lane reads its own answer the same way: an HTTP error, a network failure or a missing exchange rate (pptTransient) says
+    // nothing about the card.
+    const couldNotTell = (lane === 'tcgdex' && !!r.tcgdexTransient) || (japanese && !!r.pptTransient);
     let changed = idIsNew;
-    if (lane === 'tcgdex' && !couldNotTell && item._tcgdexMissDate !== today) { item._tcgdexMissDate = today; changed = true; }
+    if ((lane === 'tcgdex' || japanese) && !couldNotTell && item._tcgdexMissDate !== today) { item._tcgdexMissDate = today; changed = true; }
     if (idIsNew) markDirty(table, id); // a resolved tcgdexId may still need to sync even on a miss
     if (changed) {
       saveData();
       if (table === 'singles') renderSingles();
       if (table === 'slabs') renderSlabs();
     }
-    if (couldNotTell) toastError('Could not reach TCGdex (' + (r.tcgdexError || 'network error') + '). Nothing was marked as unmatched, try again in a moment.');
+    if (couldNotTell) toastError('Could not reach ' + (japanese ? 'PokemonPriceTracker (' + (r.pptError || 'network error') : 'TCGdex (' + (r.tcgdexError || 'network error')) + '). Nothing was marked as unmatched, try again in a moment.');
     else toastError('No price found · TCGdex: ' + (r.tcgdexError||'?') + ' · PPT: ' + (r.pptError||'?'));
   }
 }
@@ -18487,7 +18893,7 @@ async function refreshPrice(id, table) {
 //   2. All singles (by costPrice desc, top 100 first each day)
 // Deduplication: fetch once per unique card name+grader+grade combo,
 //   copy the result to all other rows with the same name.
-// Daily limit: 100 lookups max (each unique fetch = 1 credit).
+// Daily budget: PPT credits, by plan (kjrDailyCredits below, 90 on the free plan).
 // Queue state persists in localStorage - resumes automatically next day.
 
 const QUEUE_KEY       = 'pokeinv_refresh_queue';
@@ -18496,14 +18902,130 @@ const QUEUE_DATE_KEY  = 'pokeinv_refresh_queue_date';
 // entries to keep localStorage well under quota across the whole inventory.
 // 365 covers a year of daily refreshes per card.
 const PRICE_HISTORY_MAX = 365;
-// DAILY_LIMIT - capped to PPT free-plan's safe envelope. Hitting 100/day at
-// 1.1s spacing tripped their abuse detector (50 429s in 5min = key block for
-// 24h). 30/day with 6s spacing is well under the free-plan rate limit and
-// matches PPT's "30 data points/day" hint. Upgrade PPT plan → bump this.
-const DAILY_LIMIT     = 30;
-// REQUEST_GAP_MS - pause between requests inside a batch. PPT's free plan
-// rate-limits individual requests; spacing them out prevents 429s entirely.
-const REQUEST_GAP_MS  = 6000;
+// PPT plan and the day's credit budget (v3.85). The vendor bills in credits (see the PokemonPriceTracker block above): the free plan
+// gives 100 a day and the paid plan 20,000. The queue spends against a budget held under that, 90 and 18,000, so a hand lookup, a
+// price check or a slightly short count never meets the vendor's refusal. Credits reset at 00:00 UTC, the UTC day dayCreditsUsed is
+// keyed by. Which plan the owner is on is a device setting, 'free' unless it says 'paid' (anything else reads as free). Nothing here
+// can know whether the subscription is really live: after a cancellation the vendor refuses at its own 100, the queue reads
+// "Daily credit limit exceeded" as a pause for the rest of the day, and the Settings text says to switch back to Free.
+// The gap between requests is the plan's too. The free plan keeps the old 6 seconds: hitting 100 a day at 1.1 seconds apart tripped
+// the vendor's abuse detector (50 429s in 5 minutes = key block for 24h), and 6 seconds is well under its rate limit. The paid plan
+// is a higher tier with its own limit, so it gets 1.1 seconds.
+const PPT_PLAN_KEY = 'pokeinv_ppt_plan';
+const PPT_PLANS = {
+  free: { label: 'Free', credits: 90, gapMs: 6000, quota: 100 },
+  paid: { label: 'Paid', credits: 18000, gapMs: 1100, quota: 20000 }
+};
+function kjrPptPlan() {
+  let v = null;
+  try { v = localStorage.getItem(PPT_PLAN_KEY); } catch (e) { /* storage blocked: the default plan */ }
+  return v === 'paid' ? 'paid' : 'free';
+}
+// Only 'free' and 'paid' are plans. Anything else is refused and changes nothing. A plan change gives today's vendor refusal a fresh
+// start, the owner may have just upgraded, so the next run asks the vendor again (a refusal costs nothing).
+function kjrPptSetPlan(plan) {
+  if (plan !== 'free' && plan !== 'paid') return false;
+  try { localStorage.setItem(PPT_PLAN_KEY, plan); } catch (e) { return false; }
+  const q = loadQueue();
+  if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
+  return true;
+}
+function kjrDailyCredits() { return PPT_PLANS[kjrPptPlan()].credits; }
+// A credit count as the owner reads it: 18,000, not 18000
+function kjrFmtCredits(n) { return Number(n).toLocaleString('en-GB'); }
+function kjrRequestGapMs() { return PPT_PLANS[kjrPptPlan()].gapMs; }
+// Credits the queue has spent on a UTC day. A queue saved before v3.85 counted PPT REQUESTS in dayCreditsUsed and carries no
+// creditsVersion: each of those was a limit=3 search, up to 3 credits, so it reads as three times its number. The conversion is
+// written back the next time the PPT lane spends (_kjrAdoptCredits), until then the stored queue is left exactly as it was.
+const KJR_CREDITS_PER_OLD_REQUEST = 3;
+function kjrCreditsUsedOn(q, day) {
+  const n = Number(q && q.dayCreditsUsed && q.dayCreditsUsed[day]);
+  if (!isFinite(n) || n <= 0) return 0;
+  return q.creditsVersion ? n : n * KJR_CREDITS_PER_OLD_REQUEST;
+}
+function _kjrAdoptCredits(q) {
+  if (!q || q.creditsVersion) return;
+  const days = q.dayCreditsUsed && typeof q.dayCreditsUsed === 'object' ? q.dayCreditsUsed : {};
+  Object.keys(days).forEach(d => { days[d] = (Number(days[d]) || 0) * KJR_CREDITS_PER_OLD_REQUEST; });
+  q.dayCreditsUsed = days;
+  q.creditsVersion = 1;
+}
+// Credits the PPT lane may still spend today: nothing once the vendor has refused for the day (q.creditsPausedDate), and nothing
+// when less than the cheapest search is left.
+function kjrCreditsLeft(q, day) {
+  if (q && q.creditsPausedDate === day) return 0;
+  const left = kjrDailyCredits() - kjrCreditsUsedOn(q, day);
+  return left >= PPT_SEARCH_CREDITS ? left : 0;
+}
+// A rebuilt queue starts with no progress but the day's credits are a fact about the vendor, not about the queue, so they travel with it.
+// Every way a queue is replaced goes through here: the Rebuild Queue button, the rebuild when the inventory grew, the first queue after a
+// schema mismatch discarded the old one, and one built after the queue was cleared. A queue that is thrown away (loadQueue on a schema
+// mismatch, clearQueue) leaves its credits in a small side record (_kjrStashCredits) for the queue that replaces it to pick up, so a
+// replacement made after the day's credits were spent starts with them spent, and makes no PPT request.
+const KJR_CREDITS_STASH_KEY = 'pokeinv_refresh_queue_credits';
+function _kjrStashCredits(q) {
+  if (!q || typeof q !== 'object') return;
+  try {
+    _kjrAdoptCredits(q);
+    localStorage.setItem(KJR_CREDITS_STASH_KEY, JSON.stringify({ dayCreditsUsed: q.dayCreditsUsed || {}, creditsPausedDate: q.creditsPausedDate || null }));
+  } catch (e) { /* the credits are bookkeeping, a queue is still discarded when they can not be kept */ }
+}
+function _kjrTakeStashedCredits() {
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem(KJR_CREDITS_STASH_KEY) || 'null'); } catch (e) { rec = null; }
+  try { localStorage.removeItem(KJR_CREDITS_STASH_KEY); } catch (e) { /* nothing to do */ }
+  return rec && typeof rec === 'object' && rec.dayCreditsUsed && typeof rec.dayCreditsUsed === 'object'
+    ? { dayCreditsUsed: rec.dayCreditsUsed, creditsVersion: 1, creditsPausedDate: rec.creditsPausedDate || null } : null;
+}
+function _kjrCarryCredits(fresh, old) {
+  if (!fresh) return fresh;
+  const from = old ? (_kjrAdoptCredits(old), old) : _kjrTakeStashedCredits();
+  if (old) _kjrTakeStashedCredits(); // the live queue has the newer count, a stash left by an earlier discard must not outlive it
+  if (!from) return fresh;
+  fresh.dayCreditsUsed = from.dayCreditsUsed || {};
+  fresh.creditsVersion = 1;
+  if (from.creditsPausedDate) fresh.creditsPausedDate = from.creditsPausedDate;
+  return fresh;
+}
+
+// ── The two days the pricing code keeps ──
+// The PPT lane's day is the UTC date (kjrUtcDay): the vendor's credits reset at 00:00 UTC, which is 08:00 in Singapore, so dayCreditsUsed
+// and creditsPausedDate must roll over on the VENDOR's clock or the queue would believe it has credits the vendor has already refused
+// (or none, for the first 8 hours after the reset). priceHistory dates are UTC dates too, the charts and kjrCheckedDays read them so.
+// The free TCGdex lane's day is the device's LOCAL calendar date (kjrLocalDay): TCGdex has no daily budget, "priced today", "missed today"
+// and "ran today" are things the owner reads off their own clock, and a UTC day made those roll over at 08:00 in Singapore, so an auto run
+// at 06:00 took last evening's pass for today's. It dates _tcgdexPricedDate, _tcgdexMissDate and lastTcgdexPass. A queue saved before
+// that change dated them in UTC, see _kjrFreeLaneDayMigrate.
+function kjrUtcDay(now) { return new Date(now == null ? Date.now() : now).toISOString().slice(0, 10); }
+function kjrLocalDay(now) {
+  const d = new Date(now == null ? Date.now() : now);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// 'YYYY-MM-DD' one calendar day before another, 'YYYY-MM-DD' in and out (UTC arithmetic on the date alone, so no clock or zone is involved)
+function _kjrDayBefore(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day));
+  if (!m) return day;
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] - 1)).toISOString().slice(0, 10);
+}
+// Before v3.85 the free lane dated its markers in UTC. A UTC date can equal today's LOCAL date although it was written on an earlier local
+// day (west of UTC, a card priced at 21:00 carries the next UTC date), and then the card would be skipped as "priced today" a day late. East of
+// UTC (Singapore) a UTC date is never ahead of the local one, so it can only cost one repeat request, never a skip. Either way the answer is
+// the same and cheap: the first run on a queue that does not say freeLaneDay: 'local' lowers every marker that is today's date or later to
+// the day before, once. Nothing equals today then, so the pass asks every card again and stamps what it asks in local dates. A marker keeps
+// its truthiness, so a card the banner lists as unmatched stays listed. Returns true when it changed anything (the caller saves).
+function _kjrFreeLaneDayMigrate(q, localDay) {
+  if (!q || q.freeLaneDay === 'local') return false;
+  const lower = d => (typeof d === 'string' && d >= localDay) ? _kjrDayBefore(localDay) : d;
+  ['singles', 'slabs'].forEach(t => (DB[t] || []).forEach(r => {
+    if (r._tcgdexPricedDate) r._tcgdexPricedDate = lower(r._tcgdexPricedDate);
+    if (r._tcgdexMissDate) r._tcgdexMissDate = lower(r._tcgdexMissDate);
+  }));
+  if (q.lastTcgdexPass) q.lastTcgdexPass = lower(q.lastTcgdexPass);
+  ['items', 'tcgdexRetry'].forEach(k => (Array.isArray(q[k]) ? q[k] : []).forEach(i => { if (i && i._tcgdexMissDate) i._tcgdexMissDate = lower(i._tcgdexMissDate); }));
+  q.freeLaneDay = 'local';
+  saveData();
+  return true;
+}
 // Bump whenever a change to buildRefreshQueue/_queueLaneFor/the tcgdex lane's
 // per-card fields would leave an already-persisted queue in a stale or
 // inconsistent shape (new lane values, new per-item fields the runner now
@@ -18537,6 +19059,7 @@ function loadQueue() {
   try { q = JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); } catch(e) { return null; }
   if (!q) return null;
   if (q.schemaVersion !== QUEUE_SCHEMA_VERSION) {
+    _kjrStashCredits(q); // the day's PPT credits are the vendor's count, the queue that replaces this one starts from them (_kjrCarryCredits)
     localStorage.removeItem(QUEUE_KEY);
     return null;
   }
@@ -18546,7 +19069,10 @@ function loadQueue() {
 // the queue's progress markers (cursor, misses-today) rebuild from scratch
 // next load, as already handled by loadQueue()'s schema-mismatch path above.
 function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) { console.warn('[queue] refresh-queue save failed:', e); } }
-function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY); }
+function clearQueue() {
+  _kjrStashCredits(loadQueue()); // Clear drops the progress, not the credits already spent today
+  localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY);
+}
 
 // Which lane will price this queue item? Slabs (graded) never have a TCGdex
 // price at all, so they're always 'ppt' (their PokemonPriceTracker graded
@@ -18562,25 +19088,59 @@ function clearQueue() { localStorage.removeItem(QUEUE_KEY); localStorage.removeI
 // name-only PPT search is the inaccurate matching this rework moved away
 // from, and a numberless EN name is often a custom/joke card with no real
 // market at all ("Umbreon Custom Card"), so sending it to PPT would waste
-// the 30/day slab budget on an unmatchable search. After this rule the
-// 'ppt' lane contains ONLY slabs - every raw single is either 'tcgdex' or
-// 'manual'. A numberless EN card is still surfaced to the user though (see
+// the daily slab credits on an unmatchable search. After this rule the
+// 'ppt' lane contains slabs and (v3.85, once the Japanese lane is switched on) Japanese singles with a number - every
+// other raw single is either 'tcgdex' or 'manual'. A numberless EN card is still surfaced to the user though (see
 // _kjrUnresolvedSingles), since adding a card number is a real fix that
 // moves it into the tcgdex lane. A single the owner flagged as a custom card
 // (kjrIsCustomCard, the synced customCard field) is 'manual' too, whatever its
 // name, language or a cached tcgdexId say: zero API calls, no miss stamps, and
 // it leaves the "could not be matched" list. The flag only says "do not
 // auto-match, do not nag", the card keeps whatever market price was typed in.
+// v3.85 adds one exception to "non-EN is manual": a JAPANESE single with a card number
+// is the 'ppt' lane's Japanese lane (_kjrJapaneseLane), priced from the vendor's Japanese
+// catalogue by a strict one-card match. It ships OFF (PPT_JA_LANE_ENABLED), and while it is
+// off every non-EN single is manual, exactly as in v3.84. Chinese, Indonesian, Korean and the
+// rest stay manual with it on too (_kjrPptJaLangs says which). A slab is a row whose
+// grader and grade read as a real grader and grade (_kjrSlabGrade), so "PSA 10"
+// typed into the grade field alone is a slab too.
 function _queueLaneFor(item) {
-  if (item.grader) return 'ppt'; // slab - TCGdex has no graded prices, language rule doesn't apply
+  if (item.grader || _kjrSlabGrade(item)) return 'ppt'; // slab - TCGdex has no graded prices, language rule doesn't apply
   if (kjrIsCustomCard(item)) return 'manual'; // custom card: priced by hand, never matched
   const lang = (item.language || 'EN').toString().trim().toUpperCase();
   const isEnglish = lang === 'EN' || lang === '';
-  if (!isEnglish) return 'manual'; // JP/CN/ID/KR/anything non-EN - never auto-priced, zero API calls
+  if (!isEnglish) return _kjrJapaneseLane(item) ? 'ppt' : 'manual'; // Japanese with a number, with the lane on: the Japanese lane. Any other non-EN: never auto-priced, zero API calls
   if (item.tcgdexId) return 'tcgdex'; // already resolved, skip straight to the free lane
   const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
   return hasNameAndNumber ? 'tcgdex' : 'manual'; // no number - manual, not a PPT fuzzy-search fallback
 }
+
+// The canonical { grader, grade } of a slab row ('PSA', '10'), or null unless BOTH read. Only the grader and grade fields are read, never
+// the name or the notes: _resolveGrader looks for a grader code anywhere in what it is given and a stray "ACE" or a card number would
+// pass for one. The shapes it accepts are the ones the Slabs table has always held ("PSA" and "10", "PSA 10" in either field, "psa10").
+function _kjrSlabGrade(item) {
+  if (!item) return null;
+  const r = _resolveGrader(item.grader, item.grade);
+  return r.grader && r.grade ? { grader: r.grader, grade: r.grade } : null;
+}
+// Is this non-custom single a Japanese-lane card: a language the Japanese lane covers (_kjrPptJaLangs: Japanese, and none while the lane is
+// off) and a name that carries a card number to match on. Nothing else about the row matters, an art id on tcgdexId does not move it.
+function _kjrJapaneseLane(item) {
+  if (!item || kjrIsCustomCard(item)) return false;
+  const lang = (item.language || 'EN').toString().trim().toUpperCase();
+  return _kjrPptJaLangs().includes(lang) && !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+}
+// Why a single is on the manual lane, in the words the card inspector and the Refresh price toast share. A Japanese card without a number
+// is the same fix as an English one, add the number and it joins the Japanese lane (with the lane on, otherwise it reads like any other language).
+function _kjrManualReason(item) {
+  if (kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)';
+  const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  if (lang !== 'EN' && !_kjrPptJaLangs().includes(lang)) return 'Manual price, no free source for this language';
+  return 'Add or fix the card number for exact pricing';
+}
+// The currency a priced result came in, for the history entry: its own unit when it names one, else USD when it has a USD amount, else EUR
+// (TCGdex's two). A price in any other currency carries its unit (the Japanese lane, only when the vendor names one).
+function _kjrPriceUnit(r) { return (r && r.unit) || (r && r.maxUsd ? 'USD' : 'EUR'); }
 
 // Build a fresh queue from current DB state
 function buildRefreshQueue() {
@@ -18590,7 +19150,12 @@ function buildRefreshQueue() {
   const slabs = DB.slabs
     .filter(i => (i.status||'Available') === 'Available')
     .sort((a,b) => (parseFloat(b.costPrice)||0) - (parseFloat(a.costPrice)||0))
-    .map(i => ({ id: i.id, table: 'slabs', name: i.name, grader: i.grader||null, grade: i.grade||null, language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0 }));
+    .map(i => {
+      // The grader and grade as the resolver reads them ('PSA', '10') when both read, so "PSA 10" in the grade field alone queues as the PPT
+      // slab it is and the same slab spelled two ways dedupes into one lookup. Anything the resolver can not read keeps its stored values.
+      const sg = _kjrSlabGrade(i);
+      return { id: i.id, table: 'slabs', name: i.name, grader: sg ? sg.grader : (i.grader||null), grade: sg ? sg.grade : (i.grade||null), language: i.language||null, tcgdexId: i.tcgdexId||null, costPrice: parseFloat(i.costPrice)||0 };
+    });
 
   // Singles: sorted by costPrice desc
   const singles = DB.singles
@@ -18642,6 +19207,8 @@ function buildRefreshQueue() {
 
   return {
     schemaVersion: QUEUE_SCHEMA_VERSION, // loadQueue() discards+rebuilds on a mismatch - see the constant's comment
+    freeLaneDay: 'local',  // the free lane dates its markers in the device's local day (kjrLocalDay), an older queue has no such key
+    creditsVersion: 1,     // dayCreditsUsed counts PPT credits (an older queue counted requests, see kjrCreditsUsedOn)
     items: ordered,        // only primaries, each with copyTargets[]
     cursor: 0,             // index of next PPT-lane item to fetch (tcgdex lane runs independently, see _runRefreshQueueBody)
     totalItems: ordered.length,
@@ -18657,16 +19224,57 @@ function buildRefreshQueue() {
 function getQueueStatus() {
   const q = loadQueue();
   if (!q) return null;
-  const today = new Date().toISOString().slice(0,10);
-  const usedToday = q.dayCreditsUsed?.[today] || 0;
+  const today = kjrLocalDay(); // the free lane's day
+  const utcDay = kjrUtcDay();   // the PPT lane's day
+  const usedToday = kjrCreditsUsedOn(q, utcDay); // credits
   const remaining = q.items.length - q.cursor;
-  const daysLeft  = Math.ceil(remaining / DAILY_LIMIT);
-  return { q, usedToday, remaining, daysLeft, today };
+  // days of credits the cards still to do will take: what they are estimated to cost (a slab 6, a Japanese single 3) against the day's budget
+  const need = q.items.slice(q.cursor).filter(i => i.lane !== 'tcgdex').reduce((sum, i) => sum + _pptEstimateCredits(i), 0);
+  const daysLeft  = Math.ceil(need / kjrDailyCredits());
+  return { q, usedToday, remaining, daysLeft, today, utcDay };
+}
+
+// Add to the PPT lane what the live inventory says belongs there and the queue does not hold. Called at the start of every run
+// (runRefreshQueue), so a queue built before the Japanese lane existed, or before a card was given a number or its grade, still gets that
+// card priced without a rebuild. Strictly additive: entries already in the queue, the cursor, the credits spent and the cards done are
+// untouched, the new entries go on the end, and a copy of a card the queue already holds stays a copy. Returns true when it added any, in
+// which case the queue is no longer complete and its row count is brought up to date (so the "inventory grew" rebuild does not fire for
+// rows this has just taken in).
+function _pptLaneTopUp(q) {
+  if (!q || !Array.isArray(q.items)) return false;
+  const fresh = buildRefreshQueue();
+  const held = new Set();
+  q.items.forEach(i => {
+    if (!i || i.lane === 'tcgdex') return; // a free-lane entry is dropped by the next pass, it holds nothing for the PPT lane
+    held.add(i.table + ':' + i.id);
+    (i.copyTargets || []).forEach(t => held.add(t.table + ':' + t.id));
+  });
+  const add = fresh.items
+    .filter(i => i.lane === 'ppt' && !held.has(i.table + ':' + i.id))
+    .map(i => Object.assign({}, i, { copyTargets: (i.copyTargets || []).filter(t => !held.has(t.table + ':' + t.id)) }));
+  if (!add.length) return false;
+  q.items = q.items.concat(add);
+  q.totalItems = q.items.length;
+  q.totalRows = Math.max(q.totalRows || 0, fresh.totalRows);
+  q.completed = false;
+  return true;
+}
+
+// Stamp (or clear, with null) the "the price lookup found no unique card" marker for a Japanese-lane entry: on the queue entry, its row and
+// the rows that copy it, all of which are the same card. It is the one local, never synced marker the free lane uses too
+// (_tcgdexMissDate), which is what puts the card in the Singles banner (_kjrUnresolvedSingles). A custom card is left alone.
+function _kjrSetJapaneseMiss(item, val) {
+  item._tcgdexMissDate = val;
+  [{ id: item.id, table: item.table }].concat(item.copyTargets || []).forEach(t => {
+    const row = DB[t.table] && DB[t.table].find(x => x.id === t.id);
+    if (row && !kjrIsCustomCard(row)) row._tcgdexMissDate = val;
+  });
 }
 
 // Apply a fetched price to a primary item and all its copy targets
 function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit, source, confidence, resolvedTcgdexId) {
-  const today = new Date().toISOString().slice(0,10);
+  const today = kjrUtcDay(); // priceHistory dates are UTC dates, the charts and kjrCheckedDays read them so
+  const checkedDay = kjrLocalDay(); // the free lane's "priced today" marker is the device's local day (see kjrLocalDay)
   const histEntry = { date: today, price: priceSgd, unit, source, confidence };
 
   const applyToItem = (id, table) => {
@@ -18688,11 +19296,16 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
     // function itself writes, so a strict === against newPrice (always a
     // string) never matched a hand-edited row - Number() on both sides
     // compares the actual value regardless of which type wrote it.
-    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew) {
-      item._tcgdexPricedDate = today;
+    // A stale estimate (kjrIsStaleEstimate) is never a no-op: an old fuzzy match that happens to equal the new price still needs the history
+    // entry, it is what clears the flag, so the price is counted again.
+    if (Number(item.marketPrice) === Number(newPrice) && !idIsNew && !kjrIsStaleEstimate(item)) {
+      item._tcgdexPricedDate = checkedDay;
       return;
     }
     item.marketPrice = newPrice;
+    // A price that changed is a check too. The marker is stamped on every write, not only the same-value one: it is the only evidence the
+    // free lane reads for "priced today" (_tcgdexPricedToday), a history date is a UTC date and says nothing certain about the local day.
+    item._tcgdexPricedDate = checkedDay;
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push(histEntry);
     if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
@@ -18745,8 +19358,11 @@ async function runRefreshQueue(manual = false) {
   // successful run.
   if (manual) {
     const existing = loadQueue();
-    if (existing && existing.lastPausedReason) {
+    // A manual run also asks the vendor again after a refusal for credits: a refused request costs nothing, and the plan or the account
+    // may have changed since. If it refuses again the queue pauses again.
+    if (existing && (existing.lastPausedReason || existing.creditsPausedDate)) {
       existing.lastPausedReason = null;
+      existing.creditsPausedDate = null;
       saveQueue(existing);
     }
   }
@@ -18764,11 +19380,20 @@ async function runRefreshQueue(manual = false) {
       if (manual) toast('No inventory yet - add some Singles or Slabs first');
       return;
     }
-    q = buildRefreshQueue();
+    q = _kjrCarryCredits(buildRefreshQueue(), null); // after a discard (schema mismatch, Clear) the new queue starts from the credits already spent today
     saveQueue(q);
     if (manual) toast('Built queue: ' + q.totalItems + ' unique cards · starting first batch');
   }
-  const today = new Date().toISOString().slice(0,10);
+  // Two days, on purpose (see kjrLocalDay): the free lane's is the device's local date, the PPT lane's is the vendor's UTC date
+  const today = kjrLocalDay();
+  const utcDay = kjrUtcDay();
+  // a queue saved before the free lane's day went local gets its markers lowered once, so no UTC-dated one can pass for today's
+  if (_kjrFreeLaneDayMigrate(q, today)) saveQueue(q);
+
+  // A card the PPT lane should price that the queue does not hold yet (a Japanese single the queue pre-dates, a slab whose grade only reads
+  // now, a row added or given a number since) is added at the end, without rebuilding anything or touching the cursor, the credits spent
+  // or the cards already done. A complete queue with something added is no longer complete.
+  if (_pptLaneTopUp(q)) saveQueue(q);
 
   // If the queue is complete but inventory has changed since (new items
   // added), rebuild it automatically so the auto-refresh keeps pricing
@@ -18777,7 +19402,7 @@ async function runRefreshQueue(manual = false) {
     const currentRowCount = (DB.singles?.filter(i=>(i.status||'Available')==='Available').length || 0)
                           + (DB.slabs  ?.filter(i=>(i.status||'Available')==='Available').length || 0);
     if (currentRowCount > q.totalRows) {
-      q = buildRefreshQueue();
+      q = _kjrCarryCredits(buildRefreshQueue(), q); // a rebuild resets the progress, not the credits already spent today
       saveQueue(q);
       if (manual) toast('Inventory grew - rebuilt queue (' + q.totalItems + ' cards)');
     } else if (manual || _tcgdexLaneHasWork(q, today)) {
@@ -18792,7 +19417,7 @@ async function runRefreshQueue(manual = false) {
       // Manual "run now" always re-enters regardless.
       _queueRunning = true;
       try {
-        await _runRefreshQueueBody(q, 0, manual, today, q.dayCreditsUsed?.[today] || 0);
+        await _runRefreshQueueBody(q, 0, manual, utcDay, kjrCreditsUsedOn(q, utcDay), today);
       } finally {
         _queueRunning = false;
         hideSyncProgress();
@@ -18804,8 +19429,8 @@ async function runRefreshQueue(manual = false) {
     }
   }
 
-  const usedToday = q.dayCreditsUsed?.[today] || 0;
-  const creditsLeft = DAILY_LIMIT - usedToday;
+  const usedToday = kjrCreditsUsedOn(q, utcDay);
+  const creditsLeft = kjrCreditsLeft(q, utcDay); // 0 when the budget is spent or the vendor has refused for today
 
   if (creditsLeft <= 0) {
     // PPT's daily budget is spent, but TCGdex is free and independent of it -
@@ -18817,7 +19442,7 @@ async function runRefreshQueue(manual = false) {
     // here beyond the run itself.
     _queueRunning = true;
     try {
-      await _runRefreshQueueBody(q, 0, manual, today, usedToday);
+      await _runRefreshQueueBody(q, 0, manual, utcDay, usedToday, today);
     } finally {
       _queueRunning = false;
       hideSyncProgress();
@@ -18835,7 +19460,7 @@ async function runRefreshQueue(manual = false) {
   // no-op (hideSyncProgress no-ops if the bar is already gone, and setting
   // a boolean to its current value does nothing).
   try {
-    await _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday);
+    await _runRefreshQueueBody(q, creditsLeft, manual, utcDay, usedToday, today);
   } finally {
     _queueRunning = false;
     hideSyncProgress();
@@ -18859,13 +19484,11 @@ const TCGDEX_GAP_MS = 250;
 function _tcgdexPricedToday(item, today) {
   const row = DB[item.table]?.find(i => i.id === item.id);
   if (!row || !row.marketPrice) return false;
-  // A same-value re-price (see applyPriceToGroup) skips the history append
-  // on purpose, so check this local non-synced marker first, before falling
-  // back to the history date below.
-  if (row._tcgdexPricedDate === today) return true;
-  const hist = Array.isArray(row.priceHistory) ? row.priceHistory : [];
-  const last = hist[hist.length - 1];
-  return !!(last && last.date === today);
+  // today is the free lane's day, the device's LOCAL date (kjrLocalDay), and the local non-synced marker is the evidence: every write
+  // stamps it (applyPriceToGroup, refreshPrice, bulkRefreshPrices), a same-value re-price included. The last priceHistory date is NOT
+  // read any more: it is a UTC date, and a UTC date equals today's local date on an earlier local day in every zone west of UTC, so
+  // it could skip a card priced the evening before. A card priced on another device re-asks TCGdex once here, which costs nothing.
+  return row._tcgdexPricedDate === today;
 }
 
 // The mirror of _tcgdexPricedToday for misses (v3.75). _runTcgdexLane stamps a miss on the
@@ -19073,7 +19696,10 @@ function _kjrRenderAfterPricing() {
   if (dash && dash.classList && dash.classList.contains('active') && typeof renderDashboard === 'function') renderDashboard();
 }
 
-async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
+// pptDay is the PPT lane's day (the UTC date, the vendor's clock) and usedToday the credits spent on it. localDay is the free lane's day
+// (the device's local date), left out it is read from the clock. See kjrLocalDay for why the two differ.
+async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, localDay) {
+  if (!localDay) localDay = kjrLocalDay();
   // Free lane first, full pass, decoupled from PPT's cap/pause below, and it
   // runs EVERY DAY: its cards come from the live inventory (_tcgdexLaneItems),
   // not from q.items. Every free-lane card gets a definitive outcome this pass
@@ -19086,7 +19712,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   // must see PPT entries only. q.cursor is adjusted by however many
   // already-passed items sat before it, so PPT-lane progress made on earlier
   // runs today is preserved exactly. Nothing here changes dayCreditsUsed.
-  const tcgdexResult = await _runTcgdexLane(q, manual, today);
+  const tcgdexResult = await _runTcgdexLane(q, manual, localDay);
   if (tcgdexResult.ran) {
     // Stash the outcome on the queue itself - the status panel and dashboard
     // chip read these persisted counts (they can't count q.items, the lane is
@@ -19095,6 +19721,11 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
     // so a second run on the same day reads 120/120 and not 0/120.
     q.lastTcgdexTotal = tcgdexResult.total;
     q.lastTcgdexDone  = tcgdexResult.done + (tcgdexResult.alreadyPriced || 0);
+  } else if (!tcgdexResult.paused && tcgdexResult.total === 0) {
+    // A pass with no free-lane card at all still stamps lastTcgdexPass with today, so the counts it leaves must be today's too: 0 of 0.
+    // Left alone they were the last busy day's, and the Settings tile read "12/12 today" for a day nothing was checked.
+    q.lastTcgdexTotal = 0;
+    q.lastTcgdexDone = 0;
   }
   const beforeCursor = q.items.slice(0, q.cursor).filter(i => i.lane === 'tcgdex').length;
   q.items = q.items.filter(i => i.lane !== 'tcgdex');
@@ -19102,8 +19733,8 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   q.totalItems = q.items.length;
   saveQueue(q); // persist lastTcgdexPass + splice + any resolved tcgdexId/prices immediately
 
-  // PPT lane: unchanged cursor/credit mechanics - q.items is now purely the
-  // ppt-lane array (slabs, then PPT-bound singles), so no other change needed
+  // PPT lane: the cursor mechanics are unchanged, the budget is in credits (v3.85) - q.items is now purely the
+  // ppt-lane array (slabs, then the Japanese singles), so no other change needed
   // to the batch-slice/tail-rebuild logic below.
   // NOTE: an empty batch here has two different causes that must NOT be
   // conflated - (a) q.cursor has genuinely walked past every ppt-lane item
@@ -19113,7 +19744,10 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   // marking (b) complete would wrongly stop future PPT runs today AND
   // tomorrow until a manual rebuild, because q.completed short-circuits
   // runRefreshQueue before it ever reaches this function.
-  const batch = q.items.slice(q.cursor, q.cursor + creditsLeft);
+  const limit = kjrDailyCredits();
+  const gapMs = kjrRequestGapMs();
+  // as many cards as the credits left could pay for at the cheapest search, a slab costs more and the loop below checks each card
+  const batch = q.items.slice(q.cursor, q.cursor + Math.floor(creditsLeft / PPT_SEARCH_CREDITS));
   if (!batch.length) {
     const pptLaneExhausted = q.cursor >= q.items.length; // (a) - genuinely nothing left
     if (pptLaneExhausted) q.completed = true;
@@ -19124,8 +19758,10 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
     if (tcgdexResult.ran && (tcgdexResult.done || tcgdexResult.failedData)) _kjrRenderAfterPricing();
     const tcgdexNote = _tcgdexNote(tcgdexResult);
     if (manual) {
-      if (pptLaneExhausted) toast('All cards refreshed!' + tcgdexNote + ' Reset queue to start a new cycle.');
-      else toast('PPT daily limit reached.' + tcgdexNote + ' PPT resumes tomorrow.');
+      // the free lane's note ends the first sentence, the hint after it is about the PPT lane only: it is one cycle per queue, and the
+      // Rebuild Queue button in Settings (the one place a queue is reset) starts the next. The free lane needs nothing, it runs every day.
+      if (pptLaneExhausted) toast('All cards refreshed!' + tcgdexNote + ' · Rebuild the queue to start a new Search (PPT) cycle.');
+      else toast('PPT credits are used up for today.' + tcgdexNote + ' PPT resumes tomorrow.');
     }
     return;
   }
@@ -19141,16 +19777,19 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   //     don't grind through the whole queue when the API is down.
   let done = 0, failedData = 0, failedTransport = 0, copied = 0;
   let consecTransport = 0;
-  let creditsSpent = 0;         // real PPT data-returning requests billed today (a fallback card can cost 2)
+  let creditsSpent = 0;         // PPT credits the answers of this batch cost (a slab search is up to 6, a Japanese single up to 3, a fallback search adds its own)
   const errorTally = {};        // { 'HTTP 429': 17, 'no match': 3 ... }
   const advancedItems = [];     // items whose cursor position we'll commit
   const retryItems    = [];     // items kept for tomorrow (transport-failed)
   const TRANSPORT_FAIL_PAUSE = 5; // pause after 5 in a row
   const total = batch.length;
   let pausedReason = null;
+  let creditsRefused = false;   // the vendor said "Daily credit limit exceeded": a pause until the reset, no card is at fault
+  let budgetStop = false;       // what is left of today's credits will not pay for the next card
 
   // Classify a fetchMarketPrice() result:
   //   'ok'        → priced
+  //   'credits'   → the vendor refused for credits: pause for today, the card is neither missed nor skipped (cursor stays)
   //   'data'      → both sources said "no match" or "no price data"  (burn credit, advance)
   //   'transport' → HTTP error, rate limit, network failure          (don't burn credit, retry)
   // Sentinels from sources that never actually attempted a request: a
@@ -19165,6 +19804,8 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
   function classifyResult(r) {
     if (r.maxSgd) return 'ok';
+    if (r.creditsExhausted) return 'credits'; // decided by the flag, never by reading the error text
+    if (r.pptTransient) return 'transport';   // the Japanese lane's own verdict: the answer never came, or no exchange rate yet
     // Drop non-attempt sentinels. If we don't, a disabled source's "disabled"
     // string poisons the every(isTransport) check below: a real PPT "HTTP 403"
     // (key blocked) paired with "disabled" would look like a mixed result and
@@ -19185,18 +19826,35 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
 
   for (let i = 0; i < batch.length; i++) {
     const item = batch[i];
+    // The queue entry can be older than the row. A card flagged custom since the queue was built (or deleted) is not asked about:
+    // asking would spend credits on a price applyPriceToGroup then refuses to write. It counts as done for this cycle.
+    const live = DB[item.table] && DB[item.table].find(r => r.id === item.id);
+    if (!live || (item.table === 'singles' && kjrIsCustomCard(live))) { advancedItems.push(item); continue; }
+    // A raw single in the PPT lane is a Japanese one (_queueLaneFor), a slab carries its grader and grade. One the Japanese lane does not take
+    // is not asked about either: the lane is off (PPT_JA_LANE_ENABLED), the card is not Japanese, or its number is gone. _kjrJapaneseLane is the
+    // one rule and a queue entry can be older than it (a queue saved while the lane was on). It sends no request and passes no verdict on the
+    // card, so nothing is stamped as unmatched.
+    const japanese = item.table === 'singles' && !item.grader;
+    if (japanese && !_kjrJapaneseLane(live)) { advancedItems.push(item); continue; }
+    // Stop before a request today's credits can not pay for. A slab is a search with eBay (6), a Japanese single a plain one (3).
+    if (creditsLeft - creditsSpent < _pptEstimateCredits(item)) {
+      for (let j = i; j < batch.length; j++) retryItems.push(batch[j]);
+      budgetStop = true;
+      break;
+    }
     showSyncProgress(done + failedData + failedTransport, total,
       'Queue: ' + (q.cursor + done + failedData + failedTransport + 1) + '/' + q.totalItems +
-      ' · Day credit ' + Math.min(usedToday + creditsSpent + 1, DAILY_LIMIT) + '/' + DAILY_LIMIT);
+      ' · Credits used today ' + kjrFmtCredits(usedToday + creditsSpent) + ' of ' + kjrFmtCredits(limit));
 
-    const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: item.tcgdexId||null });
-    creditsSpent += r.creditsUsed || 0; // bill real PPT requests, not cards
+    const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: item.tcgdexId||null, japanese });
+    creditsSpent += r.creditsUsed || 0; // bill what the answers cost, in credits (their own metadata, else the estimate)
     // Persist a freshly-resolved id on the queue's own item copy so a
     // requeue (retry/tomorrow) skips the resolve round-trip next time.
     if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
     const kind = classifyResult(r);
     if (kind === 'ok') {
-      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, r.maxUsd ? 'USD' : 'EUR', r.source, r.confidence, r.resolvedTcgdexId);
+      if (japanese) _kjrSetJapaneseMiss(item, null); // priced now, before the apply so that its save keeps the clearing
+      applyPriceToGroup(item.id, item.table, item.copyTargets, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence, r.resolvedTcgdexId);
       copied += item.copyTargets?.length || 0;
       done++;
       consecTransport = 0;
@@ -19206,6 +19864,16 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
       consecTransport = 0;
       tallyErrors(r);
       advancedItems.push(item); // burn the credit + advance cursor - name is wrong
+      // A Japanese card the vendor has no single card for is listed in the Singles "could not be matched" banner like an English one
+      // TCGdex has none for. Never a guessed price: nothing was written. The save after this branch keeps the stamp.
+      if (japanese) _kjrSetJapaneseMiss(item, localDay);
+    } else if (kind === 'credits') {
+      // The vendor said the day's credits are gone. Not a data miss (the card is fine) and not a transport failure (nothing to count
+      // towards the five in a row): this card and everything after it stay queued exactly where they are, the cursor does not move past
+      // them, nothing is stamped, and no further request is made today.
+      creditsRefused = true;
+      for (let j = i; j < batch.length; j++) retryItems.push(batch[j]);
+      break;
     } else { // transport
       failedTransport++;
       consecTransport++;
@@ -19234,14 +19902,15 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
       }
     }
     saveData();
-    // Stop once today's real PPT request budget is spent. A fallback search
-    // makes a card cost 2 requests, so the card count (batch size) isn't the
-    // ceiling - actual requests are. Remaining cards stay queued for tomorrow.
-    if (i < batch.length - 1 && usedToday + creditsSpent >= DAILY_LIMIT) {
+    // Stop once what is left of today's credits can not pay for the next card. A slab search costs up to 6 and a fallback search adds
+    // its own, so the card count (batch size) isn't the ceiling, the credits are. Remaining cards stay queued for tomorrow.
+    const next = batch[i + 1];
+    if (next && creditsLeft - creditsSpent < _pptEstimateCredits(next)) {
       for (let j = i + 1; j < batch.length; j++) retryItems.push(batch[j]);
+      budgetStop = true;
       break;
     }
-    await new Promise(res => setTimeout(res, REQUEST_GAP_MS)); // respect PPT free-plan rate limit
+    await new Promise(res => setTimeout(res, gapMs)); // respect the plan's rate limit (6 seconds free, 1.1 paid)
   }
 
   // Rebuild the queue tail: items we advanced past + items we kept for
@@ -19254,13 +19923,14 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   q.items = [...head, ...advancedItems, ...retryItems, ...tail];
   q.cursor = q.cursor + advancedItems.length; // only advance past items we accept as "done for now"
   q.totalItems = q.items.length;
-  if (!q.dayCreditsUsed) q.dayCreditsUsed = {};
-  // Bill the real PPT requests made (creditsSpent), not the card count. A card
-  // that needed the fallback search consumed 2 requests; a transport failure
-  // consumed 0 (PPT refused with 429/403 or crashed with 5xx - not metered,
-  // and we retry tomorrow anyway). Counting cards would under-bill fallbacks
-  // and risk silently overrunning PPT's free-plan daily limit.
-  q.dayCreditsUsed[today] = (q.dayCreditsUsed[today] || 0) + creditsSpent;
+  // Bill the PPT credits the answers cost (creditsSpent), not the card count. A slab search is up to 6, a Japanese single up to 3, a card
+  // that needed the fallback search paid for two searches, and a transport failure or a refusal for credits cost 0 (PPT refused with
+  // 429/403 or crashed with 5xx or said the credits are gone - not metered, and we retry tomorrow anyway). Counting cards would
+  // under-bill and risk silently overrunning PPT's daily limit. A queue saved by an older version counted requests: its figures are
+  // turned into credits here, once (_kjrAdoptCredits), before this batch is added.
+  _kjrAdoptCredits(q);
+  q.dayCreditsUsed[pptDay] = (q.dayCreditsUsed[pptDay] || 0) + creditsSpent;
+  if (creditsRefused) q.creditsPausedDate = pptDay; // nothing more is asked of the vendor today, it resets at 00:00 UTC (8am Singapore)
   if (q.cursor >= q.items.length) q.completed = true;
   // Stamp the last error reason so the dashboard / settings panel can
   // surface it instead of just "100 failed".
@@ -19282,7 +19952,8 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
   const errSummary  = Object.entries(errorTally).sort((a,b) => b[1]-a[1]).slice(0,2)
                             .map(([err,n]) => n + '× ' + err).join(', ');
   const diagHint =
-      pausedReason                          ? ' · ⏸ paused: ' + pausedReason + ' - retrying tomorrow'
+      creditsRefused                        ? ' · ⏸ PPT credits are used up for today, pricing resumes after the reset (8am Singapore time)'
+    : pausedReason                          ? ' · ⏸ paused: ' + pausedReason + ' - retrying tomorrow'
     : failedTransport >= 5 && done === 0    ? ' · API looks down - check your keys in Settings, then API settings'
     : /401|403|invalid|unauthor/i.test(errSummary)
                                             ? ' · ⚠ key invalid - check Settings, then API settings'
@@ -19294,7 +19965,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
     (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') +
     diagHint +
     (q.completed ? ' · ✅ Complete!' : ' · ' + (q.items.length - q.cursor) + ' remaining' +
-                                       (retryItems.length ? ' (' + retryItems.length + ' kept for retry)' : ''));
+                                       (retryItems.length ? ' (' + retryItems.length + (budgetStop || creditsRefused ? ' waiting for tomorrow)' : ' kept for retry)') : ''));
   toast(msg, 7000);
 
   // Refresh settings panel if open
@@ -19305,16 +19976,18 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, today, usedToday) {
 // Raw singles that are Available and in a manual-only language (anything
 // non-English: JP/CN/ID/KR/...) - separate from "unresolved" below because
 // there's no fix available on the pricing side at all, by product design
-// (English-only auto-pricing, see _queueLaneFor) rather than a per-card data
+// (see _queueLaneFor) rather than a per-card data
 // problem. Named for what it actually checks now (every non-EN language,
 // matching _queueLaneFor's 'manual' lane exactly) - was briefly
 // "_kjrChineseUnpriceable" mid-rework when the check was CN-only, renamed
 // once it broadened so a JP/ID/KR card never surfaces as "Chinese" in the UI.
+// A Japanese single with a card number is no longer one of them once the Japanese lane is switched on (v3.85, PPT_JA_LANE_ENABLED, the
+// lane prices it), one without a number still is. While the lane is off, every non-English single is one of them, as in v3.84.
 function _kjrManualLangCards() {
   return (DB.singles || []).filter(i => {
     if ((i.status||'Available') !== 'Available') return false;
     const lang = (i.language||'EN').toString().trim().toUpperCase();
-    return lang !== 'EN' && lang !== '';
+    return lang !== 'EN' && lang !== '' && !_kjrJapaneseLane(i);
   });
 }
 
@@ -19323,8 +19996,9 @@ function _kjrManualLangCards() {
 // name+number to resolve a TCGdex id at all, or a number WAS extracted but
 // today's TCGdex lookup found no unique match (_tcgdexMissDate stamped by
 // _runTcgdexLane's self-heal loop, cleared automatically once the card is
-// priced or the date rolls over). Never counts JP/CN/ID/KR cards - those are
-// manual by design (_kjrManualLangCards above), not "unresolved". Mirrors
+// priced or the date rolls over). Never counts KR or other manual-language cards - those are
+// manual by design (_kjrManualLangCards above), not "unresolved". A Japanese card (with the lane on)
+// is counted only once the Japanese lane found no unique match for it. Mirrors
 // _queueLaneFor's resolvability check for the no-number case. A custom card
 // (kjrIsCustomCard) is never unresolved, whatever its name or a stale miss
 // stamp say: the owner told us it has no match by design, so it must not count
@@ -19333,9 +20007,12 @@ function _kjrUnresolvedSingles() {
   return (DB.singles || []).filter(i => {
     if ((i.status||'Available') !== 'Available') return false;
     if (kjrIsCustomCard(i)) return false; // priced by hand on purpose, never nags
-    if (i.tcgdexId) return false; // already resolved
     const lang = (i.language||'EN').toString().trim().toUpperCase();
-    if (lang !== 'EN' && lang !== '') return false; // manual language, not "fixable" by adding a number
+    // A Japanese single the Japanese lane asked about and the vendor had no single card for (v3.85, the lane stamps the same local marker
+    // the free lane does) is unresolved too. Its art id on tcgdexId says nothing about its price, so it does not clear it. One that was
+    // never asked, or has no card number, or any non-English single while the lane is off, is manual like any other non-English card.
+    if (lang !== 'EN' && lang !== '') return _kjrJapaneseLane(i) && !!i._tcgdexMissDate;
+    if (i.tcgdexId) return false; // already resolved
     if (i._tcgdexMissDate) return true; // had a number, TCGdex tried today and found no unique match
     return !(_baseCardName(i.name) && _tcgdexNumber(i.name));
   });
@@ -19349,7 +20026,7 @@ function _renderQueueStatus() {
     el.innerHTML = '<div style="color:var(--text3);font-size:12px">No queue built yet.</div>';
     return;
   }
-  const { q, usedToday, remaining, daysLeft, today } = s;
+  const { q, usedToday, remaining, daysLeft, today, utcDay } = s; // today: the free lane's (local) day, utcDay: the PPT lane's
   // q.items only becomes PPT-lane-only AFTER the first run of the day (the
   // tcgdex lane is spliced out post-pass, see _runRefreshQueueBody) - a
   // freshly built queue that has never run yet still has BOTH lanes mixed
@@ -19371,6 +20048,18 @@ function _renderQueueStatus() {
 
   const unresolvedCount = _kjrUnresolvedSingles().length;
   const manualLangCount = _kjrManualLangCards().length;
+  const limit = kjrDailyCredits();
+  // What the Search (PPT) lane prices and what stays manual, in words that are true for the Japanese lane's switch (PPT_JA_LANE_ENABLED)
+  const jaOn = kjrPptJaLaneOn();
+  const pptTip = (jaOn
+    ? 'Slabs (eBay sold data), plus Japanese singles with a card number (TCGplayer market), priced via PokemonPriceTracker. A slab search costs up to 6 credits, a single up to 3.'
+    : 'Slabs (eBay sold data), priced via PokemonPriceTracker. A slab search costs up to 6 credits.') +
+    ' The ' + PPT_PLANS[kjrPptPlan()].label + ' plan is held to ' + kjrFmtCredits(limit) + ' credits a day.';
+  const manualNote = jaOn
+    ? ' priced manually. Only a Japanese card with a card number has an automatic source, add the number to a Japanese card to price it automatically.'
+    : ' priced manually, no free source for that language.';
+  const creditsPausedToday = q.creditsPausedDate === utcDay; // the vendor refused for credits today (its day, UTC)
+  const creditsSpentOut = creditsPausedToday || kjrCreditsLeft(q, utcDay) === 0;
 
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
@@ -19383,11 +20072,11 @@ function _renderQueueStatus() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:10px">
       <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Raw English singles priced free via TCGdex (TCGplayer/Cardmarket), matched by card number. A full pass runs the first time the app opens each day, and Run Today's Batch runs it again now.">
         <div style="color:var(--text3);margin-bottom:2px">Exact (TCGdex)</div>
-        <div style="font-weight:600">${tcgdexRanToday ? tcgdexDone + '/' + tcgdexTotal + ' today' : (tcgdexTotal ? tcgdexDone + '/' + tcgdexTotal + ' (last run)' : 'not run yet')}</div>
+        <div style="font-weight:600">${tcgdexRanToday ? (tcgdexTotal ? tcgdexDone + '/' + tcgdexTotal + ' today' : 'Nothing to check today') : (tcgdexTotal ? tcgdexDone + '/' + tcgdexTotal + ' (last run)' : 'not run yet')}</div>
       </div>
-      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="Slabs (always) and TCGdex misses, priced via PokemonPriceTracker eBay sold data. Capped at ${DAILY_LIMIT}/day.">
-        <div style="color:var(--text3);margin-bottom:2px">Search (PPT)</div>
-        <div style="font-weight:600">${usedToday}/${DAILY_LIMIT} credits</div>
+      <div style="padding:8px;background:var(--bg3);border-radius:6px" title="${pptTip}">
+        <div style="color:var(--text3);margin-bottom:2px">Search (PPT) credits used today</div>
+        <div style="font-weight:600">${kjrFmtCredits(usedToday)} of ${kjrFmtCredits(limit)}</div>
       </div>
       <div style="padding:8px;background:var(--bg3);border-radius:6px">
         <div style="color:var(--text3);margin-bottom:2px">Slabs (PPT)</div>
@@ -19405,7 +20094,7 @@ function _renderQueueStatus() {
     ${(unresolvedCount > 0 || manualLangCount > 0) ? `<div style="font-size:11px;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:10px;line-height:1.5">
       ${unresolvedCount > 0 ? unresolvedCount + ' card' + (unresolvedCount!==1?'s':'') + ' unresolved, add the card number for exact pricing.' : ''}
       ${unresolvedCount > 0 && manualLangCount > 0 ? '<br>' : ''}
-      ${manualLangCount > 0 ? manualLangCount + ' non-English card' + (manualLangCount!==1?'s':'') + ' priced manually, no free source for that language.' : ''}
+      ${manualLangCount > 0 ? manualLangCount + ' non-English card' + (manualLangCount!==1?'s':'') + manualNote : ''}
     </div>` : ''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
       Queue built ${new Date(q.createdAt).toLocaleDateString()} ·
@@ -19439,7 +20128,7 @@ function _renderQueueStatus() {
       // re-runs it regardless of lastTcgdexPass, so it's only truly out of
       // work when the PPT lane is complete AND there are zero TCGdex-lane-
       // eligible cards - i.e. a fresh empty/all-CN/all-slabs collection).
-      const pptHasWork = !q.completed || usedToday < DAILY_LIMIT;
+      const pptHasWork = !q.completed || !creditsSpentOut;
       const nothingLeft = q.completed && tcgdexTotal === 0;
       return `<div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" onclick="runRefreshQueue(true)" ${nothingLeft?'disabled':''}>
@@ -19449,7 +20138,7 @@ function _renderQueueStatus() {
       <button class="btn btn-sm" style="color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Clear queue?', {ok:'Clear', danger:true})){clearQueue();_renderQueueStatus();} })()">✕ Clear</button>
     </div>`;
     })()}
-    ${usedToday >= DAILY_LIMIT ? '<div style="font-size:11px;color:#f59e0b;margin-top:8px">⏰ PPT daily limit reached - Search lane resumes tomorrow (Exact/TCGdex lane is unaffected)</div>' : ''}
+    ${creditsSpentOut ? '<div style="font-size:11px;color:var(--amber);margin-top:8px">' + (creditsPausedToday ? 'PokemonPriceTracker says today\'s credits are used up.' : 'Today\'s PPT credits are used up.') + ' The Search lane resumes after the reset at 8am Singapore time (the Exact/TCGdex lane is unaffected).</div>' : ''}
     ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ PPT lane fully refreshed. Rebuild queue to start next cycle.</div>' : ''}
   `;
 }
@@ -19460,7 +20149,8 @@ async function startFreshQueue() {
   // that's running would get silently clobbered by the next in-flight save.
   if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
   if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
-  const q = buildRefreshQueue();
+  // the progress starts again, the credits already spent today do not (they are the vendor's count, not the queue's)
+  const q = _kjrCarryCredits(buildRefreshQueue(), loadQueue());
   saveQueue(q);
   _renderQueueStatus();
   const tcgdexCount = q.items.filter(i=>i.lane==='tcgdex').length;
@@ -19494,9 +20184,16 @@ async function bulkRefreshPrices(table) {
   // gets miscounted as a real data failure.
   const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
   const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
+  let creditsOut = false;
   for (const item of items) {
     showSyncProgress(done + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
-    const r = await fetchMarketPrice({ name: item.name, grader: item.grader||null, grade: item.grade||null, language: item.language||null, tcgdexId: item.tcgdexId||null });
+    // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
+    // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
+    const slabGrade = table === 'slabs' ? _kjrSlabGrade(item) : null;
+    const japanese = table === 'singles' && _queueLaneFor(Object.assign({}, item, { grader: null, grade: null })) === 'ppt';
+    const r = await fetchMarketPrice({ name: item.name, grader: slabGrade ? slabGrade.grader : (item.grader||null), grade: slabGrade ? slabGrade.grade : (item.grade||null), language: item.language||null, tcgdexId: item.tcgdexId||null, japanese });
+    // the vendor says the day's credits are gone: nothing in this run can be priced, so it stops here instead of asking for the rest
+    if (r.creditsExhausted) { creditsOut = true; break; }
     const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
     if (r.resolvedTcgdexId && !item.tcgdexId) {
       item.tcgdexId = r.resolvedTcgdexId;
@@ -19504,16 +20201,18 @@ async function bulkRefreshPrices(table) {
     }
     if (r.maxSgd) {
       const newPrice = r.maxSgd.toFixed(0);
+      if (japanese && item._tcgdexMissDate) item._tcgdexMissDate = null; // priced now, no longer "could not be matched"
       // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
       // + no new id to cache means nothing to sync, so only stamp the local
       // priced-today marker and skip history/markDirty. Still counts as a
       // successful pass (the fetch did confirm the price).
-      if (item.marketPrice === newPrice && !idIsNew) {
-        item._tcgdexPricedDate = new Date().toISOString().slice(0,10);
+      if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
+        item._tcgdexPricedDate = kjrLocalDay();
       } else {
         item.marketPrice = newPrice;
+        item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
         if (!item.priceHistory) item.priceHistory = [];
-        item.priceHistory.push({ date: new Date().toISOString().slice(0,10), price: r.maxSgd, unit: r.maxUsd ? 'USD' : 'EUR', source: r.source, confidence: r.confidence });
+        item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
         if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
         if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
           new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
@@ -19529,6 +20228,9 @@ async function bulkRefreshPrices(table) {
       if (transport) { failedTransport++; consecTransport++; }
       else            { failedData++;       consecTransport = 0; }
       markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
+      // A Japanese card the vendor had no single card for lands in the Singles banner, like the queue does it. An answer that never came
+      // (pptTransient) says nothing about the card and stamps nothing.
+      if (japanese && !r.pptTransient) item._tcgdexMissDate = kjrLocalDay();
       // Auto-pause if the API is clearly unhappy - saves time and credits.
       if (consecTransport >= 5) { aborted = true; break; }
     }
@@ -19550,7 +20252,8 @@ async function bulkRefreshPrices(table) {
     : /no match|no price/i.test(dominant)                    ? ' · names don\'t match catalogue'
     : /network|fetch|aborted|timeout|cors/i.test(dominant)   ? ' · network blocked'
     : '';
-  const tail = aborted ? ' · ⏸ auto-paused after 5 failures in a row' : '';
+  const tail = creditsOut ? ' · ⏸ PPT credits are used up for today, they reset at 8am Singapore time'
+    : aborted ? ' · ⏸ auto-paused after 5 failures in a row' : '';
   toast('Done: ' + done + ' updated' + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
@@ -19851,12 +20554,12 @@ async function searchEbay() {
         <div style="font-size:12px;color:var(--text2);margin-top:4px">${usdOrEur} · Confidence: ${r.confidence}</div>
         ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Low confidence - card matched on name only, manually verify</div>' : ''}
       </div>`;
-  } else if (/HTTP 429/.test(r.pptError || '')) {
-    // PPT free tier is 100 lookups/day and resets at 00:00 UTC (08:00 SGT).
+  } else if (r.creditsExhausted || /HTTP 429/.test(r.pptError || '')) {
+    // PPT free plan is 100 credits/day and resets at 00:00 UTC (08:00 SGT).
     outEl.innerHTML = '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
       '<strong>⏳ Daily price-lookup limit reached</strong>' +
       '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' +
-        'PokemonPriceTracker allows 100 lookups per day on the free tier, and that is used up. It resets at 08:00 SGT (midnight UTC).' +
+        'PokemonPriceTracker gives 100 credits a day on the free plan, and the day\'s credits are used up. They reset at 08:00 SGT (midnight UTC).' +
       '</div>' +
       '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
         'Try again after the reset, or add the card number so TCGdex can price it for free instead.' +
@@ -20030,6 +20733,54 @@ async function getEurSgdRate() {
 
 function eurToSgd(eur) {
   return eur * (_eurSgdRate || FALLBACK_EUR_RATE);
+}
+
+// ── Any currency to SGD (v3.85) ──
+// Only the Japanese lane needs this, and only when a vendor card names a currency other than USD (the answer has no such field today, so
+// this is the guard that keeps a foreign amount from ever being read as dollars). USD and EUR keep their own daily-cached waterfalls above.
+// Any other 3 letter code asks the same three sources (Frankfurter v2 first, then the two fallbacks getSgdRate uses), is cached per
+// currency per day, and falls back to the last rate it cached when every source is down. There is NO hardcoded last resort, unlike the two
+// above: with no rate it answers null and the caller prices nothing, because a made-up rate would be a guessed price.
+async function getFxToSgd(code) {
+  const c = String(code == null ? '' : code).trim().toUpperCase();
+  if (c === 'SGD') return 1;
+  if (c === 'USD') return getSgdRate();
+  if (c === 'EUR') return getEurSgdRate();
+  if (!/^[A-Z]{3}$/.test(c)) return null;
+  const lower = c.toLowerCase();
+  const cacheKey = 'pokeinv_fxrate_' + lower;
+  const cached = (() => { try { return JSON.parse(localStorage.getItem(cacheKey)); } catch (e) { return null; } })();
+  const today = new Date().toISOString().slice(0, 10);
+  if (cached && cached.date === today && cached.rate > 0) return cached.rate;
+  const sources = [
+    async () => {
+      // built apart from the fetch call on purpose: tests/dealer-production-preview.test.js counts the literal Frankfurter URLs the page asks
+      // (USD and EUR, the two the preview fixture answers), and this one is only ever asked for a currency neither of those is
+      const url = 'https://api.frankfurter.dev/v2/rates?base=' + c + '&quotes=SGD';
+      const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      return _kjrFrankfurterRate(await r.json(), 'SGD');
+    },
+    async () => {
+      const r = await fetch('https://open.er-api.com/v6/latest/' + c, { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      return d.rates?.SGD;
+    },
+    async () => {
+      const r = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/' + lower + '.json', { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      return d[lower]?.sgd;
+    }
+  ];
+  for (const source of sources) {
+    try {
+      const rate = await source();
+      if (typeof rate === 'number' && isFinite(rate) && rate > 0 && rate < 100000) {
+        try { localStorage.setItem(cacheKey, JSON.stringify({ date: today, rate })); } catch (e) { /* the rate is still good for this call */ }
+        return rate;
+      }
+    } catch (e) { /* try the next source */ }
+  }
+  return cached && cached.rate > 0 ? cached.rate : null;
 }
 
 // =========== AI API ===========
@@ -21740,6 +22491,18 @@ function kjrConfirm(msg, opts) {
   if (!dlg || typeof dlg.showModal !== 'function') {
     return Promise.resolve(window.confirm(String(msg).replace(/<[^>]+>/g, '')));
   }
+  // Re-entrant (v3.85). There is one confirm dialog, so there is never a second prompt on screen. Asked the SAME question while it is up
+  // (Esc, a tap on the backdrop and the Back button can all put the Discard question to one dirty form), the caller shares the prompt in
+  // flight and its one answer. Asked a DIFFERENT question, it is answered "no" at once and the prompt on screen is left alone: an answer
+  // belongs to the question it was given to, so a click on Discard can never also confirm a deletion that was never on screen, and "no"
+  // is the answer every caller here treats as do nothing. A prompt whose dialog is no longer open (something shut it without the close
+  // event) is settled as "no" and replaced, so one lost event cannot turn every later confirm into a refusal.
+  const key = JSON.stringify([String(msg), opts.ok || 'OK', opts.cancel || 'Cancel', !!opts.danger]);
+  const live = kjrConfirm._open;
+  if (live) {
+    if (dlg.open) return live.key === key ? live.promise : Promise.resolve(false);
+    live.finish(false);
+  }
   const msgEl = document.getElementById('kjr-confirm-msg');
   const okBtn = document.getElementById('kjr-confirm-ok');
   const cancelBtn = document.getElementById('kjr-confirm-cancel');
@@ -21751,11 +22514,14 @@ function kjrConfirm(msg, opts) {
   okBtn.style.color = opts.danger ? 'var(--danger-fg)' : '';
   okBtn.style.borderColor = opts.danger ? 'var(--danger)' : '';
 
-  return new Promise(resolve => {
+  const entry = { key, finish: null, promise: null, done: false };
+  entry.promise = new Promise(resolve => {
     let settled = false;
     const finish = (val) => {
       if (settled) return;
       settled = true;
+      entry.done = true;
+      if (kjrConfirm._open === entry) kjrConfirm._open = null; // at once, so the next ask is a fresh prompt and never this one's settled answer
       okBtn.onclick = null;
       cancelBtn.onclick = null;
       dlg.removeEventListener('close', onClose);
@@ -21763,6 +22529,7 @@ function kjrConfirm(msg, opts) {
       if (dlg.open) dlg.close();
       resolve(val);
     };
+    entry.finish = finish;
     const onClose = () => finish(false);
     const onBackdrop = (e) => { if (e.target === dlg) finish(false); };
     okBtn.onclick = () => finish(true);
@@ -21774,6 +22541,8 @@ function kjrConfirm(msg, opts) {
     okBtn.focus();
     dlg.scrollTop = 0; // v3.83, as in kjrModalCtrl.open: last, because the two focus calls above are what can scroll it
   });
+  if (!entry.done) kjrConfirm._open = entry;
+  return entry.promise;
 }
 
 async function deleteSavedChart(id) {

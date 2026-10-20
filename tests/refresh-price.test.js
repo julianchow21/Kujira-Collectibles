@@ -10,7 +10,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp } = require('./harness.js');
 
-const today = () => new Date().toISOString().slice(0, 10);
+// the free lane's markers carry the device's LOCAL date (kjrLocalDay), the same date the lane's own "today" is
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const slabRow = (extra) => Object.assign({
   id: 'sl1', name: 'Charizard 4', type: 'slab', grader: 'PSA', grade: '10', language: 'EN', costPrice: 500,
   marketPrice: '', listPrice: '', status: 'Available', priceHistory: [],
@@ -122,8 +123,9 @@ test('refresh-price: a blank language counts as English, like the queue', async 
 });
 
 // ── manual singles: no API at all, and the toast says why ───────────────────────────────────────────
-test('refresh-price: a Japanese single makes zero API calls and says it is a manual price', async () => {
-  for (const language of ['JP', 'CN', 'ID', 'KR']) {
+// v3.85: a Japanese single with a card number is priced by the Japanese lane (tests/ppt-japanese.test.js). The rest stay manual.
+test('refresh-price: a Korean (or other unlisted language) single makes zero API calls and says it is a manual price', async () => {
+  for (const language of ['KR', 'TH']) {
     const app = await setup({ singles: [singleRow({ language, marketPrice: 30 })] });
     app.fetchMock.route('api.tcgdex.net', { ok: true, json: [{ id: 'sv3-199' }] });
     pptHit(app, 99); fx(app, 1);
@@ -137,8 +139,8 @@ test('refresh-price: a Japanese single makes zero API calls and says it is a man
   }
 });
 
-test('refresh-price: a Japanese single with a cached tcgdexId is still manual', async () => {
-  const app = await setup({ singles: [singleRow({ language: 'JP', tcgdexId: 'sv3-199' })] });
+test('refresh-price: a Korean single with a cached tcgdexId is still manual', async () => {
+  const app = await setup({ singles: [singleRow({ language: 'KR', tcgdexId: 'sv3-199' })] });
   await app.ctx.refreshPrice('s1', 'singles');
   assert.equal(app.fetchMock.calls.length, 0);
   assert.deepEqual(app.toasts, ['Manual price, no free source for this language']);
@@ -155,11 +157,11 @@ test('refresh-price: an English single with no card number makes zero API calls 
 });
 
 test('refresh-price: the manual verdict is the queue\'s own (_queueLaneFor), not a second rule', async () => {
-  const app = await setup({ singles: [singleRow({ id: 'en', name: 'Pikachu 25' }), singleRow({ id: 'jp', language: 'JP' }), singleRow({ id: 'nn', name: 'Umbreon Custom Card' })] });
+  const app = await setup({ singles: [singleRow({ id: 'en', name: 'Pikachu 25' }), singleRow({ id: 'kr', language: 'KR' }), singleRow({ id: 'nn', name: 'Umbreon Custom Card' }), singleRow({ id: 'jn', name: 'Umbreon', language: 'JP' })] });
   const lanes = {};
-  for (const id of ['en', 'jp', 'nn']) lanes[id] = app.ctx._queueLaneFor(app.row('singles', id));
-  assert.deepEqual(lanes, { en: 'tcgdex', jp: 'manual', nn: 'manual' });
-  for (const id of ['jp', 'nn']) {
+  for (const id of ['en', 'kr', 'nn', 'jn']) lanes[id] = app.ctx._queueLaneFor(app.row('singles', id));
+  assert.deepEqual(lanes, { en: 'tcgdex', kr: 'manual', nn: 'manual', jn: 'manual' });
+  for (const id of ['kr', 'nn', 'jn']) {
     app.fetchMock.calls.length = 0;
     await app.ctx.refreshPrice(id, 'singles');
     assert.equal(app.fetchMock.calls.length, 0, id + ' is manual in the queue, so it makes no call here either');

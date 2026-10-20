@@ -13,7 +13,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp, jsonResponse, plain } = require('./harness.js');
 
-const TODAY = () => new Date().toISOString().slice(0, 10);
+// the free lane's markers carry the device's LOCAL date (kjrLocalDay), the price history keeps UTC dates
+const TODAY = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 
 // The lane waits on sandbox setTimeout calls the harness never fires on its own: let a real tick pass, then flush the lane's own waits
 // (the 250ms gap, the 2s and 6s retry backoffs). Not the app's startup timers, flushing those would start its 8s auto-run of the queue

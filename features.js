@@ -4780,6 +4780,44 @@ function kjrHoldClick(table, e) {
   } catch (e) { /* no media query support, the rows are drawn by each render */ }
 })();
 
+// ── Wide tables scroll sideways (iPad pass, v3.85) ──
+// Above 1000px a .tbl-wrap leaves its table overflowing so the header can stick to the page (styles.css, "Sticky-header enabler"), and the
+// .card around the wrap clips (overflow: clip). A table wider than its card, the Slabs, Sales and eBay tables on a 1024px iPad with the rail
+// or beside the open card panel, lost its right-hand columns that way, Actions included, with nothing to scroll. kjrTblFit puts .kjr-wide on
+// a wrap whose table does not fit and takes it off one that does, and styles.css makes a .kjr-wide wrap scroll sideways. A table that fits
+// keeps its sticky header. It reads two sizes and toggles one class: no row is touched, nothing is saved or marked dirty.
+function kjrTblFit(wrap) {
+  if (!wrap || !wrap.classList) return false;
+  var wide = wrap.scrollWidth > wrap.clientWidth + 1;
+  if (wrap.classList.contains('kjr-wide') !== wide) wrap.classList.toggle('kjr-wide', wide);
+  return wide;
+}
+(function kjrTblFitInstall() {
+  if (typeof window === 'undefined' || typeof document === 'undefined' || typeof ResizeObserver !== 'function') return;
+  try {
+    var wraps = document.querySelectorAll('.tbl-wrap');
+    if (!wraps || !wraps.length) return;
+    var queued = false;
+    var run = function () {
+      queued = false;
+      for (var i = 0; i < wraps.length; i++) kjrTblFit(wraps[i]);
+    };
+    // The toggle waits for the next frame, so changing a wrap's overflow never resizes what the observer is still reporting on.
+    var ask = function () {
+      if (queued) return;
+      queued = true;
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run); else setTimeout(run, 0);
+    };
+    var ro = new ResizeObserver(ask);
+    for (var j = 0; j < wraps.length; j++) {
+      ro.observe(wraps[j]);
+      var table = wraps[j].querySelector('table');
+      if (table) ro.observe(table);
+    }
+    ask();
+  } catch (e) { /* no ResizeObserver, a wrap keeps the stylesheet's own overflow as before */ }
+})();
+
 // ═════════════ Card inspector (v3.72) ═════════════
 // Redesign Step 5. One panel shows one card or slab. It is a read-and-launch surface: it never writes a row itself.
 // Every change goes through the function the list already uses (markStatus, openEditSingle and openEditSlab,
@@ -4850,11 +4888,12 @@ function kjrInspectSourceText(source) {
   if (/^TCGdex \(TCGplayer\)$/i.test(s)) return 'TCGplayer market via TCGdex';
   if (/^TCGdex \(Cardmarket\)$/i.test(s)) return 'Cardmarket trend via TCGdex';
   if (/^manual$/i.test(s)) return 'Manual price';
+  if (/^PPT \(Japanese\)$/i.test(s)) return 'TCGplayer market (Japanese) via PokemonPriceTracker';
   if (/^PPT\b/i.test(s)) return 'eBay sold average via PokemonPriceTracker';
   return s;
 }
 // The line under the chart: where the price came from and how long ago it was checked. A row with no history says
-// what it can: a non-English single is priced by hand, a price with no record was typed in, an empty one says why.
+// what it can: a non-English single the queue does not price is priced by hand, a price with no record was typed in, an empty one says why.
 function kjrInspectPriceLine(table, item, now) {
   var hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
   var last = hist.length ? hist[hist.length - 1] : null;
@@ -4863,12 +4902,21 @@ function kjrInspectPriceLine(table, item, now) {
   // for a card that was checked today.
   var ts = typeof kjrPriceCheckedTs === 'function' ? kjrPriceCheckedTs(item) : 0;
   var ago = ts && typeof kjrOverviewCheckedText === 'function' ? kjrOverviewCheckedText(ts, now) : '';
+  // an old fuzzy PokemonPriceTracker match on a non-English single (kjrIsStaleEstimate, v3.85) is counted at cost, so the line says so
+  if (table !== 'slabs' && typeof kjrIsStaleEstimate === 'function' && kjrIsStaleEstimate(item)) {
+    return 'Old PokemonPriceTracker match, counted at cost until it is priced again';
+  }
   if (last && typeof last === 'object') {
     var text = kjrInspectSourceText(last.source) || 'Price source not recorded';
     return ago ? text + ' · checked ' + ago : text;
   }
   var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
-  if (table !== 'slabs' && lang !== 'EN') return 'Manual price, no free source for this language';
+  if (table !== 'slabs' && lang !== 'EN' && !(typeof _kjrJapaneseLane === 'function' && _kjrJapaneseLane(item))) {
+    // priced by hand. A Japanese single with a card number is not one of these once the Japanese lane is on (v3.85), so it falls
+    // through to the typed-in and not-checked-yet lines below. One without a number says what to add, like an English card.
+    var jaLangs = typeof _kjrPptJaLangs === 'function' ? _kjrPptJaLangs() : [];
+    return jaLangs.indexOf(lang) >= 0 && !kjrIsCustomCard(item) ? 'Add or fix the card number for exact pricing' : 'Manual price, no free source for this language';
+  }
   if (parseFloat(item.marketPrice) > 0) return ago ? 'Manual price · checked ' + ago : 'Manual price';
   var why = typeof _mktEmptyCellTitle === 'function' ? _mktEmptyCellTitle(item) : '';
   return why || 'No market price checked yet';
@@ -4934,7 +4982,7 @@ function kjrInspectChartHtml(item, now) {
     '</svg><div class="kjr-insp-legend">' + key + '</div>';
 }
 // Can the price be refreshed from here, and if not, why. Same guards as the queue: a local preview never prices,
-// and a single with no free source (non-English, or no card number) is priced by hand.
+// and a single with no automatic source (non-English other than a Japanese one with a card number, or no card number) is priced by hand.
 function kjrInspectRefreshInfo(table, item) {
   if (typeof isLocalhostPreview === 'function' && isLocalhostPreview()) {
     return { ok: false, why: 'Price refresh is disabled in local preview (sync off). Use the live site.' };
@@ -4942,6 +4990,8 @@ function kjrInspectRefreshInfo(table, item) {
   if (table === 'singles' && typeof _queueLaneFor === 'function' && _queueLaneFor(item) === 'manual') {
     if (kjrIsCustomCard(item)) return { ok: false, why: 'Custom card, price by hand (no auto-match)' };
     var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+    // the shared wording (_kjrManualReason): a Japanese single without a number is told to add one, as an English card is
+    if (typeof _kjrManualReason === 'function') return { ok: false, why: _kjrManualReason(item) };
     return { ok: false, why: lang !== 'EN' ? 'Manual price, no free source for this language' : 'Add or fix the card number for exact pricing' };
   }
   return { ok: true, why: '' };
@@ -5979,7 +6029,9 @@ function kjrInspectBindRows() {
     dbRecords.forEach(function (r) {
       if (!r || !r.tcgdexId || seen[r.tcgdexId]) return;
       seen[r.tcgdexId] = 1;
-      pool.push({ id: r.tcgdexId, source: 'db', price: parseFloat(r.marketPrice) || 0, rec: r });
+      // the greeting ranks cards by value: a stale estimate (kjrIsStaleEstimate, v3.85) is not one of the high ones
+      var live = typeof kjrLiveMarketPrice === 'function' ? kjrLiveMarketPrice(r) : parseFloat(r.marketPrice);
+      pool.push({ id: r.tcgdexId, source: 'db', price: live > 0 ? live : 0, rec: r });
     });
     return pool;
   }

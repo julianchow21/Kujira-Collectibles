@@ -153,13 +153,14 @@ test('content: market value, gain against cost with an arrow AND a sign, and the
 });
 
 test('content: the source line says where the price came from and how long ago, for every source the app writes', async () => {
-  const { ctx } = await loadApp();
+  const { ctx } = await loadApp({ jaLane: false });
   const line = (source, daysAgo, extra) => ctx.kjrInspectPriceLine('singles', single(Object.assign({ marketPrice: 10, priceHistory: [{ date: dayIso(daysAgo), price: 10, source }] }, extra || {})), NOW);
   assert.equal(line('TCGdex (TCGplayer)', 0), 'TCGplayer market via TCGdex · checked today');
   assert.equal(line('TCGdex (Cardmarket)', 1), 'Cardmarket trend via TCGdex · checked yesterday');
   assert.equal(line('manual', 3), 'Manual price · checked 3 days ago');
   assert.equal(line('PPT', 0), 'eBay sold average via PokemonPriceTracker · checked today');
   assert.equal(line('PPT (PSA 10)', 0), 'eBay sold average via PokemonPriceTracker · checked today');
+  assert.equal(line('PPT (Japanese)', 0), 'TCGplayer market (Japanese) via PokemonPriceTracker · checked today', 'v3.85: the Japanese lane prices the TCGplayer market, not eBay sales');
   assert.equal(line('Some New Source', 0), 'Some New Source · checked today', 'an unknown source is shown as stored');
   assert.equal(line('', 0), 'Price source not recorded · checked today');
   assert.match(line('manual', 20), /^Manual price · checked 21 Sep 2026$/, 'older than a week is a plain date');
@@ -167,13 +168,31 @@ test('content: the source line says where the price came from and how long ago, 
   const two = single({ marketPrice: 10, priceHistory: [{ date: dayIso(9), price: 8, source: 'manual' }, { date: dayIso(0), price: 10, source: 'TCGdex (TCGplayer)' }] });
   assert.equal(ctx.kjrInspectPriceLine('singles', two, NOW), 'TCGplayer market via TCGdex · checked today');
   // no history at all
-  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language');
-  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'KR', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'KR', marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language');
+  // v3.85 ships with the Japanese lane off, so a Japanese single (with a number or without) reads like every other non-English one, as in v3.84
+  for (const name of ['Pikachu 25', 'Umbreon']) {
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name, marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language', name);
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name, marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language', name);
+  }
   assert.equal(ctx.kjrInspectPriceLine('singles', single({ marketPrice: 12 }), NOW), 'Manual price', 'a typed price with no record');
   assert.equal(ctx.kjrInspectPriceLine('singles', single({ marketPrice: '', name: 'Custom Card' }), NOW), 'Add or fix the card number for exact pricing');
   assert.equal(ctx.kjrInspectPriceLine('slabs', slab({ marketPrice: '' }), NOW), 'No market price checked yet');
-  const sealed = ctx.kjrInspectHtml('singles', single({ language: 'JP', priceHistory: [] }), { now: NOW });
+  const sealed = ctx.kjrInspectHtml('singles', single({ language: 'KR', priceHistory: [] }), { now: NOW });
   assert.match(sealed, /Manual price, no free source for this language/);
+});
+
+test('content: with the Japanese lane on a Japanese single with a number reads like an English card, a Chinese or Indonesian one stays a manual price', async () => {
+  const { ctx } = await loadApp({ jaLane: true });
+  // priced by the Japanese lane, so typed in, or not checked yet. One without a number is told what to add, as an English card is.
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: '', priceHistory: undefined }), NOW), 'No market price checked yet');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name: 'Umbreon', marketPrice: 90, priceHistory: [] }), NOW), 'Add or fix the card number for exact pricing');
+  for (const language of ['CN', 'ID']) {
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language, marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language', language);
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language, name: 'Umbreon', marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language', language);
+  }
+  assert.equal(ctx.kjrInspectSourceText('PPT (Japanese)'), 'TCGplayer market (Japanese) via PokemonPriceTracker');
 });
 
 test('content: the 30-day line uses the last 30 days only, one point a day, with a dashed cost line and a key', async () => {
@@ -306,14 +325,19 @@ test('content: the actions follow the status, the "…" reuses the row menu mark
 });
 
 test('content: Refresh price is off in a local preview and for a single with no free source, with the reason in the title', async () => {
-  const { ctx } = await loadApp();
+  const { ctx } = await loadApp({ jaLane: false });
   const live = single({ name: 'Charizard ex 223' });
   assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', live)), { ok: true, why: '' });
   assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('slabs', slab({}))), { ok: true, why: '' }, 'slabs price through PPT');
-  assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Pikachu 25' })).why, 'Manual price, no free source for this language');
+  assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'KR', name: 'Pikachu 25' })).why, 'Manual price, no free source for this language');
+  // v3.85 ships with the Japanese lane off: a Japanese, Chinese or Indonesian single is a manual price too, with a number or without
+  for (const language of ['JP', 'CN', 'ID']) {
+    assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Pikachu 25' }))), { ok: false, why: 'Manual price, no free source for this language' }, language);
+    assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Umbreon' })).why, 'Manual price, no free source for this language', language + ' without a number');
+  }
   assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ name: 'Custom Card' })).why, 'Add or fix the card number for exact pricing');
   assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ name: 'Custom Card', tcgdexId: 'sv03-223' })).ok, true, 'a TCGdex id makes it free-lane');
-  const off = ctx.kjrInspectHtml('singles', single({ language: 'JP' }), { now: NOW });
+  const off = ctx.kjrInspectHtml('singles', single({ language: 'KR' }), { now: NOW });
   assert.match(off, /data-insp-act="refresh" aria-disabled="true" title="Manual price, no free source for this language">Refresh price</);
   ctx.location = Object.assign({}, ctx.location, { hostname: 'localhost', protocol: 'http:' });
   const local = ctx.kjrInspectRefreshInfo('singles', live);
@@ -321,6 +345,13 @@ test('content: Refresh price is off in a local preview and for a single with no 
   assert.equal(local.why, 'Price refresh is disabled in local preview (sync off). Use the live site.');
   assert.equal(ctx.kjrInspectRefreshInfo('slabs', slab({})).ok, false, 'slabs too, a preview never prices');
   assert.match(ctx.kjrInspectHtml('singles', live, { now: NOW }), /data-insp-act="refresh" aria-disabled="true" title="Price refresh is disabled in local preview/);
+});
+
+test('content: with the Japanese lane on Refresh price is on for a Japanese single with a number, and a Chinese or Indonesian single stays a manual price', async () => {
+  const { ctx } = await loadApp({ jaLane: true });
+  assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Pikachu 25' }))), { ok: true, why: '' }, 'priced by the Japanese lane');
+  assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Umbreon' })).why, 'Add or fix the card number for exact pricing', 'without a number it asks for one');
+  for (const language of ['CN', 'ID', 'KR']) assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Pikachu 25' }))), { ok: false, why: 'Manual price, no free source for this language' }, language);
 });
 
 test('art: a single shows the high image, the whale for no id, a miss or a failed load, and the late fill reads the size off the slot', async () => {
@@ -1061,7 +1092,7 @@ test('actions: Delete closes the panel once the card is gone, stays open when ca
 });
 
 test('actions: Refresh price calls refreshPrice once, explains itself when it is off, and never prices a manual single', async () => {
-  const app = await appWith({ singles: [single({ id: 'a', name: 'Charizard ex 223' }), single({ id: 'j', name: 'Pikachu 25', language: 'JP' })] });
+  const app = await appWith({ singles: [single({ id: 'a', name: 'Charizard ex 223' }), single({ id: 'j', name: 'Pikachu 25', language: 'KR' })] });
   const { ctx } = app, { panelBody, trigger, toasts } = app.dom;
   const calls = [];
   let release;

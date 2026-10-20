@@ -34,8 +34,9 @@ function sale(o) {
 }
 // The price code stores the UTC date (toISOString().slice(0, 10)), so a fixture does the same
 function utcDay() { return new Date().toISOString().slice(0, 10); }
-async function app(db) {
-  const a = await loadApp();
+// jaLane: the Japanese lane ships OFF (PPT_JA_LANE_ENABLED), a test that needs it asks the harness for it
+async function app(db, jaLane) {
+  const a = await loadApp({ jaLane: !!jaLane });
   a.ctx.DB.singles = (db && db.singles) || [];
   a.ctx.DB.slabs = (db && db.slabs) || [];
   a.ctx.DB.sales = (db && db.sales) || [];
@@ -225,7 +226,7 @@ test('needs attention: the all-clear state and the populated state in the hero',
   assert.doesNotMatch(calm, /Needs attention/);
 
   const busy = await app({
-    singles: [single({ name: 'Pikachu 25 JP', language: 'JP' }), single({ name: 'Eevee' })],
+    singles: [single({ name: 'Pikachu 25 KR', language: 'KR' }), single({ name: 'Eevee' })],
     sales: [sale({ dealerPaymentStatus: 'Unknown', paymentStatus: 'Unknown', dealerRelease: '3.62', profit: null })],
   });
   busy.ctx.renderDashboard();
@@ -239,11 +240,27 @@ test('needs attention: the all-clear state and the populated state in the hero',
   assert.match(hero, /data-ov-act="unresolved">Add card numbers/);
   assert.match(hero, /data-ov-act="sales">View sales/);
 
-  const jpOnly = await app({ singles: [single({ name: 'Pikachu 25 JP', language: 'JP' })] });
-  jpOnly.ctx.renderDashboard();
-  const one = text(jpOnly.document, 'dash-hero');
+  const krOnly = await app({ singles: [single({ name: 'Pikachu 25 KR', language: 'KR' })] });
+  krOnly.ctx.renderDashboard();
+  const one = text(krOnly.document, 'dash-hero');
   assert.match(one, /non-English card on manual prices/);
   assert.doesNotMatch(one, /need a card number|needs a card number|pending settlement/);
+
+  // v3.85 ships with the Japanese lane off, so a Japanese, Chinese or Indonesian single is one of the manual ones, as in v3.84
+  for (const language of ['JP', 'CN', 'ID']) {
+    const off = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] });
+    off.ctx.renderDashboard();
+    assert.match(text(off.document, 'dash-hero'), /1 non-English card on manual prices/, language);
+  }
+  // with the lane on a Japanese single with a card number is priced by it and is no longer one of the manual ones, a Chinese or Indonesian one still is
+  const jp = await app({ singles: [single({ name: 'Pikachu 25 JP', language: 'JP' })] }, true);
+  jp.ctx.renderDashboard();
+  assert.doesNotMatch(text(jp.document, 'dash-hero'), /non-English card on manual prices/);
+  for (const language of ['CN', 'ID']) {
+    const on = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] }, true);
+    on.ctx.renderDashboard();
+    assert.match(text(on.document, 'dash-hero'), /1 non-English card on manual prices/, language);
+  }
 });
 
 // ── Hero ────────────────────────────────────────────────────────────────────

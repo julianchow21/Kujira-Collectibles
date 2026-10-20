@@ -161,7 +161,9 @@ test('price contract: the 16/09 eight-slab queue prices through the Worker witho
   assert.deepEqual(plain(q.lastErrorTally), { 'no card name': 1 }, 'only the blank slab is a miss');
   assert.equal(q.cursor, 9, 'priced slabs and the blank data miss all advance');
   assert.equal(q.completed, true);
-  assert.equal(q.dayCreditsUsed[today], 8, 'eight billed requests, the blank slab costs nothing');
+  // v3.85: credits, not requests. The stubbed vendor sends no metadata.apiCallsConsumed, so each of the eight searches is estimated at the
+  // 6 credits of a slab search (3 cards, plus eBay). The blank slab makes no request and costs nothing.
+  assert.equal(q.dayCreditsUsed[today], 48, 'eight slab searches at 6 credits, the blank slab costs nothing');
 
   const { DB } = grab('DB');
   for (const slab of slabs.slice(0, 8)) {

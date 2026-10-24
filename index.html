@@ -41,7 +41,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.86',
+    release: 'kujira-collectibles@3.87',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -77,7 +77,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
 <!-- Geist is self-hosted (Assets/fonts, the @font-face rules sit at the top of styles.css). Only the sans is preloaded: it is on screen at first paint, Geist Mono is not. -->
 <link rel="preload" href="Assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="styles.css?v=3.86">
+<link rel="stylesheet" href="styles.css?v=3.87">
 </head>
 <body>
 
@@ -276,7 +276,7 @@
       <span class="kjr-sync-dot" aria-hidden="true"></span>
       <span class="kjr-sync-text">
         <span class="kjr-sync-line1" id="sync-label">Not synced yet</span>
-        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.86 (24 Oct)</span></span>
+        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.87 (24 Oct)</span></span>
       </span>
     </button>
     <span class="sr-only" id="sync-live" role="status"></span>
@@ -337,6 +337,29 @@
     </div>
   </div>
 </div>
+
+<!-- COLLECTION SWITCHER (phone, 600px and below). The tab bar has one Collection tab, so this row walks between the four Collection
+     pages (Singles, Slabs, ETBs, Boxes & packs) from the top of each of them. It is one element for all four: showPage shows it on those
+     pages and marks the current segment (syncCollSwitch, app.js), and kjrNavCountsRefresh (features.js) fills the counts from the same
+     read as the sidebar's. From 601px the sidebar and the rail carry the same four, so styles.css hides it. -->
+<nav class="kjr-coll" id="kjr-coll" aria-label="Collection" hidden>
+  <button type="button" class="kjr-coll-btn" onclick="showPage('inventory')">
+    <span class="kjr-coll-name">Singles</span>
+    <span class="kjr-coll-count" id="kjr-coll-count-inventory"></span>
+  </button>
+  <button type="button" class="kjr-coll-btn" onclick="showPage('slabs')">
+    <span class="kjr-coll-name">Slabs</span>
+    <span class="kjr-coll-count" id="kjr-coll-count-slabs"></span>
+  </button>
+  <button type="button" class="kjr-coll-btn" onclick="showPage('etbs')">
+    <span class="kjr-coll-name">ETBs</span>
+    <span class="kjr-coll-count" id="kjr-coll-count-etbs"></span>
+  </button>
+  <button type="button" class="kjr-coll-btn" onclick="showPage('boosterBoxes')">
+    <span class="kjr-coll-name">Boxes &amp; packs</span>
+    <span class="kjr-coll-count" id="kjr-coll-count-boosterBoxes"></span>
+  </button>
+</nav>
 
 <div class="main">
 
@@ -1673,8 +1696,9 @@
 <div id="toast" role="alert" aria-live="assertive" aria-atomic="true" popover="manual" onclick="toastDismiss()"><div id="toast-inner"><em id="toast-icon"></em><span id="toast-msg"></span></div><div id="toast-bar"></div></div>
 
 
-<!-- BOTTOM TAB BAR (phone, 600px and below). Four tabs and a raised round Add in the middle. Slabs, eBay and everything else
-     are in More. The Add button is not a .btb-item, it never takes the active state. -->
+<!-- BOTTOM TAB BAR (phone, 600px and below). Four tabs and a raised round Add in the middle. The Collection tab opens Singles and holds
+     the other three Collection pages (TAB_HELD_BY, app.js), which the switcher at the top of each walks between. eBay and everything
+     else are in More. The Add button is not a .btb-item, it never takes the active state. -->
 <div class="bottom-tab-bar" id="bottom-tab-bar" role="navigation" aria-label="Main">
   <div class="btb-inner">
     <button class="btb-item active" id="btb-dashboard" onclick="showPage('dashboard')">
@@ -2182,12 +2206,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.86"></script>
-<script src="features.js?v=3.86"></script>
-<script src="dealer-money.js?v=3.86"></script>
-<script src="dealer-desk.js?v=3.86"></script>
-<script src="dealer-ui.js?v=3.86"></script>
-<script src="dealer-store.js?v=3.86"></script>
-<script src="dealer-production-ui.js?v=3.86"></script>
+<script src="app.js?v=3.87"></script>
+<script src="features.js?v=3.87"></script>
+<script src="dealer-money.js?v=3.87"></script>
+<script src="dealer-desk.js?v=3.87"></script>
+<script src="dealer-ui.js?v=3.87"></script>
+<script src="dealer-store.js?v=3.87"></script>
+<script src="dealer-production-ui.js?v=3.87"></script>
 </body>
 </html>

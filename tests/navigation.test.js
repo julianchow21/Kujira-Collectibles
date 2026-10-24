@@ -24,8 +24,9 @@ const slab = (o) => Object.assign({
 const BASE = 'https://assets.tcgdex.net/en/swsh/swsh7/215';
 
 // ── the markup ──────────────────────────────────────────────────────────────────────────────
-// the logo is an 85KB data URI, left out so a failing assertion stays readable
-const topbar = html.slice(html.indexOf('<div class="topbar">'), html.indexOf('<div class="main">')).replace(/src="data:image\/png;base64,[^"]*"/, 'src="data:image/png;base64,..."');
+// the logo is an 85KB data URI, left out so a failing assertion stays readable. The shell ends where the phone's Collection switcher
+// begins (collection-switcher.test.js), the next thing in the page before .main
+const topbar = html.slice(html.indexOf('<div class="topbar">'), html.indexOf('<!-- COLLECTION SWITCHER')).replace(/src="data:image\/png;base64,[^"]*"/, 'src="data:image/png;base64,..."');
 const navHtml = topbar.slice(topbar.indexOf('<nav class="nav"'), topbar.indexOf('</nav>'));
 // every nav-btn: its label, the page its inline handler opens, its visible text
 const navItems = [...navHtml.matchAll(/<button class="nav-btn( active)?" aria-label="([^"]*)" onclick="showPage\('([A-Za-z]+)'\)">([\s\S]*?)<\/button>/g)]
@@ -81,9 +82,9 @@ test('every page is reachable from the sidebar, and the phone reaches every page
   const sheet = sheetPages.map(m => { assert.equal(m[1], m[2], 'the data-page and the handler agree'); return m[1]; });
   assert.deepEqual([...sheet].sort(), sidebar.filter(p => !tabPages.includes(p)).sort(), 'the More sheet holds every page the tab bar does not');
   assert.deepEqual(sheet, ['slabs', 'etbs', 'boosterBoxes', 'listing', 'ebay', 'dealerProduction', 'reports', 'import', 'changelog', 'trash', 'guide']);
-  for (const p of sheet) assert.ok(ctx.MORE_PAGES.has(p), p + ' is in MORE_PAGES, so the More tab lights for it');
+  for (const p of sheet) assert.ok(ctx.MORE_PAGES.has(p), p + ' is in MORE_PAGES, a page the More sheet reaches (the Collection tab holds three of them, collection-switcher.test.js)');
   for (const p of tabPages) assert.equal(ctx.MORE_PAGES.has(p), false, p + ' has its own tab');
-  for (const p of ['dealer', 'boosterPacks']) assert.ok(ctx.MORE_PAGES.has(p), p + ' (no page of its own to open from the sheet) still lights More');
+  for (const p of ['dealer', 'boosterPacks']) assert.ok(ctx.MORE_PAGES.has(p), p + ' (no page of its own to open from the sheet) is still in MORE_PAGES');
   assert.match(html, /<button class="sheet-item" data-page="reports" onclick="moreGo\('reports'\)">/, 'the pinned Reports markup');
   assert.match(html, /<span id="more-layout-label">Layout: Cards<\/span>/, 'and the Layout toggle is still in Tools');
 });
@@ -110,12 +111,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.86 \(24 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.87 \(24 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.86 \(24 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.87 \(24 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -1100,14 +1101,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.85: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.87: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.86'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.86">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.87'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.87">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.86"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.86'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.87"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.87'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v89'/);
+  assert.match(sw, /const CACHE = 'kujira-v90'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

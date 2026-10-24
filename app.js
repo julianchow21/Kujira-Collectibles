@@ -11438,7 +11438,8 @@ function showPage(name) {
   const bottomButtons = document.querySelectorAll('.btb-item');
   const dropdownItems = document.querySelectorAll('.nav-dd-item');
   const sheetItems = document.querySelectorAll('#more-sheet .sheet-item[data-page]');
-  const navControls = [...desktopButtons, ...bottomButtons, ...dropdownItems, ...sheetItems];
+  const collButtons = document.querySelectorAll('#kjr-coll .kjr-coll-btn'); // the phone's Collection switcher
+  const navControls = [...desktopButtons, ...bottomButtons, ...dropdownItems, ...sheetItems, ...collButtons];
   navControls.forEach(b => {
     b.classList.remove('active');
     b.removeAttribute('aria-current');
@@ -11457,18 +11458,26 @@ function showPage(name) {
   };
   // The sidebar and the rail are one persistent navigation region (v3.73): the item for the page lights up whatever
   // MORE_PAGES says, and a page with no item of its own lights the item that holds it (Booster Packs sit under Boxes &
-  // packs). The bottom bar is the phone's region: a page it has no tab for lights More.
+  // packs), and the Collection switcher on a phone reads the same way. The bottom bar is the phone's region: the Collection
+  // tab lights for all four Collection pages (TAB_HELD_BY), and a page it has no tab for lights More.
   const heldBy = NAV_HELD_BY[name] || '';
   const matchesHolder = b => {
     if (!heldBy) return false;
     const oc = b.getAttribute('onclick') || '';
     return oc.indexOf("'" + heldBy + "'") !== -1 || oc.indexOf('"' + heldBy + '"') !== -1;
   };
-  desktopButtons.forEach(b => { if (matchesPage(b) || matchesHolder(b)) markCurrent(b); });
+  const tabHolder = TAB_HELD_BY[name] || '';
+  const matchesTabHolder = b => {
+    if (!tabHolder) return false;
+    const oc = b.getAttribute('onclick') || '';
+    return oc.indexOf("'" + tabHolder + "'") !== -1 || oc.indexOf('"' + tabHolder + '"') !== -1;
+  };
+  [...desktopButtons, ...collButtons].forEach(b => { if (matchesPage(b) || matchesHolder(b)) markCurrent(b); });
   bottomButtons.forEach(b => {
-    if (MORE_PAGES.has(name)) { if (b.id === 'btb-more') markCurrent(b); }
-    else if (matchesPage(b)) markCurrent(b);
+    if (moreLights(name)) { if (b.id === 'btb-more') markCurrent(b); }
+    else if (matchesPage(b) || matchesTabHolder(b)) markCurrent(b);
   });
+  syncCollSwitch(collButtons);
   // The menu items (Settings, the More sheet) are a third, transient region. Mark the exact page where it is present
   // without forcing a synthetic item for grouped pages.
   [...dropdownItems, ...sheetItems].forEach(b => {
@@ -11508,17 +11517,35 @@ function showPage(name) {
 
 // ── MORE SHEET (phone nav hub) ──────────────────────────────
 // The pages the phone's bottom bar has no tab for, so they are reached from its "More" button. When one of these is
-// active the More tab lights up. The bar carries Overview, Collection (Singles), Add, Sales and More, so everything
+// active the More tab lights up, except the three the Collection tab holds (TAB_HELD_BY below), which stay listed here
+// under Browse as a second way in. The bar carries Overview, Collection (Singles), Add, Sales and More, so everything
 // else is here: Slabs, eBay, Dealer Desk, the Sealed pages, Listings, Reports, Import, History, Trash and the Guide.
 // (v3.73. The desktop has the sidebar and no More dropdown any more, so this set is the phone's only.)
 const MORE_PAGES = new Set(['slabs','ebay','dealerProduction','dealer','listing','etbs','boosterBoxes','boosterPacks','import','changelog','trash','guide','reports']);
 // A page with no nav item of its own, and the item that holds it (the sidebar lights that one for it).
 const NAV_HELD_BY = { boosterPacks: 'boosterBoxes' };
+// The same for the phone's bottom bar: the Collection tab opens Singles and holds the other Collection pages too, so it lights for
+// them and More does not. The Collection switcher (index.html #kjr-coll) is the other half, it walks between the four.
+const TAB_HELD_BY = { slabs: 'inventory', etbs: 'inventory', boosterBoxes: 'inventory', boosterPacks: 'inventory' };
+// Whether the More tab lights for a page: More reaches it and no tab of the bar holds it.
+function moreLights(name) { return MORE_PAGES.has(name) && !TAB_HELD_BY[name]; }
 function syncMoreActive(name) {
   const moreBtn = document.getElementById('btb-more');
-  if (moreBtn) moreBtn.classList.toggle('active', MORE_PAGES.has(name));
+  if (moreBtn) moreBtn.classList.toggle('active', moreLights(name));
   document.querySelectorAll('#more-sheet .sheet-item[data-page]').forEach(b =>
     b.classList.toggle('active', b.getAttribute('data-page') === name));
+}
+// The Collection switcher is on the four Collection pages and nowhere else: it shows while one of its segments is the current page
+// (showPage has just marked them) and hides otherwise. If its four segments do not fit the row, the row scrolls inside itself and the
+// current segment is centred here. That moves the row only: scrollIntoView would also scroll the page up to a row that had been
+// scrolled out of view, on a page that was simply drawn again. Where the CSS hides it (601px and wider) there is no width to measure.
+function syncCollSwitch(buttons) {
+  const nav = document.getElementById('kjr-coll');
+  if (!nav) return;
+  const current = [...buttons].find(b => b.getAttribute('aria-current') === 'page');
+  nav.hidden = !current;
+  if (!current || !(nav.scrollWidth > nav.clientWidth)) return;
+  nav.scrollLeft = current.offsetLeft - (nav.clientWidth - current.offsetWidth) / 2;
 }
 function openMoreSheet() { kjrApplyTableMode(); kjrModalCtrl.open(document.getElementById('more-sheet-overlay')); }
 function closeMoreSheet() { kjrModalCtrl.close(document.getElementById('more-sheet-overlay')); }
@@ -23777,10 +23804,11 @@ function _refreshSavedChart(id) {
   window.showPage = function(id) {
     if (_orig) _orig(id);
     document.querySelectorAll('.btb-item').forEach(b => b.classList.remove('active'));
-    const btb = document.getElementById('btb-' + id);
+    // The Collection tab holds Slabs, ETBs and Boxes & packs too (TAB_HELD_BY), so it is the tab to light for them.
+    const btb = document.getElementById('btb-' + (TAB_HELD_BY[id] || id));
     if (btb) btb.classList.add('active');
     // Pages without a dedicated tab live under "More" - light that up instead.
-    else if (typeof MORE_PAGES !== 'undefined' && MORE_PAGES.has(id)) {
+    else if (typeof moreLights === 'function' && moreLights(id)) {
       const more = document.getElementById('btb-more');
       if (more) more.classList.add('active');
     }

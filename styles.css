@@ -1595,6 +1595,7 @@ html.dealer-preview-only .topbar .nav,
 html.dealer-preview-only .topbar .kjr-side-actions,
 html.dealer-preview-only .topbar-actions,
 html.dealer-preview-only .bottom-tab-bar,
+html.dealer-preview-only .kjr-coll,
 html.dealer-preview-only #sentry-drawer,
 html.dealer-preview-only #sentry-drawer-overlay,
 html.dealer-preview-only #sync-diagnostics-overlay,
@@ -2592,6 +2593,30 @@ body{padding-left:var(--kjr-side-w)}
   .bottom-tab-bar{display:block;position:fixed;left:0;right:0;bottom:0;z-index:150;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);background:var(--sidebar);border-top:1px solid var(--border)}
   .bottom-tab-bar .btb-inner{display:flex;align-items:stretch;height:var(--kjr-tab-h)}
   body{padding-bottom:calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
+}
+
+/* ── Collection switcher, 600px and below ──
+   The tab bar has one Collection tab, so this row walks between the four Collection pages from the top of each of them (index.html
+   #kjr-coll, one element for all four, which showPage shows on those pages and marks). It is the look of .seg: a --bg3 track, and the
+   current segment filled with --accent in a heavier weight, so the current one is not told by colour alone (aria-current is set too). A
+   segment is the name over its count, which is what lets all four fit side by side on a 320px phone and up (the widths come to about
+   280px with the padding, from the font's advance widths, against 294px of room at 320px) and share what is left. Where they still do
+   not fit, in a narrower window or with the text enlarged, the row scrolls inside itself, with no scrollbar and no sideways scroll for
+   the page, and syncCollSwitch centres the current segment. The focus ring is inset because the row clips an outer one, and the
+   current segment's is --accent-fg because its fill is --accent. From 601px the sidebar and the rail carry the same four, so it is
+   hidden, and nothing else here applies. */
+.kjr-coll{display:none}
+.kjr-coll[hidden]{display:none}
+@media (max-width: 600px){
+  .kjr-coll{position:relative;display:flex;align-items:stretch;gap:2px;margin:12px max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius)}
+  .kjr-coll::-webkit-scrollbar{display:none}
+  .kjr-coll-btn{-webkit-appearance:none;appearance:none;flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:44px;margin:0;padding:6px 8px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--text2);font:inherit;font-size:13px;font-weight:500;line-height:16px;white-space:nowrap;cursor:pointer}
+  .kjr-coll-btn[aria-current="page"]{background:var(--accent);color:var(--accent-fg);font-weight:600}
+  .kjr-coll-btn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .kjr-coll-btn[aria-current="page"]:focus-visible{outline-color:var(--accent-fg)}
+  .kjr-coll-count{font-size:12px;font-weight:400;line-height:14px;color:var(--text3);font-variant-numeric:tabular-nums}
+  .kjr-coll-count:empty{display:none}
+  .kjr-coll-btn[aria-current="page"] .kjr-coll-count{color:inherit}
 }
 
 /* ── Phone Holdings rows (Singles and Slabs, list view, 600px and below, not in Tables layout) ──

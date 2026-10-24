@@ -4547,8 +4547,9 @@ function kjrNavCounts(db) {
   };
   return { singles: available('singles'), slabs: available('slabs'), etbs: onHand('etbs'), boxes: onHand('boosterBoxes') + onHand('boosterPacks') };
 }
-// Writes the four counts into the sidebar. Called after the renders that can change them and once at boot. It can never
-// get in the way of a render: a failure here is swallowed, the counts are a nicety.
+// Writes the four counts into the sidebar, and the same four into the phone's Collection switcher (index.html #kjr-coll), from
+// the one read above, so the two can never disagree. Called after the renders that can change them and once at boot. It can
+// never get in the way of a render: a failure here is swallowed, the counts are a nicety.
 function kjrNavCountsRefresh() {
   try {
     var c = kjrNavCounts();
@@ -4561,6 +4562,10 @@ function kjrNavCountsRefresh() {
     put('nav-count-slabs', c.slabs);
     put('nav-count-etbs', c.etbs);
     put('nav-count-boosterBoxes', c.boxes);
+    put('kjr-coll-count-inventory', c.singles);
+    put('kjr-coll-count-slabs', c.slabs);
+    put('kjr-coll-count-etbs', c.etbs);
+    put('kjr-coll-count-boosterBoxes', c.boxes);
     return c;
   } catch (e) { return null; }
 }

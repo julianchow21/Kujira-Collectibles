@@ -86,23 +86,24 @@ test('runtime accessibility: normal pages have one current control in each persi
   assert.strictEqual(controls.staleSheet.getAttribute('aria-current'), null, 'stale menu state is removed');
 });
 
-test('runtime accessibility: the sidebar lights the exact item for every page, and the tab bar lights More for a page it has no tab for', async () => {
+test('runtime accessibility: the sidebar lights the exact item for every page, the tab bar lights Collection for the Collection pages and More for a page it has no tab for', async () => {
   const { ctx, document } = await loadApp();
   const controls = makeNavigationFixture(document);
 
-  // Slabs has a sidebar item and no tab: both regions say so
+  // Slabs has a sidebar item and no tab of its own: the Collection tab holds it on the phone, and More does not light for it
   ctx.showPage('slabs');
   assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarSlabs], 'the exact sidebar item, MORE_PAGES or not');
-  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomMore], 'Slabs is behind More on the phone');
-  assert.strictEqual(controls.bottomInventory.getAttribute('aria-current'), null, 'Collection is Singles only');
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomInventory], 'Slabs is held by the Collection tab on the phone');
+  assert.strictEqual(controls.bottomMore.getAttribute('aria-current'), null, 'and More lets go of it');
 
-  // Booster Packs has no item of its own, the item that holds it (Boxes & packs) is current
+  // Booster Packs has no item of its own, the item that holds it (Boxes & packs) is current, and the Collection tab holds it too
   ctx.showPage('boosterPacks');
   assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarBoxes]);
-  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomMore]);
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomInventory]);
   assert.strictEqual(controls.sheetGuide.getAttribute('aria-current'), null, 'Booster Packs has no sheet item');
   ctx.showPage('boosterBoxes');
   assert.deepStrictEqual(controls.current(controls.sidebar), [controls.sidebarBoxes]);
+  assert.deepStrictEqual(controls.current(controls.bottom), [controls.bottomInventory]);
 
   // Guide: its sidebar item, the More tab and its sheet entry, and only the exact sheet page
   ctx.showPage('guide');

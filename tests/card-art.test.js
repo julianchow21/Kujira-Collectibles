@@ -842,12 +842,12 @@ test('card-art: a tile reads as name, set, value with a signed arrow percentage,
   assert.match(gain, /<span class="kjr-tile-name" title="Umbreon VMAX">Umbreon VMAX<\/span>/);
   assert.match(gain, /<span class="kjr-tile-set">Evolving Skies<\/span>/);
   assert.match(gain, /<span class="kjr-tile-price">S\$610<\/span>/);
-  assert.match(gain, /<span class="kjr-tile-pct pos">▲ \+17\.3%<\/span>/, 'gain: arrow, plus sign, one decimal');
+  assert.match(gain, /<span class="kjr-tile-pct pos">▲ \+S\$90 · \+17\.3%<\/span>/, 'gain: arrow, plus sign, the S$ gain, then the percentage to one decimal (cost S$10 or more)');
   assert.match(gain, /<span class="kjr-tile-note">Asking S\$680<\/span>/);
   assert.doesNotMatch(gain, /kjr-tile-qty/, 'no quantity badge for one');
 
   const loss = html(single({ id: '2', costPrice: 88, marketPrice: 74, listPrice: '' }));
-  assert.match(loss, /<span class="kjr-tile-pct neg">▼ -15\.9%<\/span>/, 'loss: arrow and minus sign, not colour alone');
+  assert.match(loss, /<span class="kjr-tile-pct neg">▼ -S\$14 · -15\.9%<\/span>/, 'loss: arrow and minus sign, not colour alone');
 
   const multi = html(single({ id: '3', qty: 4, language: 'JP', costPrice: 36, marketPrice: 56, listPrice: 18 }));
   assert.match(multi, /<span class="kjr-tile-qty">×4<\/span>/);
@@ -858,7 +858,8 @@ test('card-art: a tile reads as name, set, value with a signed arrow percentage,
   assert.match(estimate, /<span class="kjr-tile-price">~S\$12<\/span>/, 'an estimate from cost is flagged with ~');
   assert.doesNotMatch(estimate, /kjr-tile-pct/, 'and has no gain to show');
   const flat = html(single({ id: '5', costPrice: 5, marketPrice: 5 }));
-  assert.match(flat, /<span class="kjr-tile-pct ">0%<\/span>/);
+  assert.match(flat, /<span class="kjr-tile-pct ">S\$0<\/span>/, 'flat on a cost under S$10 has no percentage to show');
+  assert.match(html(single({ id: '5b', costPrice: 50, marketPrice: 50 })), /<span class="kjr-tile-pct ">0%<\/span>/, 'flat on S$10 or more of cost says 0%');
   const cheap = html(single({ id: '6', costPrice: 0.1, marketPrice: 0.4 }));
   assert.match(cheap, /<S\$1|&lt;S\$1/, 'a priced card never reads S$0');
   const blankLang = html(single({ id: '7', language: '' }));

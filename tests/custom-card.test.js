@@ -86,18 +86,18 @@ test('custom-card: the banner count drops, and the banner is gone at zero', asyn
   assert.equal(banner.classList.contains('show'), false, 'nothing left to flag, no banner');
 });
 
-test('custom-card: the Overview "needs a card number" count drops with it', async () => {
+test('custom-card: the Overview "could not be matched" count drops with it', async () => {
   const { ctx, document } = await loadApp({ seed: unmatchedSeed() });
   const hero = () => document.getElementById('dash-hero').innerHTML;
   ctx.renderDashboard();
-  assert.match(hero(), /3 cards need a card number/);
+  assert.match(hero(), /3 cards could not be matched/);
   rowOf(ctx, 'u1').customCard = true;
   ctx.renderDashboard();
-  assert.match(hero(), /2 cards need a card number/);
+  assert.match(hero(), /2 cards could not be matched/);
   rowOf(ctx, 'u2').customCard = true;
   rowOf(ctx, 'u3').customCard = true;
   ctx.renderDashboard();
-  assert.doesNotMatch(hero(), /need a card number|needs a card number/, 'the row is gone, not a zero');
+  assert.doesNotMatch(hero(), /could not be matched/, 'the row is gone, not a zero');
 });
 
 test('custom-card: the queue leaves a custom card out and does not let a plain duplicate copy a price onto it, or take its lane', async () => {
@@ -531,7 +531,7 @@ test('custom-card: a dismissed banner comes back when the unmatched cards are as
   assert.equal(banner.classList.contains('show'), false, 'the x hides it for the session');
   ctx._kjrShowUnresolvedOnly();
   assert.equal(ctx._kjrSinglesUnresolvedOnly, true);
-  assert.equal(banner.classList.contains('show'), true, 'Overview "Add card numbers" or Show in list brings it, and its Review button, back');
+  assert.equal(banner.classList.contains('show'), true, 'Show in list (the review sheet, opened from the Overview Fix matches link) brings it, and its Review button, back');
 });
 
 test('custom-card: a closed sheet is not redrawn, and closing it forgets what was marked', async () => {

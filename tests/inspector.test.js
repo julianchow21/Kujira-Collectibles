@@ -307,7 +307,8 @@ test('content: the actions follow the status, the "…" reuses the row menu mark
   assert.match(avail, /<button type="button" class="kjr-more kjr-insp-more" data-insp-act="more" aria-label="More actions for Pikachu 25" aria-haspopup="menu" aria-expanded="false" title="More actions">/);
   assert.match(avail, /<div class="kjr-rowmenu" role="menu" aria-label="More actions for Pikachu 25" hidden>/);
   const items = [...avail.slice(avail.indexOf('class="kjr-rowmenu"')).matchAll(/role="menuitem"[^>]*>([^<]*)</g)].map(m => m[1]);
-  assert.deepEqual(items, ['Open eBay listing', 'Open Carousell listing', 'Refresh price', 'Delete']);
+  assert.deepEqual(items, ['Open eBay listing', 'Open Carousell listing', 'Check on PriceCharting', 'Refresh price', 'Delete']);
+  assert.match(avail, /<a role="menuitem" href="https:\/\/www\.pricecharting\.com\/search-products\?type=prices&amp;q=Pikachu%2025" target="_blank" rel="noopener noreferrer">Check on PriceCharting<\/a>/, 'a price lookup link on every card, escaped for the attribute');
   assert.match(avail, /<a role="menuitem" href="https:\/\/www\.ebay\.com\/itm\/1" target="_blank" rel="noopener noreferrer">Open eBay listing<\/a>/);
   assert.match(avail, /class="kjr-rowmenu-sep" role="separator"><\/div><button type="button" role="menuitem" class="is-danger" data-insp-act="delete">Delete<\/button>/);
   assert.doesNotMatch(avail, /\son(click|change|input)=/i, 'no inline handler anywhere in the panel');

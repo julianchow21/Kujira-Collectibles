@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { loadApp, ROOT } = require('./harness.js');
+const { setClock, utcDayOf } = require('./clock.js');
 
 const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 const css = fs.readFileSync(ROOT + '/styles.css', 'utf8');
@@ -103,9 +104,9 @@ test('best and worst: empty state when nothing has a real price', async () => {
   assert.match(text(document, 'dash-movers'), /Add market prices to see gains and losses/);
 });
 
-// ── Top of the collection ───────────────────────────────────────────────────
+// ── Most valuable ───────────────────────────────────────────────────────────
 
-test('top of the collection: five highest unit values across singles and slabs, sold rows out', async () => {
+test('most valuable: five highest unit values across singles and slabs, sold rows out', async () => {
   const { ctx, document } = await app({
     singles: [
       single({ id: 'a', name: 'A', marketPrice: 40 }), single({ id: 'b', name: 'B', marketPrice: 90 }),
@@ -127,7 +128,7 @@ test('top of the collection: five highest unit values across singles and slabs, 
   assert.equal(document.getElementById('dash-top-sec').hidden, false);
 });
 
-test('top of the collection: the section hides when there is no inventory', async () => {
+test('most valuable: the section hides when there is no inventory', async () => {
   const { ctx, document } = await app({ singles: [single({ status: 'Sold' })] });
   ctx.renderDashboard();
   assert.equal(document.getElementById('dash-top-sec').hidden, true);
@@ -206,19 +207,27 @@ test('names, sets, products, channels and ids are escaped in every Overview list
 test('needs attention lists only the non-zero items', () => {
   return loadApp().then(({ ctx }) => {
     assert.deepEqual(Array.from(ctx.kjrOverviewAttention({}), i => i.key), []);
-    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ manualLang: 0, unresolved: 0, pendingSales: 0 }), i => i.key), []);
-    const all = ctx.kjrOverviewAttention({ manualLang: 3, unresolved: 1, pendingSales: 2 });
-    assert.deepEqual(Array.from(all, i => i.key), ['manual', 'unresolved', 'pending']);
-    assert.deepEqual(Array.from(all, i => i.act), ['singles', 'unresolved', 'sales']);
-    assert.equal(all[0].text, '3 non-English cards on manual prices');
-    assert.equal(all[1].text, '1 card needs a card number');
-    assert.equal(all[2].text, '2 Dealer sales pending settlement');
-    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ manualLang: 1 }), i => i.text), ['1 non-English card on manual prices']);
-    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ unresolved: 4 }), i => i.text), ['4 cards need a card number']);
+    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ unresolved: 0, staleSingles: 0, staleSlabs: 0, pendingSales: 0 }), i => i.key), []);
+    const all = ctx.kjrOverviewAttention({ unresolved: 1, staleSingles: 3, staleSlabs: 2, pendingSales: 2 });
+    assert.deepEqual(Array.from(all, i => i.key), ['unresolved', 'stale-singles', 'stale-slabs', 'pending']);
+    assert.deepEqual(Array.from(all, i => i.act), ['unresolved', 'stale-singles', 'stale-slabs', 'sales']);
+    assert.deepEqual(Array.from(all, i => i.link), ['Fix matches', 'Review', 'Review', 'View sales']);
+    assert.equal(all[0].text, '1 card could not be matched');
+    assert.equal(all[1].text, '3 singles over S$50 not priced in 60 days');
+    assert.equal(all[2].text, '2 slabs over S$50 not priced in 60 days');
+    assert.equal(all[3].text, '2 Dealer sales pending settlement');
+    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ unresolved: 4 }), i => i.text), ['4 cards could not be matched']);
+    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ staleSingles: 1, staleSlabs: 1 }), i => i.text),
+      ['1 single over S$50 not priced in 60 days', '1 slab over S$50 not priced in 60 days']);
+    // the two Review links tell each other apart by name, and the name starts with the visible word
+    assert.equal(all[1].label, 'Review 3 singles over S$50 not priced in 60 days');
+    assert.equal(all[2].label, 'Review 2 slabs over S$50 not priced in 60 days');
+    // the non-English manual prices row is gone, whatever count a caller still passes for it
+    assert.deepEqual(Array.from(ctx.kjrOverviewAttention({ manualLang: 3 }), i => i.key), []);
   });
 });
 
-test('needs attention: the all-clear state and the populated state in the hero', async () => {
+test('needs attention: the all-clear state and the populated state in the hero, with no manual prices row', async () => {
   const clean = await app({ singles: [single({ name: 'Pikachu 25', tcgdexId: 'base1-25' })] });
   clean.ctx.renderDashboard();
   const calm = text(clean.document, 'dash-hero');
@@ -233,39 +242,212 @@ test('needs attention: the all-clear state and the populated state in the hero',
   const hero = text(busy.document, 'dash-hero');
   assert.match(hero, /Needs attention/);
   assert.doesNotMatch(hero, /All caught up/);
-  assert.match(hero, /1 non-English card on manual prices/);
-  assert.match(hero, /1 card needs a card number/);
+  assert.match(hero, /1 card could not be matched/, 'Eevee has no card number, the Korean card is manual by design and is not counted');
   assert.match(hero, /1 Dealer sale pending settlement/);
-  assert.match(hero, /data-ov-act="singles">Review prices/);
-  assert.match(hero, /data-ov-act="unresolved">Add card numbers/);
-  assert.match(hero, /data-ov-act="sales">View sales/);
+  assert.match(hero, /data-ov-act="unresolved">Fix matches</);
+  assert.match(hero, /data-ov-act="sales">View sales</);
+  assert.doesNotMatch(hero, /non-English|manual prices|Review prices|Add card numbers|need a card number|needs a card number/, 'the old rows and wording are gone');
 
-  const krOnly = await app({ singles: [single({ name: 'Pikachu 25 KR', language: 'KR' })] });
-  krOnly.ctx.renderDashboard();
-  const one = text(krOnly.document, 'dash-hero');
-  assert.match(one, /non-English card on manual prices/);
-  assert.doesNotMatch(one, /need a card number|needs a card number|pending settlement/);
+  // a non-English single on a manual price raises no row, with the Japanese lane off (as v3.85 ships) or on
+  for (const language of ['KR', 'JP', 'CN', 'ID']) {
+    for (const lane of [false, true]) {
+      const x = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] }, lane);
+      x.ctx.renderDashboard();
+      const markup = text(x.document, 'dash-hero');
+      assert.doesNotMatch(markup, /non-English|manual prices/, language + (lane ? ', Japanese lane on' : ', Japanese lane off'));
+      assert.match(markup, /All caught up/, language + (lane ? ', Japanese lane on' : ', Japanese lane off'));
+    }
+  }
+});
 
-  // v3.85 ships with the Japanese lane off, so a Japanese, Chinese or Indonesian single is one of the manual ones, as in v3.84
-  for (const language of ['JP', 'CN', 'ID']) {
-    const off = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] });
-    off.ctx.renderDashboard();
-    assert.match(text(off.document, 'dash-hero'), /1 non-English card on manual prices/, language);
-  }
-  // with the lane on a Japanese single with a card number is priced by it and is no longer one of the manual ones, a Chinese or Indonesian one still is
-  const jp = await app({ singles: [single({ name: 'Pikachu 25 JP', language: 'JP' })] }, true);
-  jp.ctx.renderDashboard();
-  assert.doesNotMatch(text(jp.document, 'dash-hero'), /non-English card on manual prices/);
-  for (const language of ['CN', 'ID']) {
-    const on = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] }, true);
-    on.ctx.renderDashboard();
-    assert.match(text(on.document, 'dash-hero'), /1 non-English card on manual prices/, language);
-  }
+// ── Stale prices ────────────────────────────────────────────────────────────
+
+// A fixed clock keeps the day counts exact. The history dates are UTC dates, as the price code writes them.
+const NOW_ISO = '2026-10-21T12:00:00Z';
+const agoDay = days => utcDayOf(new Date(NOW_ISO).getTime() - days * 86400000);
+// a card priced `days` days ago the way the price code leaves it: a dated history entry, the stored price equal to it
+const pricedAgo = (days, value, extra) => Object.assign({ costPrice: 10, marketPrice: value, priceHistory: [{ date: agoDay(days), price: value, source: 'TCGdex (TCGplayer)' }] }, extra || {});
+const idsOf = rows => Array.from(rows, r => r.id);
+
+function staleFixture() {
+  return {
+    singles: [
+      single(pricedAgo(61, 51, { id: 'in-61d' })),
+      single(pricedAgo(59, 51, { id: 'out-59d' })),
+      single(pricedAgo(60, 51, { id: 'out-60d' })), // "more than 60 days", 60 is not
+      single(pricedAgo(400, 49, { id: 'out-49' })),
+      single(pricedAgo(400, 50, { id: 'out-50' })), // "over S$50", 50 is not
+      single(pricedAgo(400, 80, { id: 'out-sold', status: 'Sold' })),
+      single({ id: 'out-estimate', marketPrice: '', costPrice: 90, priceHistory: [] }), // cost standing in for a price is no price
+      single({ id: 'in-never', marketPrice: 75, priceHistory: [] }), // a price with no check date at all
+      single(pricedAgo(120, 40, { id: 'out-unit', qty: 5 })), // the unit value counts, five at S$40 is not over S$50
+      Object.assign(single(pricedAgo(300, 66, { id: 'out-rechecked' })), { _tcgdexPricedDate: agoDay(3) }), // a same-value re-check 3 days ago
+      single({ id: 'out-stale-ppt', language: 'KR', marketPrice: 645, costPrice: 2, priceHistory: [{ date: '2026-06-10', price: 644.63, ppt: 500.99, source: 'PPT' }] }), // counted at cost, an estimate
+    ],
+    slabs: [
+      slab(pricedAgo(70, 500, { id: 'sl-in' })),
+      slab(pricedAgo(10, 500, { id: 'sl-out' })),
+      slab({ id: 'sl-estimate', marketPrice: '', costPrice: 300, priceHistory: [] }),
+      slab(pricedAgo(90, 600, { id: 'sl-sold', status: 'Sold' })),
+    ],
+  };
+}
+
+test('stale prices: Available cards over S$50 each whose last price check is more than 60 days old or missing, real prices only', async () => {
+  const a = await app(staleFixture());
+  setClock(a, NOW_ISO);
+  const { ctx } = a;
+  assert.deepEqual(idsOf(ctx.kjrStaleCards('singles')), ['in-61d', 'in-never']);
+  assert.deepEqual(idsOf(ctx.kjrStaleCards('slabs')), ['sl-in']);
+  assert.deepEqual(idsOf(ctx.kjrStaleCards('etbs')), [], 'singles and slabs only');
+  assert.deepEqual(idsOf(ctx.kjrStaleCards()), []);
+  const before = JSON.stringify(ctx.DB.singles) + JSON.stringify(ctx.DB.slabs);
+  ctx.kjrStaleCards('singles');
+  assert.equal(JSON.stringify(ctx.DB.singles) + JSON.stringify(ctx.DB.slabs), before, 'a pure read');
+});
+
+test('stale prices: the two rows count by that rule, say 1 and N, and hide at 0', async () => {
+  const a = await app(staleFixture());
+  setClock(a, NOW_ISO);
+  a.ctx.renderDashboard();
+  const hero = text(a.document, 'dash-hero');
+  assert.match(hero, /2 singles over S\$50 not priced in 60 days/);
+  assert.match(hero, /1 slab over S\$50 not priced in 60 days/);
+  assert.match(hero, /aria-label="Review 2 singles over S\$50 not priced in 60 days" data-ov-act="stale-singles">Review<\/button>/);
+  assert.match(hero, /aria-label="Review 1 slab over S\$50 not priced in 60 days" data-ov-act="stale-slabs">Review<\/button>/);
+  assert.doesNotMatch(hero, /1 singles|1 slabs/, 'a count of one is singular');
+
+  const one = await app({ singles: [single(pricedAgo(70, 90, { id: 'only' }))] });
+  setClock(one, NOW_ISO);
+  one.ctx.renderDashboard();
+  const markup = text(one.document, 'dash-hero');
+  assert.match(markup, /1 single over S\$50 not priced in 60 days/);
+  assert.doesNotMatch(markup, /slab over/, 'the slabs row hides at 0');
+
+  const none = await app({ singles: [single(pricedAgo(5, 90)), single({ marketPrice: 30, priceHistory: [] })], slabs: [slab(pricedAgo(5, 400))] });
+  setClock(none, NOW_ISO);
+  none.ctx.renderDashboard();
+  assert.doesNotMatch(text(none.document, 'dash-hero'), /not priced in 60 days/);
+});
+
+test('stale prices: a count that fails to read costs its rows, not the hero', async () => {
+  const a = await app(staleFixture());
+  setClock(a, NOW_ISO);
+  a.ctx.kjrStaleCards = () => { throw new Error('boom'); };
+  assert.doesNotThrow(() => a.ctx.renderDashboard());
+  const hero = text(a.document, 'dash-hero');
+  assert.match(hero, /ov-hero-value/);
+  assert.doesNotMatch(hero, /not priced in 60 days/);
+  assert.ok(a.consoleWarnings.some(w => /\[overview\] stale singles failed to render/.test(w)));
+});
+
+test('stale prices: Review opens Singles or Slabs filtered to them, with a chip, and leaving the page, Clear or re-pricing drops the filter', async () => {
+  const a = await app({
+    singles: [single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard' })), single(pricedAgo(2, 90, { id: 's-fresh', name: 'New Charizard' })), single(pricedAgo(80, 30, { id: 's-cheap', name: 'Cheap Charizard' }))],
+    slabs: [slab(pricedAgo(80, 700, { id: 'l-stale' })), slab(pricedAgo(2, 700, { id: 'l-fresh' }))],
+  });
+  setClock(a, NOW_ISO);
+  const { ctx, document } = a;
+  const shown = (t) => Array.from(ctx._kjrInspectOrder[t]).sort();
+  const chip = (id) => document.getElementById(id).style.display;
+
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-singles' }));
+  assert.equal(ctx._kjrSinglesStaleOnly, true);
+  assert.deepEqual(shown('singles'), ['s-stale'], 'only the stale single is listed');
+  assert.equal(chip('singles-stale-filter-chip'), '', 'the chip shows');
+  assert.match(html, /<button class="btn btn-sm" id="singles-stale-filter-chip" style="display:none;color:var\(--amber\);border-color:var\(--amber\)" onclick="_kjrClearStaleFilter\('singles'\)" title="[^"]+">Showing stale prices only, ✕ Clear filter<\/button>/, 'same look as the unresolved chip, next to it');
+  ctx._kjrClearStaleFilter('singles');
+  assert.equal(ctx._kjrSinglesStaleOnly, false);
+  assert.deepEqual(shown('singles'), ['s-cheap', 's-fresh', 's-stale']);
+  assert.equal(chip('singles-stale-filter-chip'), 'none');
+
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-slabs' }));
+  assert.equal(ctx._kjrSlabsStaleOnly, true);
+  assert.deepEqual(shown('slabs'), ['l-stale']);
+  assert.equal(chip('slabs-stale-filter-chip'), '');
+  assert.match(html, /<button class="btn btn-sm" id="slabs-stale-filter-chip" style="display:none;color:var\(--amber\);border-color:var\(--amber\)" onclick="_kjrClearStaleFilter\('slabs'\)" title="[^"]+">Showing stale prices only, ✕ Clear filter<\/button>/, 'and the Slabs toolbar has its own');
+  ctx.showPage('dashboard');
+  assert.equal(ctx._kjrSlabsStaleOnly, false, 'leaving Slabs drops it');
+  ctx.showPage('slabs');
+  assert.deepEqual(shown('slabs'), ['l-fresh', 'l-stale']);
+  assert.equal(chip('slabs-stale-filter-chip'), 'none');
+
+  ctx._kjrShowStaleOnly('singles');
+  assert.equal(ctx._kjrSinglesStaleOnly, true);
+  ctx.showPage('slabs');
+  assert.equal(ctx._kjrSinglesStaleOnly, false, 'leaving Singles drops it');
+
+  // one narrowing at a time: the unmatched cards filter replaces the stale one
+  ctx._kjrShowStaleOnly('singles');
+  ctx._kjrShowUnresolvedOnly();
+  assert.equal(ctx._kjrSinglesStaleOnly, false);
+  assert.equal(ctx._kjrSinglesUnresolvedOnly, true);
+  ctx._kjrClearUnresolvedFilter();
+
+  // the last stale card is re-priced while the page is filtered to them: the filter drops itself, no empty list behind a chip
+  ctx._kjrShowStaleOnly('singles');
+  assert.deepEqual(shown('singles'), ['s-stale']);
+  ctx.DB.singles.find(r => r.id === 's-stale').priceHistory = [{ date: agoDay(0), price: 90, source: 'manual' }];
+  ctx.renderSingles();
+  assert.equal(ctx._kjrSinglesStaleOnly, false);
+  assert.deepEqual(shown('singles'), ['s-cheap', 's-fresh', 's-stale']);
+  assert.equal(chip('singles-stale-filter-chip'), 'none');
+});
+
+test('stale prices: the Fix matches link opens the unmatched cards sheet, the Review links open the filtered lists', async () => {
+  const { ctx } = await app({ singles: [single()] });
+  const calls = [];
+  ctx.kjrCustomReviewOpen = () => calls.push(['sheet']);
+  ctx._kjrShowUnresolvedOnly = () => calls.push(['unresolved-list']);
+  ctx.showPage = name => calls.push(['page', name]);
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'unresolved' }));
+  assert.deepEqual(calls, [['sheet']], 'the sheet, not a page change and not the filtered list');
+  calls.length = 0;
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-singles' }));
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-slabs' }));
+  assert.deepEqual(calls, [['page', 'inventory'], ['page', 'slabs']]);
+  assert.equal(ctx._kjrSinglesStaleOnly, true);
+  assert.equal(ctx._kjrSlabsStaleOnly, true);
+});
+
+// ── Most valuable: identical holdings grouped ───────────────────────────────
+
+test('most valuable: identical holdings are grouped before the cut, and the count rides on the tile', async () => {
+  const { ctx, document } = await app({
+    singles: [
+      single({ id: 'z1', name: 'Zard ex 199', tcgdexId: 'sv-199', marketPrice: 120 }),
+      single({ id: 'z2', name: '  zard EX 199 ', tcgdexId: 'sv-199', marketPrice: 120.2 }), // the same card: case and spaces differ, the value rounds to the same dollar
+      single({ id: 'z3', name: 'Zard ex 199', tcgdexId: 'sv-199', marketPrice: 120, language: 'JP' }), // another language
+      single({ id: 'z4', name: 'Zard ex 199', tcgdexId: 'sv-200', marketPrice: 120 }), // another tcgdexId
+      single({ id: 'z5', name: 'Zard ex 199', tcgdexId: 'sv-199', marketPrice: 125 }), // another value
+      single({ id: 'p1', name: 'Pika', marketPrice: 30, qty: 3 }), // one row of three
+      single({ id: 'p2', name: 'Pika', marketPrice: 30, qty: 2, status: 'Sold' }), // Sold is not part of the holding
+    ],
+    slabs: [
+      slab({ id: 'a1', name: 'Slab ex', grader: 'PSA', grade: '10', marketPrice: 800 }),
+      slab({ id: 'a2', name: 'Slab ex', grader: 'PSA', grade: '10', marketPrice: 800 }),
+      slab({ id: 'b1', name: 'Slab ex', grader: 'PSA', grade: '9', marketPrice: 800 }), // another grade is its own group
+    ],
+  });
+  const flat = n => Array.from(ctx.kjrOverviewTop(n), r => [r.item.id, r.table, r.count]);
+  assert.deepEqual(flat(20), [['a1', 'slabs', 2], ['b1', 'slabs', 1], ['z5', 'singles', 1], ['z1', 'singles', 2], ['z3', 'singles', 1], ['z4', 'singles', 1], ['p1', 'singles', 3]],
+    'slabs count rows, singles add their quantity, the first row of a group is the item');
+  assert.deepEqual(flat(2), [['a1', 'slabs', 2], ['b1', 'slabs', 1]], 'the cut counts groups, so twins do not crowd out other cards');
+  assert.equal(ctx.kjrOverviewTop(1)[0].value, 800);
+
+  ctx.renderDashboard();
+  const markup = text(document, 'dash-top');
+  assert.equal((markup.match(/class="ov-top-item"/g) || []).length, 5, 'five tiles, one per group');
+  assert.equal((markup.match(/<span class="kjr-tile-qty">×2<\/span>/g) || []).length, 2, 'the slab pair and the single pair');
+  assert.doesNotMatch(markup, /data-id="a2"|data-id="z2"/, 'the twin rows have no tile of their own');
+  assert.match(html, /<h2 class="ov-h2" id="dash-top-h">Most valuable<\/h2>/, 'the section is called Most valuable');
+  assert.doesNotMatch(html, /Top of the collection/);
+  assert.match(ctx.kjrOvTopHtml(ctx.kjrOverviewTop(20)), /<span class="kjr-tile-qty">×3<\/span>/, 'a single row of three shows ×3, as before');
 });
 
 // ── Hero ────────────────────────────────────────────────────────────────────
 
-test('hero: collection value, gain chip with arrow and sign, cost line, no info buttons', async () => {
+test('hero: collection value, gain chip with arrow and sign, no cost note, info icons only on Cost basis and Realised profit', async () => {
   const { ctx, document } = await app({
     singles: [single({ costPrice: 100, marketPrice: 160, qty: 1 })],
     slabs: [slab({ costPrice: 400, marketPrice: 440 })],
@@ -274,12 +456,36 @@ test('hero: collection value, gain chip with arrow and sign, cost line, no info 
   const hero = text(document, 'dash-hero');
   assert.match(hero, /class="ov-hero-value">S\$600</);
   assert.match(hero, /class="ov-chip pos"><span aria-hidden="true">▲<\/span> \+S\$100 · \+20\.0%/);
-  assert.match(hero, /unrealised gain on S\$500 cost/);
+  assert.doesNotMatch(hero, /unrealised gain on/, 'the cost note is gone, the cost is the Cost basis figure');
+  assert.match(hero, /<\/span> \+S\$100 · \+20\.0%<\/span><\/div>/, 'nothing sits beside the chip');
   assert.match(hero, /data-ov-act="breakdown">See breakdown/);
-  assert.match(hero, /Cost basis<\/div><div class="ov-stat-value">S\$500</);
-  assert.match(hero, /1 single · 1 slab/);
+  assert.match(hero, /Cost basis<button type="button" class="ov-info"[^>]*>[\s\S]*?<\/button><\/div><div class="ov-stat-value">S\$500</);
+  assert.match(hero, /<span role="tooltip" id="ov-info-cost" class="ov-info-tip">1 single · 1 slab<\/span><\/button>/, 'the count lives in the bubble');
+  assert.doesNotMatch(hero, /class="ov-stat-sub"/, 'and no longer under the figure');
   assert.doesNotMatch(hero, /metric-info|kjrToggleTooltip|aria-label="Info"/);
   assert.match(hero, /class="ov-hero-label"><span title="Estimated value/, 'the explanation is a tooltip on the label');
+});
+
+test('hero: each info icon is a button that names itself, points at its bubble, starts closed, and its label carries no title', async () => {
+  const { ctx, document } = await app({
+    singles: [single()],
+    sales: [sale({ costPrice: 100, totalCollected: 130, profit: 30 })],
+  });
+  ctx.renderDashboard();
+  const hero = text(document, 'dash-hero');
+  const buttons = [...hero.matchAll(/<button type="button" class="ov-info"[^>]*>/g)].map(m => m[0]);
+  assert.equal(buttons.length, 2, 'one beside Cost basis, one beside Realised profit');
+  assert.equal(buttons[0], '<button type="button" class="ov-info" aria-label="Cost basis details" aria-expanded="false" aria-describedby="ov-info-cost">');
+  assert.equal(buttons[1], '<button type="button" class="ov-info" aria-label="Realised profit details" aria-expanded="false" aria-describedby="ov-info-roi">');
+  assert.equal(hero.match(/id="ov-info-cost"/g).length, 1, 'the ids are unique');
+  assert.equal(hero.match(/id="ov-info-roi"/g).length, 1, 'the ids are unique');
+  assert.equal(hero.match(/<svg width="14" height="14"[^>]*stroke="currentColor"[^>]*aria-hidden="true"/g).length, 2, 'a 14px currentColor glyph hidden from screen readers');
+  assert.doesNotMatch(hero, /class="ov-stat-label[^"]*"[^>]*title=/, 'a title would stack the native tooltip and the long-press bubble on the icon bubble');
+  assert.doesNotMatch(hero, /<button type="button" class="ov-info"[^>]*title=/);
+  assert.doesNotMatch(hero, /onclick=/, 'wired by the one delegated handler, not inline');
+  assert.match(css, /\.ov-info-tip\{[^}]*position:absolute[^}]*white-space:nowrap/, 'the bubble is out of flow and stays on one line');
+  assert.match(css, /\.ov-info-tip\{[^}]*max-width:calc\(100vw - 32px\)/, 'and never wider than the screen');
+  assert.match(css, /@container ov \(max-width:1120px\)\{\.ov-info-end \.ov-info-tip\{left:auto;right:0\}\}/, 'right-aligned where Realised profit is the right-hand figure');
 });
 
 test('hero is one band: the value block, then Cost basis, Realised profit and Needs attention as regions of the same card', async () => {
@@ -302,12 +508,14 @@ test('hero is one band: the value block, then Cost basis, Realised profit and Ne
   assert.match(phone, /\.ov-hero-main\{[^}]*border-bottom:1px solid var\(--border\)/, 'with a horizontal hairline under it');
 });
 
-test('hero: a loss reads down with a minus and the loss wording', async () => {
+test('hero: a loss reads down with a minus, and no cost note follows the chip', async () => {
   const { ctx, document } = await app({ singles: [single({ costPrice: 200, marketPrice: 150 })] });
   ctx.renderDashboard();
   const hero = text(document, 'dash-hero');
   assert.match(hero, /class="ov-chip neg"><span aria-hidden="true">▼<\/span> -S\$50 · -25\.0%/);
-  assert.match(hero, /unrealised loss on S\$200 cost/);
+  assert.doesNotMatch(hero, /unrealised (gain|loss) on/);
+  assert.match(hero, /<\/span> -S\$50 · -25\.0%<\/span><\/div>/, 'nothing sits beside the chip');
+  assert.match(hero, /Cost basis<button[\s\S]*?<\/button><\/div><div class="ov-stat-value">S\$200</, 'the cost is the Cost basis figure');
 });
 
 test('hero: realised profit is signed with its return, None yet without sales, Unknown while all are pending', async () => {
@@ -317,16 +525,22 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   });
   withSales.ctx.renderDashboard();
   const a = text(withSales.document, 'dash-hero');
-  assert.match(a, /Realised profit<\/div><div class="ov-stat-value pos">\+S\$20</);
-  assert.match(a, /13\.3% return across 2 sales/);
+  assert.match(a, /Realised profit<button type="button" class="ov-info"[^>]*>[\s\S]*?<\/button><\/div><div class="ov-stat-value pos">\+S\$20</);
+  assert.match(a, /<span role="tooltip" id="ov-info-roi" class="ov-info-tip">ROI 13% across 2 sales<\/span>/, 'the return is a whole percent, in the bubble');
+  assert.match(a, /class="ov-stat-label ov-info-row ov-info-end">Realised profit/, 'the bubble can grow leftwards where the figure sits at the right edge');
+  assert.doesNotMatch(a, /% return|class="ov-stat-sub"/, 'no visible sub line once the figures moved into the bubble');
 
   const negative = await app({ singles: [single()], sales: [sale({ costPrice: 100, totalCollected: 60, profit: -40 })] });
   negative.ctx.renderDashboard();
-  assert.match(text(negative.document, 'dash-hero'), /ov-stat-value neg">-S\$40</);
+  const n = text(negative.document, 'dash-hero');
+  assert.match(n, /ov-stat-value neg">-S\$40</);
+  assert.match(n, /class="ov-info-tip">ROI -40% across 1 sale</);
 
   const none = await app({ singles: [single()] });
   none.ctx.renderDashboard();
-  assert.match(text(none.document, 'dash-hero'), /ov-stat-value dim">None yet</);
+  const z = text(none.document, 'dash-hero');
+  assert.match(z, /Realised profit<\/div><div class="ov-stat-value dim">None yet</, 'nothing to describe, so no icon');
+  assert.doesNotMatch(z, /ov-info-roi/);
 
   const pending = await app({
     singles: [single()],
@@ -335,7 +549,108 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   pending.ctx.renderDashboard();
   const p = text(pending.document, 'dash-hero');
   assert.match(p, /ov-stat-value dim">Unknown</);
-  assert.match(p, /1 Dealer sale pending settlement/);
+  assert.match(p, /<div class="ov-stat-sub">1 Dealer sale pending settlement<\/div>/, 'the reason for Unknown stays visible');
+  assert.doesNotMatch(p, /ov-info-roi/, 'with no known sale there is no return to put in a bubble');
+});
+
+test('hero: the return in the Realised profit bubble is a whole percent, signed only below zero, and absent when there is none', async () => {
+  const { ctx } = await app({});
+  const bubble = roiPct => {
+    const html = ctx.kjrOvHeroHtml({
+      invCostSingles: 10, invCostSlabs: 0, totalMktValue: 15, unrealisedPL: 5, singlesAvail: 1, slabsAvail: 0, hasCards: true,
+      allTimeSales: [{}, {}], allTimeProfit: 20, allTimePendingDealerSales: 0, roiPct, attention: [],
+    });
+    const m = html.match(/<span role="tooltip" id="ov-info-roi" class="ov-info-tip">([^<]*)<\/span>/);
+    return m && m[1];
+  };
+  assert.equal(bubble(75.04), 'ROI 75% across 2 sales');
+  assert.equal(bubble(75.5), 'ROI 76% across 2 sales');
+  assert.equal(bubble(-11.6), 'ROI -12% across 2 sales');
+  assert.equal(bubble(-12.5), 'ROI -13% across 2 sales', 'a negative rounds the same way as a positive');
+  assert.equal(bubble(0), 'ROI 0% across 2 sales');
+  assert.equal(bubble(-0.4), 'ROI 0% across 2 sales', 'a return that rounds to zero carries no minus sign');
+  assert.equal(bubble(null), 'Across 2 sales', 'no ROI part without a return');
+  assert.equal(bubble(undefined), 'Across 2 sales');
+  assert.equal(bubble(NaN), 'Across 2 sales', 'a non-number never reaches the screen');
+});
+
+test('hero: the Overview click router leaves a click inside an info icon alone', async () => {
+  const { ctx } = await app({});
+  let adds = 0;
+  ctx.openAddSingle = () => { adds += 1; };
+  const holder = { getAttribute: name => (name === 'data-ov-act' ? 'add' : null) };
+  const click = insideIcon => ({ target: { matches: sel => insideIcon && sel === '.ov-info, .ov-info *', closest: () => holder } });
+  ctx._kjrOvClick(click(true));
+  assert.equal(adds, 0, 'ignored even when an action holder wraps the icon');
+  ctx._kjrOvClick(click(false));
+  assert.equal(adds, 1, 'the same router still acts on any other click');
+});
+
+test('hero: the info icons open on a tap, and close on a second tap, Escape, the other icon or a click anywhere else', async () => {
+  const { ctx, document } = await app({});
+  // Two stand-in icons: the harness DOM never dispatches events, so the handler is driven by hand
+  const icon = () => {
+    const on = new Set();
+    const el = {
+      held: false, attrs: { 'aria-expanded': 'false' },
+      classList: {
+        contains: n => on.has(n), remove: n => on.delete(n),
+        toggle: (n, force) => { if (force) on.add(n); else on.delete(n); return !!force; },
+      },
+      setAttribute(k, v) { el.attrs[k] = v; },
+      closest: sel => (sel === '.ov-info' ? el : null),
+      contains: n => n === el,
+      matches: sel => sel === ':hover' && el.held,
+    };
+    return el;
+  };
+  const a = icon(), b = icon();
+  document.querySelectorAll = sel => (sel === '.ov-info' ? [a, b] : []);
+  const fire = (type, target, more) => ctx._kjrOvInfoEvent(Object.assign({ type, target }, more));
+  const isOpen = el => el.classList.contains('open') && el.attrs['aria-expanded'] === 'true';
+  const isClosed = el => !el.classList.contains('open') && el.attrs['aria-expanded'] === 'false';
+  const elsewhere = { closest: () => null };
+
+  fire('click', a);
+  assert.ok(isOpen(a) && isClosed(b), 'a tap opens the icon');
+  fire('click', a);
+  assert.ok(isClosed(a), 'a second tap closes it');
+  fire('click', a);
+  fire('click', b);
+  assert.ok(isClosed(a) && isOpen(b), 'opening one closes the other');
+  fire('click', elsewhere);
+  assert.ok(isClosed(a) && isClosed(b), 'a click anywhere else closes it');
+  fire('click', a);
+  fire('keydown', a, { key: 'Enter' });
+  assert.ok(isOpen(a), 'a key other than Escape leaves it open');
+  fire('keydown', a, { key: 'Escape' });
+  assert.ok(isClosed(a) && !a.classList.contains('shut'), 'Escape closes it, and with the pointer elsewhere nothing needs hiding');
+
+  // Hover and focus show the bubble from CSS, so closing while the pointer still rests on the icon adds shut
+  a.held = true;
+  fire('click', a);
+  fire('click', a);
+  assert.ok(isClosed(a) && a.classList.contains('shut'), 'closed under the pointer, so shut keeps the CSS hover from showing it again');
+  fire('mouseout', a, { relatedTarget: a });
+  assert.ok(a.classList.contains('shut'), 'moving between the icon and its own bubble is not leaving it');
+  fire('mouseout', a, { relatedTarget: elsewhere });
+  assert.ok(!a.classList.contains('shut'), 'leaving the icon lets hover show it again');
+  fire('keydown', elsewhere, { key: 'Escape' });
+  assert.ok(isClosed(a) && a.classList.contains('shut'), 'Escape also hides a bubble that only the pointer or focus is showing');
+  fire('click', a);
+  assert.ok(isOpen(a) && !a.classList.contains('shut'), 'a fresh tap opens it again');
+});
+
+test('hero: the info handler is installed once at load, and no redraw installs it again', async () => {
+  // renderDashboard has already run by the time loadApp returns, which is when _kjrOvBind installed the handler
+  const { ctx, document } = await app({ singles: [single()] });
+  assert.equal(document.getElementById('page-dashboard')._kjrOvBound, true, 'the Overview was bound at load');
+  const seen = [];
+  document.addEventListener = type => { seen.push(type); };
+  ctx.renderDashboard();
+  ctx.renderDashboard();
+  ctx._kjrOvInfoInit();
+  assert.deepEqual(seen, [], 'no document listener is added by a redraw or a second install call');
 });
 
 test('hero: an empty collection says so and offers one action', async () => {
@@ -936,7 +1251,9 @@ test('tiles and rows open the card inspector by table, the text buttons go where
   ctx.openEditSingle = id => calls.push(['edit-single', id]);
   ctx.openEditSlab = id => calls.push(['edit-slab', id]);
   ctx.showPage = name => calls.push(['page', name]);
-  ctx._kjrShowUnresolvedOnly = () => calls.push(['unresolved']);
+  ctx._kjrShowUnresolvedOnly = () => calls.push(['unresolved-list']);
+  ctx.kjrCustomReviewOpen = () => calls.push(['review-sheet']);
+  ctx._kjrShowStaleOnly = table => calls.push(['stale', table]);
   ctx.showMarketValueBreakdown = () => calls.push(['breakdown']);
   ctx.openAddSingle = () => calls.push(['add']);
 
@@ -946,10 +1263,12 @@ test('tiles and rows open the card inspector by table, the text buttons go where
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'singles' }));
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'sales' }));
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'unresolved' }));
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-singles' }));
+  ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'stale-slabs' }));
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'breakdown' }));
   ctx._kjrOvClick(fakeClick({ 'data-ov-act': 'add' }));
   assert.deepEqual(calls, [
-    ['inspect', 'singles', 'one'], ['inspect', 'slabs', 'two'], ['inspect', 'slabs', 3], ['page', 'inventory'], ['page', 'sales'], ['unresolved'], ['breakdown'], ['add'],
+    ['inspect', 'singles', 'one'], ['inspect', 'slabs', 'two'], ['inspect', 'slabs', 3], ['page', 'inventory'], ['page', 'sales'], ['review-sheet'], ['stale', 'singles'], ['stale', 'slabs'], ['breakdown'], ['add'],
   ]);
 
   calls.length = 0;

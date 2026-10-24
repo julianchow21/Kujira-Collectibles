@@ -4295,19 +4295,79 @@ function kjrTileMoney(n) {
   var whole = Math.round(v);
   return whole < 1 ? '<S$1' : 'S$' + whole.toLocaleString('en-SG');
 }
-// Gain or loss against cost, with an arrow AND a sign so colour is never the only signal.
-function kjrTilePct(market, cost) {
-  if (!(market > 0) || !(cost > 0)) return null;
+// Gain or loss against cost as a percentage ALONE, with an arrow AND a sign so colour is never the only signal. One decimal below 100%, a
+// whole number from 100%. { cls, text }, null when there is no market price or no cost. kjrTilePct builds on it, and the Overview's
+// Best and worst rows use it as it is (they carry the S$ totals themselves).
+function kjrGainPct(market, cost) {
+  if (!(market > 0) || !(cost > 0) || !isFinite(market) || !isFinite(cost)) return null;
   var p = (market - cost) / cost * 100;
   var a = Math.abs(p);
   var txt = a.toFixed(a >= 100 ? 0 : 1);
   if (Number(txt) === 0) return { cls: '', text: '0%' };
   return p > 0 ? { cls: 'pos', text: '▲ +' + txt + '%' } : { cls: 'neg', text: '▼ -' + txt + '%' };
 }
-function kjrTileHtml(item, table, isSold) {
+// The gain label the tile, the phone Holdings row and the card inspector's gain line share. The S$ gain always shows, in whole dollars like
+// every other S$ here, and the percentage only when the cost is S$10 or more: on a card bought for S$2 a "+32150%" says less than
+// "+S$643". { cls, text }, null when there is no market price or no cost. The text is plain text, not HTML ("<S$1" is possible), so
+// whoever draws it escapes it.
+//   ▲ +S$643           cost under S$10        ▼ -S$4            a loss, cost under S$10
+//   ▲ +S$12 · +25.0%   cost S$10 or more      S$0 or 0%         flat (the percentage rounds to 0.0), cost under or from S$10
+function kjrTilePct(market, cost) {
+  var g = kjrGainPct(market, cost);
+  if (!g) return null;
+  var showPct = cost >= 10;
+  if (!g.cls) return { cls: '', text: showPct ? '0%' : 'S$0' };
+  return { cls: g.cls, text: (g.cls === 'pos' ? '▲ +' : '▼ -') + kjrTileMoney(Math.abs(market - cost)) + (showPct ? ' · ' + g.text.replace(/^[▲▼]\s*/, '') : '') };
+}
+// The gain label as words for an aria-label: no arrow, no signs, the dot a comma, "<S$1" as "under S$1". '' for a flat card.
+function kjrTilePctSpoken(pct) {
+  if (!pct || !pct.cls) return '';
+  return (pct.cls === 'pos' ? 'up ' : 'down ') + String(pct.text).replace(/^[▲▼]\s*/, '').replace(/[+-](?=S\$|<S\$|\d)/g, '')
+    .replace(/\s·\s/g, ', ').replace(/<S\$1/, function () { return 'under S$1'; });
+}
+// How long ago a price was checked, in words, from whole UTC days (kjrCheckedDays): today, yesterday, N days ago, then N weeks ago
+// from 14 days and N months ago from 60 (days / 7 and days / 30, rounded down). '' when the days are not a number.
+function kjrAgeWords(days) {
+  var d = Math.floor(Number(days));
+  if (!isFinite(d)) return '';
+  if (d <= 0) return 'today';
+  if (d === 1) return 'yesterday';
+  if (d < 14) return d + ' days ago';
+  if (d < 60) return Math.floor(d / 7) + ' weeks ago';
+  return Math.floor(d / 30) + ' months ago';
+}
+// The tile's age line, "Checked 5 days ago". The newest check is kjrPriceCheckedTs, the one freshness reader the Overview, the list dots
+// and the inspector share, and the days are kjrCheckedDays, so no surface names a different day. '' when no check date can be read.
+function kjrTileAgeText(item, now) {
+  var ts = typeof kjrPriceCheckedTs === 'function' ? kjrPriceCheckedTs(item) : 0;
+  if (!(ts > 0)) return '';
+  return 'Checked ' + kjrAgeWords(kjrCheckedDays(ts, now));
+}
+// Was this price typed in by hand rather than looked up? The tile says "Manual price" only when so, whatever the card's language (a
+// Japanese card a lane priced is not manual, an English card someone typed a price onto is). True for a custom card (priced by hand on
+// purpose), and for a real market price (above 0) that has no history entry, whose latest entry says source "manual" (any case), or
+// whose latest entry's price is not the stored one (more than S$1.01 apart: the edit form saves a typed price with no history entry,
+// see kjrIsStaleEstimate). False otherwise, a blank or zero price included: nothing is priced, so nothing is manual. An entry with no
+// readable price can not be compared and is taken as the writer, as kjrIsStaleEstimate does.
+function kjrPriceIsManual(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (kjrIsCustomCard(item)) return true;
+  var mp = parseFloat(item.marketPrice);
+  if (!(mp > 0)) return false;
+  var hist = Array.isArray(item.priceHistory) ? item.priceHistory : [];
+  var last = hist.length ? hist[hist.length - 1] : null;
+  if (!last || typeof last !== 'object') return true;
+  if (String(last.source == null ? '' : last.source).trim().toLowerCase() === 'manual') return true;
+  var lp = parseFloat(last.price);
+  return isFinite(lp) && Math.abs(mp - lp) > 1.01;
+}
+// opts (optional): count replaces the quantity on the x badge ONLY (the Overview's grouped holdings, kjrOverviewTop), now is the clock the
+// age line reads. Every other caller passes three arguments and gets the row's own quantity and the real clock.
+function kjrTileHtml(item, table, isSold, opts) {
   var isSlab = table === 'slabs';
   var name = String(item.name || '-');
   var qty = isSlab ? 1 : (parseInt(item.qty, 10) || 1);
+  var badge = opts && opts.count > 0 ? Math.floor(opts.count) : qty;
   var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN'; // blank has always meant EN in this app
   var mi = effectiveMarketInfo(item);
   var cost = parseFloat(item.costPrice) || 0;
@@ -4315,10 +4375,12 @@ function kjrTileHtml(item, table, isSold) {
   var pct = mi.isEstimate ? null : kjrTilePct(mi.value, cost); // an estimate from cost has no gain to show
   var askN = parseFloat(item.listPrice);
   var ask = askN > 0 ? kjrTileMoney(askN) + (qty > 1 ? ' each' : '') : '';
-  var manual = !isSlab && lang !== 'EN'; // non-English raw singles are priced by hand
+  var manual = !mi.isEstimate && kjrPriceIsManual(item); // typed in, not looked up, whatever the language or table
+  // A looked-up price says how old it is where a typed one says "Manual price". An estimate from cost has neither.
+  var age = !manual && !mi.isEstimate && mi.value > 0 ? kjrTileAgeText(item, opts && opts.now) : '';
   // One short line each, so a narrow tile never has to cut "Manual price" and the asking price into one clipped line.
   // With nothing to say the line stays as an empty row so tiles in a grid row keep their rhythm.
-  var notes = [manual ? 'Manual price' : '', ask ? 'Asking ' + ask : ''].filter(Boolean);
+  var notes = [manual ? 'Manual price' : age, ask ? 'Asking ' + ask : ''].filter(Boolean);
   if (!notes.length) notes.push('');
   var sub, meta = null;
   if (isSlab) {
@@ -4333,7 +4395,7 @@ function kjrTileHtml(item, table, isSold) {
   var spoken = name + (isSlab ? ', ' + meta.grader + ' ' + meta.grade.replace(' \u2605', ' pristine') : '') + (isSold ? ', sold' : '');
   return '<button type="button" class="kjr-tile' + (isSold ? ' is-sold' : '') + '" data-id="' + kjrEscape(item.id) + '" aria-label="' + kjrEscape(spoken) + '">' +
     '<span class="kjr-tile-stage">' + art +
-      (qty > 1 ? '<span class="kjr-tile-qty">×' + qty + '</span>' : '') +
+      (badge > 1 ? '<span class="kjr-tile-qty">×' + badge + '</span>' : '') +
       '<span class="kjr-tile-lang">' + kjrEscape(lang) + '</span>' +
       (isSold ? '<span class="kjr-tile-soldtag">Sold</span>' : '') +
     '</span>' +
@@ -4341,7 +4403,7 @@ function kjrTileHtml(item, table, isSold) {
       '<span class="kjr-tile-name" title="' + kjrEscape(name) + '">' + kjrEscape(name) + '</span>' +
       '<span class="kjr-tile-set">' + kjrEscape(sub) + '</span>' +
       '<span class="kjr-tile-val"><span class="kjr-tile-price">' + kjrEscape(price) + '</span>' +
-        (pct ? '<span class="kjr-tile-pct ' + pct.cls + '">' + pct.text + '</span>' : '') + '</span>' +
+        (pct ? '<span class="kjr-tile-pct ' + pct.cls + '">' + kjrEscape(pct.text) + '</span>' : '') + '</span>' +
       notes.map(function (n) { return '<span class="kjr-tile-note">' + kjrEscape(n) + '</span>'; }).join('') +
     '</span></button>';
 }
@@ -4670,13 +4732,13 @@ function kjrHoldRowHtml(item, table, isSold) {
   }
   if (qty > 1) { subText += ' · ×' + qty; subHtml += ' · ×' + qty; }
   if (isSold) { subText += ' · Sold'; subHtml += ' · Sold'; } // the dimmed art is only visual, the word says it
-  var gainSpoken = pct && pct.cls ? ', ' + (pct.cls === 'pos' ? 'up ' : 'down ') + pct.text.replace(/^[^0-9]*/, '') : '';
+  var gainSpoken = pct && pct.cls ? ', ' + kjrTilePctSpoken(pct) : '';
   var spoken = name + ', ' + subText + ', ' + (money ? (mi.isEstimate ? 'estimated ' : '') + money : 'no price') + gainSpoken;
   return '<button type="button" class="kjr-hold-row' + (isSold ? ' is-sold' : '') + '" data-table="' + table + '" data-id="' + E(item.id) + '" aria-label="' + E(spoken) + '">' +
     kjrThumbHtml(item, table) +
     '<span class="kjr-hold-body"><span class="kjr-hold-name">' + E(name) + '</span><span class="kjr-hold-sub">' + subHtml + '</span></span>' +
     '<span class="kjr-hold-val"><span class="kjr-hold-price">' + E(price) + '</span>' +
-      (pct ? '<span class="kjr-hold-pct ' + pct.cls + '">' + pct.text + '</span>' : '') + '</span>' +
+      (pct ? '<span class="kjr-hold-pct ' + pct.cls + '">' + E(pct.text) + '</span>' : '') + '</span>' +
   '</button>';
 }
 function kjrHoldRowsHtml(rows, table, isSold) {
@@ -4852,6 +4914,17 @@ function kjrInspectMoney(v) {
   if (!isFinite(n) || n < 0) return '';
   var whole = Math.round(n);
   return n > 0 && whole < 1 ? '<S$1' : 'S$' + whole.toLocaleString('en-SG');
+}
+// The PriceCharting search for a card, behind the inspector's "Check on PriceCharting" menu link: the card's name, plus the word
+// PriceCharting files a Japanese (" japanese") or Chinese (CN or ZH, " chinese") card under. The query is percent-encoded here, so a
+// name with &, #, quotes or spaces can not leave the q parameter, and the caller escapes the whole URL for the attribute. The host and
+// path are fixed, a row never chooses where the link goes. '' when the row has no name to search for.
+function kjrPriceChartingUrl(item) {
+  var name = String(item && item.name != null ? item.name : '').trim();
+  if (!name) return '';
+  var lang = String(item.language || 'EN').trim().toUpperCase();
+  var word = lang === 'JP' ? ' japanese' : (lang === 'CN' || lang === 'ZH' ? ' chinese' : '');
+  return 'https://www.pricecharting.com/search-products?type=prices&q=' + encodeURIComponent(name + word);
 }
 // Only http and https links are ever put in an href, whatever a row holds. '' otherwise.
 function kjrInspectSafeUrl(v) {
@@ -5076,7 +5149,11 @@ function kjrInspectHtml(table, item, view) {
     var diff = mi.value - cost;
     var flat = pct.cls === '';
     var arrow = flat ? '' : '<span aria-hidden="true">' + (diff > 0 ? '▲' : '▼') + '</span> ';
-    var main = flat ? 'S$0 · 0%' : (diff > 0 ? '+' : '-') + kjrInspectMoney(Math.abs(diff)) + ' · ' + pct.text.replace(/^[▲▼]\s*/, '');
+    // The inspector is the detail view: the S$ gain is kjrInspectMoney's, not the tile's kjrTilePct text, so it follows the inspector's own
+    // money format. The percentage joins it only from S$10 of cost (below that it says less than the S$ figure), and a flat card keeps its fuller wording.
+    var pctOnly = cost >= 10 ? kjrGainPct(mi.value, cost) : null;
+    var main = flat ? (cost >= 10 ? 'S$0 · 0%' : 'S$0')
+      : (diff > 0 ? '+' : '-') + kjrInspectMoney(Math.abs(diff)) + (pctOnly ? ' · ' + pctOnly.text.replace(/^[▲▼]\s*/, '') : '');
     gain = '<div class="kjr-insp-gain' + (pct.cls === 'pos' ? ' is-up' : (pct.cls === 'neg' ? ' is-down' : '')) + '"><div class="kjr-insp-gain-main">' + arrow + E(main) + '</div>' +
       '<div class="kjr-insp-gain-sub">against ' + E(kjrInspectMoney(cost)) + ' cost</div></div>';
   }
@@ -5121,6 +5198,8 @@ function kjrInspectHtml(table, item, view) {
   var menu = '';
   if (listed.ebayUrl) menu += '<a role="menuitem" href="' + E(listed.ebayUrl) + '" target="_blank" rel="noopener noreferrer">Open eBay listing</a>';
   if (listed.carousellUrl) menu += '<a role="menuitem" href="' + E(listed.carousellUrl) + '" target="_blank" rel="noopener noreferrer">Open Carousell listing</a>';
+  var pcUrl = kjrPriceChartingUrl(item); // singles and slabs alike, '' only for a row with no name to search for
+  if (pcUrl) menu += '<a role="menuitem" href="' + E(pcUrl) + '" target="_blank" rel="noopener noreferrer">Check on PriceCharting</a>';
   if (!sold) {
     var rf = kjrInspectRefreshInfo(table, item);
     menu += '<button type="button" role="menuitem" data-insp-act="refresh"' + (rf.ok ? '' : ' aria-disabled="true" title="' + E(rf.why) + '"') + '>Refresh price</button>';
@@ -7303,7 +7382,7 @@ function kjrGateSceneFinalise() {
 // Redesign Step 6b. Three small features share this section: the holo shine, the focus after a delete and the phone sort. The
 // rail's long-press labels sit beside the rail tooltip (kjrNavTouchTips, above) and the ⌘K palette is in app.js, next to Quick Entry.
 
-// ── Holo shine. A pointer-tracked sheen and a slight lean on the card art of the Overview's "Top of the collection" and of the card
+// ── Holo shine. A pointer-tracked sheen and a slight lean on the card art of the Overview's "Most valuable" and of the card
 // inspector (the panel and the sheet), and nowhere else, so a grid or a list never moves under the pointer. One delegated pointermove
 // and one pointerleave per host, a frame at a time (requestAnimationFrame), writing custom properties on the art: --kjr-hx and
 // --kjr-hy (the pointer, as a percentage of the stage) and --kjr-rx and --kjr-ry (the lean in degrees, KJR_HOLO_TILT at the most

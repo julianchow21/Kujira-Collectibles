@@ -110,12 +110,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.85 \(21 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.86 \(24 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.85 \(21 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.86 \(24 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -368,8 +368,8 @@ test('Holdings row: a button with the art, the name, the set and language, the v
   assert.match(row, /<span class="kjr-hold-name">Umbreon VMAX 215\/203<\/span>/);
   assert.match(row, /<span class="kjr-hold-sub">Evolving Skies · <span class="kjr-hold-lang">EN<\/span><\/span>/, 'set · language, the language tag is the mono one');
   assert.match(row, /<span class="kjr-hold-price">S\$150<\/span>/);
-  assert.match(row, /<span class="kjr-hold-pct pos">▲ \+50\.0%<\/span>/, 'the arrow and the sign, not colour alone');
-  assert.match(row, /aria-label="Umbreon VMAX 215\/203, Evolving Skies · EN, S\$150, up 50\.0%"/);
+  assert.match(row, /<span class="kjr-hold-pct pos">▲ \+S\$50 · \+50\.0%<\/span>/, 'the arrow and the sign, not colour alone, the S$ gain then the percentage (cost S$10 or more)');
+  assert.match(row, /aria-label="Umbreon VMAX 215\/203, Evolving Skies · EN, S\$150, up S\$50, 50\.0%"/);
   assert.doesNotMatch(row, /\son\w+=/i, 'no inline handler on the row, the container has the one listener');
   assert.match(row, /<\/button>$/);
 });
@@ -379,8 +379,8 @@ test('Holdings row: a loss is down with its sign, a flat card says 0%, an estima
   const up = (o) => ctx.kjrHoldRowHtml(single(o), 'singles', false);
   const loss = up({ id: 'l', costPrice: 100, marketPrice: 75 });
   assert.match(loss, /<span class="kjr-hold-price">S\$75<\/span>/);
-  assert.match(loss, /<span class="kjr-hold-pct neg">▼ -25\.0%<\/span>/);
-  assert.match(loss, /S\$75, down 25\.0%"/);
+  assert.match(loss, /<span class="kjr-hold-pct neg">▼ -S\$25 · -25\.0%<\/span>/);
+  assert.match(loss, /S\$75, down S\$25, 25\.0%"/);
   const flat = up({ id: 'f', costPrice: 50, marketPrice: 50 });
   assert.match(flat, /<span class="kjr-hold-pct ">0%<\/span>/);
   assert.doesNotMatch(flat, /up |down /, 'a flat card is neither');
@@ -394,7 +394,13 @@ test('Holdings row: a loss is down with its sign, a flat card says 0%, an estima
   assert.match(none, /, no price"/);
   const big = up({ id: 'b', costPrice: 10, marketPrice: 1380 });
   assert.match(big, /S\$1,380/, 'thousands separators');
-  assert.match(big, /▲ \+13700%/, 'a gain of 100% or more is a whole number');
+  assert.match(big, /▲ \+S\$1,370 · \+13700%/, 'a gain of 100% or more is a whole number');
+  const cheap = up({ id: 'c', costPrice: 2, marketPrice: 645 });
+  assert.match(cheap, /<span class="kjr-hold-pct pos">▲ \+S\$643<\/span>/, 'under S$10 of cost the percentage is left out');
+  assert.match(cheap, /S\$645, up S\$643"/);
+  const small = up({ id: 's', costPrice: 9, marketPrice: 9.3 });
+  assert.match(small, /<span class="kjr-hold-pct pos">▲ \+&lt;S\$1<\/span>/, 'a gain under half a dollar reads <S$1, escaped in the markup');
+  assert.match(small, /up under S\$1"/);
 });
 
 test('Holdings row: language blank means EN, a Japanese card says JP, a lot says its quantity, a sold row says Sold in words', async () => {
@@ -409,7 +415,7 @@ test('Holdings row: language blank means EN, a Japanese card says JP, a lot says
   const sold = ctx.kjrHoldRowHtml(single({ id: 'x', set: 'Base Set', status: 'Sold' }), 'singles', true);
   assert.match(sold, /^<button type="button" class="kjr-hold-row is-sold"/);
   assert.match(sold, /<span class="kjr-hold-sub">Base Set · <span class="kjr-hold-lang">EN<\/span> · Sold<\/span>/);
-  assert.match(sold, /aria-label="Pikachu 25, Base Set · EN · Sold, S\$15, up 50\.0%"/, 'and the accessible name says it too');
+  assert.match(sold, /aria-label="Pikachu 25, Base Set · EN · Sold, S\$15, up S\$5, 50\.0%"/, 'and the accessible name says it too');
 });
 
 test('Holdings row: a slab shows grader and grade as plain text, TAG and pristine and unknown graders read right, and it uses the slab thumbnail', async () => {
@@ -424,7 +430,7 @@ test('Holdings row: a slab shows grader and grade as plain text, TAG and pristin
   assert.match(row, /data-table="slabs" data-id="p1"/);
   assert.match(row, /class="kjr-art kjr-thumb kjr-thumb-slab kjr-g-psa/, 'the grader bar thumbnail');
   assert.doesNotMatch(row, /kjr-hold-lang/, 'a slab has no language tag in the sub line');
-  assert.match(row, /aria-label="Umbreon VMAX 215\/203, PSA 10, S\$610, up 17\.3%"/);
+  assert.match(row, /aria-label="Umbreon VMAX 215\/203, PSA 10, S\$610, up S\$90, 17\.3%"/);
 });
 
 test('Holdings row: everything that comes from the row is escaped, odd ids survive in the attribute', async () => {
@@ -1096,12 +1102,12 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
 test('v3.85: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.85'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.85">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.86'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.86">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.85"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.85'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.86"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.86'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v88'/);
+  assert.match(sw, /const CACHE = 'kujira-v89'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

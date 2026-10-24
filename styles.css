@@ -843,7 +843,7 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
    so it is a centred modal on desktop and a bottom sheet on phones through the .overlay rules above, only the body scrolls. */
 .kjr-custom-modal{max-width:var(--modal-sm);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
 .kjr-custom-modal .modal-head{flex-shrink:0}
-.kjr-custom-modal .modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.kjr-custom-modal .modal-body{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain}
 .kjr-custom-modal .modal-foot{flex-shrink:0}
 .kjr-cr-lead{margin:0 0 12px;font-size:13px;line-height:1.5;color:var(--text2)}
 .kjr-cr-link{padding:0;border:0;background:none;color:var(--link);font:inherit;text-decoration:underline;cursor:pointer}
@@ -859,6 +859,24 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
 .kjr-cr-sub{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--text2)}
 .kjr-cr-more{margin:10px 0 0;font-size:11px;color:var(--text3)}
 .kjr-cr-empty{padding:28px 12px}
+/* Pick the set: an English card with a number gets its TCGdex candidates as a strip under its name, then Open and Custom card as quiet buttons.
+   The strip scrolls sideways inside itself (overscroll-behavior-x keeps that from dragging the sheet), the sheet body never does. */
+.kjr-cr-row.has-pick .kjr-cr-pick{flex:1 1 100%;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.kjr-cr-row.has-pick .kjr-cr-acts{flex:1 1 100%}
+.kjr-cr-row.has-pick .kjr-cr-acts .btn{background:transparent;color:var(--text2)}
+.kjr-cr-row.has-pick .kjr-cr-acts .btn:hover{background:var(--bg3);color:var(--text)}
+.kjr-cr-q{font-size:12px;font-weight:600;line-height:1.4;color:var(--text2)}
+.kjr-cr-status{font-size:12px;line-height:1.4;color:var(--text3)}
+.kjr-cr-retry{align-self:flex-start}
+.kjr-cr-cands{display:flex;gap:8px;max-width:100%;padding:2px 2px 6px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.kjr-cr-cand{flex:none;display:flex;flex-direction:column;align-items:stretch;gap:4px;width:80px;padding:6px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg2);color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.kjr-cr-cand:hover{background:var(--bg3)}
+.kjr-cr-cand:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kjr-cr-thumb{display:block;width:100%;aspect-ratio:63/88;border-radius:4px;background:var(--bg3);overflow:hidden}
+.kjr-cr-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.kjr-cr-thumb.is-none{display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1.2;color:var(--text3);text-align:center}
+.kjr-cr-cset{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;min-height:2.8em;font-size:11px;line-height:1.4;color:var(--text2);overflow-wrap:anywhere}
+.kjr-cr-cnum{font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--text3)}
 /* The Undo bar: the page toast can not be pressed over an open modal, so the sheet draws its own between the list and Done */
 .kjr-cr-toast{flex-shrink:0;display:flex;align-items:center;gap:10px;margin:0 20px 12px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border2);border-left:3px solid var(--accent);border-radius:var(--radius);font-size:12px;line-height:1.4;color:var(--text)}
 .kjr-cr-toast[hidden]{display:none}
@@ -866,6 +884,12 @@ dialog.sheet-overlay::backdrop{background:var(--backdrop);transition:background 
 @media(max-width:480px){.kjr-cr-acts{flex:1 1 100%}.kjr-cr-acts .btn{flex:1;min-height:44px}}
 .toast-undo{margin-left:6px;padding:2px 10px;border:0;border-radius:4px;background:var(--accent);color:var(--accent-fg);font:inherit;font-size:12px;cursor:pointer;vertical-align:middle}
 .kjr-cr-toast .toast-undo{flex:none;margin-left:0;min-height:28px}
+/* Held prices (v3.86): the Overview's "prices waiting for your OK" sheet reuses the rows above (app.js kjrPriceHoldRowHtml). The price now on
+   the card, an arrow, the held price and the reason in words, so colour is never the only signal */
+.kjr-ph-prices{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;margin-top:6px;font-size:13px;line-height:1.4;color:var(--text2)}
+.kjr-ph-was{color:var(--text3)}
+.kjr-ph-now{font-weight:600;color:var(--text)}
+.kjr-ph-why{padding:1px 7px;border:1px solid var(--amber);border-radius:6px;background:var(--amber-soft);color:var(--amber);font-size:11px;font-weight:600}
 
 /* ── Custom Chart Builder ── */
 .cb-drop-zone{border:1.5px dashed var(--border2);border-radius:var(--radius);padding:8px 10px;font-size:12px;color:var(--text3);transition:all 0.15s;cursor:default;min-height:42px;display:flex;align-items:flex-start;gap:4px;background:var(--bg2);flex-wrap:wrap}
@@ -1840,7 +1864,7 @@ html.light .kjr-art-none::after{opacity:0.4;filter:brightness(0.55) saturate(1.4
 .kjr-tile-set,.kjr-tile-note{display:block;min-height:16px;font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kjr-tile-val{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 8px;min-width:0;margin-top:6px}
 .kjr-tile-price{font-size:15px;font-weight:600;line-height:20px}
-.kjr-tile-pct{font-size:12px;font-weight:600;line-height:16px}
+.kjr-tile-pct{max-width:100%;overflow:hidden;font-size:12px;font-weight:600;line-height:16px;white-space:nowrap;text-overflow:ellipsis}
 /* Sold: the art dims and the name and price step down to the secondary text colour. The words stay at full
    opacity (dimming them put the set line near 2:1), and the Sold tag on the stage says it in text. */
 .kjr-tile.is-sold .kjr-tile-art,.kjr-tile.is-sold .kjr-slab{opacity:0.55}
@@ -1924,6 +1948,24 @@ html.light .kjr-art-none::after{opacity:0.4;filter:brightness(0.55) saturate(1.4
 .ov-stat-value{margin-top:2px;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-0.01em;color:var(--text);font-variant-numeric:tabular-nums}
 .ov-stat-value.dim{font-weight:500;color:var(--text3)}
 .ov-stat-sub{margin-top:2px;font-size:12px;line-height:16px;color:var(--text3)}
+/* Info icon beside Cost basis and Realised profit. The bubble is the button's own child, so hover and keyboard focus show it with CSS
+   alone, and a tap or click pins it with .open (app.js, _kjrOvInfoEvent). .shut hides it again while the pointer or focus still rests
+   on the icon (Escape, or a second click), hover only counts on devices that can hover so a tap never leaves it stuck open. The icon
+   has no title, so the touch long-press bubble does not double it. The icon is 20px with an invisible 28px hit area, and its
+   negative vertical margin keeps the label row at 18px. */
+.ov-info-row{display:flex;align-items:center}
+.ov-info{position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:20px;height:20px;margin:-1px 0 -1px 4px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--text3);font:inherit;cursor:pointer;-webkit-appearance:none;appearance:none}
+.ov-info::before{content:"";position:absolute;inset:-4px}
+.ov-info.open{color:var(--text2)}
+.ov-info:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ov-info-tip{position:absolute;z-index:60;top:calc(100% + 6px);left:0;display:none;box-sizing:border-box;max-width:calc(100vw - 32px);padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);box-shadow:var(--shadow-md);color:var(--text);font-size:12px;line-height:16px;font-weight:400;text-align:left;white-space:nowrap;cursor:default}
+.ov-info-tip::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:8px}
+.ov-info.open .ov-info-tip,.ov-info:focus-visible .ov-info-tip{display:block}
+@media (hover:hover){.ov-info:hover{color:var(--text2)}.ov-info:hover .ov-info-tip{display:block}}
+.ov-info.shut .ov-info-tip{display:none}
+/* Where Realised profit is the right-hand figure of its row (the stats wrap, or sit two-up on a phone), the bubble grows leftwards
+   from the icon so it stays on screen. Wider than that the Needs attention column gives it room to grow rightwards. */
+@container ov (max-width:1120px){.ov-info-end .ov-info-tip{left:auto;right:0}}
 .ov-att-head{display:flex;align-items:center;gap:8px;font-size:13px;line-height:18px;font-weight:500}
 .ov-att-head.warn{color:var(--amber)}
 .ov-att-head.ok{color:var(--green)}

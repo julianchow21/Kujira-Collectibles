@@ -198,7 +198,7 @@ test('stale-estimate: Where the money sits counts it as estimated, never as pric
   assert.ok(singles.pricedPct < 100);
 });
 
-test('stale-estimate: Top of the collection ranks it by its cost, and best and worst against cost leave it out', async () => {
+test('stale-estimate: Most valuable ranks it by its cost, and best and worst against cost leave it out', async () => {
   const inv = inventory();
   const { ctx } = await setup(inv.singles, inv.slabs);
   const top = plain(ctx.kjrOverviewTop(10)).map((r) => [r.item.id, r.value]);

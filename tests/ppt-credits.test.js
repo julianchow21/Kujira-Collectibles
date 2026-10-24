@@ -260,7 +260,9 @@ test('ppt-credits: a manual run asks the vendor once more, a refusal costs nothi
   assert.equal(app.saved().cursor, 4, 'the rest were priced');
 });
 
-test('ppt-credits: the next UTC day, 08:00 in Singapore, the queue picks up where it stopped', async () => {
+// v3.86: a new vendor day gives the PPT lane a fresh order read off the live inventory (tests/ppt-rolling.test.js has the order itself). The card
+// the old cycle had not reached comes first, the four it priced the evening before come after it, and the budget (a whole 90 here) is spent on all five.
+test('ppt-credits: the next UTC day, 08:00 in Singapore, the lane asks again, the card nobody has checked first', async () => {
   const slabs = manySlabs(4);
   const app = await setup({ slabs });
   const clock = setClock(app, '2026-10-21T23:30:00Z'); // 07:30 on the 22nd in Singapore, still the 21st in UTC
@@ -283,9 +285,10 @@ test('ppt-credits: the next UTC day, 08:00 in Singapore, the queue picks up wher
   refuse = false;
   clock.set('2026-10-22T00:01:00Z'); // 08:01 in Singapore: the vendor has reset
   await drain(() => app.ctx.runRefreshQueue(false), app.timers);
-  assert.equal(app.ppt().length, 1, 'the new vendor day asks again');
+  assert.deepEqual(app.ppt().map((c) => searchOf(c.url)), ['Echo 5', 'Delta 4', 'Charlie 3', 'Bravo 2', 'Alpha 1'], 'the new vendor day asks again: the unchecked card, then the four checked a moment ago, the dearer first');
   assert.equal(app.slabRow('s5').marketPrice, '105');
-  assert.equal(app.saved().dayCreditsUsed['2026-10-22'], 6, 'and counts from zero on its own day');
+  assert.equal(app.saved().dayCreditsUsed['2026-10-22'], 30, 'and counts from zero on its own day: five searches at 6');
+  assert.equal(app.saved().pptDay, '2026-10-22', 'the order is stamped with the vendor day it was made for');
 });
 
 test('ppt-credits: a plain 429 or 403 with no body keeps the old hard pause (the key may be blocked), and reads "blocked" in the chip', async () => {

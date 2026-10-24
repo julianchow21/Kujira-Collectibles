@@ -11426,9 +11426,11 @@ function _kjrDealerPreviewOnly() {
 function showPage(name) {
   if (_kjrDealerPreviewOnly() && name !== 'dealer') name = 'dealer';
   if (!_kjrDealerPreviewOnly() && name === 'dealer') name = 'dealerProduction';
-  // Leaving Singles for any other tab drops the session-only unresolved
-  // filter, so it can never sit silently active after a tab change.
-  if (name !== 'inventory') _kjrSinglesUnresolvedOnly = false;
+  // Leaving Singles for any other tab drops the session-only unresolved and
+  // stale-price filters, so they can never sit silently active after a tab change.
+  // Slabs has the stale-price one too.
+  if (name !== 'inventory') { _kjrSinglesUnresolvedOnly = false; _kjrSinglesStaleOnly = false; }
+  if (name !== 'slabs') _kjrSlabsStaleOnly = false;
   // The card inspector belongs to the page it was opened on (v3.72): another page closes it, the same page keeps it.
   if (typeof kjrInspectOnPage === 'function') kjrInspectOnPage(name);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -12295,7 +12297,8 @@ function _renderUnresolvedBanner() {
 let _kjrSinglesUnresolvedOnly = false;
 function _kjrShowUnresolvedOnly() {
   _kjrSinglesUnresolvedOnly = true;
-  _kjrUnresolvedBannerDismissed = false; // asked for these cards on purpose (Overview link, Show in list): the banner and its Review button come back
+  _kjrSinglesStaleOnly = false; // one narrowing at a time, so the chip on screen is the whole story
+  _kjrUnresolvedBannerDismissed = false; // asked for these cards on purpose (Show in list in the review sheet): the banner and its Review button come back
   showPage('inventory'); // showPage('inventory') renders the Singles grid
 }
 function _kjrClearUnresolvedFilter() {
@@ -12305,6 +12308,33 @@ function _kjrClearUnresolvedFilter() {
 function _updateUnresolvedFilterChip() {
   const chip = document.getElementById('singles-unresolved-filter-chip');
   if (chip) chip.style.display = _kjrSinglesUnresolvedOnly ? '' : 'none';
+}
+
+// Session-only stale-price filters, the same lifecycle as the unresolved one above: driven by the Review links on the Overview's
+// Needs attention rows, never persisted, cleared by showPage when the page is left (one for Singles, one for Slabs). The row set is
+// kjrStaleCards itself, no second copy of the rule. A filter whose list has emptied (the last stale card was re-priced while the
+// page was filtered to them) is dropped by the render, it would only show an empty list.
+let _kjrSinglesStaleOnly = false;
+let _kjrSlabsStaleOnly = false;
+function _kjrShowStaleOnly(table) {
+  if (table === 'slabs') {
+    _kjrSlabsStaleOnly = true;
+    showPage('slabs');
+  } else {
+    _kjrSinglesStaleOnly = true;
+    _kjrSinglesUnresolvedOnly = false; // one narrowing at a time
+    showPage('inventory');
+  }
+}
+function _kjrClearStaleFilter(table) {
+  if (table === 'slabs') { _kjrSlabsStaleOnly = false; renderSlabs(); }
+  else { _kjrSinglesStaleOnly = false; renderSingles(); }
+}
+function _updateStaleFilterChips() {
+  const s = document.getElementById('singles-stale-filter-chip');
+  if (s) s.style.display = _kjrSinglesStaleOnly ? '' : 'none';
+  const b = document.getElementById('slabs-stale-filter-chip');
+  if (b) b.style.display = _kjrSlabsStaleOnly ? '' : 'none';
 }
 
 // ═════════════ Custom card flag and the review sheet ═════════════
@@ -12337,8 +12367,10 @@ function _kjrCustomReason(item) {
   return _kjrJapaneseLane(item) ? 'PokemonPriceTracker found no unique match' : 'TCGdex found no unique match';
 }
 // One <li>. Every value from the row is escaped. The buttons are read by one delegated click handler on the dialog, so no id
-// is ever put inside an inline script.
-function _kjrCustomRowHtml(item, done) {
+// is ever put inside an inline script. picks (optional) is a function from a row to its picker view ({ state, list, busy }) or null:
+// a row it answers for gets the "Which one is yours?" strip between its name and its Open and Custom card buttons, every other row
+// (no picks, no answer, a card just marked) is drawn exactly as it always was.
+function _kjrCustomRowHtml(item, done, picks) {
   const name = String(item.name == null || item.name === '' ? '-' : item.name);
   const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
   const bits = ['<span class="badge b-lang">' + esc(lang) + '</span>'];
@@ -12349,11 +12381,14 @@ function _kjrCustomRowHtml(item, done) {
     ? '<button type="button" class="btn btn-sm" data-cr-act="undo"' + id + ' aria-label="Undo custom card for ' + esc(name) + '">Undo</button>'
     : '<button type="button" class="btn btn-sm" data-cr-act="open"' + id + ' aria-label="Open ' + esc(name) + '">Open</button>' +
       '<button type="button" class="btn btn-sm" data-cr-act="mark"' + id + ' aria-label="Mark ' + esc(name) + ' as a custom card">Custom card</button>';
-  return '<li class="kjr-cr-row' + (done ? ' is-done' : '') + '"><div class="kjr-cr-info"><div class="kjr-cr-name">' + esc(name) + '</div>' +
-    '<div class="kjr-cr-meta">' + bits.join('') + '</div></div><div class="kjr-cr-acts">' + acts + '</div></li>';
+  const view = !done && typeof picks === 'function' ? picks(item) : null;
+  const pick = view ? '<div class="kjr-cr-pick" data-cr-pick="' + esc(item.id) + '">' + kjrCustomPickInner(item, view) + '</div>' : '';
+  return '<li class="kjr-cr-row' + (done ? ' is-done' : '') + (view ? ' has-pick' : '') + '"><div class="kjr-cr-info"><div class="kjr-cr-name">' + esc(name) + '</div>' +
+    '<div class="kjr-cr-meta">' + bits.join('') + '</div></div>' + pick + '<div class="kjr-cr-acts">' + acts + '</div></li>';
 }
-// The sheet body for the cards still unmatched and the ones just marked. Pure: it reads nothing but its arguments.
-function kjrCustomReviewHtml(cards, marked) {
+// The sheet body for the cards still unmatched and the ones just marked. Pure: it reads nothing but its arguments (picks is the
+// optional per-row picker lookup of _kjrCustomRowHtml, left out the rows are all drawn without a picker).
+function kjrCustomReviewHtml(cards, marked, picks) {
   const n = cards.length;
   let html = '';
   if (n === 0) {
@@ -12363,7 +12398,7 @@ function kjrCustomReviewHtml(cards, marked) {
   } else {
     html += '<p class="kjr-cr-lead">' + n + ' card' + (n !== 1 ? 's' : '') + ' could not be matched. Open one to add its set code and number, or a TCGdex ID. ' +
       'A custom card is priced by hand and never flagged. <button type="button" class="kjr-cr-link" data-cr-act="filter">Show in list</button></p>' +
-      '<ul class="kjr-cr-list" aria-label="Unmatched cards">' + cards.slice(0, KJR_CUSTOM_SHEET_MAX).map(c => _kjrCustomRowHtml(c, false)).join('') + '</ul>';
+      '<ul class="kjr-cr-list" aria-label="Unmatched cards">' + cards.slice(0, KJR_CUSTOM_SHEET_MAX).map(c => _kjrCustomRowHtml(c, false, picks)).join('') + '</ul>';
     if (n > KJR_CUSTOM_SHEET_MAX) {
       html += '<p class="kjr-cr-more">Showing the first ' + KJR_CUSTOM_SHEET_MAX + ' of ' + n + '. The rest appear as you handle these.</p>';
     }
@@ -12377,6 +12412,217 @@ function kjrCustomReviewHtml(cards, marked) {
 function _kjrCustomUnmatchedSorted() {
   return _kjrUnresolvedSingles().slice().sort((a, b) =>
     String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' }) || String(a.id).localeCompare(String(b.id)));
+}
+
+// ── Pick the set ──
+// An English card WITH a card number that TCGdex could not narrow to one printing ("Pikachu 25" is in a dozen sets) is no longer left to
+// the edit form: its row shows every card TCGdex lists for that name and number (kjrTcgdexCandidates), a thumbnail, the set and the number
+// on each, and one tap on the right one sets the row's tcgdexId and prices it. A row with no number and a non-English row are drawn as they
+// always were. The searches start when the sheet opens, KJR_CAND_PARALLEL at a time in list order, and each answer is kept in memory for
+// the session by row id, with the name and number it was asked for (a row edited to another name or number asks again). Nothing here
+// stamps a miss: a search that failed is shown as that, with a Retry, and is written nowhere.
+const KJR_CAND_PARALLEL = 3;
+let _kjrCand = Object.create(null);      // row id -> { sig, state: 'loading' | 'ready' | 'none' | 'error', list, started }
+let _kjrCandWaiting = [];                // row ids waiting for one of the slots, in list order
+let _kjrCandActive = 0;                  // searches in flight
+let _kjrCandBusy = Object.create(null);  // row id -> the "Set 025" label of the card being saved for it
+let _kjrPickTail = Promise.resolve();    // picks are saved one after another, so two uploads never overlap
+
+// Does this unmatched row get the picker: an English (or blank language) single that HAS a card number in its name, has no tcgdexId and is
+// not a custom card. Everything else is what it always was: no number means the edit form, a non-English card is priced by hand.
+function kjrCustomPickable(item) {
+  if (!item || item.tcgdexId || kjrIsCustomCard(item)) return false;
+  const lang = String(item.language == null ? 'EN' : item.language).trim().toUpperCase();
+  if (lang !== 'EN' && lang !== '') return false;
+  return !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+}
+// What a search was asked, so a row edited to another name or number is asked again.
+function _kjrCandSig(item) { return _tcgdexLang(item.language) + '|' + _baseCardName(item.name) + '|' + _tcgdexNumber(item.name); }
+// The answer kept for this row, null when it has none (not asked yet, or asked about another name or number).
+function kjrCustomPickState(item) {
+  const e = item ? _kjrCand[String(item.id)] : null;
+  return e && e.sig === _kjrCandSig(item) ? e : null;
+}
+// A row's picker view for the sheet, null for a row that gets none. A row not asked yet reads as loading: the load that follows every draw
+// of the sheet (_kjrCandLoadVisible) is about to ask.
+function _kjrCustomPicks(item) {
+  if (!kjrCustomPickable(item)) return null;
+  const e = kjrCustomPickState(item);
+  return { state: e ? e.state : 'loading', list: e ? e.list : [], busy: _kjrCandBusy[String(item.id)] || '' };
+}
+// One candidate: a button with the card's low-res picture in a fixed 63:88 box (so nothing jumps as it loads), the set and the number.
+// Its name for assistive tech is "Pick <set> <number>", the set id standing in for a set name that is not known.
+function _kjrCandButtonHtml(rowId, c) {
+  const set = c.setName || c.setId || '';
+  const label = [set, c.localId].filter(Boolean).join(' ') || c.name || c.id;
+  const src = c.image && typeof kjrCardImageUrl === 'function' ? kjrCardImageUrl(c.image, 'low') : '';
+  const thumb = src
+    ? '<span class="kjr-cr-thumb"><img src="' + esc(src) + '" alt="" width="63" height="88" loading="lazy" decoding="async" referrerpolicy="no-referrer"></span>'
+    : '<span class="kjr-cr-thumb is-none" aria-hidden="true">No image</span>';
+  return '<button type="button" class="kjr-cr-cand" data-cr-act="pick" data-cr-id="' + esc(rowId) + '" data-cr-card="' + esc(c.id) + '" aria-label="Pick ' + esc(label) + '"' +
+    (c.name ? ' title="' + esc(c.name) + '"' : '') + '>' + thumb +
+    '<span class="kjr-cr-cset">' + esc(set) + '</span><span class="kjr-cr-cnum">' + esc(c.localId) + '</span></button>';
+}
+// The inside of a row's picker slot for one of its four states, or while a pick is being saved (view.busy). Pure.
+function kjrCustomPickInner(item, view) {
+  const name = String(item.name == null ? '' : item.name);
+  if (view.busy) return '<div class="kjr-cr-status">Matching to ' + esc(view.busy) + '…</div>';
+  if (view.state === 'ready') {
+    return '<div class="kjr-cr-q">Which one is yours?</div><div class="kjr-cr-cands" role="group" aria-label="Cards matching ' + esc(name) + '">' +
+      view.list.map(c => _kjrCandButtonHtml(item.id, c)).join('') + '</div>';
+  }
+  if (view.state === 'none') return '<div class="kjr-cr-status">No card found for this name and number</div>';
+  if (view.state === 'error') {
+    return '<div class="kjr-cr-status">Could not reach TCGdex, try again later</div>' +
+      '<button type="button" class="btn btn-sm kjr-cr-retry" data-cr-act="retry" data-cr-id="' + esc(item.id) + '" aria-label="Retry finding matches for ' + esc(name) + '">Retry</button>';
+  }
+  return '<div class="kjr-cr-status">Finding matches…</div>';
+}
+// Ask for the rows that have no answer yet, in the order given. A row already asked this session (loading, ready, none or error) is left
+// alone: Retry is how a failed one is asked again.
+function _kjrCandEnqueue(items) {
+  for (const item of items) {
+    if (!kjrCustomPickable(item)) continue;
+    const key = String(item.id), sig = _kjrCandSig(item), have = _kjrCand[key];
+    if (have && have.sig === sig) continue;
+    _kjrCand[key] = { sig, state: 'loading', list: [], started: false };
+    _kjrCandWaiting.push(key);
+  }
+  _kjrCandPump();
+}
+// At most KJR_CAND_PARALLEL searches at a time: each finished one starts the next waiting row.
+function _kjrCandPump() {
+  while (_kjrCandActive < KJR_CAND_PARALLEL && _kjrCandWaiting.length) {
+    const key = _kjrCandWaiting.shift();
+    const entry = _kjrCand[key];
+    if (!entry || entry.started || entry.state !== 'loading') continue;
+    const item = _kjrCustomFindSingle(key);
+    if (!item || !kjrCustomPickable(item) || _kjrCandSig(item) !== entry.sig) { delete _kjrCand[key]; continue; } // gone, matched or edited meanwhile
+    entry.started = true;
+    _kjrCandActive++;
+    kjrTcgdexCandidates(item).then(
+      (list) => { entry.list = list; entry.state = list.length ? 'ready' : 'none'; },
+      () => { entry.list = []; entry.state = 'error'; } // could not tell: shown with a Retry, never a miss
+    ).then(() => {
+      _kjrCandActive--;
+      try { if (_kjrCand[key] === entry) _kjrCandShow(key); } catch (e) { console.warn('[pick the set] could not draw an answer:', e); }
+      _kjrCandPump();
+    });
+  }
+}
+// Draw one row's picker slot in place when its answer arrives. Redrawing the whole body would put every row's strip back to its first
+// card while someone is swiping one. Without the slot (a plain redraw is due, or the row is not drawn) the normal render does it. The
+// body's remembered markup is kept in step, so the next render sees no difference and leaves the strips alone.
+function _kjrCandShow(key) {
+  const dlg = document.getElementById('kjr-custom-overlay');
+  const body = document.getElementById('kjr-custom-body');
+  if (!dlg || !dlg.open || !body) return; // a closed sheet is left alone, the answer stays kept for the next open
+  const item = _kjrCustomFindSingle(key);
+  const view = item ? _kjrCustomPicks(item) : null;
+  const slots = view && typeof body.querySelectorAll === 'function' ? body.querySelectorAll('[data-cr-pick]') : null;
+  const slot = slots ? Array.prototype.find.call(slots, el => el.getAttribute('data-cr-pick') === String(key)) : null;
+  if (!slot) { kjrCustomReviewRender(); return; }
+  slot.innerHTML = kjrCustomPickInner(item, view);
+  body._kjrCrHtml = _kjrCustomBody().html;
+}
+// Ask for every row the sheet draws. Called after the sheet opens and after each redraw of an open sheet, so rows that come into the
+// first KJR_CUSTOM_SHEET_MAX as others are handled, and rows edited to a new number, are asked too.
+function _kjrCandLoadVisible() {
+  _kjrCandEnqueue(_kjrCustomUnmatchedSorted().slice(0, KJR_CUSTOM_SHEET_MAX));
+}
+// The sheet closed: searches not yet started are dropped (they are asked again on the next open), the ones in flight finish and keep their answer.
+function _kjrCandStop() {
+  _kjrCandWaiting.length = 0;
+  Object.keys(_kjrCand).forEach(key => { if (!_kjrCand[key].started && _kjrCand[key].state === 'loading') delete _kjrCand[key]; });
+}
+function kjrCustomRetry(id) {
+  const key = String(id);
+  const item = _kjrCustomFindSingle(key);
+  if (!item) { kjrCustomReviewRender(); return; }
+  const snap = _kjrCustomFocusSnapshot();
+  delete _kjrCand[key]; // the failed answer was never written anywhere, so forgetting it is all there is to undo
+  _kjrCandEnqueue([item]);
+  _kjrCandShow(key);
+  _kjrCustomFocusRestore(snap); // the Retry button is gone, focus goes to the row's Open
+}
+// Tap on a candidate. Picks are saved one after another (_kjrPickTail), the tapped row shows "Matching to ..." at once.
+function kjrCustomPick(rowId, cardId) {
+  const key = String(rowId);
+  const item = _kjrCustomFindSingle(key);
+  if (!item) { toast('That card is no longer in your collection'); kjrCustomReviewRender(); return Promise.resolve(false); }
+  const e = kjrCustomPickState(item);
+  const cand = e && e.state === 'ready' && kjrCustomPickable(item) ? e.list.find(c => c.id === cardId) : null;
+  if (!cand) { kjrCustomReviewRender(); return Promise.resolve(false); } // the list changed under the tap (matched, flagged custom, edited)
+  if (_kjrCandBusy[key]) return Promise.resolve(false); // this one is already being saved
+  if (kjrDealerWriteGuard('singles', item, 'edit')) return Promise.resolve(false);
+  const label = [cand.setName || cand.setId, cand.localId].filter(Boolean).join(' ') || cand.name || cand.id;
+  _kjrCandBusy[key] = label;
+  const snap = _kjrCustomFocusSnapshot();
+  _kjrCandShow(key);
+  _kjrCustomFocusRestore(snap); // the tapped candidate is gone, focus goes to the row's Open
+  const run = _kjrPickTail.then(() => _kjrCustomPickRun(key, cand, label)).catch(err => {
+    console.error('[pick the set] could not save the match:', err);
+    toastError('Could not save that match. Open the card to set its TCGdex ID.');
+    return false;
+  });
+  _kjrPickTail = run;
+  return run;
+}
+// Save the match: undo snapshot first, the id on the row (the markers that said "no match" and "priced" go, as when the edit form saves an id),
+// the row marked dirty, then the price through refreshPrice (the one path a price guard will sit on) and the dirty-rows upload, awaited
+// in that order. A price that could not be fetched leaves the match saved, the next pass prices it.
+async function _kjrCustomPickRun(key, cand, label) {
+  const item = _kjrCustomFindSingle(key);
+  try {
+    if (!item || item.tcgdexId || kjrIsCustomCard(item)) return false; // gone, matched or flagged while it waited its turn
+    const before = { id: item.tcgdexId, name: item._tcgdexResolvedName, miss: item._tcgdexMissDate, priced: item._tcgdexPricedDate };
+    try {
+      snapshotForUndo();
+      item.tcgdexId = cand.id;
+      if (cand.name) item._tcgdexResolvedName = cand.name;
+      delete item._tcgdexMissDate;
+      delete item._tcgdexPricedDate;
+      markDirty('singles', item.id);
+    } catch (err) { // nothing may stay changed on the row without being queued to sync
+      if (before.id === undefined) delete item.tcgdexId; else item.tcgdexId = before.id;
+      [['_tcgdexResolvedName', before.name], ['_tcgdexMissDate', before.miss], ['_tcgdexPricedDate', before.priced]].forEach(([k, v]) => { if (v === undefined) delete item[k]; else item[k] = v; });
+      throw err;
+    }
+    saveData(); // on this device before any network wait
+    clLog('edit', 'singles', item.name || String(item.id), 'tcgdexId: ∅ → ' + cand.id);
+    let priced = false;
+    try {
+      await refreshPrice(item.id, 'singles');
+      priced = item._tcgdexPricedDate === kjrLocalDay(); // both a changed and an unchanged price stamp it, a miss or a refusal does not
+    } catch (err) { console.warn('[pick the set] the price refresh failed, the match stays:', err); }
+    const synced = await _kjrCandFlush();
+    // the price guard (v3.86) can hold the price this match just fetched, the match stays and the toast says the price is waiting for the owner's OK
+    toast('Matched to ' + label + (kjrPriceHold(item) ? ', but its price looks wrong and is waiting for your OK' : (priced ? '' : ', the price will follow on the next pass')) +
+      (synced ? '' : '. Saved on this device, cloud sync will retry, check the sync indicator'), synced ? 4000 : 6000, !synced);
+    return true;
+  } finally {
+    delete _kjrCandBusy[key];
+    const now = _kjrCustomFindSingle(key);
+    if (!now || now.tcgdexId) delete _kjrCand[key]; // matched (or gone): its candidates are done with. A pick that failed keeps them, the row shows them again
+    const snap = _kjrCustomFocusSnapshot();
+    renderSingles(); // the banner count, and through its hook the sheet: a matched row leaves it
+    _kjrCustomFocusRestore(snap);
+    const dash = document.getElementById('page-dashboard');
+    if (dash && dash.classList && dash.classList.contains('active')) renderDashboard(); // the Overview under the sheet, or after it closed mid-save, shows the new counts
+  }
+}
+// Upload after a pick: the dirty rows only, through _flushDirtyToSupabase, the path the Custom card action uses (_kjrCustomFlush). Not
+// saveAllToSupabase, which would re-upload every table with a progress bar and an "All data synced" toast for each pick. Resolves to
+// false when the upload was refused or failed (the row stays dirty and retries), so the pick can say so in its one final toast: a toast
+// of its own here would be replaced at once by "Matched to ...".
+async function _kjrCandFlush() {
+  try {
+    const res = await _flushDirtyToSupabase();
+    return !(res && (res.status === 'error' || res.status === 'blocked'));
+  } catch (e) {
+    console.error('[pick the set] cloud flush failed:', e);
+    return false;
+  }
 }
 // Keyboard focus survives a redraw: the button pressed is gone after it, so remember which kind of button and which row it was in.
 function _kjrCustomFocusSnapshot() {
@@ -12405,20 +12651,25 @@ function _kjrCustomFocusRestore(snap) {
 }
 // force: draw even if the markup is the one already drawn (opening the sheet). Otherwise an unchanged list is left alone, so a price pass
 // that redraws Singles behind the sheet does not replace the button someone is pressing.
+// The cards the sheet lists and the markup for them and the ones just marked (the pickers' state included).
+function _kjrCustomBody() {
+  const cards = _kjrCustomUnmatchedSorted();
+  const marked = _kjrCustomJustMarked.map(_kjrCustomFindSingle).filter(r => r && kjrIsCustomCard(r));
+  return { cards, html: kjrCustomReviewHtml(cards, marked, _kjrCustomPicks) };
+}
 function kjrCustomReviewRender(force) {
   const body = document.getElementById('kjr-custom-body');
   if (!body) return;
-  const cards = _kjrCustomUnmatchedSorted();
-  const marked = _kjrCustomJustMarked.map(_kjrCustomFindSingle).filter(r => r && kjrIsCustomCard(r));
-  const html = kjrCustomReviewHtml(cards, marked);
+  const { cards, html } = _kjrCustomBody();
   if (force || body._kjrCrHtml !== html) { body._kjrCrHtml = html; body.innerHTML = html; }
   const live = document.getElementById('kjr-custom-live');
   if (live) live.textContent = cards.length ? cards.length + ' card' + (cards.length !== 1 ? 's' : '') + ' left to review' : 'All cards matched or marked custom';
 }
-// Redraw the sheet when it is open. Called from _renderUnresolvedBanner, i.e. after every renderSingles.
+// Redraw the sheet when it is open, and ask for any row the redraw brought in that has no candidates yet. Called from
+// _renderUnresolvedBanner, i.e. after every renderSingles.
 function kjrCustomReviewRefresh() {
   const dlg = document.getElementById('kjr-custom-overlay');
-  if (dlg && dlg.open) kjrCustomReviewRender();
+  if (dlg && dlg.open) { kjrCustomReviewRender(); _kjrCandLoadVisible(); }
 }
 function _kjrCustomReviewClick(e) {
   const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-cr-act]') : null;
@@ -12429,16 +12680,19 @@ function _kjrCustomReviewClick(e) {
   else if (act === 'mark') kjrCustomMark(id);
   else if (act === 'undo') kjrCustomUnmark(id);
   else if (act === 'filter') kjrCustomShowList();
+  else if (act === 'pick') kjrCustomPick(id, t.getAttribute('data-cr-card'));
+  else if (act === 'retry') kjrCustomRetry(id);
 }
 function kjrCustomReviewOpen() {
   const dlg = document.getElementById('kjr-custom-overlay');
   if (!dlg) return;
-  if (dlg.open) { kjrCustomReviewRender(); return; } // showModal() on an open dialog throws
+  if (dlg.open) { kjrCustomReviewRender(); _kjrCandLoadVisible(); return; } // showModal() on an open dialog throws
   _kjrCustomJustMarked = [];
   _kjrCustomToastHide();
   if (!dlg._kjrCrBound) { dlg._kjrCrBound = true; dlg.addEventListener('click', _kjrCustomReviewClick); }
   kjrCustomReviewRender(true);
-  kjrModalCtrl.open(dlg, { onClose: () => { _kjrCustomJustMarked = []; _kjrCustomToastHide(); } });
+  kjrModalCtrl.open(dlg, { onClose: () => { _kjrCustomJustMarked = []; _kjrCustomToastHide(); _kjrCandStop(); } });
+  _kjrCandLoadVisible(); // the sheet is up with every pickable row reading "Finding matches...", now ask
 }
 function kjrCustomReviewClose() {
   const dlg = document.getElementById('kjr-custom-overlay');
@@ -12544,6 +12798,7 @@ function _kjrCustomUndoToast(item) {
 
 function renderSingles() {
   _renderUnresolvedBanner();
+  if (typeof kjrPriceHoldsRefresh === 'function') kjrPriceHoldsRefresh(); // the held-prices sheet, when it is open, follows the data (v3.86)
   kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
   if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const q = (document.getElementById('singles-search').value||'').toLowerCase();
@@ -12567,11 +12822,19 @@ function renderSingles() {
   const unresolvedIds = (_kjrSinglesUnresolvedOnly && typeof _kjrUnresolvedSingles === 'function')
     ? new Set(_kjrUnresolvedSingles().map(i => i.id))
     : null;
+  // Stale-prices-only mode (the Overview Review link): exactly the rows kjrStaleCards flags. If none are left the
+  // filter is dropped here, it would only show an empty list.
+  let staleIds = null;
+  if (_kjrSinglesStaleOnly) {
+    const stale = kjrStaleCards('singles');
+    if (stale.length) staleIds = new Set(stale.map(i => i.id)); else _kjrSinglesStaleOnly = false;
+  }
 
   // Every test except the language one. The language chips count against this, so each chip says what
   // picking it would show (v3.71). passesFilters below is exactly the old test, language included.
   const passesOther = i => {
     if (unresolvedIds && !unresolvedIds.has(i.id)) return false;
+    if (staleIds && !staleIds.has(i.id)) return false;
     if (type && i.type !== type) return false;
     // Universal search: text fields + numeric ranges + "raw", "near mint",
     // "psa 10", ">50", "may 2025", etc.
@@ -12644,6 +12907,7 @@ function renderSingles() {
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
     updateClearFiltersBtn('singles');
     _updateUnresolvedFilterChip();
+    _updateStaleFilterChips();
     if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
     return;
   }
@@ -12734,6 +12998,7 @@ function renderSingles() {
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('singles');
   updateClearFiltersBtn('singles');
   _updateUnresolvedFilterChip();
+  _updateStaleFilterChips();
   // Rows on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
   if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-inventory'), 'singles');
   if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
@@ -12840,6 +13105,10 @@ function updateField(table, id, field, val) {
   }
   snapshotForUndo();
   item[field] = check.value;
+  // A market price typed by hand is the owner's decision about the price (v3.86): a price the guard is holding for this card, and the memory
+  // of one the owner rejected, are settled, so both go. The markDirty below syncs the deletion. A value identical to the stored one returned
+  // above, so it never gets here. The sealed tables never carry either key, deleting an absent one is nothing.
+  if (field === 'marketPrice') { delete item.priceHold; delete item.priceHoldRejected; }
   // Record price history whenever marketPrice is manually updated
   if (field === 'marketPrice' && val && !isNaN(parseFloat(val))) {
     if (!item.priceHistory) item.priceHistory = [];
@@ -13687,13 +13956,30 @@ function _preserveModalListingMeta(norm, existing) {
 //    slab grader and grade. After an edit that changes one, the card is looked up
 //    afresh, and a card whose number was just fixed leaves the "needs a card number"
 //    list instead of staying flagged under its old name
+//  - priceHold and priceHoldRejected (v3.86, the price guard) go the same way on an
+//    identity change, and also when the form changes the market price: a price typed
+//    by hand settles the held price and the memory of a rejected one
 //  - no row has an art link to reset. Card art lives in local maps, kjr_card_images by
 //    tcgdexId and kjr_slab_card_ids by slab id with a name signature, so changing the
 //    id cannot leave a stale link on the row. A key called "image" is carried like any
 //    other, nothing can tell it from user data and dropping it would be silent loss
 const _MODAL_OWN_RULE_KEYS = ['createdAt', 'createdAtSeq', '_serverVersion', '_updatedAt', 'listingMeta', '_tcgdexResolvedName'];
-const _MODAL_LOOKUP_MARKERS = ['_tcgdexMissDate', '_tcgdexPricedDate'];
+// priceHold and priceHoldRejected (v3.86, the price guard) are lookup results of one pricing identity too: a held or rejected price belongs to
+// the match that produced it, so after an edit that changes the name, language, tcgdexId (or a slab's grader or grade) neither carries over.
+// Otherwise a card whose match was just fixed would still wait on an Accept for the wrong card's price.
+const _MODAL_LOOKUP_MARKERS = ['_tcgdexMissDate', '_tcgdexPricedDate', 'priceHold', 'priceHoldRejected'];
+// A market price the owner changes by hand is the owner's decision about the price, so a held price waiting on that decision, and the memory
+// of a rejected one, are settled and do not carry over (v3.86). The inline table edit (updateField) does the same. A save that leaves the
+// market price as it was (a note, a status) keeps both.
+const _MODAL_PRICE_DECISION_KEYS = ['priceHold', 'priceHoldRejected'];
 const _MODAL_PRICING_IDENTITY = { singles: ['name', 'language', 'tcgdexId'], slabs: ['name', 'grader', 'grade', 'language', 'tcgdexId'] };
+
+// Did the form change the market price? Compared as numbers, so '5' stored and 5 saved is no change, and a blank on both sides is none either.
+// Clearing a price, or typing 0, is a change.
+function _modalMarketPriceEdited(norm, existing) {
+  const was = parseFloat(existing.marketPrice), now = parseFloat(norm.marketPrice);
+  return !(was === now || (Number.isNaN(was) && Number.isNaN(now)));
+}
 
 function _modalPricingIdentityChanged(table, norm, existing) {
   // A blank language is English everywhere pricing looks at it (_queueLaneFor), so a row with
@@ -13708,10 +13994,12 @@ function _modalPricingIdentityChanged(table, norm, existing) {
 function _preserveModalOffFormKeys(table, norm, existing) {
   if (!norm || !existing) return;
   const identityChanged = _modalPricingIdentityChanged(table, norm, existing);
+  const priceEdited = _modalMarketPriceEdited(norm, existing);
   for (const key of Object.keys(existing)) {
     if (key === '__proto__' || Object.prototype.hasOwnProperty.call(norm, key)) continue;
     if (_MODAL_OWN_RULE_KEYS.includes(key)) continue;
     if (identityChanged && _MODAL_LOOKUP_MARKERS.includes(key)) continue;
+    if (priceEdited && _MODAL_PRICE_DECISION_KEYS.includes(key)) continue; // the owner has just decided the price
     const value = existing[key];
     let copy = value;
     if (value !== null && typeof value === 'object') {
@@ -13935,6 +14223,7 @@ function _saveSingleNow(id) {
 
 // =========== SLABS ===========
 function renderSlabs() {
+  if (typeof kjrPriceHoldsRefresh === 'function') kjrPriceHoldsRefresh(); // the held-prices sheet, when it is open, follows the data (v3.86)
   kjrRowMenuClose(false); // the rows below are rebuilt, an open "…" menu would be left pointing at nothing
   if (typeof kjrNavCountsRefresh === 'function') kjrNavCountsRefresh(); // the sidebar counts (v3.73), a pure read of DB
   const q = (document.getElementById('slabs-search').value||'').toLowerCase();
@@ -13952,12 +14241,21 @@ function renderSlabs() {
   const fMkt  = (document.getElementById('slbf-mkt')?.value  || '').trim();
   const fList = (document.getElementById('slbf-list')?.value || '').trim();
 
+  // Stale-prices-only mode (the Overview Review link): exactly the rows kjrStaleCards flags. If none are left the
+  // filter is dropped here, it would only show an empty list.
+  let staleIds = null;
+  if (_kjrSlabsStaleOnly) {
+    const stale = kjrStaleCards('slabs');
+    if (stale.length) staleIds = new Set(stale.map(i => i.id)); else _kjrSlabsStaleOnly = false;
+  }
+
   // Slab filter goes through the unified _resolveGrader so it sees the same
   // canonical PSA/CGC/TAG that the badge does. Without this, rows with
   // grader stored as "PSA 10" + empty grade (or vice versa) wouldn't match
   // the PSA dropdown filter. This was the root cause of "filtering by PSA
   // only yields 1 result" - most rows didn't have grader exactly === "PSA".
   const passesFilters = i => {
+    if (staleIds && !staleIds.has(i.id)) return false;
     if (grader || grade) {
       // Pass notes so Pristine markers stored there are picked up.
       const r = _resolveGrader(i.grader, i.grade, i.notes);
@@ -14033,6 +14331,7 @@ function renderSlabs() {
     if (typeof kjrHoldClear === 'function') kjrHoldClear('slabs'); // the grid keeps the grid on a phone too
     if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
     updateClearFiltersBtn('slabs');
+    _updateStaleFilterChips();
     if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
     return;
   }
@@ -14119,6 +14418,7 @@ function renderSlabs() {
   attachHeaderDrag('slabs');
   if (typeof updateFiltersBadge === 'function') updateFiltersBadge('slabs');
   updateClearFiltersBtn('slabs');
+  _updateStaleFilterChips();
   // Slabs on screen with no card image yet get looked up lazily (v3.69). Render itself never fetches.
   if (typeof kjrObserveCardImages === 'function') kjrObserveCardImages(document.getElementById('page-slabs'), 'slabs');
   if (typeof kjrInspectRefresh === 'function') kjrInspectRefresh(); // an open card inspector follows the redraw (v3.72)
@@ -15024,10 +15324,12 @@ function _kjrOvSigned(n) {
   return (v > 0 ? '+' : (v < 0 ? '-' : '')) + _kjrOvMoney(v);
 }
 function _kjrOvPlural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
-// Same arrow, sign and rounding as the Step 2 tiles. kjrTilePct lives in features.js, which loads after
-// app.js, so the first paint of a gate-less preview falls back to the identical local rule.
+// The percentage alone, with the same arrow, sign and rounding as the percentage on the tiles (kjrGainPct). The movers rows already
+// carry the position totals in S$, so the tile's own S$ gain (kjrTilePct, a per-unit figure) would repeat them and disagree
+// with them for a quantity above 1. kjrGainPct lives in features.js, which loads after app.js, so the first paint of a
+// gate-less preview falls back to the identical local rule.
 function _kjrOvPct(market, cost) {
-  if (typeof kjrTilePct === 'function') return kjrTilePct(market, cost);
+  if (typeof kjrGainPct === 'function') return kjrGainPct(market, cost);
   if (!(market > 0) || !(cost > 0)) return null;
   const p = (market - cost) / cost * 100;
   const a = Math.abs(p);
@@ -15081,13 +15383,32 @@ function _kjrOvInventory() {
 function _kjrOvByName(a, b) {
   return String(a.item.name || '').localeCompare(String(b.item.name || '')) || String(a.item.id).localeCompare(String(b.item.id));
 }
-// Top of the collection: the highest unit values, the same number the tile shows (market price,
-// else cost as an estimate, exactly like the headline total).
+// Most valuable: the highest unit values, the same number the tile shows (market price, else cost as an
+// estimate, exactly like the headline total). Identical holdings are grouped BEFORE the cut, so two copies of
+// one card take one of the places and the tile counts them, instead of filling the row with twins. The group key
+// is the table, the name (trimmed, any case), the language (blank means EN), the tcgdexId, for a slab its grader
+// and grade as the tile reads them (kjrSlabMeta), and the unit value to the dollar. count is the summed quantity
+// for singles and the row count for slabs. item is the first row of the group in the order the Overview reads
+// them (singles then slabs, each in table order), value is that row's unit value.
 function kjrOverviewTop(limit) {
   const n = limit > 0 ? limit : 5;
-  return _kjrOvInventory()
-    .map(r => ({ item: r.item, table: r.table, value: effectiveMarketInfo(r.item).value }))
-    .filter(r => r.value > 0)
+  const groups = new Map();
+  _kjrOvInventory().forEach(r => {
+    const it = r.item;
+    const value = effectiveMarketInfo(it).value;
+    if (!(value > 0)) return;
+    const lang = String(it.language == null ? 'EN' : it.language).trim().toUpperCase() || 'EN';
+    let grade = '';
+    if (r.table === 'slabs') {
+      const meta = typeof kjrSlabMeta === 'function' ? kjrSlabMeta(it) : null;
+      grade = meta ? meta.grader + ' ' + meta.grade : String(it.grader || '').trim().toUpperCase() + ' ' + String(it.grade || '').trim();
+    }
+    const key = JSON.stringify([r.table, String(it.name == null ? '' : it.name).trim().toLowerCase(), lang, String(it.tcgdexId || ''), grade, Math.round(value)]);
+    const qty = r.table === 'slabs' ? 1 : Math.max(1, parseInt(it.qty, 10) || 1);
+    const g = groups.get(key);
+    if (g) g.count += qty; else groups.set(key, { item: it, table: r.table, value, count: qty });
+  });
+  return Array.from(groups.values())
     .sort((a, b) => (b.value - a.value) || (a.table === b.table ? 0 : (a.table === 'singles' ? -1 : 1)) || _kjrOvByName(a, b))
     .slice(0, n);
 }
@@ -15121,15 +15442,50 @@ function kjrOverviewRecentSales(limit) {
   });
   return rows.slice(0, n).map(r => ({ row: r.row, ms: r.ms, financials: kjrDealerSaleFinancials(r.row) }));
 }
-// Needs attention lists only what is non-zero. Pending settlement is a count of Dealer sales: their
-// money stays Unknown until confirmed, so there is no honest S$ amount to show.
+// The stale-price rule behind the two stale rows of Needs attention and the Singles and Slabs filters they open: an Available card
+// worth more than S$50 each (the unit value) whose price was last checked more than 60 days ago, or never. Only a real price
+// counts. An estimate from cost (no market price, or a stale PokemonPriceTracker one) is not a price anyone looked up, so it is left
+// out. A function and not two top-level constants, like kjrIsStaleEstimate: the first paint can run before a later const is set.
+function kjrStaleRule() { return { minValue: 50, days: 60 }; }
+// The Available rows of one table ('singles' or 'slabs') that rule flags, in table order. Pure: it reads DB and the clock, writes
+// nothing and marks nothing dirty. kjrPriceCheckedTs is the one freshness reader (history date or the device-local re-check marker)
+// and kjrCheckedDays counts UTC days, so this agrees with the dots and the "Prices checked" line. Any other table gives [].
+function kjrStaleCards(table) {
+  const rows = table === 'slabs' ? DB.slabs : (table === 'singles' ? DB.singles : []);
+  const rule = kjrStaleRule();
+  const now = Date.now();
+  return (rows || []).filter(i => {
+    if (!i || (i.status || 'Available') !== 'Available') return false;
+    const mi = effectiveMarketInfo(i);
+    if (mi.isEstimate || !(mi.value > rule.minValue)) return false;
+    const ts = kjrPriceCheckedTs(i);
+    return !ts || kjrCheckedDays(ts, now) > rule.days;
+  });
+}
+// Needs attention lists only what is non-zero. The unmatched row opens the review sheet, the two stale rows open Singles or Slabs
+// filtered to them. Pending settlement is a count of Dealer sales: their money stays Unknown until confirmed, so there is no honest
+// S$ amount to show. The three Review links carry a label that starts with their visible word, so they are told apart by assistive tech.
+// Prices waiting for your OK (v3.86, the price guard's holds) come first: a held price is the one thing here that changes what a card is worth.
 function kjrOverviewAttention(counts) {
   const c = counts || {};
   const n = k => Math.max(0, Math.floor(Number(c[k]) || 0));
-  const manual = n('manualLang'), unresolved = n('unresolved'), pending = n('pendingSales');
+  const priceHolds = n('priceHolds'), unresolved = n('unresolved'), staleSingles = n('staleSingles'), staleSlabs = n('staleSlabs'), pending = n('pendingSales');
+  const rule = kjrStaleRule();
+  const aged = ' over ' + _kjrOvMoney(rule.minValue) + ' not priced in ' + rule.days + ' days';
   const items = [];
-  if (manual > 0) items.push({ key: 'manual', act: 'singles', link: 'Review prices', text: _kjrOvPlural(manual, 'non-English card', 'non-English cards') + ' on manual prices' });
-  if (unresolved > 0) items.push({ key: 'unresolved', act: 'unresolved', link: 'Add card numbers', text: unresolved + (unresolved === 1 ? ' card needs' : ' cards need') + ' a card number' });
+  if (priceHolds > 0) {
+    const text = _kjrOvPlural(priceHolds, 'price', 'prices') + ' waiting for your OK';
+    items.push({ key: 'price-holds', act: 'price-holds', link: 'Review', label: 'Review ' + text, text });
+  }
+  if (unresolved > 0) items.push({ key: 'unresolved', act: 'unresolved', link: 'Fix matches', text: _kjrOvPlural(unresolved, 'card', 'cards') + ' could not be matched' });
+  if (staleSingles > 0) {
+    const text = _kjrOvPlural(staleSingles, 'single', 'singles') + aged;
+    items.push({ key: 'stale-singles', act: 'stale-singles', link: 'Review', label: 'Review ' + text, text });
+  }
+  if (staleSlabs > 0) {
+    const text = _kjrOvPlural(staleSlabs, 'slab', 'slabs') + aged;
+    items.push({ key: 'stale-slabs', act: 'stale-slabs', link: 'Review', label: 'Review ' + text, text });
+  }
   if (pending > 0) items.push({ key: 'pending', act: 'sales', link: 'View sales', text: _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement' });
   return items;
 }
@@ -15140,7 +15496,48 @@ function kjrOvAttentionHtml(items) {
   return '<div class="ov-att-head warn"><span class="ov-dot" aria-hidden="true"></span><span title="' + esc(KJR_OV_TIPS.attention) + '">Needs attention</span></div>' +
     '<ul class="ov-att-list">' + items.map(it =>
       '<li class="ov-att-item"><span class="ov-att-text">' + esc(it.text) + '</span>' +
-      '<button type="button" class="ov-link" data-ov-act="' + it.act + '">' + esc(it.link) + '</button></li>').join('') + '</ul>';
+      '<button type="button" class="ov-link"' + (it.label ? ' aria-label="' + esc(it.label) + '"' : '') + ' data-ov-act="' + it.act + '">' + esc(it.link) + '</button></li>').join('') + '</ul>';
+}
+
+// Info icon beside a hero figure (Cost basis, Realised profit). The bubble is the button's own child, so hover and keyboard focus
+// show it from CSS alone and a tap or click pins it with the class open (_kjrOvInfoEvent). The label carries no title, so the native
+// tooltip and the touch long-press bubble (kjrInitTouchTips reads title only) never stack on top of it.
+function _kjrOvInfo(id, label, text) {
+  return '<button type="button" class="ov-info" aria-label="' + esc(label) + ' details" aria-expanded="false" aria-describedby="' + esc(id) + '">' +
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>' +
+    '<span role="tooltip" id="' + esc(id) + '" class="ov-info-tip">' + esc(text) + '</span></button>';
+}
+// One handler on the document, installed once from _kjrOvBind. A click opens or closes the icon it lands on and closes the other,
+// a click anywhere else closes both, Escape closes both. Hover and focus show the bubble from CSS, so an explicit close adds shut
+// (hidden even while the pointer or focus still rests on the icon), and leaving the icon clears it.
+let _kjrOvInfoBound = false;
+function _kjrOvInfoHeld(btn) {
+  try { return btn === document.activeElement || btn.matches(':hover'); } catch (e) { return false; }
+}
+function _kjrOvInfoSet(btn, on) {
+  btn.classList.toggle('open', on);
+  btn.classList.toggle('shut', !on && _kjrOvInfoHeld(btn));
+  btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+}
+function _kjrOvInfoEvent(e) {
+  const near = e.target && typeof e.target.closest === 'function' ? e.target.closest('.ov-info') : null;
+  if (e.type === 'mouseout' || e.type === 'focusout') {
+    if (near && !(e.relatedTarget && near.contains(e.relatedTarget))) near.classList.remove('shut');
+    return;
+  }
+  if (e.type === 'keydown' && e.key !== 'Escape') return;
+  const btns = Array.prototype.slice.call(document.querySelectorAll('.ov-info'));
+  if (e.type === 'click') {
+    btns.forEach(b => { if (b !== near && b.classList.contains('open')) _kjrOvInfoSet(b, false); });
+    if (near) _kjrOvInfoSet(near, !near.classList.contains('open'));
+  } else {
+    btns.forEach(b => { if (b.classList.contains('open') || _kjrOvInfoHeld(b)) _kjrOvInfoSet(b, false); });
+  }
+}
+function _kjrOvInfoInit() {
+  if (_kjrOvInfoBound || typeof document.addEventListener !== 'function') return;
+  _kjrOvInfoBound = true;
+  ['click', 'keydown', 'mouseout', 'focusout'].forEach(type => document.addEventListener(type, _kjrOvInfoEvent));
 }
 
 // s: { invCostSingles, invCostSlabs, totalMktValue, unrealisedPL, singlesAvail, slabsAvail, hasCards,
@@ -15159,7 +15556,7 @@ function kjrOvHeroHtml(s) {
     const pct = a.toFixed(a >= 100 ? 0 : 1);
     if (Number(pct) === 0) chip = '<span class="ov-chip flat">S$0 · 0%</span>';
     else chip = pl > 0 ? up(pl, pct) : down(pl, pct);
-    note = (pl < 0 && Number(pct) !== 0 ? 'unrealised loss on ' : 'unrealised gain on ') + _kjrOvMoney(costBasis) + ' cost';
+    note = ''; // the cost is the Cost basis figure beside it, so the chip stands alone
   } else {
     if (Math.abs(pl) >= 0.5) chip = pl > 0 ? up(pl, '') : down(pl, '');
     note = 'no cost recorded';
@@ -15169,19 +15566,23 @@ function kjrOvHeroHtml(s) {
   const sales = s.allTimeSales || [];
   const pending = s.allTimePendingDealerSales || 0;
   const known = Math.max(0, sales.length - pending);
-  let rv, rcls = '', rsub = '';
+  // The figures behind each number sit in an info bubble, not under it. Only the pending-settlement line stays visible, because
+  // it explains why the profit reads Unknown. rtip is empty (no icon) while there is no known sale to describe.
+  let rv, rcls = '', rsub = '', rtip = '';
   if (sales.length === 0) { rv = 'None yet'; rcls = ' dim'; }
   else if (known === 0) { rv = 'Unknown'; rcls = ' dim'; rsub = _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement'; }
   else {
     rv = _kjrOvSigned(s.allTimeProfit);
     rcls = s.allTimeProfit > 0 ? ' pos' : (s.allTimeProfit < 0 ? ' neg' : '');
-    rsub = (s.roiPct == null ? '' : (s.roiPct < 0 ? '-' : '') + Math.abs(s.roiPct).toFixed(1) + '% return ') + 'across ' + _kjrOvPlural(known, 'sale', 'sales');
+    // Whole percent, no sign once it rounds to zero, and no ROI part at all while roiPct is null or not a number
+    const roi = Number.isFinite(s.roiPct) ? Math.round(Math.abs(s.roiPct)) : null;
+    rtip = (roi == null ? 'Across ' : 'ROI ' + (s.roiPct < 0 && roi !== 0 ? '-' : '') + roi + '% across ') + _kjrOvPlural(known, 'sale', 'sales');
   }
+  const costTip = _kjrOvPlural(s.singlesAvail, 'single', 'singles') + ' · ' + _kjrOvPlural(s.slabsAvail, 'slab', 'slabs');
   const stats =
-    '<div class="ov-stat"><div class="ov-stat-label" title="' + esc(KJR_OV_TIPS.cost) + '">Cost basis</div>' +
-      '<div class="ov-stat-value">' + _kjrOvMoney(costBasis) + '</div>' +
-      '<div class="ov-stat-sub">' + _kjrOvPlural(s.singlesAvail, 'single', 'singles') + ' · ' + _kjrOvPlural(s.slabsAvail, 'slab', 'slabs') + '</div></div>' +
-    '<div class="ov-stat"><div class="ov-stat-label" title="' + esc(KJR_OV_TIPS.profit) + '">Realised profit</div>' +
+    '<div class="ov-stat"><div class="ov-stat-label ov-info-row">Cost basis' + _kjrOvInfo('ov-info-cost', 'Cost basis', costTip) + '</div>' +
+      '<div class="ov-stat-value">' + _kjrOvMoney(costBasis) + '</div></div>' +
+    '<div class="ov-stat"><div class="ov-stat-label' + (rtip ? ' ov-info-row ov-info-end' : '') + '">Realised profit' + (rtip ? _kjrOvInfo('ov-info-roi', 'Realised profit', rtip) : '') + '</div>' +
       '<div class="ov-stat-value' + rcls + '">' + esc(rv) + '</div>' +
       (rsub ? '<div class="ov-stat-sub">' + esc(rsub) + '</div>' : '') + '</div>' +
     '<div class="ov-stat">' + kjrOvAttentionHtml(s.attention || []) + '</div>';
@@ -15196,11 +15597,12 @@ function kjrOvHeroHtml(s) {
     '<div class="ov-stats">' + stats + '</div>';
 }
 
-// Each tile sits in a wrapper that carries the table and id, so ONE delegated click opens the edit modal.
+// Each tile sits in a wrapper that carries the table and id, so ONE delegated click opens the edit modal. A grouped
+// holding (kjrOverviewTop) passes its count, which the tile shows as the x badge in place of the first row's own quantity.
 function kjrOvTopHtml(rows) {
   if (typeof kjrTileHtml !== 'function') return '';
   return rows.map(r => '<div class="ov-top-item" data-ov-act="edit" data-table="' + r.table + '" data-id="' + esc(r.item.id) + '">' +
-    kjrTileHtml(r.item, r.table, false) + '</div>').join('');
+    kjrTileHtml(r.item, r.table, false, { count: r.count }) + '</div>').join('');
 }
 
 function kjrOvMoversHtml(m) {
@@ -15465,13 +15867,18 @@ function _kjrOvEdit(table, id, holder) {
 // One delegated click for the whole Overview: tiles and rows open the card inspector, the text
 // buttons go where their label says.
 function _kjrOvClick(e) {
+  // The info icons answer to _kjrOvInfoEvent, never to this router, even if an action holder ever wraps them
+  if (e && e.target && typeof e.target.matches === 'function' && e.target.matches('.ov-info, .ov-info *')) return;
   const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-ov-act]') : null;
   if (!t) return;
   const act = t.getAttribute('data-ov-act');
   if (act === 'edit') _kjrOvEdit(t.getAttribute('data-table'), t.getAttribute('data-id'), t);
   else if (act === 'breakdown') showMarketValueBreakdown();
   else if (act === 'singles') showPage('inventory');
-  else if (act === 'unresolved') _kjrShowUnresolvedOnly();
+  else if (act === 'price-holds') kjrPriceHoldsOpen(); // the held-prices sheet (v3.86), over the Overview like the unmatched-cards one: a top-level dialog, redrawn through renderSingles and renderSlabs, the Overview redraws when it closes
+  else if (act === 'unresolved') kjrCustomReviewOpen(); // the unmatched-cards sheet, straight over the Overview: it is a top-level dialog, redraws through renderSingles and the Overview redraws when it closes
+  else if (act === 'stale-singles') _kjrShowStaleOnly('singles');
+  else if (act === 'stale-slabs') _kjrShowStaleOnly('slabs');
   else if (act === 'sales') showPage('sales');
   else if (act === 'add') openAddSingle();
 }
@@ -15480,6 +15887,7 @@ function _kjrOvBind() {
   if (!page || page._kjrOvBound) return;
   page._kjrOvBound = true;
   page.addEventListener('click', _kjrOvClick);
+  _kjrOvInfoInit();
   // Tiles and rows open the edit modal, and a card edit saves and closes WITHOUT redrawing the Overview behind
   // it (the old Dashboard only redrew when you came back to it). So redraw whenever a dialog closes over the
   // Overview: an edit, Quick Entry, a sale. 'close' does not bubble, so listen in the capture phase. An
@@ -15646,10 +16054,16 @@ function renderDashboard() {
   _kjrOvSet('dash-hero', _kjrOvTry('hero', () => kjrOvHeroHtml({
     invCostSingles, invCostSlabs, totalMktValue, unrealisedPL, singlesAvail, slabsAvail,
     hasCards: allCount > 0, allTimeSales, allTimeProfit, allTimePendingDealerSales, roiPct,
-    attention: kjrOverviewAttention({ manualLang: _manualLangCount, unresolved: _unresolvedCount, pendingSales: allTimePendingDealerSales }),
+    attention: kjrOverviewAttention({
+      priceHolds: _kjrOvTry('price holds', () => kjrPriceHolds().length, 0), // the guard's held prices (v3.86), the same fail-soft read as the stale counts below
+      unresolved: _unresolvedCount,
+      staleSingles: _kjrOvTry('stale singles', () => kjrStaleCards('singles').length, 0), // a count that fails to read is a row that does not show, not a hero that does not draw
+      staleSlabs: _kjrOvTry('stale slabs', () => kjrStaleCards('slabs').length, 0),
+      pendingSales: allTimePendingDealerSales,
+    }),
   }), failed));
 
-  // ── Top of the collection (hidden when there is nothing to show)
+  // ── Most valuable (hidden when there is nothing to show)
   const topHtml = _kjrOvTry('top of the collection', () => kjrOvTopHtml(kjrOverviewTop(5)), '');
   const topSec = document.getElementById('dash-top-sec');
   if (topSec) topSec.hidden = !topHtml;
@@ -17738,6 +18152,19 @@ async function _kjrResolveJa(item, num, setHint, report) {
   } catch (e) { return flag('net'); }
 }
 
+// The one card search behind resolveTcgdexId and kjrTcgdexCandidates: GET /{lang}/cards?name=<base name>&localId=<number>. It answers
+//   { kind: 'list', data }   a card list, possibly empty
+//   { kind: 'none' }         a 404, TCGdex saying there is nothing there
+//   { kind: 'net', status }  no usable answer: an HTTP error other than 404 (status), or a body that is not a list (no status)
+// A rejected fetch, a timeout and an unreadable body THROW, the caller classifies them. Pure transport: it reads and writes no row.
+async function _tcgdexCardSearch(name, num, lang, timeoutMs) {
+  const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
+  const r = await fetch(url, _tcgdexFetchOpts(timeoutMs));
+  if (!r.ok) return r.status === 404 ? { kind: 'none' } : { kind: 'net', status: r.status };
+  const data = await r.json();
+  return Array.isArray(data) ? { kind: 'list', data } : { kind: 'net' };
+}
+
 // Resolve an item to a TCGdex card id ("setcode-number", e.g. "sv03-223").
 // Auto-accept ONLY when the query returns exactly one candidate outright, OR
 // when it returns several and the card's stored name mentions a set the
@@ -17783,12 +18210,11 @@ async function resolveTcgdexId(item, opts) {
     return null;
   };
   try {
-    const url = TCGDEX_BASE + '/' + lang + '/cards?name=' + encodeURIComponent(name) + '&localId=' + encodeURIComponent(num);
-    const r = await fetch(url, _tcgdexFetchOpts(opts && opts.timeoutMs));
+    const found = await _tcgdexCardSearch(name, num, lang, opts && opts.timeoutMs);
     // transport failure - unresolved, PPT fallback picks it up. 404 is TCGdex saying there is nothing there, any other status says nothing about the card
-    if (!r.ok) return r.status === 404 ? null : flag('net', r.status);
-    const data = await r.json();
-    if (!Array.isArray(data)) return flag('net'); // not a card list at all (a gateway page, a changed shape)
+    if (found.kind === 'none') return null;
+    if (found.kind === 'net') return flag('net', found.status); // an HTTP error, or not a card list at all (a gateway page, a changed shape)
+    const data = found.data;
     if (!data.length) return null; // zero results - unresolved, never guess
     const sets = art && lang === 'en' ? await _kjrArtSets('en', item.name, setHint, data.length) : null;
     let card = data.length === 1 ? data[0] : _disambiguateBySetName(item.name, data, sets);
@@ -17803,6 +18229,64 @@ async function resolveTcgdexId(item, opts) {
     if (priceReport && e && (e.name === 'TimeoutError' || e.name === 'AbortError')) priceReport.timedOut = true;
     return flag('net');
   }
+}
+
+// Every card TCGdex lists for a row's name and card number, for the Unmatched cards sheet's "Which one is yours?" picker. It is the
+// search resolveTcgdexId runs (_tcgdexCardSearch: the same name and number out of the row's name, the same language path), but it keeps
+// the list instead of throwing it away when it is ambiguous. TCGdex's localId filter is a "contains" match (checked live 24/10/2026:
+// localId=25 for Pikachu also returned 225, 259 and the zero-padded 025), so the list is cut to the cards whose number IS the typed
+// one, with _kjrLocalIdMatches (numbers compare as numbers, "TG11" never takes "TG111"), the way the Japanese art lookup cuts its own.
+// Pokémon TCG Pocket cards are left out (_kjrIsPocketCard): they are digital only and the owner holds physical cards. The filter lives
+// here, not in _tcgdexCardSearch, so resolveTcgdexId sees the list exactly as before.
+// Resolves to [{ id, localId, name, image, setId, setName }], in TCGdex's order, at most KJR_CAND_MAX, empty when no card has that name
+// and number:
+//   setId    the id up to its last "-" ("sv03.5-025" is "sv03.5"), '' when the id has no "-"
+//   setName  from the cached set list (_kjrTcgdexSets, 30 days, fetched only when there is a card to name), '' when it is not to be had
+//   image    the TCGdex asset base that kjrCardImageUrl appends /low.webp or /high.webp to, '' when absent or not on the asset host
+// It REJECTS when TCGdex could not be asked or gave no usable answer (offline, a timeout, an HTTP error other than 404, a body that is
+// not a card list): "could not tell" is not "no card", and it touches no row, so no miss is ever stamped by it. A row with no name or no
+// number has nothing to ask and resolves to [].
+const KJR_CAND_MAX = 60;
+// A Pokémon TCG Pocket card (the digital game). TCGdex files its images under /tcgp/ and its sets under the ids A1, A1a, A2, A2a ... and
+// P-A (the promos); a later series with another letter is still caught by its image path. The image is read as TCGdex sent it, the set
+// id is the card id up to its last "-" (so "P-A-001" is set "P-A").
+function _kjrIsPocketCard(c) {
+  if (typeof c.image === 'string' && /\/tcgp\//i.test(c.image)) return true;
+  const cut = c.id.lastIndexOf('-');
+  return cut > 0 && /^(A\d+[a-z]?|P-A)$/i.test(c.id.slice(0, cut));
+}
+async function kjrTcgdexCandidates(item) {
+  const name = _baseCardName(item && item.name);
+  const num = _tcgdexNumber(item && item.name);
+  if (!name || !num) return [];
+  const lang = _tcgdexLang(item.language);
+  const found = await _tcgdexCardSearch(name, num, lang, TCGDEX_TIMEOUT_MS);
+  if (found.kind === 'none') return [];
+  if (found.kind === 'net') throw new Error(found.status ? 'HTTP ' + found.status : 'not a card list');
+  const seen = new Set(), cards = [];
+  for (const c of found.data) {
+    if (cards.length >= KJR_CAND_MAX) break;
+    if (!c || typeof c.id !== 'string' || !c.id.trim() || seen.has(c.id) || !_kjrLocalIdMatches(c.localId, num)) continue;
+    if (_kjrIsPocketCard(c)) continue; // before the cap and before the set list is asked for, so Pocket cards cost the picker nothing
+    seen.add(c.id);
+    cards.push(c);
+  }
+  if (!cards.length) return [];
+  const sets = await _kjrTcgdexSets(lang); // never rejects, null when there is no list
+  const names = new Map();
+  (sets || []).forEach(s => { if (!names.has(s.id)) names.set(s.id, s.name); });
+  return cards.map(c => {
+    const cut = c.id.lastIndexOf('-');
+    const setId = cut > 0 ? c.id.slice(0, cut) : '';
+    return {
+      id: c.id,
+      localId: String(c.localId),
+      name: typeof c.name === 'string' ? c.name : '',
+      image: typeof kjrCleanImageBase === 'function' ? kjrCleanImageBase(c.image) : '',
+      setId,
+      setName: (setId && names.get(setId)) || '',
+    };
+  });
 }
 
 // Does the card's stored name mark it as a reverse-holo printing? Checked
@@ -18845,11 +19329,26 @@ async function refreshPrice(id, table) {
     // path writes strings - see applyPriceToGroup.
     if (Number(item.marketPrice) === Number(newPrice) && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
       item._tcgdexPricedDate = today;
+      _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
       saveData();
       toast('Price unchanged: S$' + newPrice + ' (' + r.source + ')');
       return;
     }
+    // The price guard (kjrPriceGuard). A per-card Refresh is held like the daily pass: a price that looks wrong is not written, it waits on
+    // the card for the owner's OK (Overview, Needs attention). The id resolved above is kept, as applyPriceToGroup keeps it.
+    const gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence);
+    if (gate !== 'write') {
+      if (idIsNew && gate !== 'held') markDirty(table, id); // a new hold has marked the row already
+      saveData();
+      _kjrPriceHoldsRedraw(table);
+      toast(gate === 'skipped'
+        ? 'S$' + newPrice + ' (' + r.source + ') is a price you rejected before. The price on the card is unchanged.'
+        : '⚠ Held for your OK: S$' + newPrice + ' is ' + item.priceHold.reason + '. The price on the card is unchanged.', 7000);
+      return;
+    }
     item.marketPrice = newPrice;
+    delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
+    _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
     item._tcgdexPricedDate = today; // a changed price is a check too, the free lane reads this marker and nothing else (_tcgdexPricedToday)
     if (!item.priceHistory) item.priceHistory = [];
     item.priceHistory.push({
@@ -18895,6 +19394,8 @@ async function refreshPrice(id, table) {
 //   copy the result to all other rows with the same name.
 // Daily budget: PPT credits, by plan (kjrDailyCredits below, 90 on the free plan).
 // Queue state persists in localStorage - resumes automatically next day.
+// v3.86: cost order is only the order a queue is first built in. The PPT lane's order is remade on the first run of each vendor day from the
+// live inventory (cards not checked in 7 days first, the most valuable first, then the oldest look-ups), see _pptLaneRoll.
 
 const QUEUE_KEY       = 'pokeinv_refresh_queue';
 const QUEUE_DATE_KEY  = 'pokeinv_refresh_queue_date';
@@ -19260,9 +19761,87 @@ function _pptLaneTopUp(q) {
   return true;
 }
 
-// Stamp (or clear, with null) the "the price lookup found no unique card" marker for a Japanese-lane entry: on the queue entry, its row and
-// the rows that copy it, all of which are the same card. It is the one local, never synced marker the free lane uses too
-// (_tcgdexMissDate), which is what puts the card in the Singles banner (_kjrUnresolvedSingles). A custom card is left alone.
+// ── The rolling PPT order (v3.86) ──
+// How the PPT lane worked before: buildRefreshQueue put every slab (and, with the Japanese lane on, every Japanese single) into q.items once,
+// in cost order. The cursor walked that list at the day's credit budget, and when it reached the end the queue was "complete" and the PPT lane
+// stood idle until someone pressed Rebuild Queue (or the inventory grew). That suits a paid month, where one day's 18,000 credits cover the lot.
+// On the free plan afterwards (90 credits a day, 15 slab searches) it left the lane either crawling through one long cycle in cost order or,
+// once the cycle was done, doing nothing for ever.
+//
+// Now the lane has a fresh order for each vendor day (the UTC date, the day its credits reset on), read off the LIVE inventory by
+// kjrPptPriority. The first run of a new UTC day replaces the PPT entries of q.items with it and starts the cursor again at 0, whether or
+// not the queue had finished, so a finished queue never stalls the lane. Within the day nothing changes: the cursor, the retry entries and
+// the credit budget work exactly as they did, an interrupted day resumes where it stopped. Progress is not lost by starting again each
+// day, a card the lane has looked at is "checked" and goes to the back of the next order. The free TCGdex lane is untouched (its entries
+// in q.items stay where they are and it reads the live inventory itself). QUEUE_SCHEMA_VERSION is not bumped: the queue's shape did not
+// change, q.pptDay is one optional field that an older queue simply lacks, and a bump would throw the persisted queue away (the cursor, the
+// retry entries, the free lane's notes) for nothing. The vendor's credit count survives either way (_kjrStashCredits).
+//
+// A queue from before this change has no pptDay. If it has already spent credits today it is taken as today's own cycle (it is stamped
+// and rolls tomorrow), otherwise it rolls at once.
+function kjrPptRollRule() { return { recentDays: 7 }; }
+
+// The newest day this card was looked up on the PPT lane and answered, as the local midnight of that day (the unit kjrPriceCheckedTs returns),
+// 0 for never. That is the newest price CHECK (kjrPriceCheckedTs: a history date, or the local "priced today" marker, a held price stamps it
+// too) or the newest definitive miss (_tcgdexMissDate, the vendor has no unique card for it). Without the miss a card the vendor can not
+// match would never be checked, stay the most valuable card nobody has looked at, and take the same credits every day.
+function _kjrPptAttemptTs(row) {
+  const miss = row && typeof row._tcgdexMissDate === 'string' ? _parseHistDate(row._tcgdexMissDate) : null;
+  const missTs = miss ? miss.getTime() : 0;
+  return Math.max(kjrPriceCheckedTs(row), Number.isFinite(missTs) ? missTs : 0);
+}
+
+// The PPT lane's order for a day. entries are PPT-lane queue entries (a primary and its copyTargets), read against the live rows.
+//   1. Due first: cards not looked up in the last 7 days, or never. The most valuable first (effectiveMarketInfo, the number the tile shows,
+//      the market price or else the cost), a tie going to the card looked up longest ago.
+//   2. Then the cards looked up within 7 days, the oldest look-up first (a tie going to the more valuable).
+// A group of copies counts as its primary's value and its oldest member's age, so a copy that was never priced makes the group due. A tie
+// on everything keeps the incoming order. Pure: nothing is written, a new array comes back, now is a time in ms.
+function kjrPptPriority(entries, now) {
+  const recent = kjrPptRollRule().recentDays;
+  const idx = {};
+  ['singles', 'slabs'].forEach(t => { idx[t] = new Map(); (DB[t] || []).forEach(r => { if (r) idx[t].set(r.id, r); }); });
+  const rowsOf = (e) => [{ id: e.id, table: e.table }].concat(e.copyTargets || []).map(t => idx[t.table] && idx[t.table].get(t.id)).filter(Boolean);
+  const info = (entries || []).map((e, i) => {
+    const group = rowsOf(e);
+    const ts = group.length ? Math.min.apply(null, group.map(_kjrPptAttemptTs)) : 0;
+    const value = group.length ? effectiveMarketInfo(group[0]).value : 0;
+    return { e, i, ts, value, due: !(ts > 0) || kjrCheckedDays(ts, now) >= recent };
+  });
+  info.sort((a, b) => {
+    if (a.due !== b.due) return a.due ? -1 : 1;
+    return a.due ? ((b.value - a.value) || (a.ts - b.ts) || (a.i - b.i)) : ((a.ts - b.ts) || (b.value - a.value) || (a.i - b.i));
+  });
+  return info.map(x => x.e);
+}
+
+// Start the vendor day's order if it has not started. Returns true when it changed the queue (the caller saves). See the block comment above.
+function _pptLaneRoll(q, utcDay) {
+  if (!q || !Array.isArray(q.items)) return false;
+  const ranToday = q.pptDay
+    ? q.pptDay >= utcDay
+    : !!(q.dayCreditsUsed && typeof q.dayCreditsUsed === 'object' && Object.prototype.hasOwnProperty.call(q.dayCreditsUsed, utcDay));
+  if (ranToday) {
+    if (q.pptDay) return false;
+    q.pptDay = utcDay; // an older queue that has already worked today: today stays its cycle, tomorrow it rolls
+    return true;
+  }
+  const fresh = buildRefreshQueue();
+  const ppt = kjrPptPriority(fresh.items.filter(i => i.lane === 'ppt'), Date.now());
+  // the free lane's own entries stay as they are, the cursor at 0 puts the PPT entries after them, which is where a new queue has them
+  q.items = q.items.filter(i => i && i.lane === 'tcgdex').concat(ppt);
+  q.cursor = 0;
+  q.totalItems = q.items.length;
+  q.totalRows = fresh.totalRows;
+  if (ppt.length) q.completed = false;
+  q.pptDay = utcDay;
+  return true;
+}
+
+// Stamp (or clear, with null) the "the price lookup found no unique card" marker for a PPT-lane entry (a Japanese single, and since v3.86 a slab
+// too, see _kjrPptAttemptTs): on the queue entry, its row and the rows that copy it, all of which are the same card. It is the one local, never
+// synced marker the free lane uses too (_tcgdexMissDate), which is what puts a single in the Singles banner (_kjrUnresolvedSingles, singles
+// only, so a slab carrying it shows nowhere). A custom card is left alone.
 function _kjrSetJapaneseMiss(item, val) {
   item._tcgdexMissDate = val;
   [{ id: item.id, table: item.table }].concat(item.copyTargets || []).forEach(t => {
@@ -19271,11 +19850,330 @@ function _kjrSetJapaneseMiss(item, val) {
   });
 }
 
-// Apply a fetched price to a primary item and all its copy targets
+// ═════════════ The price guard and held prices (v3.86) ═════════════
+// A wrong-card match once wrote US$500.99, which became S$644.63, onto a card worth about S$5. Every automatic price now passes
+// kjrPriceGuard before it is written: applyPriceToGroup (both queue lanes), refreshPrice (the card inspector's Refresh) and
+// bulkRefreshPrices. Nothing is exempt, a manual "run now" and a per-card Refresh are held like the daily pass. A price the guard doubts
+// is not written. marketPrice and priceHistory stay exactly as they were and the price waits on the row as priceHold, for the owner to
+// Accept or Reject from the Overview (kjrPriceHoldsOpen). priceHold and priceHoldRejected are ordinary synced fields (no underscore, the
+// jsonb data column carries them, as it does customCard), so a hold follows the card to the owner's other devices. Valuation reads
+// marketPrice and nothing else, so a held price changes no total.
+//
+// The rule: a price under S$20 is never held (a cheap card is not worth a review and barely moves a total). From S$20 up it is held when
+// it is more than 20 times the card's cost, or more than 5 times the price the app currently counts for it. A price within 10% of one the
+// owner rejected is skipped without a word, but only for 30 days from the rejection (rejectDays): after that the guard asks again, so a card
+// that really has moved to that price is not left stale for ever. A function and not top-level constants, like kjrStaleRule: the first paint
+// can run before a later const is set.
+function kjrPriceGuardRule() { return { min: 20, costX: 20, lastX: 5, near: 0.1, rejectDays: 30 }; }
+
+// "129×" for 128.9, "5.1×" for 5.1: a multiple under 10 keeps one decimal, a larger one is a whole number
+function _kjrGuardTimes(ratio) {
+  const n = ratio >= 10 ? Math.round(ratio) : Math.round(ratio * 10) / 10;
+  return n + '×';
+}
+
+// Pure. null means write the price as usual, { reason } means hold it ("129× cost" or "5.1× last price"). item is the row the price is for,
+// newPriceSgd the price in S$ before rounding. The cost is tested first. A row with no cost, or with no price the app counts
+// (kjrLiveMarketPrice is NaN for a stale estimate too), skips that half of the rule.
+function kjrPriceGuard(item, newPriceSgd) {
+  const rule = kjrPriceGuardRule();
+  const price = Number(newPriceSgd);
+  if (!item || !isFinite(price) || price < rule.min) return null;
+  const cost = parseFloat(item.costPrice);
+  if (cost > 0 && price > cost * rule.costX) return { reason: _kjrGuardTimes(price / cost) + ' cost' };
+  const last = kjrLiveMarketPrice(item);
+  if (last > 0 && price > last * rule.lastX) return { reason: _kjrGuardTimes(price / last) + ' last price' };
+  return null;
+}
+
+// Does this rejection still count? priceHoldRejected { price, date } holds for rejectDays (30) UTC days from its date. The age is counted the way
+// every age in the app is, kjrCheckedDays on the stored UTC date (read as a calendar date, so the time zone does not move it): day 30 still
+// counts, day 31 does not. A rejection with no readable date can not be aged, so it does not count either. That is the safe side, the owner
+// is asked about the price again instead of it being skipped for good.
+function _kjrRejectionLive(rejected) {
+  if (!rejected || typeof rejected !== 'object') return false;
+  const d = typeof rejected.date === 'string' ? _parseHistDate(rejected.date) : null;
+  return !!d && kjrCheckedDays(d.getTime()) <= kjrPriceGuardRule().rejectDays;
+}
+// An old rejection is deleted the next time the row is written or given a hold (the callers are already marking the row dirty then), so the
+// key does not sit on the row for ever. A rejection that still counts is left alone.
+function _kjrDropOldRejection(item) {
+  if (item && item.priceHoldRejected !== undefined && !_kjrRejectionLive(item.priceHoldRejected)) delete item.priceHoldRejected;
+}
+
+// What a write site does with a fetched price, for one row.
+//   'write'   go on and write it as before. The guard does not doubt it, or the card already carries this price (that is not a new price,
+//             so the caller's same-value no-op deals with it).
+//   'held'    the guard doubts it. marketPrice and priceHistory are untouched and the row carries priceHold { price, unit, source,
+//             confidence, date, prev, reason } (prev: the price counted at that moment, null for none). Marked dirty, it is a synced field.
+//   'seen'    the guard doubts it and the row already holds a price within 10% of it: the same price seen again, so only the hold's date
+//             moves. That is a local change and is not marked dirty: a date that moves every day would send phantom edits between devices
+//             (the v3.26 rule for a same-value re-price).
+//   'skipped' the guard doubts it and the owner rejected a price within 10% of it in the last 30 days (priceHoldRejected { price, date },
+//             _kjrRejectionLive). No hold, no write, nothing to review. An older rejection is ignored, and removed when the row gets a hold.
+// Both non-write outcomes stamp the local "priced today" marker (_tcgdexPricedDate, the one every pricing path stamps), so the queue does
+// not ask for this card again today.
+// guard: the guard's verdict on this price when the caller already has it (null for no doubt, { reason } for doubt), left out it is taken
+// from this row. applyPriceToGroup takes it once for a group of same-card rows and hands it to every row, so the group gets one treatment.
+function _kjrPriceGate(item, table, priceSgd, unit, source, confidence, guard) {
+  const price = Number(priceSgd);
+  if (Number(item.marketPrice) === Number(price.toFixed(0))) return 'write';
+  if (guard === undefined) guard = kjrPriceGuard(item, price);
+  if (!guard) return 'write';
+  const near = (ref) => { const r = parseFloat(ref); return r > 0 && Math.abs(price - r) <= r * kjrPriceGuardRule().near; };
+  item._tcgdexPricedDate = kjrLocalDay();
+  const rejected = item.priceHoldRejected;
+  if (_kjrRejectionLive(rejected) && near(rejected.price)) return 'skipped';
+  const held = item.priceHold;
+  if (held && typeof held === 'object' && near(held.price)) { held.date = kjrUtcDay(); return 'seen'; }
+  const live = kjrLiveMarketPrice(item);
+  item.priceHold = {
+    price, unit: unit == null ? null : unit, source: source == null ? null : source, confidence: confidence == null ? null : confidence,
+    date: kjrUtcDay(), prev: live > 0 ? live : null, reason: guard.reason
+  };
+  _kjrDropOldRejection(item); // the row is being written for the hold, so an old rejection goes with it
+  markDirty(table, item.id);
+  return 'held';
+}
+
+// A price that is written, or that equals the stored one, makes an older hold on the row obsolete: the source no longer says it. The write
+// sites delete it with their own write (they mark the row dirty themselves, and they drop an old rejection in the same breath), the
+// same-value path calls this, which marks the row when there was a hold to delete.
+function _kjrDropPriceHold(item, table) {
+  if (!item || !item.priceHold) return false;
+  delete item.priceHold;
+  _kjrDropOldRejection(item);
+  markDirty(table, item.id);
+  return true;
+}
+
+// ── Held prices: the rows, and the redraws ──
+// The hold on a row, or null. A hold needs a price above zero: anything else on the key (a value some other writer left) is not a hold, so
+// it is never counted, listed or accepted.
+function kjrPriceHold(item) {
+  const h = item && item.priceHold;
+  if (!h || typeof h !== 'object') return null;
+  const price = Number(h.price);
+  return isFinite(price) && price > 0 ? h : null;
+}
+// The Available singles and slabs that carry a hold, as { item, table }, in the order the Overview reads them (singles, then slabs). Pure.
+function kjrPriceHolds() {
+  return _kjrOvInventory().filter(r => kjrPriceHold(r.item));
+}
+// The Overview behind a sheet or a pass shows the new count at once, when it is the page on screen
+function _kjrRedrawOverview() {
+  const dash = document.getElementById('page-dashboard');
+  if (dash && dash.classList && dash.classList.contains('active') && typeof renderDashboard === 'function') renderDashboard();
+}
+function _kjrPriceHoldsRedraw(table) {
+  if (table === 'singles') renderSingles();
+  else if (table === 'slabs') renderSlabs();
+  _kjrRedrawOverview();
+}
+
+// ── Held prices: the review sheet ──
+// The Overview's "N prices waiting for your OK" Review link opens it (#kjr-holds-overlay in index.html, through kjrModalCtrl). It is built
+// the way the unmatched-cards sheet is (kjrCustomReviewOpen): the same dialog pattern, the same row classes, keyboard focus kept through a
+// redraw, one delegated click handler on the dialog so no id is ever put inside an inline script, every value from a row escaped. A row says
+// the card, the price on it and the price on hold with its reason, the source and the date, and has three buttons:
+//   Accept  the held price becomes the market price and a priceHistory entry, the hold goes (undoable, snapshotForUndo)
+//   Reject  the hold goes and priceHoldRejected { price, date } remembers it, so a price within 10% of it is not asked about again. The
+//           card keeps the price it has. A tcgdexId the pass set is left alone, the match may be right and the price odd, so the toast says
+//           where to fix the match if it is wrong.
+//   Open    the card's edit form, on top of the sheet
+// Nothing is kept in memory, the rows are read off DB each time, so a pass, a sync or an edit made over the sheet shows up at once
+// (kjrPriceHoldsRefresh, called by renderSingles and renderSlabs).
+function _kjrHoldFind(table, id) {
+  const rows = table === 'slabs' ? DB.slabs : (table === 'singles' ? DB.singles : null);
+  const key = String(id);
+  return (rows && rows.find(r => r && String(r.id) === key)) || null;
+}
+function _kjrHoldsSorted() {
+  return kjrPriceHolds().slice().sort((a, b) =>
+    String(a.item.name || '').localeCompare(String(b.item.name || ''), 'en', { sensitivity: 'base' }) ||
+    a.table.localeCompare(b.table) || String(a.item.id).localeCompare(String(b.item.id)));
+}
+// One <li>. The arrow between the prices is decoration, a screen reader hears "to" instead.
+function kjrPriceHoldRowHtml(r) {
+  const it = r.item, h = it.priceHold;
+  const name = String(it.name == null || it.name === '' ? '-' : it.name);
+  const lang = String(it.language || 'EN').trim().toUpperCase() || 'EN';
+  const bits = ['<span class="badge b-lang">' + esc(lang) + '</span>'];
+  if (r.table === 'slabs') {
+    const g = _kjrSlabGrade(it);
+    const grade = g ? g.grader + ' ' + g.grade : [it.grader, it.grade].filter(Boolean).join(' ');
+    if (grade) bits.push('<span class="kjr-cr-set">' + esc(grade) + '</span>');
+  } else if (it.set) {
+    bits.push('<span class="kjr-cr-set">' + esc(it.set) + '</span>');
+  }
+  const prev = parseFloat(h.prev);
+  const was = prev > 0 ? _kjrOvMoney(prev) : 'No price';
+  const now = _kjrOvMoney(h.price);
+  const source = typeof kjrInspectSourceText === 'function' ? kjrInspectSourceText(h.source) : String(h.source == null ? '' : h.source);
+  const when = toDateMmmYyyy(h.date) || String(h.date == null ? '' : h.date);
+  const facts = [source, when].filter(Boolean).map(s => '<span>' + esc(s) + '</span>').join('');
+  const ids = ' data-ph-table="' + esc(r.table) + '" data-ph-id="' + esc(it.id) + '"';
+  const btn = (act, label) => '<button type="button" class="btn btn-sm" data-ph-act="' + act + '"' + ids + ' aria-label="' + esc(label) + '">' + esc(act.charAt(0).toUpperCase() + act.slice(1)) + '</button>';
+  return '<li class="kjr-cr-row kjr-ph-row"><div class="kjr-cr-info"><div class="kjr-cr-name">' + esc(name) + '</div>' +
+    '<div class="kjr-cr-meta">' + bits.join('') + '</div>' +
+    '<div class="kjr-ph-prices"><span class="kjr-ph-was">' + esc(was) + '</span><span class="sr-only"> to </span><span aria-hidden="true"> → </span><span class="kjr-ph-now">' + esc(now) + '</span>' +
+    (h.reason ? '<span class="kjr-ph-why">' + esc(h.reason) + '</span>' : '') + '</div>' +
+    (facts ? '<div class="kjr-cr-meta">' + facts + '</div>' : '') + '</div>' +
+    '<div class="kjr-cr-acts">' + btn('accept', 'Accept ' + now + ' for ' + name) + btn('reject', 'Reject ' + now + ' for ' + name) + btn('open', 'Open ' + name) + '</div></li>';
+}
+// The sheet body for a list of { item, table }. Pure. Nothing waiting is a state of its own, not an empty list.
+function kjrPriceHoldsHtml(rows) {
+  const n = rows.length;
+  if (n === 0) {
+    return '<div class="hig-empty kjr-cr-empty"><div class="hig-empty-icon" aria-hidden="true">✓</div>' +
+      '<div class="hig-empty-title">Nothing waiting</div>' +
+      '<div class="hig-empty-sub">A price that looks wrong against what you paid or the last price waits here for your OK.</div></div>';
+  }
+  let html = '<p class="kjr-cr-lead">' + _kjrOvPlural(n, 'price', 'prices') + ' looked wrong against cost or the last price, so ' + (n === 1 ? 'it was' : 'they were') +
+    ' not applied. Accept uses the new price, Reject keeps the price on the card.</p>' +
+    '<ul class="kjr-cr-list" aria-label="Prices waiting for your OK">' + rows.slice(0, KJR_CUSTOM_SHEET_MAX).map(kjrPriceHoldRowHtml).join('') + '</ul>';
+  if (n > KJR_CUSTOM_SHEET_MAX) html += '<p class="kjr-cr-more">Showing the first ' + KJR_CUSTOM_SHEET_MAX + ' of ' + n + '. The rest appear as you handle these.</p>';
+  return html;
+}
+// force: draw even if the markup is the one already drawn (opening the sheet). Otherwise an unchanged list is left alone, so a price pass that
+// redraws Singles behind the sheet does not replace the button someone is pressing.
+function kjrPriceHoldsRender(force) {
+  const body = document.getElementById('kjr-holds-body');
+  if (!body) return;
+  const rows = _kjrHoldsSorted();
+  const html = kjrPriceHoldsHtml(rows);
+  if (force || body._kjrPhHtml !== html) { body._kjrPhHtml = html; body.innerHTML = html; }
+  const live = document.getElementById('kjr-holds-live');
+  if (live) live.textContent = rows.length ? _kjrOvPlural(rows.length, 'price', 'prices') + ' waiting for your OK' : 'Nothing waiting';
+}
+// Redraw the sheet when it is open. Called from renderSingles and renderSlabs, i.e. after every pass, edit and sync that touches a row.
+function kjrPriceHoldsRefresh() {
+  const dlg = document.getElementById('kjr-holds-overlay');
+  if (dlg && dlg.open) kjrPriceHoldsRender();
+}
+function _kjrPriceHoldsClick(e) {
+  const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-ph-act]') : null;
+  if (!t) return;
+  const act = t.getAttribute('data-ph-act');
+  const table = t.getAttribute('data-ph-table');
+  const id = t.getAttribute('data-ph-id');
+  if (act === 'accept') kjrPriceHoldAccept(table, id);
+  else if (act === 'reject') kjrPriceHoldReject(table, id);
+  else if (act === 'open') kjrPriceHoldOpen(table, id);
+}
+function kjrPriceHoldsOpen() {
+  const dlg = document.getElementById('kjr-holds-overlay');
+  if (!dlg) return;
+  if (dlg.open) { kjrPriceHoldsRender(); return; } // showModal() on an open dialog throws
+  if (!dlg._kjrPhBound) { dlg._kjrPhBound = true; dlg.addEventListener('click', _kjrPriceHoldsClick); }
+  kjrPriceHoldsRender(true);
+  kjrModalCtrl.open(dlg);
+}
+function kjrPriceHoldsClose() {
+  const dlg = document.getElementById('kjr-holds-overlay');
+  if (dlg) kjrModalCtrl.close(dlg, true);
+}
+// Keyboard focus survives a redraw: the button pressed is gone with its row, so remember which kind of button it was and which row, and
+// give focus to the same kind of button on the card that moved into its place (else the last one, else the title).
+function _kjrHoldsFocusSnapshot() {
+  const dlg = document.getElementById('kjr-holds-overlay');
+  const body = document.getElementById('kjr-holds-body');
+  const el = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!dlg || !body || !el || typeof el.getAttribute !== 'function' || typeof dlg.contains !== 'function' || !dlg.contains(el)) return null;
+  const act = el.getAttribute('data-ph-act');
+  if (!act) return null;
+  const row = typeof el.closest === 'function' ? el.closest('.kjr-ph-row') : null;
+  const rows = typeof body.querySelectorAll === 'function' ? Array.from(body.querySelectorAll('.kjr-ph-row')) : [];
+  return { act, table: el.getAttribute('data-ph-table'), id: el.getAttribute('data-ph-id'), index: Math.max(0, rows.indexOf(row)) };
+}
+function _kjrHoldsFocusRestore(snap) {
+  const body = document.getElementById('kjr-holds-body');
+  if (!snap || !body || typeof body.querySelectorAll !== 'function') return;
+  const all = (sel) => Array.from(body.querySelectorAll(sel));
+  const kind = all('[data-ph-act="' + snap.act + '"]');
+  const target = kind.find(b => b.getAttribute('data-ph-table') === snap.table && b.getAttribute('data-ph-id') === snap.id) ||
+    kind[Math.min(snap.index, kind.length - 1)] || all('[data-ph-act]')[0] || document.getElementById('kjr-holds-title');
+  if (target && typeof target.focus === 'function') target.focus();
+}
+// Upload after a decision: the dirty rows only, through _flushDirtyToSupabase, the path the unmatched-cards sheet uses. Resolves to false when
+// the upload was refused or failed (the row stays dirty and retries), so the decision can say so in its one toast.
+async function _kjrHoldsFlush() {
+  try {
+    const res = await _flushDirtyToSupabase();
+    return !(res && (res.status === 'error' || res.status === 'blocked'));
+  } catch (e) {
+    console.error('[price holds] cloud flush failed:', e);
+    return false;
+  }
+}
+const KJR_HOLD_SYNC_NOTE = '. Saved on this device, cloud sync will retry, check the sync indicator';
+// Accept: the history entry is the one the pass would have written (date, price, unit, source, confidence, all from the hold, the date being
+// the day the price was last seen).
+async function kjrPriceHoldAccept(table, id) {
+  const item = _kjrHoldFind(table, id);
+  const hold = kjrPriceHold(item);
+  if (!item || !hold) { toast('That price is no longer waiting'); kjrPriceHoldsRender(); return false; }
+  const snap = _kjrHoldsFocusSnapshot();
+  const price = Number(hold.price);
+  const before = parseFloat(item.marketPrice);
+  const day = typeof hold.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(hold.date) && _parseHistDate(hold.date) ? hold.date : kjrUtcDay();
+  snapshotForUndo();
+  item.marketPrice = price.toFixed(0);
+  if (!Array.isArray(item.priceHistory)) item.priceHistory = [];
+  item.priceHistory.push({
+    date: day, price, unit: hold.unit == null ? null : hold.unit,
+    source: hold.source == null ? null : hold.source, confidence: hold.confidence == null ? null : hold.confidence
+  });
+  if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
+  delete item.priceHold;
+  markDirty(table, item.id);
+  saveData();
+  clLog('edit', table, item.name || String(item.id), 'marketPrice: ' + _clFmtVal('marketPrice', before > 0 ? before : '') + ' → ' + _clFmtVal('marketPrice', price) + ' (held price accepted)');
+  _kjrPriceHoldsRedraw(table);
+  _kjrHoldsFocusRestore(snap);
+  const synced = await _kjrHoldsFlush();
+  toast('Accepted ' + _kjrOvMoney(price) + ' for ' + (item.name || 'the card') + (synced ? '' : KJR_HOLD_SYNC_NOTE), synced ? 4000 : 6000, !synced);
+  return true;
+}
+// Reject: nothing about the match is changed, only the price is turned down.
+async function kjrPriceHoldReject(table, id) {
+  const item = _kjrHoldFind(table, id);
+  const hold = kjrPriceHold(item);
+  if (!item || !hold) { toast('That price is no longer waiting'); kjrPriceHoldsRender(); return false; }
+  const snap = _kjrHoldsFocusSnapshot();
+  const price = Number(hold.price);
+  const kept = parseFloat(item.marketPrice);
+  snapshotForUndo();
+  item.priceHoldRejected = { price, date: kjrUtcDay() };
+  delete item.priceHold;
+  markDirty(table, item.id);
+  saveData();
+  clLog('edit', table, item.name || String(item.id), 'held price ' + _clFmtVal('marketPrice', price) + ' rejected');
+  _kjrPriceHoldsRedraw(table);
+  _kjrHoldsFocusRestore(snap);
+  const synced = await _kjrHoldsFlush();
+  toast((kept > 0 ? 'Kept ' + _kjrOvMoney(kept) : 'No price set') + '. If the match is wrong, open the card to fix it' + (synced ? '' : KJR_HOLD_SYNC_NOTE), synced ? 5000 : 6000, !synced);
+  return true;
+}
+// Open: the edit form goes on top of the sheet, so a match can be fixed and the next price decided straight after. Focus is parked on the sheet
+// title first, the edit form gives focus back to what was focused when it opened and the button will have been redrawn by then.
+function kjrPriceHoldOpen(table, id) {
+  const item = _kjrHoldFind(table, id);
+  if (!item) { toast('That card is no longer in your collection'); kjrPriceHoldsRender(); return; }
+  const title = document.getElementById('kjr-holds-title');
+  if (title && typeof title.focus === 'function') title.focus();
+  if (table === 'slabs') openEditSlab(item.id); else openEditSingle(item.id);
+}
+
+// Apply a fetched price to a primary item and all its copy targets. The rows are one card, so they get one treatment: the price guard
+// (kjrPriceGuard) is asked once, on the first row that would change (the primary, as the queue builds a group), and its answer holds or
+// writes every row of the group. A copy is not tested again on its own cost, or a lower cost bought later would be held under a price its
+// sibling took.
 function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit, source, confidence, resolvedTcgdexId) {
   const today = kjrUtcDay(); // priceHistory dates are UTC dates, the charts and kjrCheckedDays read them so
   const checkedDay = kjrLocalDay(); // the free lane's "priced today" marker is the device's local day (see kjrLocalDay)
   const histEntry = { date: today, price: priceSgd, unit, source, confidence };
+  let groupGuard; // undefined until the first row that would change has been tested, then null (no doubt) or { reason }
 
   const applyToItem = (id, table) => {
     const item = DB[table]?.find(i => i.id === id);
@@ -19300,9 +20198,20 @@ function applyPriceToGroup(primaryId, primaryTable, copyTargets, priceSgd, unit,
     // entry, it is what clears the flag, so the price is counted again.
     if (Number(item.marketPrice) === Number(newPrice) && !idIsNew && !kjrIsStaleEstimate(item)) {
       item._tcgdexPricedDate = checkedDay;
+      _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
+      return;
+    }
+    // The guard (kjrPriceGuard): a price that looks wrong is held for the owner and written nowhere, on every row of the group. A freshly
+    // resolved id is still kept, the match was found, only its price is in doubt (Reject leaves the id alone too).
+    if (groupGuard === undefined) groupGuard = kjrPriceGuard(item, priceSgd);
+    const verdict = _kjrPriceGate(item, table, priceSgd, unit, source, confidence, groupGuard);
+    if (verdict !== 'write') {
+      if (idIsNew) { item.tcgdexId = resolvedTcgdexId; if (verdict !== 'held') markDirty(table, id); } // a new hold has marked the row already
       return;
     }
     item.marketPrice = newPrice;
+    delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
+    _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
     // A price that changed is a check too. The marker is stamped on every write, not only the same-value one: it is the only evidence the
     // free lane reads for "priced today" (_tcgdexPricedToday), a history date is a UTC date and says nothing certain about the local day.
     item._tcgdexPricedDate = checkedDay;
@@ -19390,10 +20299,15 @@ async function runRefreshQueue(manual = false) {
   // a queue saved before the free lane's day went local gets its markers lowered once, so no UTC-dated one can pass for today's
   if (_kjrFreeLaneDayMigrate(q, today)) saveQueue(q);
 
+  // The first run of a new vendor day (UTC) gives the PPT lane its order for the day, read off the live inventory: cards not checked in 7 days
+  // first, the most valuable first, then the rest oldest first (_pptLaneRoll). A finished queue starts again here, so it never stalls the lane
+  // on a later day. The same day's later runs find the order already made and go on from the cursor as they always did.
+  const rolled = _pptLaneRoll(q, utcDay);
+
   // A card the PPT lane should price that the queue does not hold yet (a Japanese single the queue pre-dates, a slab whose grade only reads
   // now, a row added or given a number since) is added at the end, without rebuilding anything or touching the cursor, the credits spent
   // or the cards already done. A complete queue with something added is no longer complete.
-  if (_pptLaneTopUp(q)) saveQueue(q);
+  if (_pptLaneTopUp(q) || rolled) saveQueue(q);
 
   // If the queue is complete but inventory has changed since (new items
   // added), rebuild it automatically so the auto-refresh keeps pricing
@@ -19483,7 +20397,9 @@ const TCGDEX_GAP_MS = 250;
 // but an interrupted pass left cards unattempted").
 function _tcgdexPricedToday(item, today) {
   const row = DB[item.table]?.find(i => i.id === item.id);
-  if (!row || !row.marketPrice) return false;
+  // A row with no market price still counts when the guard is holding a price for it (v3.86, kjrPriceHold): the hold stamped today's marker
+  // so the lane would not ask again, and a card with no price to show would otherwise be asked on every run of the day.
+  if (!row || (!row.marketPrice && !kjrPriceHold(row))) return false;
   // today is the free lane's day, the device's LOCAL date (kjrLocalDay), and the local non-synced marker is the evidence: every write
   // stamps it (applyPriceToGroup, refreshPrice, bulkRefreshPrices), a same-value re-price included. The last priceHistory date is NOT
   // read any more: it is a UTC date, and a UTC date equals today's local date on an earlier local day in every zone west of UTC, so
@@ -19866,7 +20782,9 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
       advancedItems.push(item); // burn the credit + advance cursor - name is wrong
       // A Japanese card the vendor has no single card for is listed in the Singles "could not be matched" banner like an English one
       // TCGdex has none for. Never a guessed price: nothing was written. The save after this branch keeps the stamp.
-      if (japanese) _kjrSetJapaneseMiss(item, localDay);
+      // A slab the vendor has no card for is stamped the same way (v3.86), though no banner lists it: the rolling PPT order reads the stamp as
+      // "looked up today" (_kjrPptAttemptTs), so the slab drops back for a week and does not take the same 6 credits on every day's run.
+      _kjrSetJapaneseMiss(item, localDay);
     } else if (kind === 'credits') {
       // The vendor said the day's credits are gone. Not a data miss (the card is fine) and not a transport failure (nothing to count
       // towards the five in a row): this card and everything after it stay queued exactly where they are, the cursor does not move past
@@ -20139,7 +21057,7 @@ function _renderQueueStatus() {
     </div>`;
     })()}
     ${creditsSpentOut ? '<div style="font-size:11px;color:var(--amber);margin-top:8px">' + (creditsPausedToday ? 'PokemonPriceTracker says today\'s credits are used up.' : 'Today\'s PPT credits are used up.') + ' The Search lane resumes after the reset at 8am Singapore time (the Exact/TCGdex lane is unaffected).</div>' : ''}
-    ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ PPT lane fully refreshed. Rebuild queue to start next cycle.</div>' : ''}
+    ${q.completed ? '<div style="font-size:11px;color:var(--green);margin-top:8px">✅ PPT lane done for today. The next pass starts by itself tomorrow, cards not checked in 7 days first.</div>' : ''}
   `;
 }
 
@@ -20176,6 +21094,7 @@ async function bulkRefreshPrices(table) {
   if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
   _bulkRefreshRunning = true;
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
+  let held = 0; // prices the guard (kjrPriceGuard) kept for the owner's OK instead of writing
   const errorTally = {};
   let aborted = false;
   // Same NON_ATTEMPT sentinel-stripping as the queue's classifyResult -
@@ -20186,7 +21105,8 @@ async function bulkRefreshPrices(table) {
   const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
   let creditsOut = false;
   for (const item of items) {
-    showSyncProgress(done + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
+    showSyncProgress(done + held + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
+    let wasHeld = false, gate = null;
     // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
     // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
     const slabGrade = table === 'slabs' ? _kjrSlabGrade(item) : null;
@@ -20208,8 +21128,16 @@ async function bulkRefreshPrices(table) {
       // successful pass (the fetch did confirm the price).
       if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
         item._tcgdexPricedDate = kjrLocalDay();
+        _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
+      } else if ((gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence)) !== 'write') {
+        // The price guard (kjrPriceGuard): not written, it waits on the card for the owner's OK. It is not an update, so it is counted apart.
+        held++;
+        wasHeld = true;
+        if (idIsNew && gate !== 'held') markDirty(table, item.id); // the resolved id is kept and still has to sync (a new hold has marked the row already)
       } else {
         item.marketPrice = newPrice;
+        delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
+        _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
         item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
         if (!item.priceHistory) item.priceHistory = [];
         item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
@@ -20219,7 +21147,7 @@ async function bulkRefreshPrices(table) {
         }
         markDirty(table, item.id);
       }
-      done++;
+      if (!wasHeld) done++;
       consecTransport = 0;
     } else {
       const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
@@ -20241,6 +21169,7 @@ async function bulkRefreshPrices(table) {
   _bulkRefreshRunning = false;
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
+  if (held) _kjrRedrawOverview(); // the Overview's Needs attention count has a new row to show
   const failedTotal = failedData + failedTransport;
   const errSummary  = Object.entries(errorTally).sort((a,b) => b[1]-a[1]).slice(0,2)
                             .map(([err,n]) => n + '× ' + err).join(', ');
@@ -20254,7 +21183,7 @@ async function bulkRefreshPrices(table) {
     : '';
   const tail = creditsOut ? ' · ⏸ PPT credits are used up for today, they reset at 8am Singapore time'
     : aborted ? ' · ⏸ auto-paused after 5 failures in a row' : '';
-  toast('Done: ' + done + ' updated' + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
+  toast('Done: ' + done + ' updated' + (held ? ', ' + held + ' held for your OK (Overview, Needs attention)' : '') + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
 

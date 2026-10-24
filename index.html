@@ -41,7 +41,7 @@
   Sentry.init({
     dsn: DSN,
     environment: 'production',
-    release: 'kujira-collectibles@3.87',
+    release: 'kujira-collectibles@3.88',
     // Sample 10 % of page loads for performance tracing - keeps quota low
     tracesSampleRate: 0.1,
     // Suppress noise that is not actionable. ResizeObserver warnings are pure
@@ -77,7 +77,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
 <!-- Geist is self-hosted (Assets/fonts, the @font-face rules sit at the top of styles.css). Only the sans is preloaded: it is on screen at first paint, Geist Mono is not. -->
 <link rel="preload" href="Assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="styles.css?v=3.87">
+<link rel="stylesheet" href="styles.css?v=3.88">
 </head>
 <body>
 
@@ -276,7 +276,7 @@
       <span class="kjr-sync-dot" aria-hidden="true"></span>
       <span class="kjr-sync-text">
         <span class="kjr-sync-line1" id="sync-label">Not synced yet</span>
-        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.87 (24 Oct)</span></span>
+        <span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="Build version. Compare this on your local file vs the live site to see whether a deploy is pending.">v3.88 (24 Oct)</span></span>
       </span>
     </button>
     <span class="sr-only" id="sync-live" role="status"></span>
@@ -2206,12 +2206,12 @@ The full written guide is on Journal: [**Kujira User Guide**](https://kujira-jou
 </div>
 
 
-<script src="app.js?v=3.87"></script>
-<script src="features.js?v=3.87"></script>
-<script src="dealer-money.js?v=3.87"></script>
-<script src="dealer-desk.js?v=3.87"></script>
-<script src="dealer-ui.js?v=3.87"></script>
-<script src="dealer-store.js?v=3.87"></script>
-<script src="dealer-production-ui.js?v=3.87"></script>
+<script src="app.js?v=3.88"></script>
+<script src="features.js?v=3.88"></script>
+<script src="dealer-money.js?v=3.88"></script>
+<script src="dealer-desk.js?v=3.88"></script>
+<script src="dealer-ui.js?v=3.88"></script>
+<script src="dealer-store.js?v=3.88"></script>
+<script src="dealer-production-ui.js?v=3.88"></script>
 </body>
 </html>

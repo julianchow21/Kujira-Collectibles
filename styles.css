@@ -1953,13 +1953,17 @@ html.light .kjr-art-none::after{opacity:0.4;filter:brightness(0.55) saturate(1.4
    alone, and a tap or click pins it with .open (app.js, _kjrOvInfoEvent). .shut hides it again while the pointer or focus still rests
    on the icon (Escape, or a second click), hover only counts on devices that can hover so a tap never leaves it stuck open. The icon
    has no title, so the touch long-press bubble does not double it. The icon is 20px with an invisible 28px hit area, and its
-   negative vertical margin keeps the label row at 18px. */
+   negative vertical margin keeps the label row at 18px. The bubble has two lines (v3.88): the figures behind the number, then a sentence
+   on what the number means. The sentence is too long for one line, so the bubble wraps at 240px, or at two thirds of the Overview where
+   that is narrower (66cqw, a phone), which keeps the bubble that opens rightwards from the Cost basis icon inside a 320px screen. */
 .ov-info-row{display:flex;align-items:center}
 .ov-info{position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:20px;height:20px;margin:-1px 0 -1px 4px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--text3);font:inherit;cursor:pointer;-webkit-appearance:none;appearance:none}
 .ov-info::before{content:"";position:absolute;inset:-4px}
 .ov-info.open{color:var(--text2)}
 .ov-info:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.ov-info-tip{position:absolute;z-index:60;top:calc(100% + 6px);left:0;display:none;box-sizing:border-box;max-width:calc(100vw - 32px);padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);box-shadow:var(--shadow-md);color:var(--text);font-size:12px;line-height:16px;font-weight:400;text-align:left;white-space:nowrap;cursor:default}
+.ov-info-tip{position:absolute;z-index:60;top:calc(100% + 6px);left:0;display:none;box-sizing:border-box;width:max-content;max-width:min(240px,66cqw);padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);box-shadow:var(--shadow-md);color:var(--text);font-size:12px;line-height:16px;font-weight:400;text-align:left;white-space:normal;cursor:default}
+.ov-info-fig{display:block;font-weight:500}
+.ov-info-what{display:block;margin-top:2px;color:var(--text2)}
 .ov-info-tip::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:8px}
 .ov-info.open .ov-info-tip,.ov-info:focus-visible .ov-info-tip{display:block}
 @media (hover:hover){.ov-info:hover{color:var(--text2)}.ov-info:hover .ov-info-tip{display:block}}
@@ -2290,6 +2294,18 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
 .kjr-insp-src{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:16px;color:var(--text3)}
 .kjr-insp-src svg{flex:none;margin-top:1px}
 
+/* Held price (v3.88): a price the price guard kept back for this card, said under its value. The amber is the one the Overview's held-prices
+   row and the sheet's reason chip wear, and the words carry it (the title says the price is waiting), the colour only backs them. Accept and
+   Reject are the panel's own buttons, the link opens the sheet. */
+.kjr-insp-hold{display:flex;flex-direction:column;gap:6px;padding:14px 16px;border-radius:14px;background:var(--amber-soft);border:1px solid var(--amber)}
+.kjr-insp-hold p{margin:0}
+.kjr-insp-hold-title{font-weight:600;line-height:20px;color:var(--text)}
+.kjr-insp-hold-meta{font-size:12px;line-height:16px;color:var(--text2)}
+.kjr-insp-hold-note{font-size:13px;line-height:18px;color:var(--text2)}
+.kjr-insp-hold-acts{display:flex;gap:8px;margin-top:4px}
+.kjr-insp-link{-webkit-appearance:none;appearance:none;align-self:flex-start;min-height:32px;margin:0;padding:0;border:0;background:none;color:var(--link);font:inherit;font-size:13px;line-height:18px;text-decoration:underline;cursor:pointer}
+.kjr-insp-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
 /* Details */
 .kjr-insp-dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 20px;margin:0}
 .kjr-insp-dl>div{min-width:0}
@@ -2326,6 +2342,7 @@ tr:hover .kjr-more,tr:focus-within .kjr-more,.kjr-more:focus-visible,.kjr-more[a
 @media(pointer:coarse){
   .kjr-insp-ib{width:44px;height:44px}
   .kjr-insp-btn{height:44px}
+  .kjr-insp-link{min-height:44px}
   .kjr-insp-actions .kjr-more{width:44px;height:44px}
 }
 @media(prefers-reduced-motion:reduce){
@@ -2604,12 +2621,21 @@ body{padding-left:var(--kjr-side-w)}
    not fit, in a narrower window or with the text enlarged, the row scrolls inside itself, with no scrollbar and no sideways scroll for
    the page, and syncCollSwitch centres the current segment. The focus ring is inset because the row clips an outer one, and the
    current segment's is --accent-fg because its fill is --accent. From 601px the sidebar and the rail carry the same four, so it is
-   hidden, and nothing else here applies. */
+   hidden, and nothing else here applies.
+   Pinned (v3.88): the row is sticky at --kjr-top-off, the height the phone header takes (56px and the top safe area, the header's own
+   height, so a notch is cleared the way it is for the header), so it sits directly under the header while the page scrolls under it.
+   Its 12px margin is used up as soon as it sticks. It is opaque, the --bg3 track, and a --bg shadow 12px wide on every side backs the
+   gutters and the strip under it, so a row sliding past (the Holdings rows are 8px wider than the gutter) never shows beside or under
+   it. z-index 90 is over the table heads (5) and in-page popovers stay over it (150, 160), under the header (100) and its Settings
+   menu. Nothing else is sticky to the page at this width: a table head sticks inside its own wrap (overflow-x makes it the scroll
+   container), which does not scroll up and down. What the row can cover is what is scrolled into view behind it, the inspected row
+   or tile, so their scroll-margin clears the header, the row (50px), its backing (12px) and 16px of air, which is the 78px below. */
 .kjr-coll{display:none}
 .kjr-coll[hidden]{display:none}
 @media (max-width: 600px){
-  .kjr-coll{position:relative;display:flex;align-items:stretch;gap:2px;margin:12px max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius)}
+  .kjr-coll{position:sticky;top:var(--kjr-top-off);z-index:90;display:flex;align-items:stretch;gap:2px;margin:12px max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 0 0 12px var(--bg)}
   .kjr-coll::-webkit-scrollbar{display:none}
+  .kjr-tile.is-inspected,#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin-top:calc(var(--kjr-top-off) + 78px)}
   .kjr-coll-btn{-webkit-appearance:none;appearance:none;flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:44px;margin:0;padding:6px 8px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--text2);font:inherit;font-size:13px;font-weight:500;line-height:16px;white-space:nowrap;cursor:pointer}
   .kjr-coll-btn[aria-current="page"]{background:var(--accent);color:var(--accent-fg);font-weight:600}
   .kjr-coll-btn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
@@ -2626,7 +2652,7 @@ body{padding-left:var(--kjr-side-w)}
 .kjr-hold{display:flex;flex-direction:column;margin-bottom:8px}
 .kjr-hold-row{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:12px;width:calc(100% + 16px);min-height:60px;margin:0 -8px;padding:8px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;content-visibility:auto;contain-intrinsic-size:auto 60px;transition:background 0.16s ease-out}
 .kjr-hold-row:active{background:var(--bg3)}
-.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:calc(var(--kjr-top-off) + 16px) 0 calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
+.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:calc(var(--kjr-top-off) + 78px) 0 calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
 .kjr-hold-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .kjr-hold-row .kjr-thumb{width:32px;height:auto;aspect-ratio:63/88;border-radius:4px}
 .kjr-hold-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}

@@ -111,12 +111,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.87 \(24 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.88 \(24 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.87 \(24 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.88 \(24 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -1088,7 +1088,8 @@ test('css: the Holdings rows are 60px buttons with a 32px 63/88 thumbnail, 12px 
   assert.match(shellRules, /\.kjr-hold-lang\{font-family:var\(--font-mono\)\}/);
   assert.match(shellRules, /\.kjr-hold-price\{font-weight:600;[^}]*font-variant-numeric:tabular-nums\}/);
   assert.match(shellRules, /\.kjr-hold-pct\{font-size:12px;font-weight:600;/);
-  assert.match(shellRules, /\.kjr-hold-row\.is-inspected\{background:var\(--accent-soft\);scroll-margin:calc\(var\(--kjr-top-off\) \+ 16px\) 0 calc\(var\(--kjr-tab-h\) \+ var\(--kjr-tab-lift\) \+ env\(safe-area-inset-bottom\) \+ 16px\)\}/, 'a step that scrolls the row into view keeps it clear of the header and the tab bar');
+  // v3.88: the Collection switcher is pinned under the header, so the top margin clears it too (header, the row's 50px, its 12px backing, 16px of air)
+  assert.match(shellRules, /\.kjr-hold-row\.is-inspected\{background:var\(--accent-soft\);scroll-margin:calc\(var\(--kjr-top-off\) \+ 78px\) 0 calc\(var\(--kjr-tab-h\) \+ var\(--kjr-tab-lift\) \+ env\(safe-area-inset-bottom\) \+ 16px\)\}/, 'a step that scrolls the row into view keeps it clear of the header, the pinned switcher and the tab bar');
   assert.match(shellRules, /@media \(max-width: 600px\)\{\s*body:not\(\.force-tables\) \.page\.kjr-hold-on>\.card\{display:none\}\s*body:not\(\.force-tables\) \.page\.kjr-hold-on \.kjr-hold-wrap\{display:block\}/);
 });
 
@@ -1101,14 +1102,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.87: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.88: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.87'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.87">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.88'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.88">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.87"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.87'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.88"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.88'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v90'/);
+  assert.match(sw, /const CACHE = 'kujira-v91'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

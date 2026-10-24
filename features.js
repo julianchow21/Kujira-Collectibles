@@ -4888,8 +4888,8 @@ function kjrTblFit(wrap) {
 // ═════════════ Card inspector (v3.72) ═════════════
 // Redesign Step 5. One panel shows one card or slab. It is a read-and-launch surface: it never writes a row itself.
 // Every change goes through the function the list already uses (markStatus, openEditSingle and openEditSlab,
-// openListingFor, refreshPrice, deleteItem), so undo, the changelog, the sync queue and the Dealer guard behave
-// exactly as they do from a row.
+// openListingFor, refreshPrice, deleteItem, and for a price the guard is holding kjrPriceHoldAccept, kjrPriceHoldReject
+// and kjrPriceHoldsOpen, v3.88), so undo, the changelog, the sync queue and the Dealer guard behave exactly as they do from a row.
 //   901px and wider  a non-modal panel fixed to the right (#kjr-inspector). Not a focus trap, Esc closes it.
 //   900px and below  the same content in a full-height sheet (#kjr-insp-sheet), a dialog opened through
 //                    kjrModalCtrl, so scroll lock, the Back button, Esc and focus return come for free.
@@ -5168,6 +5168,27 @@ function kjrInspectHtml(table, item, view) {
     kjrInspectChartHtml(item, now) +
     '<div class="kjr-insp-src">' + KJR_INSP_ICON.clock + '<span>' + E(kjrInspectPriceLine(table, item, now)) + '</span></div></div>';
 
+  // A price the guard is holding for this card (v3.88, kjrPriceGuard in app.js): said in words, under the value it has not changed, with
+  // the same Accept and Reject as the Overview's sheet (the buttons hand over to kjrPriceHoldAccept and kjrPriceHoldReject, see
+  // kjrInspectAct) and a way into the sheet. A hold needs a price above zero (kjrPriceHold), and only an Available row can carry one the
+  // Overview counts, so a Sold row shows none. The reason, the source and the date are the sheet's own facts.
+  var hold = '';
+  var wait = !sold && typeof kjrPriceHold === 'function' ? kjrPriceHold(item) : null;
+  if (wait) {
+    var waitPrice = kjrInspectMoney(wait.price);
+    var waitPrev = parseFloat(wait.prev) > 0 ? kjrInspectMoney(wait.prev) : '';
+    var waitFacts = [wait.reason, kjrInspectSourceText(wait.source), toDateMmmYyyy(wait.date) || String(wait.date == null ? '' : wait.date)].filter(Boolean);
+    var waitBtn = function (act, word) {
+      return '<button type="button" class="kjr-insp-btn" data-insp-act="hold-' + act + '" aria-label="' + E(word + ' ' + waitPrice + ' for ' + name) + '">' + E(word) + '</button>';
+    };
+    hold = '<div class="kjr-insp-hold" role="group" aria-label="Price waiting for your OK">' +
+      '<p class="kjr-insp-hold-title">New price ' + E(waitPrice) + ' waiting for your OK</p>' +
+      (waitFacts.length ? '<p class="kjr-insp-hold-meta">' + E(waitFacts.join(' · ')) + '</p>' : '') +
+      '<p class="kjr-insp-hold-note">It was not applied. Accept uses it, Reject keeps ' + (waitPrev ? E(waitPrev) : 'the card as it is') + '.</p>' +
+      '<div class="kjr-insp-hold-acts">' + waitBtn('accept', 'Accept') + waitBtn('reject', 'Reject') + '</div>' +
+      '<button type="button" class="kjr-insp-link" data-insp-act="hold-review">See all prices waiting for your OK</button></div>';
+  }
+
   // Details. The redesign dropped the row that counted days in stock, so there is none.
   var rows = '';
   var dd = function (label, valueHtml, empty) {
@@ -5219,7 +5240,7 @@ function kjrInspectHtml(table, item, view) {
       '<div class="kjr-rowmenu" role="menu" aria-label="More actions for ' + E(name) + '" hidden>' + menu + '</div>' +
     '</div></div>';
 
-  return top + kjrInspectArtHtml(table, item, sold) + head + value + details + actions;
+  return top + kjrInspectArtHtml(table, item, sold) + head + value + hold + details + actions;
 }
 
 // ── State and the page
@@ -5576,6 +5597,13 @@ function kjrInspectAct(act, st, item) {
       openListingFor(table, id);
     } else if (act === 'edit') {
       if (table === 'slabs') openEditSlab(id); else openEditSingle(id);
+    } else if (act === 'hold-accept' || act === 'hold-reject') {
+      // The sheet's own Accept and Reject (app.js), so the write, the undo snapshot, the changelog line, the upload and the toast are the
+      // same. They redraw Singles or Slabs and the Overview, and renderSingles and renderSlabs end by redrawing this panel (kjrInspectRefresh),
+      // so the price block is gone and the value is the new one by the time they return.
+      kjrInspectRun((act === 'hold-accept' ? kjrPriceHoldAccept : kjrPriceHoldReject)(table, id));
+    } else if (act === 'hold-review') {
+      kjrPriceHoldsOpen();
     } else if (act === 'refresh') {
       var info = kjrInspectRefreshInfo(table, item);
       if (!info.ok) { if (typeof toast === 'function') toast(info.why); return; }

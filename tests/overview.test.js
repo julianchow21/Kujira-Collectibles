@@ -394,6 +394,135 @@ test('stale prices: Review opens Singles or Slabs filtered to them, with a chip,
   assert.equal(chip('singles-stale-filter-chip'), 'none');
 });
 
+// v3.88: "Clear all filters" cleared the search, the column boxes and the dropdowns and left the two session-only chip filters on, so a page
+// could say it had no filters and still show a narrowed list behind an amber chip.
+test('clear all filters: Singles and Slabs also drop the stale-prices-only and unmatched-only filters, hide their chips and draw the list once', async () => {
+  const a = await app({
+    singles: [
+      single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard' })),
+      single(pricedAgo(2, 90, { id: 's-fresh', name: 'New Charizard' })),
+      single(pricedAgo(2, 90, { id: 's-numbered', name: 'Pikachu 25' })),
+    ],
+    slabs: [slab(pricedAgo(80, 700, { id: 'l-stale' })), slab(pricedAgo(2, 700, { id: 'l-fresh' }))],
+  });
+  setClock(a, NOW_ISO);
+  const { ctx, document } = a;
+  const shown = (t) => Array.from(ctx._kjrInspectOrder[t]).sort();
+  const chip = (id) => document.getElementById(id).style.display;
+  const draws = { singles: 0, slabs: 0, sales: 0 };
+  for (const t of ['Singles', 'Slabs', 'Sales']) {
+    const real = ctx['render' + t];
+    ctx['render' + t] = function () { draws[t.toLowerCase()] += 1; return real.apply(this, arguments); };
+  }
+  const reset = () => { draws.singles = 0; draws.slabs = 0; draws.sales = 0; };
+  const everySingle = ['s-fresh', 's-numbered', 's-stale'];
+
+  // the stale-prices-only filter, with a typed search beside it: both go, in one draw
+  ctx._kjrShowStaleOnly('singles');
+  document.getElementById('singles-search').value = 'charizard';
+  ctx.renderSingles();
+  assert.deepEqual(shown('singles'), ['s-stale']);
+  assert.equal(chip('singles-stale-filter-chip'), '', 'the chip shows');
+  reset();
+  ctx.clearAllFilters('singles');
+  assert.equal(ctx._kjrSinglesStaleOnly, false, 'the stale filter is off');
+  assert.equal(document.getElementById('singles-search').value, '', 'and the search box is empty, as before');
+  assert.deepEqual(shown('singles'), everySingle, 'every card is listed');
+  assert.equal(chip('singles-stale-filter-chip'), 'none', 'the chip is hidden');
+  assert.equal(draws.singles, 1, 'one draw, not one per filter');
+
+  // the unmatched-only filter (the two cards with no number in the name)
+  ctx._kjrShowUnresolvedOnly();
+  assert.deepEqual(shown('singles'), ['s-fresh', 's-stale']);
+  assert.equal(chip('singles-unresolved-filter-chip'), '');
+  reset();
+  ctx.clearAllFilters('singles');
+  assert.equal(ctx._kjrSinglesUnresolvedOnly, false);
+  assert.deepEqual(shown('singles'), everySingle);
+  assert.equal(chip('singles-unresolved-filter-chip'), 'none');
+  assert.equal(draws.singles, 1);
+
+  // both at once (the app keeps to one narrowing, but the clear does not depend on that)
+  ctx._kjrSinglesStaleOnly = true;
+  ctx._kjrSinglesUnresolvedOnly = true;
+  ctx.renderSingles();
+  assert.deepEqual(shown('singles'), ['s-stale']);
+  assert.equal(chip('singles-stale-filter-chip') + chip('singles-unresolved-filter-chip'), '');
+  reset();
+  ctx.clearAllFilters('singles');
+  assert.equal(ctx._kjrSinglesStaleOnly || ctx._kjrSinglesUnresolvedOnly, false);
+  assert.deepEqual(shown('singles'), everySingle);
+  assert.equal(chip('singles-stale-filter-chip') + chip('singles-unresolved-filter-chip'), 'nonenone');
+  assert.equal(draws.singles, 1);
+
+  // Slabs has the stale one, and its clear draws Slabs and leaves Singles alone
+  ctx._kjrShowStaleOnly('slabs');
+  assert.deepEqual(shown('slabs'), ['l-stale']);
+  assert.equal(chip('slabs-stale-filter-chip'), '');
+  reset();
+  ctx.clearAllFilters('slabs');
+  assert.equal(ctx._kjrSlabsStaleOnly, false);
+  assert.deepEqual(shown('slabs'), ['l-fresh', 'l-stale']);
+  assert.equal(chip('slabs-stale-filter-chip'), 'none');
+  assert.deepEqual(draws, { singles: 0, slabs: 1, sales: 0 });
+
+  // Sales has neither chip: its clear touches no Singles or Slabs filter
+  ctx._kjrSinglesStaleOnly = true;
+  ctx._kjrSlabsStaleOnly = true;
+  reset();
+  ctx.clearAllFilters('sales');
+  assert.equal(ctx._kjrSinglesStaleOnly && ctx._kjrSlabsStaleOnly, true);
+  assert.deepEqual(draws, { singles: 0, slabs: 0, sales: 1 });
+  ctx._kjrSinglesStaleOnly = false;
+  ctx._kjrSlabsStaleOnly = false;
+
+  // Reset view clears through the same function, so it drops them too
+  ctx.showPage('inventory');
+  ctx._kjrShowStaleOnly('singles');
+  document.querySelector = () => ({ id: 'page-inventory' });
+  reset();
+  ctx.resetCurrentView();
+  assert.equal(ctx._kjrSinglesStaleOnly, false);
+  assert.equal(chip('singles-stale-filter-chip'), 'none');
+  assert.equal(draws.singles, 1);
+});
+
+test('clear all filters: the chips\' own clear still draws once and clears its own filter, and render false is the only way to skip the draw', async () => {
+  const a = await app({ singles: [single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard' })), single(pricedAgo(2, 90, { id: 's-numbered', name: 'Pikachu 25' }))], slabs: [slab(pricedAgo(80, 700, { id: 'l-stale' }))] });
+  setClock(a, NOW_ISO);
+  const { ctx } = a;
+  const draws = { singles: 0, slabs: 0 };
+  for (const t of ['Singles', 'Slabs']) {
+    const real = ctx['render' + t];
+    ctx['render' + t] = function () { draws[t.toLowerCase()] += 1; return real.apply(this, arguments); };
+  }
+  const reset = () => { draws.singles = 0; draws.slabs = 0; };
+  ctx._kjrSinglesStaleOnly = true;
+  ctx._kjrClearStaleFilter('singles');
+  assert.deepEqual([ctx._kjrSinglesStaleOnly, draws.singles], [false, 1], 'the chip\'s call, as the markup makes it');
+  ctx._kjrSlabsStaleOnly = true;
+  reset();
+  ctx._kjrClearStaleFilter('slabs');
+  assert.deepEqual([ctx._kjrSlabsStaleOnly, draws.slabs, draws.singles], [false, 1, 0]);
+  ctx._kjrSinglesUnresolvedOnly = true;
+  reset();
+  ctx._kjrClearUnresolvedFilter();
+  assert.deepEqual([ctx._kjrSinglesUnresolvedOnly, draws.singles], [false, 1]);
+  // an inline handler or a listener may hand the helper an event, which is not "render false"
+  ctx._kjrSinglesUnresolvedOnly = true;
+  reset();
+  ctx._kjrClearUnresolvedFilter({ type: 'click' });
+  assert.deepEqual([ctx._kjrSinglesUnresolvedOnly, draws.singles], [false, 1]);
+  // render false clears the filter and leaves the draw to the caller
+  ctx._kjrSinglesStaleOnly = true; ctx._kjrSlabsStaleOnly = true; ctx._kjrSinglesUnresolvedOnly = true;
+  reset();
+  ctx._kjrClearStaleFilter('singles', false);
+  ctx._kjrClearStaleFilter('slabs', false);
+  ctx._kjrClearUnresolvedFilter(false);
+  assert.deepEqual([ctx._kjrSinglesStaleOnly, ctx._kjrSlabsStaleOnly, ctx._kjrSinglesUnresolvedOnly, draws.singles, draws.slabs], [false, false, false, 0, 0]);
+  assert.match(html, /onclick="_kjrClearUnresolvedFilter\(\)"/, 'the markup passes nothing, so a chip always draws');
+});
+
 test('stale prices: the Fix matches link opens the unmatched cards sheet, the Review links open the filtered lists', async () => {
   const { ctx } = await app({ singles: [single()] });
   const calls = [];
@@ -460,7 +589,7 @@ test('hero: collection value, gain chip with arrow and sign, no cost note, info 
   assert.match(hero, /<\/span> \+S\$100 · \+20\.0%<\/span><\/div>/, 'nothing sits beside the chip');
   assert.match(hero, /data-ov-act="breakdown">See breakdown/);
   assert.match(hero, /Cost basis<button type="button" class="ov-info"[^>]*>[\s\S]*?<\/button><\/div><div class="ov-stat-value">S\$500</);
-  assert.match(hero, /<span role="tooltip" id="ov-info-cost" class="ov-info-tip">1 single · 1 slab<\/span><\/button>/, 'the count lives in the bubble');
+  assert.match(hero, /<span role="tooltip" id="ov-info-cost" class="ov-info-tip"><span class="ov-info-fig">1 single · 1 slab<\/span><span class="ov-info-what">[^<]+<\/span><\/span><\/button>/, 'the count lives in the bubble, and under it what the figure means (v3.88)');
   assert.doesNotMatch(hero, /class="ov-stat-sub"/, 'and no longer under the figure');
   assert.doesNotMatch(hero, /metric-info|kjrToggleTooltip|aria-label="Info"/);
   assert.match(hero, /class="ov-hero-label"><span title="Estimated value/, 'the explanation is a tooltip on the label');
@@ -483,8 +612,11 @@ test('hero: each info icon is a button that names itself, points at its bubble, 
   assert.doesNotMatch(hero, /class="ov-stat-label[^"]*"[^>]*title=/, 'a title would stack the native tooltip and the long-press bubble on the icon bubble');
   assert.doesNotMatch(hero, /<button type="button" class="ov-info"[^>]*title=/);
   assert.doesNotMatch(hero, /onclick=/, 'wired by the one delegated handler, not inline');
-  assert.match(css, /\.ov-info-tip\{[^}]*position:absolute[^}]*white-space:nowrap/, 'the bubble is out of flow and stays on one line');
-  assert.match(css, /\.ov-info-tip\{[^}]*max-width:calc\(100vw - 32px\)/, 'and never wider than the screen');
+  // v3.88: the bubble carries a sentence as well as the figures, so it wraps. Its width is set (max-content, capped), because an absolutely
+  // positioned box inside a 20px button would otherwise shrink to the longest word.
+  assert.match(css, /\.ov-info-tip\{[^}]*position:absolute[^}]*width:max-content;max-width:min\(240px,66cqw\)[^}]*white-space:normal/, 'the bubble is out of flow and wraps at a set width');
+  assert.doesNotMatch(css.match(/\.ov-info-tip\{[^}]*\}/)[0], /white-space:nowrap/);
+  assert.match(css, /\.ov-info-tip\{[^}]*max-width:min\(240px,66cqw\)/, 'never wider than two thirds of the Overview, so the one that opens rightwards from the Cost basis icon fits a 320px screen');
   assert.match(css, /@container ov \(max-width:1120px\)\{\.ov-info-end \.ov-info-tip\{left:auto;right:0\}\}/, 'right-aligned where Realised profit is the right-hand figure');
 });
 
@@ -526,7 +658,7 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   withSales.ctx.renderDashboard();
   const a = text(withSales.document, 'dash-hero');
   assert.match(a, /Realised profit<button type="button" class="ov-info"[^>]*>[\s\S]*?<\/button><\/div><div class="ov-stat-value pos">\+S\$20</);
-  assert.match(a, /<span role="tooltip" id="ov-info-roi" class="ov-info-tip">ROI 13% across 2 sales<\/span>/, 'the return is a whole percent, in the bubble');
+  assert.match(a, /<span role="tooltip" id="ov-info-roi" class="ov-info-tip"><span class="ov-info-fig">ROI 13% across 2 sales<\/span><span class="ov-info-what">[^<]+<\/span><\/span>/, 'the return is a whole percent, in the bubble, with what the figure means under it (v3.88)');
   assert.match(a, /class="ov-stat-label ov-info-row ov-info-end">Realised profit/, 'the bubble can grow leftwards where the figure sits at the right edge');
   assert.doesNotMatch(a, /% return|class="ov-stat-sub"/, 'no visible sub line once the figures moved into the bubble');
 
@@ -534,7 +666,7 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   negative.ctx.renderDashboard();
   const n = text(negative.document, 'dash-hero');
   assert.match(n, /ov-stat-value neg">-S\$40</);
-  assert.match(n, /class="ov-info-tip">ROI -40% across 1 sale</);
+  assert.match(n, /class="ov-info-tip"><span class="ov-info-fig">ROI -40% across 1 sale</);
 
   const none = await app({ singles: [single()] });
   none.ctx.renderDashboard();
@@ -560,7 +692,7 @@ test('hero: the return in the Realised profit bubble is a whole percent, signed 
       invCostSingles: 10, invCostSlabs: 0, totalMktValue: 15, unrealisedPL: 5, singlesAvail: 1, slabsAvail: 0, hasCards: true,
       allTimeSales: [{}, {}], allTimeProfit: 20, allTimePendingDealerSales: 0, roiPct, attention: [],
     });
-    const m = html.match(/<span role="tooltip" id="ov-info-roi" class="ov-info-tip">([^<]*)<\/span>/);
+    const m = html.match(/<span role="tooltip" id="ov-info-roi" class="ov-info-tip"><span class="ov-info-fig">([^<]*)<\/span>/);
     return m && m[1];
   };
   assert.equal(bubble(75.04), 'ROI 75% across 2 sales');
@@ -572,6 +704,68 @@ test('hero: the return in the Realised profit bubble is a whole percent, signed 
   assert.equal(bubble(null), 'Across 2 sales', 'no ROI part without a return');
   assert.equal(bubble(undefined), 'Across 2 sales');
   assert.equal(bubble(NaN), 'Across 2 sales', 'a non-number never reaches the screen');
+});
+
+// v3.88: v3.86 wrote the sentences for the two bubbles (KJR_OV_TIPS.cost and .profit) and left them unused, the bubbles held the figures only.
+test('hero: the Cost basis and Realised profit bubbles say what the figure means, the KJR_OV_TIPS sentence under the figures, inside the same button', async () => {
+  const { ctx, document } = await app({
+    singles: [single({ costPrice: 100, marketPrice: 160 })],
+    sales: [sale({ costPrice: 100, totalCollected: 130, profit: 30 })],
+  });
+  ctx.renderDashboard();
+  const hero = text(document, 'dash-hero');
+  const lines = id => {
+    const m = hero.match(new RegExp('<button type="button" class="ov-info"[^>]*aria-describedby="' + id + '">[\\s\\S]*?<span role="tooltip" id="' + id + '" class="ov-info-tip"><span class="ov-info-fig">([^<]*)</span><span class="ov-info-what">([^<]*)</span></span></button>'));
+    return m && { fig: m[1], what: m[2] };
+  };
+  const cost = lines('ov-info-cost'), profit = lines('ov-info-roi');
+  assert.ok(cost, 'the Cost basis bubble has a figures line and a meaning line');
+  assert.ok(profit, 'and so has the Realised profit one');
+  assert.equal(cost.fig, '1 single · 0 slabs', 'the figures stay first, as they were');
+  assert.equal(profit.fig, 'ROI 30% across 1 sale');
+  assert.equal(cost.what, ctx.KJR_OV_TIPS.cost, 'the sentence is the one v3.86 wrote for the figure');
+  assert.equal(profit.what, ctx.KJR_OV_TIPS.profit);
+  assert.match(cost.what, /^What you paid for your Available singles and slabs\./);
+  assert.match(profit.what, /^Confirmed profit across your sales\. Dealer sales still awaiting settlement are left out until confirmed\./);
+  assert.match(profit.what, /ROI is profit divided by the cost of the items sold\.$/, 'it names the figure the line above shows, ROI, not "return"');
+  // the screen reader reads both lines, from the button's own aria-describedby, as before
+  assert.equal(hero.match(/aria-describedby="ov-info-cost"/g).length, 1);
+  assert.equal(hero.match(/aria-describedby="ov-info-roi"/g).length, 1);
+  assert.equal(hero.match(/role="tooltip"/g).length, 2, 'still two bubbles and no more');
+  // the Collection value label and the Needs attention head keep their own titles
+  assert.match(hero, /<span title="Estimated value of your Available singles and slabs/);
+  assert.match(hero, /Needs attention|All caught up/);
+});
+
+test('hero: the two sentences are short, in plain words, with no dash bar and no semicolon, and the bubble builder escapes both lines', async () => {
+  const { ctx } = await app({});
+  for (const key of ['cost', 'profit']) {
+    const tip = ctx.KJR_OV_TIPS[key];
+    assert.ok(!tip.includes(String.fromCharCode(0x2014)) && !tip.includes(String.fromCharCode(0x2015)) && !tip.includes(';'), key + ': no em-dash, no horizontal bar, no semicolon');
+    assert.ok(tip.length <= 170, key + ': short enough for a bubble (' + tip.length + ' characters)');
+    for (const sentence of tip.split(/(?<=\.)\s+/)) assert.ok(sentence.split(/\s+/).length <= 15, key + ': "' + sentence + '" is a short sentence');
+  }
+  const built = ctx._kjrOvInfo('ov-x', 'A <b>', 'fig & <i>', 'what "quoted" <u>');
+  assert.match(built, /aria-label="A &lt;b&gt; details"/);
+  assert.match(built, /<span class="ov-info-fig">fig &amp; &lt;i&gt;<\/span><span class="ov-info-what">what &quot;quoted&quot; &lt;u&gt;<\/span>/);
+  assert.doesNotMatch(built, /<b>|<i>|<u>/);
+  const one = ctx._kjrOvInfo('ov-y', 'B', 'figures only');
+  assert.match(one, /class="ov-info-tip"><span class="ov-info-fig">figures only<\/span><\/span><\/button>$/, 'with no second line the bubble is the one line it was');
+  assert.doesNotMatch(one, /ov-info-what/);
+});
+
+test('hero: the bubble keeps the one show and hide mechanism, only its size and its two lines are new', () => {
+  // hover, keyboard focus and the tap are the same rules as before: nothing here adds a handler, an attribute or a second set of states
+  assert.match(css, /\.ov-info\.open \.ov-info-tip,\.ov-info:focus-visible \.ov-info-tip\{display:block\}/);
+  assert.match(css, /@media \(hover:hover\)\{\.ov-info:hover\{color:var\(--text2\)\}\.ov-info:hover \.ov-info-tip\{display:block\}\}/);
+  assert.match(css, /\.ov-info\.shut \.ov-info-tip\{display:none\}/);
+  assert.match(css, /@container ov \(max-width:1120px\)\{\.ov-info-end \.ov-info-tip\{left:auto;right:0\}\}/, 'the leftward grow of the Realised profit one is untouched');
+  assert.match(css, /\.ov-info-fig\{display:block;font-weight:500\}\n\.ov-info-what\{display:block;margin-top:2px;color:var\(--text2\)\}/, 'two block lines, the second quieter');
+  const appSrc = fs.readFileSync(ROOT + '/app.js', 'utf8');
+  assert.equal((appSrc.match(/function _kjrOvInfoEvent\(/g) || []).length, 1, 'one handler');
+  assert.match(appSrc, /\['click', 'keydown', 'mouseout', 'focusout'\]\.forEach\(type => document\.addEventListener\(type, _kjrOvInfoEvent\)\)/, 'on the same four events');
+  const tokens = new Set((css.match(/\.ov-info-(fig|what|tip)\{[^}]*\}/g) || []).join('').match(/var\(--[\w-]+/g).map(v => v.slice(4)));
+  assert.deepEqual([...tokens].sort(), ['--bg2', '--border', '--shadow-md', '--text', '--text2'], 'existing tokens only');
 });
 
 test('hero: the Overview click router leaves a click inside an info icon alone', async () => {

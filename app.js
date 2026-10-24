@@ -8260,18 +8260,30 @@ function _cmdFindReset() {
 }
 
 // Where the inspector hands focus back to when it closes: what had focus before the bar opened, else the sidebar (or phone tab)
-// item for the card's page, else nothing and kjrInspect uses whatever has focus.
+// item for the card's page, else the phone tab that holds the page, else More for a page only More reaches, else nothing and kjrInspect
+// uses whatever has focus.
 function _cmdFindTrigger(page) {
   const usable = el => !!el && el.isConnected !== false && typeof el.focus === 'function' &&
     (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
   if (usable(_cmdOpener)) return _cmdOpener;
   const items = document.querySelectorAll('.nav-btn, .btb-item');
-  for (let i = 0; items && i < items.length; i++) {
-    const oc = items[i].getAttribute('onclick') || '';
-    if (oc.indexOf("'" + page + "'") !== -1 && usable(items[i])) return items[i];
-  }
+  // the first item on screen whose handler opens the named page
+  const itemFor = name => {
+    for (let i = 0; items && i < items.length; i++) {
+      const oc = items[i].getAttribute('onclick') || '';
+      if (oc.indexOf("'" + name + "'") !== -1 && usable(items[i])) return items[i];
+    }
+    return null;
+  };
+  const own = itemFor(page);
+  if (own) return own;
+  // A page the Collection tab holds (TAB_HELD_BY: Slabs, ETBs, Boxes & packs, Packs) has no tab of its own on the phone, and the tab
+  // that holds it is the one showPage lights for it, so focus goes back there. More is for the pages no tab holds (moreLights).
+  const holder = typeof TAB_HELD_BY !== 'undefined' ? TAB_HELD_BY[page] : '';
+  const held = holder ? itemFor(holder) : null;
+  if (held) return held;
   const more = document.getElementById('btb-more');
-  if (typeof MORE_PAGES !== 'undefined' && MORE_PAGES.has(page) && usable(more)) return more;
+  if (typeof moreLights === 'function' && moreLights(page) && usable(more)) return more;
   return null;
 }
 
@@ -11387,6 +11399,11 @@ function clearAllFilters(table) {
   cfg.cols.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   cfg.sels.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   if (cfg.statusSel) { const el = document.getElementById(cfg.statusSel); if (el) el.value = 'available'; }
+  // The session-only chip filters narrow the list as the boxes above do, so "all filters" takes them too (v3.88): the stale-prices-only one on
+  // Singles and Slabs, the unmatched-cards-only one on Singles. They are the chips' own clear helpers, told not to draw (render false), because
+  // the one render below draws the list once and hides the chips with it (renderSingles and renderSlabs end by calling the chip updaters).
+  if (table === 'singles') { _kjrClearUnresolvedFilter(false); _kjrClearStaleFilter('singles', false); }
+  else if (table === 'slabs') _kjrClearStaleFilter('slabs', false);
   const render = table === 'singles' ? renderSingles : table === 'slabs' ? renderSlabs : renderSales;
   render();
 }
@@ -12328,9 +12345,10 @@ function _kjrShowUnresolvedOnly() {
   _kjrUnresolvedBannerDismissed = false; // asked for these cards on purpose (Show in list in the review sheet): the banner and its Review button come back
   showPage('inventory'); // showPage('inventory') renders the Singles grid
 }
-function _kjrClearUnresolvedFilter() {
+// The chip's own clear. It draws the list again, unless it is told render false: clearAllFilters does that, it draws once itself.
+function _kjrClearUnresolvedFilter(render) {
   _kjrSinglesUnresolvedOnly = false;
-  renderSingles();
+  if (render !== false) renderSingles();
 }
 function _updateUnresolvedFilterChip() {
   const chip = document.getElementById('singles-unresolved-filter-chip');
@@ -12353,9 +12371,10 @@ function _kjrShowStaleOnly(table) {
     showPage('inventory');
   }
 }
-function _kjrClearStaleFilter(table) {
-  if (table === 'slabs') { _kjrSlabsStaleOnly = false; renderSlabs(); }
-  else { _kjrSinglesStaleOnly = false; renderSingles(); }
+// The chip's own clear, as above: render false leaves the drawing to the caller (clearAllFilters).
+function _kjrClearStaleFilter(table, render) {
+  if (table === 'slabs') { _kjrSlabsStaleOnly = false; if (render !== false) renderSlabs(); }
+  else { _kjrSinglesStaleOnly = false; if (render !== false) renderSingles(); }
 }
 function _updateStaleFilterChips() {
   const s = document.getElementById('singles-stale-filter-chip');
@@ -15338,10 +15357,12 @@ function _toggleExposureSub(key) {
   if (key === 'sealed') _kjrExpSealedOpen = !open;
 }
 
+// What each Overview figure means. value is the title of the Collection value label and attention the title of the Needs attention head.
+// cost and profit (v3.88) are the second line of the Cost basis and Realised profit bubbles (_kjrOvInfo), under the figures they hold.
 const KJR_OV_TIPS = {
   value: 'Estimated value of your Available singles and slabs: the live market price where there is one, your cost price for cards not yet priced. Sealed is under Where the money sits.',
   cost: 'What you paid for your Available singles and slabs. Sealed is under Where the money sits.',
-  profit: 'Confirmed profit across your sales. Dealer sales still awaiting settlement are left out until confirmed. Return is profit divided by the cost of the items sold.',
+  profit: 'Confirmed profit across your sales. Dealer sales still awaiting settlement are left out until confirmed. ROI is profit divided by the cost of the items sold.',
   attention: 'Things that stop prices or totals from being exact.'
 };
 
@@ -15529,10 +15550,13 @@ function kjrOvAttentionHtml(items) {
 // Info icon beside a hero figure (Cost basis, Realised profit). The bubble is the button's own child, so hover and keyboard focus
 // show it from CSS alone and a tap or click pins it with the class open (_kjrOvInfoEvent). The label carries no title, so the native
 // tooltip and the touch long-press bubble (kjrInitTouchTips reads title only) never stack on top of it.
-function _kjrOvInfo(id, label, text) {
+// The bubble has two lines (v3.88): text is the figures behind the number, what is the sentence that says what the number means (the
+// KJR_OV_TIPS entry). what is left out when there is none, and the bubble is the one line it was.
+function _kjrOvInfo(id, label, text, what) {
   return '<button type="button" class="ov-info" aria-label="' + esc(label) + ' details" aria-expanded="false" aria-describedby="' + esc(id) + '">' +
     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>' +
-    '<span role="tooltip" id="' + esc(id) + '" class="ov-info-tip">' + esc(text) + '</span></button>';
+    '<span role="tooltip" id="' + esc(id) + '" class="ov-info-tip"><span class="ov-info-fig">' + esc(text) + '</span>' +
+    (what ? '<span class="ov-info-what">' + esc(what) + '</span>' : '') + '</span></button>';
 }
 // One handler on the document, installed once from _kjrOvBind. A click opens or closes the icon it lands on and closes the other,
 // a click anywhere else closes both, Escape closes both. Hover and focus show the bubble from CSS, so an explicit close adds shut
@@ -15607,9 +15631,9 @@ function kjrOvHeroHtml(s) {
   }
   const costTip = _kjrOvPlural(s.singlesAvail, 'single', 'singles') + ' · ' + _kjrOvPlural(s.slabsAvail, 'slab', 'slabs');
   const stats =
-    '<div class="ov-stat"><div class="ov-stat-label ov-info-row">Cost basis' + _kjrOvInfo('ov-info-cost', 'Cost basis', costTip) + '</div>' +
+    '<div class="ov-stat"><div class="ov-stat-label ov-info-row">Cost basis' + _kjrOvInfo('ov-info-cost', 'Cost basis', costTip, KJR_OV_TIPS.cost) + '</div>' +
       '<div class="ov-stat-value">' + _kjrOvMoney(costBasis) + '</div></div>' +
-    '<div class="ov-stat"><div class="ov-stat-label' + (rtip ? ' ov-info-row ov-info-end' : '') + '">Realised profit' + (rtip ? _kjrOvInfo('ov-info-roi', 'Realised profit', rtip) : '') + '</div>' +
+    '<div class="ov-stat"><div class="ov-stat-label' + (rtip ? ' ov-info-row ov-info-end' : '') + '">Realised profit' + (rtip ? _kjrOvInfo('ov-info-roi', 'Realised profit', rtip, KJR_OV_TIPS.profit) : '') + '</div>' +
       '<div class="ov-stat-value' + rcls + '">' + esc(rv) + '</div>' +
       (rsub ? '<div class="ov-stat-sub">' + esc(rsub) + '</div>' : '') + '</div>' +
     '<div class="ov-stat">' + kjrOvAttentionHtml(s.attention || []) + '</div>';
@@ -23798,22 +23822,6 @@ function _refreshSavedChart(id) {
   const config = loadSavedCharts().find(c => c.id === id);
   if (config) { _drawSavedChart(config); toast('Chart refreshed with latest data'); }
 }
-
-(function() {
-  const _orig = window.showPage;
-  window.showPage = function(id) {
-    if (_orig) _orig(id);
-    document.querySelectorAll('.btb-item').forEach(b => b.classList.remove('active'));
-    // The Collection tab holds Slabs, ETBs and Boxes & packs too (TAB_HELD_BY), so it is the tab to light for them.
-    const btb = document.getElementById('btb-' + (TAB_HELD_BY[id] || id));
-    if (btb) btb.classList.add('active');
-    // Pages without a dedicated tab live under "More" - light that up instead.
-    else if (typeof moreLights === 'function' && moreLights(id)) {
-      const more = document.getElementById('btb-more');
-      if (more) more.classList.add('active');
-    }
-  };
-})();
 
 // ── HIG: Auto-detect import type from pasted content ──
 let _detectedImportType = null;

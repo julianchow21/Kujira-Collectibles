@@ -373,6 +373,64 @@ test('Enter on a card with nothing focused beforehand hands the inspector the si
   assert.deepEqual(trig, [0]);
 });
 
+// v3.88: the phone's Collection tab holds Slabs, ETBs and Boxes & packs (TAB_HELD_BY), so More does not light for them, and a slab card
+// found in the palette used to hand focus back to More, a tab that is not lit for it. It goes to the tab that holds the page now.
+test('the inspector\'s way back for a page the Collection tab holds is that tab on a phone, and More only for a page no tab holds', async () => {
+  const e = await env(FIXTURE());
+  const item = (id, onclick, shown) => ({ id, isConnected: true, focus() {}, getAttribute: (k) => (k === 'onclick' ? onclick : null), getClientRects: () => (shown === false ? [] : [{}]) });
+  const dashboard = item('btb-dashboard', "showPage('dashboard')");
+  const collection = item('btb-inventory', "showPage('inventory')");
+  const sales = item('btb-sales', "showPage('sales')");
+  const more = item('btb-more', 'openMoreSheet()');
+  // a phone: the sidebar is not on screen (no client rects), the bar has four tabs and More has no onclick naming a page
+  const sidebar = [item('nav-singles', "showPage('inventory')", false), item('nav-slabs', "showPage('slabs')", false), item('nav-etbs', "showPage('etbs')", false)];
+  const bar = [dashboard, collection, sales, more];
+  e.doc.querySelectorAll = (sel) => (sel === '.nav-btn, .btb-item' ? sidebar.concat(bar) : []);
+  const realGet = e.doc.getElementById.bind(e.doc);
+  e.doc.getElementById = (id) => (id === 'btb-more' ? more : realGet(id));
+  e.ctx._cmdOpener = null;
+  const id = (el) => (el ? el.id : null);
+  for (const page of ['slabs', 'etbs', 'boosterBoxes', 'boosterPacks']) assert.equal(id(e.ctx._cmdFindTrigger(page)), 'btb-inventory', page + ': the Collection tab, which showPage lights for it');
+  assert.equal(id(e.ctx._cmdFindTrigger('inventory')), 'btb-inventory', 'Singles: its own tab, as before');
+  assert.equal(id(e.ctx._cmdFindTrigger('dashboard')), 'btb-dashboard');
+  assert.equal(id(e.ctx._cmdFindTrigger('sales')), 'btb-sales');
+  for (const page of ['guide', 'ebay', 'listing', 'reports', 'import', 'changelog', 'trash']) assert.equal(id(e.ctx._cmdFindTrigger(page)), 'btb-more', page + ': no tab holds it, More reaches it');
+  assert.equal(e.ctx._cmdFindTrigger('nowhere'), null, 'a name that is no page has no way back');
+
+  // it is read from TAB_HELD_BY, not from a list of its own: point Slabs at Sales and the answer follows
+  const held = e.ctx.TAB_HELD_BY.slabs;
+  e.ctx.TAB_HELD_BY.slabs = 'sales';
+  assert.equal(id(e.ctx._cmdFindTrigger('slabs')), 'btb-sales');
+  e.ctx.TAB_HELD_BY.slabs = held;
+  assert.equal(id(e.ctx._cmdFindTrigger('slabs')), 'btb-inventory');
+
+  // a shell with no Collection tab: More is not the answer for a page More does not light for
+  bar.splice(bar.indexOf(collection), 1);
+  assert.equal(e.ctx._cmdFindTrigger('slabs'), null, 'nothing, and kjrInspect falls back to whatever has focus');
+  assert.equal(id(e.ctx._cmdFindTrigger('guide')), 'btb-more', 'while a page only More reaches still gets it');
+  bar.splice(1, 0, collection);
+
+  // the order is unchanged above it: what had focus before the bar opened, then the page's own visible item (a tablet's rail, a desktop's sidebar)
+  const rail = item('rail-slabs', "showPage('slabs')");
+  sidebar.push(rail);
+  assert.equal(id(e.ctx._cmdFindTrigger('slabs')), 'rail-slabs', 'the page\'s own item beats the tab that holds it');
+  const opener = item('opener', null);
+  e.ctx._cmdOpener = opener;
+  assert.equal(e.ctx._cmdFindTrigger('slabs'), opener, 'and what had focus before the bar opened beats both');
+  e.ctx._cmdOpener = null;
+  sidebar.pop();
+
+  // end to end: Enter on a slab hands kjrInspect the Collection tab as the trigger
+  const trig = [];
+  e.ctx.showPage = () => {};
+  e.ctx.kjrInspect = (t, cardId, o) => { trig.push([t, id(o.trigger)]); return true; };
+  e.ctx.closeCmdBar = () => {};
+  e.search('pikachu 25');
+  e.ctx.cmdFindRun(e.ctx.cmdFindResults.findIndex((r) => r.table === 'slabs'));
+  e.ctx.cmdFindRun(e.ctx.cmdFindResults.findIndex((r) => r.table === 'singles'));
+  assert.deepEqual(trig, [['slabs', 'btb-inventory'], ['singles', 'btb-inventory']]);
+});
+
 test('Enter on a card: the bar closes after the card is up, not before, so the modal stack never empties and the bar\'s history entry is reused', async () => {
   // the order is a choice for fewer history moves (a narrow window opens the inspector as a dialog): pin it, with the reason
   const body = appSrc.slice(appSrc.indexOf('function _cmdFindOpenCard(r)'), appSrc.indexOf('// ── ADD MODE'));

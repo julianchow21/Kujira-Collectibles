@@ -67,12 +67,9 @@ test('markup: it sits at body level between the shell and .main, so it is neithe
 // ── the phone, as showPage sees it ───────────────────────────────────────────────────────────
 // Stub elements for the four segments, the bottom bar (with its real ids and handlers, read from the markup), the page containers and one
 // More sheet Browse item. showPage reads them with querySelectorAll, so the fixture answers for the selectors it uses and nothing else.
-// The harness hands out a stub for any id, and a browser answers null for an id that is not in the page. The older showPage wrapper in
-// app.js lights "btb-" plus the page, and falls back to More when there is no such tab, so the fixture answers null for a tab that is not
-// in the markup (there is no btb-slabs or btb-guide), as the browser does.
+// The bar is found by its onclick handlers and never by an id made from the page name (the older wrapper that did is gone, v3.88), so the
+// harness's stub for any id needs no special case here.
 function phone(document) {
-  const stubFor = document.getElementById.bind(document);
-  document.getElementById = (id) => (/^btb-/.test(id) && !tabs.some(t => t.id === id) ? null : stubFor(id));
   const stub = (id, onclick) => { const el = document.getElementById(id); if (onclick) el.setAttribute('onclick', onclick); return el; };
   const row = stub('kjr-coll');
   row.hidden = true;
@@ -195,18 +192,57 @@ test('tab bar: the holder table and the rule that uses it', async () => {
 test('tab bar: syncMoreActive follows the same rule, and a page nothing holds lights no tab at all rather than falling back to More', async () => {
   const { ctx, document } = await loadApp();
   const f = phone(document);
-  // showPage's later wrapper repaints the bar after syncMoreActive, so the function is asked directly
   for (const [page, on] of [['slabs', false], ['etbs', false], ['boosterBoxes', false], ['boosterPacks', false], ['guide', true], ['reports', true], ['dashboard', false], ['inventory', false]]) {
     ctx.syncMoreActive(page);
     assert.equal(f.tab.more.classList.contains('active'), on, page + ': More ' + (on ? 'lights' : 'stays unlit'));
   }
+  // showPage reaches the same answers by itself, there is no repaint of the bar after it (v3.88)
+  for (const [page, on] of [['slabs', false], ['etbs', false], ['boosterBoxes', false], ['boosterPacks', false], ['guide', true], ['dashboard', false], ['inventory', false]]) {
+    ctx.showPage(page);
+    assert.equal(f.tab.more.classList.contains('active'), on, page + ': showPage, More ' + (on ? 'lights' : 'stays unlit'));
+    assert.equal(f.tab.more.getAttribute('aria-current') === 'page', on, page + ': and aria-current agrees');
+  }
   // a shell with no Collection tab (cut down, or an older cached one): the holder is not there to light, and More is still not the answer
-  const real = document.getElementById;
-  document.getElementById = (id) => (id === 'btb-inventory' ? null : real(id));
+  ctx.showPage('guide');
+  const real = document.querySelectorAll;
+  document.querySelectorAll = (selector) => (selector === '.btb-item' ? f.bar.filter(b => b !== f.tab.inventory) : real(selector));
   ctx.showPage('slabs');
   assert.deepEqual(f.lit(f.bar), [], 'nothing lit');
   assert.equal(f.tab.more.getAttribute('aria-current'), null);
-  document.getElementById = real;
+  document.querySelectorAll = real;
+});
+
+// v3.88: app.js used to end with a second showPage wrapper that cleared .btb-item and lit "btb-" plus the page again, after the core had
+// marked the bar (showPage with TAB_HELD_BY and moreLights, then syncMoreActive). It did the same work a second way, by element id where the
+// core reads each tab's handler, so it is gone. The bar's state is the core's alone.
+test('tab bar: showPage alone lights the bar, one tab at most, and the class and aria-current always agree', async () => {
+  const { ctx, document } = await loadApp();
+  const f = phone(document);
+  // Reports and Trash draw charts and fetch, so this test leaves them out
+  const expect = {
+    dashboard: 'dashboard', inventory: 'inventory', sales: 'sales',
+    slabs: 'inventory', etbs: 'inventory', boosterBoxes: 'inventory', boosterPacks: 'inventory',
+    guide: 'more', ebay: 'more', import: 'more', listing: 'more', changelog: 'more',
+    // a name that is no page lights nothing, even when a tab's id would fit it: the wrapper lit More for 'more'
+    more: null, nothing: null, add: null, '': null,
+  };
+  for (const [page, tab] of Object.entries(expect)) {
+    ctx.showPage(page);
+    const want = tab ? [f.tab[tab]] : [];
+    assert.deepEqual(f.lit(f.bar), want, JSON.stringify(page) + ': the class');
+    assert.deepEqual(f.current(f.bar), want, JSON.stringify(page) + ': and aria-current, the same tab');
+  }
+  // going round twice, in the other order, leaves nothing behind
+  for (const page of Object.keys(expect).reverse()) {
+    ctx.showPage(page);
+    assert.ok(f.lit(f.bar).length <= 1, JSON.stringify(page) + ': at most one tab is lit');
+    assert.deepEqual(f.lit(f.bar), f.current(f.bar));
+  }
+  // the source: the bar is read once, by showPage, and nothing wraps showPage to touch it again
+  const reads = appSrc.match(/querySelectorAll\('\.btb-item'\)/g) || [];
+  assert.equal(reads.length, 1, 'one place reads the bar');
+  assert.doesNotMatch(appSrc, /getElementById\('btb-' \+/, 'no tab is looked up by an id made from a page name');
+  assert.doesNotMatch(appSrc.slice(appSrc.indexOf('function _refreshSavedChart(id)')), /\.btb-item|btb-more/, 'and the end of the file, where the wrappers were, holds none of it');
 });
 
 // ── the counts ───────────────────────────────────────────────────────────────────────────────
@@ -319,15 +355,15 @@ test('css: from 601px it is display:none and nothing else styles it, so the side
   assert.equal((phoneBlock.match(/@media/g) || []).length, 1, 'no second query inside');
   // the phone query turns the row on with display:flex (specificity 0,1,0) and the [hidden] rule above it (0,2,0) still wins, so a page
   // with no segment shows no row
-  assert.match(phoneBlock, /\.kjr-coll\{position:relative;display:flex;/);
+  assert.match(phoneBlock, /\.kjr-coll\{position:sticky;top:var\(--kjr-top-off\);z-index:90;display:flex;/);
 });
 
 test('css: the row is a --bg3 track that scrolls inside itself with no bar, and cannot widen the page', () => {
   const row = phoneBlock.match(/\n  \.kjr-coll\{([^}]*)\}/)[1];
-  assert.match(row, /position:relative;display:flex;align-items:stretch;gap:2px;/, 'positioned so offsetLeft is measured from the row');
+  assert.match(row, /position:sticky;top:var\(--kjr-top-off\);z-index:90;display:flex;align-items:stretch;gap:2px;/, 'pinned, and still a positioned box, so offsetLeft is measured from the row');
   assert.match(row, /margin:12px max\(12px,env\(safe-area-inset-right\)\) 0 max\(12px,env\(safe-area-inset-left\)\);/, 'the page gutter, and the notch in landscape');
   assert.match(row, /padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;/);
-  assert.match(row, /background:var\(--bg3\);border:1px solid var\(--border2\);border-radius:var\(--radius\)$/, 'the look of .seg');
+  assert.match(row, /background:var\(--bg3\);border:1px solid var\(--border2\);border-radius:var\(--radius\);box-shadow:0 0 0 12px var\(--bg\)$/, 'the look of .seg, and the page-coloured backing');
   assert.doesNotMatch(row, /(^|;)(width|min-width|max-width|flex-wrap)\s*:/, 'a block-level flex box fills the gutters and no more');
   assert.match(phoneBlock, /\.kjr-coll::-webkit-scrollbar\{display:none\}/);
 });
@@ -361,9 +397,10 @@ test('css: tokens only, spaced media queries, no motion to switch off, and nothi
   assert.doesNotMatch(sectionRules.replace(/rgba?\(0,0,0/g, ''), /rgba?\(/, 'no colour function with a literal');
   assert.doesNotMatch(sectionRules, /@media\(/, 'the compact form is for the older sections, overview.test.js finds its blocks with lastIndexOf on it');
   assert.doesNotMatch(sectionRules, /transition|animation|transform|will-change|backdrop-filter/, 'no motion, so the reduced-motion block has nothing to add');
-  assert.doesNotMatch(sectionRules, /100vw|position:fixed|position:sticky/, 'in the flow, under the sticky header');
+  assert.doesNotMatch(sectionRules, /100vw|position:fixed/, 'nothing fixed, and nothing sized by the viewport');
+  assert.equal((sectionRules.match(/position:sticky/g) || []).length, 1, 'one sticky thing in the section, the row itself (v3.88)');
   const tokens = new Set(sectionRules.match(/var\(--[\w-]+/g).map(v => v.slice(4)));
-  assert.deepEqual([...tokens].sort(), ['--accent', '--accent-fg', '--bg3', '--border2', '--radius', '--text2', '--text3'], 'the tokens it reads, all existing ones');
+  assert.deepEqual([...tokens].sort(), ['--accent', '--accent-fg', '--bg', '--bg3', '--border2', '--kjr-top-off', '--radius', '--text2', '--text3'], 'the tokens it reads, all existing ones (--kjr-top-off is the shell\'s own offset)');
 });
 
 // ── contrast, both themes ────────────────────────────────────────────────────────────────────
@@ -388,4 +425,80 @@ test('contrast: the name and the count clear 4.5:1 on the track, the current seg
     pair('--accent-fg', '--accent', 3, 'ring inside the current fill');
     pair('--accent', '--bg', 3, 'the current fill against the page, so the segment is a shape too');
   }
+});
+
+// ── pinned under the header (v3.88) ──────────────────────────────────────────────────────────
+// Until v3.88 the row stayed in the flow, so it scrolled away with the top of the page. Now it is sticky at the height the phone header takes. The
+// harness has no layout engine, so these pin the stylesheet and the arithmetic. That the row meets the header at the first pixel (its
+// 12px margin is spent as it sticks), over the page at every scroll, in dark and light, and clear of a notch, is checked in a browser.
+const phoneRule = (selector) => {
+  const at = rules.indexOf('@media (max-width: 600px){\n  ' + selector + '{');
+  assert.ok(at >= 0, 'phone rule not found: ' + selector);
+  return rules.slice(rules.indexOf('{', at + 30) + 1, rules.indexOf('}', at));
+};
+
+test('pinned: the row is sticky at the header\'s own height, so it sits directly under the header and a notch is cleared the way it is for the header', () => {
+  const row = phoneBlock.match(/\n  \.kjr-coll\{([^}]*)\}/)[1];
+  assert.match(row, /position:sticky;top:var\(--kjr-top-off\);/);
+  assert.doesNotMatch(row, /(^|;)top:(?!var\(--kjr-top-off\))/, 'no second top, and no px value of its own');
+  // the offset the row sticks at and the header's height are the same expression, so the row meets the header with no gap and no overlap
+  const topOff = rules.match(/@media \(max-width: 600px\)\{\s*:root\{[^}]*--kjr-top-off:(calc\(56px \+ env\(safe-area-inset-top\)\))/)[1];
+  const header = phoneRule('.topbar').match(/(?:^|;)height:(calc\(56px \+ env\(safe-area-inset-top\)\))/)[1];
+  assert.equal(topOff, header, 'the offset is the header\'s height, safe-area inset and all');
+  assert.match(phoneRule('.topbar'), /position:sticky;top:0;/, 'and the header is the sticky box the row meets');
+  assert.match(rules, /\.topbar\{position:fixed;top:0;bottom:0;left:0;z-index:100;box-sizing:border-box;/, 'the height is the border box, the inset is inside it');
+  assert.match(phoneRule('.topbar'), /padding:env\(safe-area-inset-top\) /, 'with the inset as the header\'s own top padding');
+});
+
+test('pinned: it sits over the table heads and under the header, and the page popovers sit over it', () => {
+  const zOf = (selector) => +rules.match(new RegExp(selector.replace(/[.[\]()+*?^$|{}\\]/g, '\\$&') + '\\{[^}]*z-index:(\\d+)'))[1];
+  const row = +phoneBlock.match(/\.kjr-coll\{[^}]*z-index:(\d+)/)[1];
+  assert.ok(row > zOf('.tbl-wrap thead'), 'over the sticky table head (' + zOf('.tbl-wrap thead') + '), which would otherwise paint across it');
+  assert.ok(row < zOf('.topbar'), 'under the header (' + zOf('.topbar') + '), so its Settings menu opens over the row');
+  assert.ok(row < zOf('.col-toggle-dropdown') && row < zOf('.filters-dropdown'), 'the Columns and Filters popovers stay over it');
+  assert.ok(row < zOf('.kjr-rowmenu') && row < zOf('.bottom-tab-bar') && row < zOf('.overlay'), 'and so do the row menu, the tab bar and the dialogs');
+});
+
+test('pinned: it is opaque in both themes, the track and the backing are solid tokens, and the backing reaches the screen edges and the strip under the row', () => {
+  for (const [theme, t] of [['dark', dark], ['light', light]]) {
+    for (const k of ['--bg', '--bg3']) assert.match(t[k], /^#[0-9A-Fa-f]{6}$/, theme + ' ' + k + ' is a solid six-digit colour, no alpha');
+  }
+  const row = phoneBlock.match(/\n  \.kjr-coll\{([^}]*)\}/)[1];
+  assert.match(row, /background:var\(--bg3\);/, 'the track is --bg3, not a translucent fill');
+  assert.doesNotMatch(row, /opacity|rgba|backdrop-filter|transparent/, 'nothing that lets the page through');
+  const gutter = +row.match(/margin:(\d+)px /)[1];
+  const spread = +row.match(/box-shadow:0 0 0 (\d+)px var\(--bg\)/)[1];
+  assert.equal(spread, gutter, 'the backing is as wide as the gutter, so it fills it to the screen edge on both sides (Holdings rows are 8px wider than the gutter)');
+  assert.match(rules, /body\{font-family:var\(--font-sans\);[^}]*background:var\(--bg\);/, 'the backing is the page colour, so at rest it is not seen');
+  assert.ok(/@media\(max-width:700px\)\{\s*\.main\{padding:12px;/.test(rules), 'the page content that slides under it starts 12px in from the edges, the width of the backing, as .main pads at this width');
+});
+
+test('pinned: nothing else is pinned to the top of the page at 600px and below, so there is no other top to move', () => {
+  const stickyTops = [...rules.matchAll(/([^{}]+)\{([^{}]*position:sticky[^{}]*)\}/g)]
+    .filter(m => /(^|;)top:/.test(m[2])).map(m => m[1].replace(/\s+/g, ' ').trim());
+  assert.deepEqual(stickyTops, ['.tbl-wrap thead', '.modal-head', '.guide-toc', '.dealer-production-list', '.kjr-insp-top', '.topbar', '.kjr-coll'],
+    'a new sticky top must say how it clears the row, add it here when it does');
+  // a table head sticks inside its own wrap: from 1001px the wrap stops being a scroller (and the row is hidden from 601px), below it the wrap is one
+  // (overflow-x makes overflow-y auto), and a wrap does not scroll up and down, so its head never meets the row
+  assert.match(rules, /\.tbl-wrap\{overflow-x:auto\}/);
+  assert.match(rules, /@media\(min-width:1001px\)\{\.tbl-wrap\{overflow-x:visible\}\}/);
+  assert.match(rules, /@media\(max-width:1000px\)\{\.tbl-wrap thead\{top:0\}\}/);
+  assert.match(rules, /body:not\(\.force-tables\) \.page \.tbl-wrap\{overflow-x:hidden\}/, 'the phone card view keeps it a scroller too');
+  // the rest are on pages the row is not on (Guide, Dealer), in dialogs, or in the card inspector, which is a full-height sheet at 900px and below
+  assert.match(rules, /@media \(max-width: 900px\)\{\s*#kjr-inspector\{display:none!important\}/);
+});
+
+test('pinned: a row or tile scrolled into view clears the header, the row, its backing and 16px of air, and 600px and below is the only place that changes', () => {
+  const seg = +phoneBlock.match(/\.kjr-coll-btn\{[^}]*min-height:(\d+)px/)[1];
+  const pad = +phoneBlock.match(/\.kjr-coll\{[^}]*padding:(\d+)px/)[1];
+  const border = +phoneBlock.match(/\.kjr-coll\{[^}]*border:(\d+)px solid/)[1];
+  const backing = +phoneBlock.match(/box-shadow:0 0 0 (\d+)px var\(--bg\)/)[1];
+  const clear = seg + 2 * pad + 2 * border + backing + 16;
+  assert.equal(clear, 78, 'the segment (44) and the track\'s padding (2) and border (1) on both sides make the 50px row, then 12px of backing and 16px of air');
+  const want = 'calc(var(--kjr-top-off) + ' + clear + 'px)';
+  assert.ok(phoneBlock.includes('.kjr-tile.is-inspected,#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin-top:' + want + '}'), 'grid tiles and table rows, the phone only');
+  assert.ok(rules.includes('.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:' + want + ' 0 '), 'the Holdings rows');
+  // everywhere wider is as it was: the 120px margins stay, and the Holdings rows only exist on a phone
+  assert.ok(rules.includes('#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin:120px 0 32px}'));
+  assert.ok(rules.includes('.kjr-tile.is-inspected{scroll-margin:120px 0 32px}'));
 });

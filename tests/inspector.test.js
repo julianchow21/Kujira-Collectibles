@@ -1225,3 +1225,233 @@ test('css: the Step 5 section uses tokens only, sets the panel geometry from the
   assert.doesNotMatch(css, /kjr-single-name/, 'the retired phone-only name button is gone from the stylesheet');
   assert.match(sec, /body\.kjr-insp-open #toast\{right:464px\}/, 'the toast steps left of the panel');
 });
+
+// ═══ a price the guard is holding (v3.88) ═════════════════════════════════════════════════════════════
+// The price guard (v3.86) keeps a price that looks wrong off the card and waits for the owner's OK, in the Overview's "N prices waiting for
+// your OK" sheet. Until v3.88 the card itself said nothing, the inspector showed the old price as if it were settled. Now it says so in words
+// under the value, with Accept and Reject that are the sheet's own functions, and a way into the sheet.
+const holdOf = (o) => Object.assign({ price: 644.63, unit: 'USD', source: 'TCGdex (TCGplayer)', confidence: 'high', date: dayIso(0), prev: 5, reason: '129× cost' }, o || {});
+const heldSingle = (o) => single(Object.assign({ id: 'h1', name: 'Charizard ex 223', costPrice: 5, marketPrice: '5', priceHold: holdOf(), priceHistory: hist([[3, 5]]) }, o || {}));
+const holdBlock = (markup) => { const m = markup.match(/<div class="kjr-insp-hold"[\s\S]*?data-insp-act="hold-review">[^<]*<\/button><\/div>/); return m ? m[0] : ''; };
+
+test('held price: a card with a hold says so in words, with Accept, Reject and a way into the sheet, each named for the card, and escapes what it shows', async () => {
+  const { ctx } = await loadApp();
+  const row = heldSingle({ name: 'Charizard "Q" <b> 223' });
+  const out = ctx.kjrInspectHtml('singles', row, { n: 1, total: 1, now: NOW });
+  const block = holdBlock(out);
+  assert.ok(block, 'the block is there');
+  assert.match(block, /<div class="kjr-insp-hold" role="group" aria-label="Price waiting for your OK">/);
+  assert.match(block, /<p class="kjr-insp-hold-title">New price S\$645 waiting for your OK<\/p>/, 'the price, in words, to the dollar the sheet shows');
+  assert.match(block, /<p class="kjr-insp-hold-meta">129× cost · TCGplayer market via TCGdex · \d{1,2} \w{3} \d{4}<\/p>/, 'the reason, the source and the day, the sheet\'s own facts');
+  assert.match(block, /<p class="kjr-insp-hold-note">It was not applied\. Accept uses it, Reject keeps S\$5\.<\/p>/);
+  assert.match(block, /<button type="button" class="kjr-insp-btn" data-insp-act="hold-accept" aria-label="Accept S\$645 for Charizard &quot;Q&quot; &lt;b&gt; 223">Accept<\/button>/);
+  assert.match(block, /<button type="button" class="kjr-insp-btn" data-insp-act="hold-reject" aria-label="Reject S\$645 for Charizard &quot;Q&quot; &lt;b&gt; 223">Reject<\/button>/);
+  assert.match(block, /<button type="button" class="kjr-insp-link" data-insp-act="hold-review">See all prices waiting for your OK<\/button>/);
+  assert.doesNotMatch(block, /<b>|onclick|tabindex|style=/, 'nothing from the row survives as markup, and nothing inline');
+  assert.ok(out.indexOf('kjr-insp-value') < out.indexOf('kjr-insp-hold') && out.indexOf('kjr-insp-hold') < out.indexOf('<dl class="kjr-insp-dl">'), 'under the value it has not changed, above the details');
+  // the buttons are the panel's own kind, one tap target each, and the text says what the colour backs
+  assert.equal((block.match(/<button\b/g) || []).length, 3);
+  assert.equal((block.match(/data-insp-act="/g) || []).length, 3);
+  // every value the block shows is escaped
+  const evil = ctx.kjrInspectHtml('singles', heldSingle({ priceHold: holdOf({ reason: '<img src=x onerror=1>', source: '<s>src</s>', date: '<u>1 Jan</u>' }) }), { now: NOW });
+  assert.doesNotMatch(holdBlock(evil), /<img|<s>|<u>/);
+  assert.match(holdBlock(evil), /&lt;img src=x onerror=1&gt; · &lt;s&gt;src&lt;\/s&gt; · &lt;u&gt;1 Jan&lt;\/u&gt;/);
+});
+
+test('held price: no hold, a Sold card, a hold with no price and a hold that is not an object show nothing, and a card with no price on it says so without inventing one', async () => {
+  const { ctx } = await loadApp();
+  const has = (row, table) => /kjr-insp-hold/.test(ctx.kjrInspectHtml(table || 'singles', row, { now: NOW }));
+  assert.equal(has(single({ id: 'n1', priceHistory: hist([[1, 12]]) })), false, 'a card with no hold');
+  assert.equal(has(heldSingle({ status: 'Sold' })), false, 'a Sold card: the Overview and the sheet count Available cards only');
+  assert.equal(has(heldSingle({ priceHold: holdOf({ price: 0 }) })), false);
+  assert.equal(has(heldSingle({ priceHold: holdOf({ price: 'x' }) })), false);
+  assert.equal(has(heldSingle({ priceHold: 'yes' })), false);
+  assert.equal(has(heldSingle({ priceHold: null })), false);
+  assert.equal(has(heldSingle({ priceHold: [] })), false);
+  const bare = holdBlock(ctx.kjrInspectHtml('singles', heldSingle({ marketPrice: '', priceHold: holdOf({ prev: null, source: null, date: null, reason: '' }) }), { now: NOW }));
+  assert.match(bare, /Reject keeps the card as it is\./, 'no price on the card, so no price is promised');
+  assert.doesNotMatch(bare, /kjr-insp-hold-meta/, 'and no empty facts line');
+  assert.match(bare, /New price S\$645 waiting for your OK/);
+  // a slab carries the same block
+  const slabOut = holdBlock(ctx.kjrInspectHtml('slabs', slab({ id: 'p9', marketPrice: '600', priceHold: holdOf({ price: 4200, prev: 600, reason: '7× last price', source: 'PPT (eBay)' }) }), { now: NOW }));
+  assert.match(slabOut, /New price S\$4,200 waiting for your OK/);
+  assert.match(slabOut, /7× last price · eBay sold average via PokemonPriceTracker/);
+  assert.match(slabOut, /Reject keeps S\$600\./);
+});
+
+// the same Accept and Reject as the sheet: the card's inspector, the Overview behind it and the data move together
+async function heldApp(seed) {
+  const app = await appWith(seed);
+  const { ctx } = app;
+  app.marks = [];
+  const real = ctx.markDirty;
+  ctx.markDirty = (...a) => { app.marks.push(a[0] + ':' + a[1]); return real.apply(ctx, a); };
+  app.flushes = 0;
+  ctx._flushDirtyToSupabase = async () => { app.flushes++; return { status: 'ok' }; };
+  app.document.getElementById('page-dashboard').classList.add('active'); // the Overview is the page on screen
+  app.hero = () => app.document.getElementById('dash-hero').innerHTML;
+  ctx.renderDashboard();
+  return app;
+}
+const waitingLine = (hero) => (hero.match(/(\d+) prices? waiting for your OK/) || [])[1] || '0';
+
+test('held price: Accept from the panel is the sheet\'s Accept, the price is written, the panel redraws without the block, the Overview count follows and focus stays in the panel', async () => {
+  const app = await heldApp({ singles: [heldSingle({ id: 'h1', name: 'Alpha 1' }), heldSingle({ id: 'h2', name: 'Bravo 2' })] });
+  const { ctx } = app, { panelBody, trigger, toasts, doc } = app.dom;
+  assert.equal(waitingLine(app.hero()), '2', 'two prices are waiting on the Overview');
+  ctx.kjrInspect('singles', 'h1', { trigger });
+  assert.match(panelBody.html(), /New price S\$645 waiting for your OK/);
+  doc.activeElement = panelBody.control('hold-accept');
+  const writes = panelBody.writes;
+  ctx.kjrInspectOnClick({ target: panelBody.control('hold-accept') });
+  const row = ctx.DB.singles.find(r => r.id === 'h1');
+  assert.equal(row.marketPrice, '645', 'the held price is the market price, as the sheet writes it');
+  assert.equal(row.priceHold, undefined, 'the hold is gone');
+  assert.deepEqual(plain(row.priceHistory.slice(-1)[0]), { date: dayIso(0), price: 644.63, unit: 'USD', source: 'TCGdex (TCGplayer)', confidence: 'high' }, 'with the history entry the pass would have written');
+  assert.ok(app.marks.includes('singles:h1'), 'marked dirty, so it syncs');
+  assert.ok(panelBody.writes > writes, 'the panel redrew');
+  assert.doesNotMatch(panelBody.html(), /kjr-insp-hold|waiting for your OK/, 'without the block');
+  assert.match(panelBody.html(), /<div class="kjr-insp-vnum">S\$645<\/div>/, 'and with the new value');
+  assert.equal(waitingLine(app.hero()), '1', 'the Overview behind it counts one less, at once');
+  assert.equal(ctx.kjrPriceHolds().length, 1);
+  assert.equal(doc.activeElement && doc.activeElement.id, 'kjr-insp-title', 'the button that had focus is gone, focus goes to the card\'s title');
+  await app.settle();
+  assert.equal(app.flushes, 1, 'uploaded once, through the sheet\'s path');
+  assert.deepEqual(toasts, ['Accepted S$645 for Alpha 1']);
+  // Ctrl+Z takes it back, as it does for the sheet's Accept: the old price and the hold are both there again
+  await ctx.undoLast();
+  assert.equal(ctx.DB.singles.find(r => r.id === 'h1').marketPrice, '5');
+  assert.equal(ctx.DB.singles.find(r => r.id === 'h1').priceHold.price, 644.63);
+  // the second card, one step on, still has its own block
+  ctx.kjrInspectStep(1);
+  assert.match(panelBody.html(), /New price S\$645 waiting for your OK/);
+});
+
+test('held price: Reject from the panel is the sheet\'s Reject, the card keeps its price, the rejection is remembered, the panel and the Overview follow', async () => {
+  const app = await heldApp({ singles: [heldSingle({ id: 'h1', name: 'Alpha 1' })], slabs: [slab({ id: 'p1', name: 'Slab 1', marketPrice: '600', costPrice: 500, priceHold: holdOf({ price: 4200, prev: 600, reason: '7× last price' }) })] });
+  const { ctx } = app, { panelBody, trigger, toasts } = app.dom;
+  assert.equal(waitingLine(app.hero()), '2');
+  ctx.kjrInspect('singles', 'h1', { trigger });
+  ctx.kjrInspectOnClick({ target: panelBody.control('hold-reject') });
+  const row = ctx.DB.singles.find(r => r.id === 'h1');
+  assert.equal(row.marketPrice, '5', 'the price on the card is unchanged');
+  assert.equal(row.priceHold, undefined);
+  assert.deepEqual(plain(row.priceHoldRejected), { price: 644.63, date: ctx.kjrUtcDay() }, 'and the rejection is remembered for the 30 days');
+  assert.ok(app.marks.includes('singles:h1'));
+  assert.doesNotMatch(panelBody.html(), /kjr-insp-hold/);
+  assert.match(panelBody.html(), /<div class="kjr-insp-vnum">S\$5<\/div>/);
+  assert.equal(waitingLine(app.hero()), '1');
+  await app.settle();
+  assert.match(toasts[0], /^Kept S\$5\. If the match is wrong, open the card to fix it/);
+  // a slab, through the same two functions
+  ctx.kjrInspect('slabs', 'p1', { trigger });
+  assert.match(panelBody.html(), /New price S\$4,200 waiting for your OK/);
+  ctx.kjrInspectOnClick({ target: panelBody.control('hold-accept') });
+  const sl = ctx.DB.slabs.find(r => r.id === 'p1');
+  assert.equal(sl.marketPrice, '4200');
+  assert.equal(sl.priceHold, undefined);
+  assert.ok(app.marks.includes('slabs:p1'));
+  assert.doesNotMatch(panelBody.html(), /kjr-insp-hold/);
+  assert.equal(waitingLine(app.hero()), '0', 'nothing left waiting, and the Overview says so');
+  assert.doesNotMatch(app.hero(), /waiting for your OK/);
+});
+
+test('held price: a second tap on a decision that was already made says it is no longer waiting and writes nothing, and a failed action is reported, not left to break the page', async () => {
+  const app = await heldApp({ singles: [heldSingle({ id: 'h1', name: 'Alpha 1' })] });
+  const { ctx } = app, { panelBody, trigger, toasts } = app.dom;
+  ctx.kjrInspect('singles', 'h1', { trigger });
+  const accept = panelBody.control('hold-accept');
+  ctx.kjrInspectOnClick({ target: accept });
+  const afterFirst = JSON.stringify(ctx.DB.singles.find(r => r.id === 'h1'));
+  const marks = app.marks.length;
+  ctx.kjrInspectOnClick({ target: accept }); // the old node, as a double tap would hand it over
+  await app.settle();
+  assert.equal(JSON.stringify(ctx.DB.singles.find(r => r.id === 'h1')), afterFirst, 'the card is not written twice');
+  assert.equal(app.marks.length, marks, 'and not marked again');
+  assert.ok(toasts.includes('That price is no longer waiting'));
+  // a decision that throws is reported through the panel's own handler
+  ctx.DB.singles.find(r => r.id === 'h1').priceHold = holdOf();
+  ctx.renderSingles();
+  ctx.kjrPriceHoldReject = () => Promise.reject(new Error('later'));
+  ctx.kjrInspectOnClick({ target: panelBody.control('hold-reject') });
+  await app.settle();
+  assert.ok(toasts.includes('ERR That did not complete. Try again.'));
+});
+
+test('held price: "See all prices waiting for your OK" opens the sheet, and the sheet\'s own Accept redraws the panel behind it', async () => {
+  const app = await heldApp({ singles: [heldSingle({ id: 'h1', name: 'Alpha 1' }), heldSingle({ id: 'h2', name: 'Bravo 2' })] });
+  const { ctx } = app, { panelBody, trigger } = app.dom;
+  ctx.kjrInspect('singles', 'h1', { trigger });
+  const dlg = app.document.getElementById('kjr-holds-overlay');
+  assert.equal(!!dlg.open, false);
+  ctx.kjrInspectOnClick({ target: panelBody.control('hold-review') });
+  assert.equal(dlg.open, true, 'the sheet is open');
+  assert.ok(ctx._kjrInsp, 'and the panel is still there under it');
+  assert.match(app.document.getElementById('kjr-holds-body').innerHTML, /Alpha 1[\s\S]*Bravo 2/, 'it lists the cards waiting');
+  // an Accept pressed in the sheet changes the card the panel shows, and the panel follows it
+  ctx.kjrPriceHoldAccept('singles', 'h1');
+  assert.doesNotMatch(panelBody.html(), /kjr-insp-hold/, 'the block leaves the panel behind the sheet');
+  assert.match(panelBody.html(), /<div class="kjr-insp-vnum">S\$645<\/div>/);
+  // opening it again while it is open does not throw (showModal on an open dialog does)
+  assert.doesNotThrow(() => ctx.kjrPriceHoldsOpen());
+  await app.settle();
+});
+
+test('held price: it is wired through the one click handler, with real buttons, an escaped label per card, and a keyboard way to every control', async () => {
+  const app = await appWith({ singles: [heldSingle()] });
+  const { ctx } = app, { panelBody, trigger, doc } = app.dom;
+  ctx.kjrInspect('singles', 'h1', { trigger });
+  for (const act of ['hold-accept', 'hold-reject', 'hold-review']) {
+    const ctl = panelBody.control(act);
+    assert.ok(ctl, act + ' is in the panel');
+    assert.equal(ctl.tagName, 'BUTTON', act + ' is a real button, so Enter and Space work');
+    assert.equal(ctl.disabled, false);
+    assert.equal(ctl.isConnected, true);
+  }
+  assert.match(panelBody.control('hold-accept').getAttribute('aria-label'), /^Accept S\$645 for Charizard ex 223$/, 'the name starts with the visible word');
+  assert.match(panelBody.control('hold-reject').getAttribute('aria-label'), /^Reject S\$645 for Charizard ex 223$/);
+  assert.equal(panelBody.control('hold-review').getAttribute('aria-label'), null, 'the link\'s visible words are its name');
+  // the controls take focus where they are, and a redraw keeps focus on the same control
+  doc.activeElement = panelBody.control('hold-review');
+  ctx.kjrInspectRefresh();
+  assert.equal(doc.activeElement.getAttribute('data-insp-act'), 'hold-review', 'unchanged markup leaves focus alone');
+  ctx.DB.singles[0].notes = 'edited';
+  ctx.kjrInspectRefresh();
+  assert.equal(doc.activeElement && doc.activeElement.getAttribute('data-insp-act'), 'hold-review', 'a changed redraw puts focus back on the control that had it');
+  // the key handler does not take Enter or Space from them (j, k and the arrows step cards, but not while a control has them as its own)
+  const handled = []; ctx.kjrInspectStep = (d) => { handled.push(d); return true; };
+  ctx.kjrInspectOnKey(app.dom.key('Enter', panelBody.control('hold-accept')));
+  ctx.kjrInspectOnKey(app.dom.key(' ', panelBody.control('hold-accept')));
+  assert.deepEqual(handled, []);
+  // the source: three acts, handed to the sheet's functions and nothing of their own
+  const feat = fs.readFileSync(ROOT + '/features.js', 'utf8');
+  const act = feat.slice(feat.indexOf('function kjrInspectAct('), feat.indexOf('function kjrInspectOnClick('));
+  assert.match(act, /act === 'hold-accept' \|\| act === 'hold-reject'[\s\S]*?kjrInspectRun\(\(act === 'hold-accept' \? kjrPriceHoldAccept : kjrPriceHoldReject\)\(table, id\)\)/);
+  assert.match(act, /act === 'hold-review'\) \{\s*kjrPriceHoldsOpen\(\);/);
+  assert.doesNotMatch(act.slice(act.indexOf("'hold-accept'"), act.indexOf("'refresh'")), /marketPrice|priceHold\b|markDirty|saveData|snapshotForUndo|clLog/, 'the panel writes no row itself');
+});
+
+test('held price: the block is styled with tokens only, reads in both themes, and the link is a 44px target on a touch screen', () => {
+  const sec = css.slice(css.indexOf('/* Held price (v3.88)'), css.indexOf('/* Details */'));
+  assert.ok(sec.length > 200, 'the section is there');
+  const rules = sec.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(rules, /#[0-9a-fA-F]{3,8}\b(?![-\w])|rgba?\(/, 'no colour literal');
+  const tokens = new Set(rules.match(/var\(--[\w-]+/g).map(v => v.slice(4)));
+  assert.deepEqual([...tokens].sort(), ['--amber', '--amber-soft', '--link', '--accent', '--text', '--text2'].sort());
+  assert.match(rules, /\.kjr-insp-hold\{[^}]*background:var\(--amber-soft\);border:1px solid var\(--amber\)\}/);
+  assert.match(rules, /\.kjr-insp-link:focus-visible\{outline:2px solid var\(--accent\)/, 'a ring on the link, the buttons have the panel\'s own');
+  assert.match(css, /\.kjr-insp-ib:focus-visible,\.kjr-insp-primary:focus-visible,\.kjr-insp-btn:focus-visible/);
+  assert.match(css, /@media\(pointer:coarse\)\{\s*\.kjr-insp-ib\{width:44px;height:44px\}\s*\.kjr-insp-btn\{height:44px\}\s*\.kjr-insp-link\{min-height:44px\}/);
+  // every text colour the block uses clears 4.5:1 on its --amber-soft fill, in dark and in light
+  const tokenText = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = (start) => tokenText.slice(tokenText.indexOf('{', start) + 1, tokenText.indexOf('\n}', start));
+  const hexes = (text) => Object.fromEntries([...text.matchAll(/(--[\w-]+):\s*(#[0-9A-Fa-f]{6})\s*;/g)].map(m => [m[1], m[2]]));
+  const dark = hexes(block(tokenText.indexOf(':root{')));
+  const light = Object.assign({}, dark, hexes(block(tokenText.indexOf('html.light{'))));
+  const lum = (hex) => { const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  for (const [theme, t] of [['dark', dark], ['light', light]]) {
+    for (const fg of ['--text', '--text2', '--link']) assert.ok(ratio(t[fg], t['--amber-soft']) >= 4.5, theme + ' ' + fg + ' on --amber-soft: ' + ratio(t[fg], t['--amber-soft']).toFixed(2));
+    assert.ok(ratio(t['--accent'], t['--amber-soft']) >= 3, theme + ' the focus ring on --amber-soft');
+  }
+});

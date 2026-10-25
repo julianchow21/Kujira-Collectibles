@@ -532,7 +532,8 @@ test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore'
   }, [{ table: 'singles', id: 'restore_1', row_version: 4, deleted_at: entry.data.deletedAt }]));
 
   const messages = [];
-  ctx.toast = message => messages.push(message);
+  const kinds = new Map(); // the third argument of toast(): 'info' is the neutral note (toastInfo), nothing is the tick
+  ctx.toast = (message, duration, kind) => { messages.push(message); kinds.set(message, kind); };
   await ctx.restoreFromTrash('trash_restore_1');
   const { DB } = grab('DB');
   assert.ok(DB.singles.some(row => row.id === 'restore_1'));
@@ -544,10 +545,13 @@ test('trash-lifecycle: restoring a row queues one tombstone-checked CAS restore'
   assert.strictEqual(syncCalls(fetchMock).length, 0, 'restore is durable locally before its debounced CAS request');
   assert.ok(messages.some(message => message.includes('Restore queued locally')),
     'optimistic UI says the restore is queued, not already confirmed');
+  assert.strictEqual(kinds.get('Restore queued locally. Waiting for server confirmation…'), 'info',
+    'and says it with the neutral note, the tick is kept for the server\'s acknowledgement (v3.94)');
 
   fetchMock.route('/sync/v2/mutate', (url, opts) => syncSuccessResponse(opts));
   assert.strictEqual(await ctx._flushMutationGroups(), true);
   assert.ok(messages.includes('Restore synced'), 'final success appears only after the server acknowledgement');
+  assert.strictEqual(kinds.get('Restore synced'), undefined, 'and that one is the tick');
 });
 
 test('trash-lifecycle: matching restore tombstone is suppressed across a fresh-tab pull while CAS remains queued', async () => {

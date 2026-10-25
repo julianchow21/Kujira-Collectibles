@@ -221,19 +221,18 @@ test('auto run: it goes after the closing refresh has written its price, so the 
 // ── a pass that is running, or has started ──────────────────────────────────────────────────────────────────────────────────────────────
 
 test('auto run: a pass already running at the mark is the day\'s work being done, nothing waits for it and nothing runs when the lookup closes', async () => {
-  for (const flag of ['_queueRunning', '_bulkRefreshRunning']) {
-    const app = await setup();
-    app.ctx[flag] = true;
-    const look = app.open();
-    assert.ok(await app.opened(1));
-    app.reachMark();
-    assert.equal(app.ctx._kjrAutoRunWaiting, false, flag + ': not waiting');
-    app.close(0);
-    await look;
-    await tick();
-    assert.equal(app.runs.length, 0, flag + ': no second pass');
-    app.ctx[flag] = false;
-  }
+  // a bulk run is not a pass: since v3.94 it is waited for (see the tests below), only a running pass stands the auto run down
+  const app = await setup();
+  app.ctx._queueRunning = true;
+  const look = app.open();
+  assert.ok(await app.opened(1));
+  app.reachMark();
+  assert.equal(app.ctx._kjrAutoRunWaiting, false, 'not waiting');
+  app.close(0);
+  await look;
+  await tick();
+  assert.equal(app.runs.length, 0, 'no second pass');
+  app.ctx._queueRunning = false;
 });
 
 test('auto run: a pass that has started by the time the lookup closes is not run a second time, and the run does not come back later', async () => {
@@ -286,6 +285,184 @@ test('auto run: a call to runRefreshQueue(false) made directly while a lookup is
   await look;
   await tick();
   assert.equal(app.runs.length, 1, 'just the direct call');
+});
+
+// ── v3.94: a bulk run that is already going at the mark ─────────────────────────────────────────────────────────────────────────────────────
+// A bulk run confirmed within the first 8 seconds after load is going when the mark fires. _kjrAutoRun dropped the run there (a lookup in flight or the bulk question
+// open at the mark made it wait, a bulk run going did not), and the day's pass was lost until the next load. Now it waits for the bulk run like it waits for the question,
+// the run's own finally hands it back (_kjrAutoRunResume), and it goes once. A pass that is running still stands it down, that pass is the day's work.
+
+const PRICED = { maxSgd: 8, maxUsd: 8, source: 'TCGdex', confidence: 'high', sgdRate: 1, creditsUsed: 0, resolvedTcgdexId: 'set-26' };
+
+// a bulk run of the Singles table, confirmed and held in flight on its first card (the router answers when the test says so, app.lookups[0]). It returns the run
+// inside an object: an async function that returned the promise itself would be waited for to its end, and the run is held until the test lets it go
+async function startBulk(app) {
+  app.ctx.kjrConfirm = async () => true;
+  const run = app.ctx.bulkRefreshPrices('singles');
+  assert.ok(await app.opened(1), 'the bulk run is in flight on its first card');
+  assert.equal(app.ctx._bulkRefreshRunning, true);
+  return { run };
+}
+
+test('auto run: a bulk run going at the mark is waited for, quietly, and the run goes once when the bulk run ends, after the bulk run has written its prices', async () => {
+  const app = await setup();
+  const { run } = await startBulk(app);
+  app.reachMark();
+  assert.equal(app.runs.length, 0, 'the pass did not start under the bulk run');
+  assert.equal(app.ctx._kjrAutoRunWaiting, true, 'it waits');
+  await tick(30);
+  assert.equal(app.runs.length, 0, 'and keeps waiting for as long as the bulk run goes');
+  assert.deepEqual(app.toasts, [], 'a quiet wait, a page-load run was never announced');
+  assert.equal(app.lookups.length, 1, 'nothing else asked any source meanwhile');
+  app.holdRouter = false; // the pass that goes after it is a real one
+  app.lookups[0].resolve(PRICED);
+  await run;
+  await tick();
+  assert.equal(app.ctx._bulkRefreshRunning, false);
+  assert.deepEqual(app.runs.map((r) => r.args), [[false]], 'it went when the bulk run ended, once, as an automatic call');
+  assert.equal(app.runs[0].price, '8', 'after the bulk run had written the price, not under it');
+  assert.equal(app.ctx._kjrAutoRunWaiting, false);
+  assert.ok(app.toasts.some((t) => /^Done: 1 updated$/.test(t)), JSON.stringify(app.toasts));
+  await app.settleQueue();
+  assert.equal(app.ctx._queueRunning, false);
+  assert.equal(app.row('b').marketPrice, '8');
+  assert.equal(app.runs.length, 1, 'and not a second time');
+});
+
+test('auto run: it is once per load, a second bulk run, a lookup and a bulk question that come later bring nothing back', async () => {
+  const app = await setup();
+  const { run } = await startBulk(app);
+  app.reachMark();
+  app.holdRouter = false;
+  app.lookups[0].resolve(PRICED);
+  await run;
+  await tick();
+  await app.settleQueue();
+  assert.equal(app.runs.length, 1);
+  // a second bulk run, held and then ended
+  app.holdRouter = true;
+  app.ctx.DB.singles.find((r) => r.id === 'b').marketPrice = ''; // so the run has a card to ask again
+  const again = app.ctx.bulkRefreshPrices('singles');
+  assert.ok(await app.opened(2));
+  app.lookups[1].resolve(PRICED);
+  await again;
+  await tick();
+  assert.equal(app.ctx._kjrAutoRunWaiting, false);
+  assert.equal(app.runs.length, 1, 'the end of another bulk run runs nothing');
+  // a lookup closing, and a question answered no
+  const look = app.open();
+  assert.ok(await app.opened(3));
+  app.close(2);
+  await look;
+  app.ctx.kjrConfirm = async () => false;
+  await app.ctx.bulkRefreshPrices('singles');
+  await tick();
+  assert.equal(app.runs.length, 1, 'at most once per load');
+});
+
+test('auto run: a bulk run that throws still hands the waiting run back, and the run goes once', async () => {
+  const app = await setup();
+  const { run } = await startBulk(app);
+  app.reachMark();
+  assert.equal(app.ctx._kjrAutoRunWaiting, true);
+  app.holdRouter = false;
+  app.lookups[0].reject(new Error('boom'));
+  await assert.rejects(() => run, /boom/);
+  await tick();
+  assert.equal(app.ctx._bulkRefreshRunning, false);
+  assert.equal(app.ctx._kjrAutoRunWaiting, false);
+  assert.deepEqual(app.runs.map((r) => r.args), [[false]]);
+  await app.settleQueue();
+});
+
+test('auto run: with a lookup in flight beside the bulk run it waits for the last of the two, whichever ends first', async () => {
+  for (const order of ['the lookup first', 'the bulk run first']) {
+    const app = await setup();
+    const { run } = await startBulk(app);
+    const look = app.open(); // a bulk run turns PPT away from a lookup (kjrLookupRefusal), but the lookup is still in flight and still counts
+    assert.ok(await app.opened(2), order);
+    assert.equal(app.ctx._kjrLookupsOpen, 1, order);
+    app.reachMark();
+    assert.equal(app.ctx._kjrAutoRunWaiting, true, order);
+    app.holdRouter = false;
+    if (order === 'the lookup first') {
+      app.close(1);
+      await look;
+      await tick();
+      assert.equal(app.runs.length, 0, order + ': the bulk run is still going');
+      assert.equal(app.ctx._kjrAutoRunWaiting, true, order);
+      app.lookups[0].resolve(PRICED);
+      await run;
+    } else {
+      app.lookups[0].resolve(PRICED);
+      await run;
+      await tick();
+      assert.equal(app.runs.length, 0, order + ': the lookup is still in flight');
+      assert.equal(app.ctx._kjrAutoRunWaiting, true, order);
+      app.close(1);
+      await look;
+    }
+    await tick();
+    assert.equal(app.runs.length, 1, order + ': the last one let it go, once');
+    assert.equal(app.ctx._kjrAutoRunWaiting, false, order);
+    await app.settleQueue();
+  }
+});
+
+test('auto run: a pass running at the mark still stands it down, a pass that starts while it waits for a bulk run stands it down for good, and nothing comes back', async () => {
+  // the mark finds a pass running: nothing waits
+  const a = await setup();
+  a.ctx._queueRunning = true;
+  a.reachMark();
+  assert.equal(a.ctx._kjrAutoRunWaiting, false, 'a running pass is the day\'s work');
+  assert.equal(a.runs.length, 0);
+  a.ctx._queueRunning = false;
+  // the mark finds the bulk run, a pass starts before the run ends: the waiting run stands down when it is handed back
+  const b = await setup();
+  const { run } = await startBulk(b);
+  b.reachMark();
+  assert.equal(b.ctx._kjrAutoRunWaiting, true);
+  b.holdRouter = false;
+  b.lookups[0].resolve(PRICED);
+  b.ctx._queueRunning = true; // a pass has started in the meantime (as it would by hand once the bulk run's flag came down)
+  await run;
+  await tick();
+  assert.equal(b.runs.length, 0, 'the waiting run found a pass running and stood down');
+  assert.equal(b.ctx._kjrAutoRunWaiting, false, 'for good');
+  b.ctx._queueRunning = false;
+  b.holdRouter = true;
+  const later = b.ctx.bulkRefreshPrices('singles'); // the question is still the stubbed yes, so another run starts and ends: it brings nothing back
+  assert.ok(await b.opened(2));
+  b.lookups[1].resolve(PRICED);
+  await later;
+  await tick();
+  assert.equal(b.runs.length, 0, 'a later bulk run does not bring it back');
+});
+
+test('auto run: the mark with no bulk run going still runs at once, and a bulk run that starts after the mark waits for nobody', async () => {
+  const app = await setup();
+  app.holdRouter = false;
+  app.reachMark();
+  assert.deepEqual(app.runs.map((r) => r.args), [[false]], 'nothing was in the way');
+  await app.settleQueue();
+  assert.equal(app.ctx._kjrAutoRunWaiting, false);
+  // a bulk run started later runs on its own, it does not set the flag and nothing is run when it ends
+  app.holdRouter = true;
+  const { run } = await startBulk(app);
+  assert.equal(app.ctx._kjrAutoRunWaiting, false);
+  app.holdRouter = false;
+  app.lookups[0].resolve(PRICED);
+  await run;
+  await tick();
+  assert.equal(app.runs.length, 1);
+});
+
+test('auto run: _kjrAutoRun stands down for a running pass alone, and waits for a bulk run, a lookup or the bulk question', () => {
+  const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
+  const fn = src.slice(src.indexOf('function _kjrAutoRun() {'), src.indexOf('function _kjrAutoRunResume()'));
+  assert.match(fn, /^function _kjrAutoRun\(\) \{\s*if \(_queueRunning\) return;\s*if \(_bulkRefreshRunning \|\| _kjrLookupsOpen > 0 \|\| _kjrBulkAsking\) \{ _kjrAutoRunWaiting = true; return; \}\s*runRefreshQueue\(false\);\s*\}\s*$/);
+  const body = src.slice(src.indexOf('\nasync function bulkRefreshPrices('), src.indexOf('\nfunction _listingTitleFor('));
+  assert.match(body, /\} finally \{\s*_bulkRefreshRunning = false;\s*_kjrAutoRunResume\(\);/, 'and the bulk run hands it back from its finally, whatever happened to the run');
 });
 
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────

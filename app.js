@@ -11868,7 +11868,9 @@ function toast(msg, dur=2800, isError=false) {
 }
 function toastError(msg) { toast(msg, 6000, true); }
 // A neutral note (v3.93): the info icon and colour where toast() draws the tick, which reads as done. For a message about something still going on, like the wait
-// for the vendor's pace (_kjrPptPace). The words say what is happening, the icon shape and the blue are only a second cue.
+// for the vendor's pace (_kjrPptPace). The words say what is happening, the icon shape and the blue are only a second cue. v3.94 adds the other two messages that mean
+// started and not finished: the card Refresh price's "Fetching market price..." (refreshPrice) and a Trash restore waiting for the server (restoreFromTrash).
+// A result, a refusal, a warning and an error keep their own looks.
 function toastInfo(msg, dur) { toast(msg, dur, 'info'); }
 
 // =========== ERROR THROTTLE (Tier-1 data-integrity toasts) ===========
@@ -13447,7 +13449,7 @@ async function restoreFromTrash(trashId) {
     saveData();
     _kjrRerenderTable(originalTable);
     clLog('restore', originalTable, restored.name || restored.product || restored.id, _clSummary(originalTable, restored) || 'restored from trash');
-    toast('Restore queued locally. Waiting for server confirmation…');
+    toastInfo('Restore queued locally. Waiting for server confirmation…'); // not confirmed yet: the neutral note, 'Restore synced' is the tick that follows (v3.94)
     renderTrash(false);
     return;
   }
@@ -19474,7 +19476,7 @@ async function refreshPrice(id, table) {
     const refusal = kjrLookupRefusal(_pptEstimateCredits({ grader, grade }));
     if (refusal) { _kjrRefreshRefusedToast(refusal); return; }
   }
-  toast('Fetching market price...');
+  toastInfo('Fetching market price...'); // started, not finished: the neutral note, the tick is for the price that comes back (v3.94)
   const today = kjrLocalDay(); // the day the checked and missed markers carry: the device's local date (kjrLocalDay), history keeps UTC dates
   // The router sends a lookup to PPT's graded lane only with a grader AND a grade. Anything
   // else is its raw branch, so tcgdexOnly keeps every such call off the fuzzy PPT search.
@@ -19757,9 +19759,15 @@ function loadQueue() {
 // the queue's progress markers (cursor, misses-today) rebuild from scratch
 // next load, as already handled by loadQueue()'s schema-mismatch path above.
 function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e) { console.warn('[queue] refresh-queue save failed:', e); } }
+// Clear takes the saved queue away, so it stands down like a rebuild does (v3.94, _kjrQueueEditBlocker): a bulk run or a pass holds the queue in memory and writes it
+// back as it goes, so its next save would put the queue back and the Clear would be lost without a word. It looks here, after the owner's yes (clearQueueAsk asks the
+// question), because the question can stay open as long as they like. Returns whether the queue was cleared.
 function clearQueue() {
+  const blocked = _kjrQueueEditBlocker();
+  if (blocked) { toast('Nothing was cleared. ' + blocked, 6000); return false; }
   _kjrStashCredits(loadQueue()); // Clear drops the progress, not the credits already spent today
   localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY);
+  return true;
 }
 
 // Which lane will price this queue item? Slabs (graded) never have a TCGdex
@@ -21273,7 +21281,7 @@ function _renderQueueStatus() {
         ▶ Run Today's Batch
       </button>
       <button class="btn btn-sm" onclick="startFreshQueue()">↺ Rebuild Queue</button>
-      <button class="btn btn-sm" style="color:var(--red)" onclick="(async()=>{ if(await kjrConfirm('Clear queue?', {ok:'Clear', danger:true})){clearQueue();_renderQueueStatus();} })()">✕ Clear</button>
+      <button class="btn btn-sm" style="color:var(--red)" onclick="clearQueueAsk()">✕ Clear</button>
     </div>`;
     })()}
     ${creditsSpentOut ? '<div style="font-size:11px;color:var(--amber);margin-top:8px">' + (creditsPausedToday ? 'PokemonPriceTracker says today\'s credits are used up.' : 'Today\'s PPT credits are used up.') + ' The Search lane resumes after the reset at 8am Singapore time (the Exact/TCGdex lane is unaffected).</div>' : ''}
@@ -21285,8 +21293,13 @@ async function startFreshQueue() {
   // A refresh pass in flight saves the queue via saveQueue() at multiple
   // points as it progresses (raw last-write-wins). Rebuilding here while
   // that's running would get silently clobbered by the next in-flight save.
-  if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
+  // A bulk run does the same (it bills each answer into the queue it holds), and v3.94 turns a rebuild away while the bulk refresh's question is open or a lookup is in
+  // flight as well (_kjrQueueEditBlocker). The question below can stay open as long as the owner likes, so the check is made again after the yes.
+  const blocked = _kjrQueueEditBlocker();
+  if (blocked) { toast(blocked); return; }
   if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
+  const blockedNow = _kjrQueueEditBlocker();
+  if (blockedNow) { toast('Nothing was rebuilt. ' + blockedNow, 6000); return; }
   // the progress starts again, the credits already spent today do not (they are the vendor's count, not the queue's)
   const q = _kjrCarryCredits(buildRefreshQueue(), loadQueue());
   saveQueue(q);
@@ -21294,6 +21307,13 @@ async function startFreshQueue() {
   const tcgdexCount = q.items.filter(i=>i.lane==='tcgdex').length;
   const pptCount = q.items.filter(i=>i.lane==='ppt').length;
   toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Exact (TCGdex): ' + tcgdexCount + ' · Search (PPT): ' + pptCount);
+}
+
+// The Clear button (v3.94): turned away before the question when the queue is held (_kjrQueueEditBlocker), and clearQueue looks again after the yes
+async function clearQueueAsk() {
+  const blocked = _kjrQueueEditBlocker();
+  if (blocked) { toast(blocked); return; }
+  if (await kjrConfirm('Clear queue?', {ok:'Clear', danger:true}) && clearQueue()) _renderQueueStatus();
 }
 
 // ── Manual bulk refresh of one table (v3.89) ──
@@ -21310,7 +21330,9 @@ async function startFreshQueue() {
 //     these stops stamps a miss on any card. The queue and this refuse to start while the other is running (_queueRunning, _bulkRefreshRunning).
 //   - The question ("Refresh N singles now?") holds the queue back while it is open (v3.93, _kjrBulkAsking): the page-load auto run waits for the answer, a pass
 //     asked for by hand is refused, and after a yes the run looks again (_kjrBulkBlocker) before it starts, reading the day and the credits as they are by then,
-//     not as the question showed them. The auto run that waited goes once the run has finished.
+//     not as the question showed them. The auto run that waited goes once the run has finished, and so does one that came due while the run was going (v3.94).
+//   - A run can last hours on the Paid plan and cross 00:00 UTC (08:00 Singapore, v3.94): the day is read again for every card, so from the reset it checks and bills the new
+//     day's budget (kjrCreditsLeft, dayCreditsUsed) and a pause or a spent budget on the old day does not carry over. The old day keeps the total it had.
 //   - Pacing: after a PPT request it waits the plan's gap (kjrRequestGapMs, 6 seconds Free and 1.1 Paid) before the next request, after a TCGdex one
 //     the free lane's own TCGDEX_GAP_MS. The free rows go first, so a run that stops at the budget has already done everything that costs nothing.
 //   - Every price still goes through _kjrPriceGate (the price guard), and the auto-pause after 5 failures in a row stays.
@@ -21347,10 +21369,13 @@ let _kjrBulkAsking = false; // the bulk refresh's question is on the screen and 
 // second time. A pass the owner asks for by hand can not start while a lookup is open (it is refused), so none starts in between.
 // v3.93: the bulk refresh's question holds it the same way, and after a yes it goes once the bulk run has finished, not under it. The question closing hands it
 // back (_kjrAutoRunResume, from bulkRefreshPrices), finds the run started and keeps waiting, and the run's own finally hands it back again.
-let _kjrAutoRunWaiting = false; // the auto run found a lookup in flight or the bulk refresh's question open, and waits for it to close
+// v3.94: a bulk run that is already going at the mark (confirmed within the first 8 seconds after load) is waited for too, where the run used to be dropped. That run
+// prices one table by hand, it is not the day's pass, so the pass goes when the run's finally hands it back. Still once per load. Only a pass that is running stands it
+// down: that pass is the day's work.
+let _kjrAutoRunWaiting = false; // the auto run found a lookup in flight, a bulk run going or the bulk refresh's question open, and waits for it to close
 function _kjrAutoRun() {
-  if (_queueRunning || _bulkRefreshRunning) return;
-  if (_kjrLookupsOpen > 0 || _kjrBulkAsking) { _kjrAutoRunWaiting = true; return; }
+  if (_queueRunning) return;
+  if (_bulkRefreshRunning || _kjrLookupsOpen > 0 || _kjrBulkAsking) { _kjrAutoRunWaiting = true; return; }
   runRefreshQueue(false);
 }
 function _kjrAutoRunResume() {
@@ -21367,6 +21392,16 @@ function _kjrBulkBlocker() {
   if (_queueRunning) return 'A refresh pass is already running - wait for it to finish first';
   if (_kjrLookupsOpen > 0) return 'A price lookup is running - wait for it to finish first'; // its bill is written into the same queue (kjrBudgetedLookup)
   return '';
+}
+
+// What keeps the saved queue from being rebuilt or cleared right now, in the words of the toast, or '' when nothing does (v3.94). The four states every other writer of
+// the queue stands down for: a bulk run (it bills each answer into the queue it holds and saves it, so a queue rebuilt or cleared under it is written over by its next save),
+// the bulk refresh's open question (its yes starts that run), a pass (it holds the queue the same way) and a lookup or card refresh in flight. startFreshQueue and
+// clearQueue look before their question and again after the yes, as bulkRefreshPrices does. A rebuild that goes ahead still carries the day's credits (_kjrCarryCredits).
+function _kjrQueueEditBlocker() {
+  if (_bulkRefreshRunning) return 'A bulk refresh is running - wait for it to finish first'; // the words runRefreshQueue gives a pass asked for by hand, _kjrBulkBlocker words it for a second bulk call
+  if (_kjrBulkAsking) return 'A bulk refresh is waiting for your answer - answer it first';
+  return _kjrBulkBlocker(); // a pass, or a lookup or card refresh in flight
 }
 
 async function bulkRefreshPrices(table) {
@@ -21455,10 +21490,15 @@ async function bulkRefreshPrices(table) {
       const slabGrade = kind === 'slab' ? _kjrSlabGrade(item) : null;
       const grader = kind === 'slab' ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
       const grade = kind === 'slab' ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
+      // The vendor's day can change in the middle of a run (v3.94): on the Paid plan a run lasts hours, and 00:00 UTC is 08:00 in Singapore. So the day is read again for every
+      // card, here for the check and below, after the gap, for the request and its bill. From the reset the run checks and bills the new day, as the queue does when its next
+      // pass finds a new day, and a pause or a spent budget on the old day does not carry over (kjrCreditsLeft reads a pause for its own day only).
+      utcDay = kjrUtcDay();
       // Stop before a search today's credits can not pay for: a slab is a search with eBay (6), a Japanese single a plain one (3). A refusal earlier
       // today (creditsPausedDate) leaves nothing to spend.
       if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; break; }
       if (waitMs) await new Promise(res => setTimeout(res, waitMs));
+      utcDay = kjrUtcDay(); // the gap can end on the other side of the reset: the request goes out on this day, and its answer is billed to it, or paused on it
       showSyncProgress(done + held + failedData + failedTransport, work.length, 'Refreshing ' + table + '…');
       let wasHeld = false, gate = null;
       // Every call carries one of the three: tcgdexOnly (TCGdex alone, the PPT name search is not reached), japanese (the set-checked lane) or a

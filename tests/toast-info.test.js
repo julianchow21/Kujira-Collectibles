@@ -1,7 +1,9 @@
 'use strict';
 // v3.93, the pacing toast ("Waiting N seconds to keep within the Free plan's pace", _kjrPptPace) was drawn with the tick, which reads as done. toast() has a
 // neutral variant now, toastInfo: the info icon in blue, with a blue edge and bar (class toast-info), where the tick and the accent edge are. It keeps the dismiss
-// time it is given (it is no error), the words carry the message and the icon shape and colour are only a second cue, and only the pacing toast uses it.
+// time it is given (it is no error), the words carry the message and the icon shape and colour are only a second cue.
+// v3.94 gives it the other two messages that mean "started, not finished": the card Refresh price's "Fetching market price..." and a Trash restore that waits for the
+// server ("Restore queued locally. Waiting for server confirmation…"). A result, a refusal, a warning and an error keep their own looks.
 // Every other suite replaces toast with a recorder. This one runs the REAL toast against the harness's stub elements and reads what it drew, so the ordinary
 // variants are pinned here too: the neutral one must not move them.
 process.env.TZ = 'Asia/Singapore';
@@ -131,9 +133,99 @@ test('toast: the pacing toast is the neutral one, a hand action held back for th
   await gate;
 });
 
+// ── v3.94: the messages that mean started and not finished ─────────────────────────────────────────────────────────────────────────────────
+
+// a card Refresh price whose answer the test holds, so the toast on the screen while it is in flight can be read
+async function heldRefresh(app, id) {
+  let answer;
+  app.ctx.fetchMarketPrice = () => new Promise((resolve) => { answer = resolve; });
+  const call = app.ctx.refreshPrice(id, 'singles');
+  await new Promise((r) => setImmediate(r));
+  return { call, answer: (r) => { answer(r); return call; } };
+}
+const PRICE = (maxSgd) => ({ maxSgd, maxUsd: maxSgd, source: 'TCGdex', confidence: 'high', sgdRate: 1, creditsUsed: 0, resolvedTcgdexId: 'sv1-025' });
+
+test('toast: the card Refresh price says "Fetching market price..." with the neutral note while it waits, and its result is the tick, the cross, or the same as ever', async () => {
+  const app = await loadApp({ realToast: true });
+  // in flight: the neutral note
+  const first = await heldRefresh(app, 'single_seed_1');
+  assert.deepEqual(look(app), { classes: ['toast-info'], shown: true, icon: 'ℹ', colour: 'var(--blue)', msg: 'Fetching market price...' });
+  // a new price is a real success: the tick
+  await first.answer(PRICE(18));
+  assert.deepEqual(look(app), { classes: [], shown: true, icon: '✓', colour: 'var(--accent)', msg: 'Updated S$18 (TCGdex)' });
+  // the same price again: still a result, the tick
+  const again = await heldRefresh(app, 'single_seed_1');
+  assert.deepEqual(look(app).classes, ['toast-info'], 'in flight again');
+  await again.answer(PRICE(18));
+  assert.deepEqual(look(app), { classes: [], shown: true, icon: '✓', colour: 'var(--accent)', msg: 'Price unchanged: S$18 (TCGdex)' });
+  // no price found: an error, the cross, six seconds
+  const miss = await heldRefresh(app, 'single_seed_1');
+  await miss.answer({ maxSgd: 0, tcgdexError: 'no price', pptError: 'not applicable' });
+  assert.deepEqual(look(app).classes, ['toast-error']);
+  assert.equal(look(app).icon, '✕');
+  assert.match(look(app).msg, /^No price found/);
+  // a card that is refused before anything is asked says why and draws no neutral note: the tick of every refusal, as it was
+  const seen = [];
+  const real = app.ctx.toast;
+  app.ctx.toast = (...a) => { seen.push(a); return real(...a); };
+  app.ctx.DB.singles.push({ id: 'manual_1', name: 'Custom thing', language: 'EN', type: 'raw', status: 'Available', costPrice: 1, marketPrice: '3', priceHistory: [] });
+  await app.ctx.refreshPrice('manual_1', 'singles');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0][2], undefined, 'a manual card\'s reason is no "started" note');
+  assert.match(seen[0][0], /Add or fix the card number/);
+});
+
+test('toast: only the started-and-not-finished messages take the neutral note, every result and refusal around them is called exactly as before', async () => {
+  const app = await loadApp();
+  const seen = [];
+  app.ctx.toast = (...a) => seen.push(a);
+  app.ctx.toastError = (m) => seen.push([m, 6000, true]);
+  // refreshPrice: the in-flight note is the only call with 'info', whatever the answer
+  for (const [reply, last] of [[PRICE(18), 'Updated S$18 (TCGdex)'], [PRICE(18), 'Price unchanged: S$18 (TCGdex)']]) {
+    seen.length = 0;
+    const h = await heldRefresh(app, 'single_seed_1');
+    await h.answer(reply);
+    assert.deepEqual(seen.map((a) => [a[0], a[2]]), [['Fetching market price...', 'info'], [last, undefined]]);
+  }
+  seen.length = 0;
+  const miss = await heldRefresh(app, 'single_seed_1');
+  await miss.answer({ maxSgd: 0, tcgdexError: 'no price', pptError: 'not applicable' });
+  assert.deepEqual(seen.map((a) => [a[0].startsWith('No price found') ? 'a miss' : a[0], a[2]]), [['Fetching market price...', 'info'], ['a miss', true]]);
+  // the bulk refresh's summary and its refusals, the queue's refusals and summary, the rebuild: ticks, as they were
+  seen.length = 0;
+  app.ctx.kjrConfirm = async () => true;
+  app.ctx._queueRunning = true;
+  await app.ctx.bulkRefreshPrices('singles');
+  app.ctx._queueRunning = false;
+  app.ctx._bulkRefreshRunning = true;
+  await app.ctx.runRefreshQueue(true);
+  await app.ctx.startFreshQueue();
+  app.ctx._bulkRefreshRunning = false;
+  assert.deepEqual(seen.map((a) => a[0]), [
+    'A refresh pass is already running - wait for it to finish first',
+    'A bulk refresh is running - wait for it to finish first',
+    'A bulk refresh is running - wait for it to finish first',
+  ]);
+  for (const a of seen) assert.equal(a[2], undefined, a[0] + ' keeps the tick: a refusal is not a note about work in progress');
+});
+
+test('toast: a Trash restore that waits for the server is the neutral note, and the server\'s acknowledgement and every other restore message keep the tick', () => {
+  const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
+  const at = src.indexOf('\nasync function restoreFromTrash(');
+  assert.ok(at >= 0);
+  const body = src.slice(at, at + 1 + src.slice(at + 1).search(/\n(?:async )?function /));
+  const calls = [...body.matchAll(/\b(toast|toastInfo|toastError)\('([^']*)'/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(calls.filter(([fn]) => fn === 'toastInfo'), [['toastInfo', 'Restore queued locally. Waiting for server confirmation…']], 'one note');
+  const ticks = calls.filter(([fn]) => fn === 'toast').map(([, m]) => m);
+  assert.deepEqual(ticks, ['Already restored', 'Already restored', 'Restored locally - cloud sync will retry', 'Restored ✓'], 'the rest are as they were');
+  // the acknowledgement that follows the queued note is in the sync code, and it is the tick
+  assert.match(src, /toast\('Restore synced'\)/);
+  assert.doesNotMatch(src, /toastInfo\('Restore synced'/);
+});
+
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-test('toast: toastInfo has one caller, the pacing gate, every place that clears a toast variant clears all three, and the CSS draws it from existing tokens in both themes', () => {
+test('toast: toastInfo has three callers, the pacing gate, the card refresh and the Trash restore, every place that clears a toast variant clears all three, and the CSS draws it from existing tokens in both themes', () => {
   const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   const callers = [];
@@ -142,7 +234,7 @@ test('toast: toastInfo has one caller, the pacing gate, every place that clears 
     const from = Math.max(code.lastIndexOf('\nasync function ', i), code.lastIndexOf('\nfunction ', i));
     callers.push(code.slice(from).match(/^\n(?:async )?function (\w+)/)[1]);
   }
-  assert.deepEqual(callers, ['_kjrPptPace']);
+  assert.deepEqual(callers, ['restoreFromTrash', '_kjrPptPace', 'refreshPrice'], 'in the order they sit in the file; a message that is not started-and-not-finished is not on this list');
   for (const file of ['features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
     assert.doesNotMatch(fs.readFileSync(ROOT + '/' + file, 'utf8'), /toastInfo\(/, file + ' never uses it');
   }

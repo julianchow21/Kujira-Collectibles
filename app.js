@@ -11815,7 +11815,7 @@ function toastDismiss() {
   t.classList.remove('show');
   // Popover API teardown, cosmetic: hidePopover() throws if already closed.
   if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
-  setTimeout(() => t.classList.remove('toast-error','toast-warn'), 300);
+  setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
 }
 function toast(msg, dur=2800, isError=false) {
   const t    = document.getElementById('toast');
@@ -11823,16 +11823,22 @@ function toast(msg, dur=2800, isError=false) {
   const icon = document.getElementById('toast-icon');
   const msgEl= document.getElementById('toast-msg');
   const bar  = document.getElementById('toast-bar');
-  const isWarn = !isError && typeof msg === 'string' && msg.startsWith('⚠');
+  // v3.93: 'info' in the third place (toastInfo) is a neutral note, neither done nor wrong. It is no error, so it keeps the dismiss time it was given
+  const isInfo = isError === 'info';
+  if (isInfo) isError = false;
+  const isWarn = !isError && !isInfo && typeof msg === 'string' && msg.startsWith('⚠');
   // Strip leading warning glyph so it doesn't appear twice
   const displayMsg = isWarn ? msg.replace(/^⚠\s*/, '') : msg;
-  t.classList.remove('toast-error','toast-warn');
+  t.classList.remove('toast-error','toast-warn','toast-info');
   if (isError) {
     t.classList.add('toast-error');
     if (icon) { icon.textContent = '✕'; icon.style.color = 'var(--red)'; }
   } else if (isWarn) {
     t.classList.add('toast-warn');
     if (icon) { icon.textContent = '⚠'; icon.style.color = '#f59e0b'; }
+  } else if (isInfo) {
+    t.classList.add('toast-info');
+    if (icon) { icon.textContent = 'ℹ'; icon.style.color = 'var(--blue)'; }
   } else {
     if (icon) { icon.textContent = '✓'; icon.style.color = 'var(--accent)'; }
   }
@@ -11857,10 +11863,13 @@ function toast(msg, dur=2800, isError=false) {
     t.classList.remove('show');
     // Popover API, cosmetic: hidePopover() throws if already closed.
     if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
-    setTimeout(() => t.classList.remove('toast-error','toast-warn'), 300);
+    setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
   }, isError ? 6000 : dur);
 }
 function toastError(msg) { toast(msg, 6000, true); }
+// A neutral note (v3.93): the info icon and colour where toast() draws the tick, which reads as done. For a message about something still going on, like the wait
+// for the vendor's pace (_kjrPptPace). The words say what is happening, the icon shape and the blue are only a second cue.
+function toastInfo(msg, dur) { toast(msg, dur, 'info'); }
 
 // =========== ERROR THROTTLE (Tier-1 data-integrity toasts) ===========
 // A silent catch on a data-integrity write (cloud delete, trash write, DB
@@ -18869,7 +18878,8 @@ function _pptCreditLimitBody(body) {
 // slept the gap already (the queue, a bulk run) finds it gone and adds no wait. A search that needs a second request (the base-name retry) waits the gap too.
 // TCGdex never comes here. The wait is measured again after each sleep, so two callers at once take turns and never go out together. The stamp is in memory: a
 // reload, another tab or another device starts a fresh count.
-// A hand action (a lookup or a card refresh is in flight, _kjrLookupsOpen) says why it is waiting, a pass shows its own progress bar and stays quiet.
+// A hand action (a lookup or a card refresh is in flight, _kjrLookupsOpen) says why it is waiting, a pass shows its own progress bar and stays quiet. The note is
+// a neutral info toast (toastInfo, v3.93): the tick toast() draws by default reads as done, and this is a wait.
 const KJR_PPT_PACE_TOAST_MS = 500; // a shorter wait is slept without a toast, nobody notices it
 const KJR_PPT_PACE_ROUNDS = 10;    // sleeps one request may take before it goes anyway, so a clock that does not move can never make this spin
 let _kjrPptLastAt = 0;             // Date.now() when the last PPT request was sent, moved to when its answer came in (0: none yet)
@@ -18883,7 +18893,7 @@ async function _kjrPptPace() {
     if (wait <= 0) break;
     if (!told && _kjrLookupsOpen > 0 && wait >= KJR_PPT_PACE_TOAST_MS) {
       told = true;
-      toast('Waiting ' + _kjrOvPlural(Math.ceil(wait / 1000), 'second', 'seconds') + ' to keep within the ' + PPT_PLANS[kjrPptPlan()].label + ' plan\'s pace', Math.min(Math.max(wait, 2800), 8000));
+      toastInfo('Waiting ' + _kjrOvPlural(Math.ceil(wait / 1000), 'second', 'seconds') + ' to keep within the ' + PPT_PLANS[kjrPptPlan()].label + ' plan\'s pace', Math.min(Math.max(wait, 2800), 8000));
     }
     await new Promise(res => setTimeout(res, wait));
   }
@@ -20444,6 +20454,9 @@ async function runRefreshQueue(manual = false) {
   if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
   // A manual bulk refresh (bulkRefreshPrices) bills the same saved queue's credits, so the two never run at once: each writes the queue back
   if (_bulkRefreshRunning) { if (manual) toast('A bulk refresh is running - wait for it to finish first'); return; }
+  // And not while its question is open (v3.93): the owner's yes starts that run on the queue as it is then, so a pass must not start under the dialog.
+  // The automatic call is held back before it gets here (_kjrAutoRun waits for the question), only a direct call is turned away
+  if (_kjrBulkAsking) { if (manual) toast('A bulk refresh is waiting for your answer - answer it first'); return; }
   // So does a hand lookup (kjrBudgetedLookup, v3.90), whose bill is written when its answer comes and would be lost under a queue held in memory
   if (_kjrLookupsOpen > 0) { if (manual) toast('A price lookup is running - wait for it to finish first'); return; }
   if (isLocalhostPreview()) {
@@ -21295,6 +21308,9 @@ async function startFreshQueue() {
 //     is asked once kjrDailyCredits() cannot pay for the next search or the vendor has refused for credits today (creditsPausedDate), and a refusal for
 //     credits sets that same creditsPausedDate, so a bulk run and the queue can not spend the one day twice. The first 429 or 403 stops the run. None of
 //     these stops stamps a miss on any card. The queue and this refuse to start while the other is running (_queueRunning, _bulkRefreshRunning).
+//   - The question ("Refresh N singles now?") holds the queue back while it is open (v3.93, _kjrBulkAsking): the page-load auto run waits for the answer, a pass
+//     asked for by hand is refused, and after a yes the run looks again (_kjrBulkBlocker) before it starts, reading the day and the credits as they are by then,
+//     not as the question showed them. The auto run that waited goes once the run has finished.
 //   - Pacing: after a PPT request it waits the plan's gap (kjrRequestGapMs, 6 seconds Free and 1.1 Paid) before the next request, after a TCGdex one
 //     the free lane's own TCGDEX_GAP_MS. The free rows go first, so a run that stops at the budget has already done everything that costs nothing.
 //   - Every price still goes through _kjrPriceGate (the price guard), and the auto-pause after 5 failures in a row stays.
@@ -21316,29 +21332,47 @@ function _kjrBulkKind(item, table) {
 let _bulkRefreshRunning = false;
 let _kjrLookupsOpen = 0; // hand lookups (kjrBudgetedLookup) and card refreshes (refreshPrice) in flight: the queue and a bulk run do not start under one, their bill goes into the same saved queue
 
+// The bulk refresh's question holds a pass back too (v3.93). bulkRefreshPrices asks "Refresh N singles now?" before it starts, and the owner can take as long as they
+// like to answer. A pass that started in that time (the page-load auto run at its 8 second mark, or Run Today's Batch) would hold the saved queue in memory while the
+// yes started a bulk run on the same queue and the same credits, and each would write the queue back over the other. So while the question is open (_kjrBulkAsking)
+// the auto run waits, the way it waits for a lookup, and a pass asked for by hand is refused (runRefreshQueue). The flag is cleared on every way out of the question,
+// a yes, a no, Esc and a throw (the try/finally in bulkRefreshPrices), and only one question is open at a time, a second call is turned away.
+let _kjrBulkAsking = false; // the bulk refresh's question is on the screen and not yet answered
+
 // The page-load auto run waits for a lookup, it is not dropped (v3.92). runRefreshQueue turns an automatic call away while a lookup is in flight (above), and
 // the 8 second mark after load (kjrStartOwnerApp) is the only automatic call there is, so a lookup open at that moment cost the day its pass until the next load.
 // Now _kjrAutoRun notes that it is waiting, and the last lookup to close (_kjrAutoRunResume, from the finally of kjrBudgetedLookup and refreshPrice) lets it go.
 // One flag, no timer and no polling, and the run is called once per load: once it has been called nothing sets the flag again. A pass already running is the
 // day's work being done, so nothing waits for it (the answer runRefreshQueue would give), and one that has started by the time the lookup closes is not run a
 // second time. A pass the owner asks for by hand can not start while a lookup is open (it is refused), so none starts in between.
-let _kjrAutoRunWaiting = false; // the auto run found a lookup in flight and waits for the last one to close
+// v3.93: the bulk refresh's question holds it the same way, and after a yes it goes once the bulk run has finished, not under it. The question closing hands it
+// back (_kjrAutoRunResume, from bulkRefreshPrices), finds the run started and keeps waiting, and the run's own finally hands it back again.
+let _kjrAutoRunWaiting = false; // the auto run found a lookup in flight or the bulk refresh's question open, and waits for it to close
 function _kjrAutoRun() {
   if (_queueRunning || _bulkRefreshRunning) return;
-  if (_kjrLookupsOpen > 0) { _kjrAutoRunWaiting = true; return; }
+  if (_kjrLookupsOpen > 0 || _kjrBulkAsking) { _kjrAutoRunWaiting = true; return; }
   runRefreshQueue(false);
 }
 function _kjrAutoRunResume() {
-  if (!_kjrAutoRunWaiting || _kjrLookupsOpen > 0) return;
+  if (!_kjrAutoRunWaiting || _kjrLookupsOpen > 0 || _kjrBulkAsking || _bulkRefreshRunning) return;
   _kjrAutoRunWaiting = false;
   // a microtask, so the closing lookup's own tail finishes first (a card refresh writes its price right after), and _kjrAutoRun waits again if another lookup opened since
   Promise.resolve().then(_kjrAutoRun);
 }
 
+// What keeps a bulk run from starting right now, in the words of the toast, or '' when nothing does. bulkRefreshPrices asks twice: before its question, and again
+// once the owner has said yes, because a lookup, a card refresh or a pass may have started while the question was open (v3.93)
+function _kjrBulkBlocker() {
+  if (_bulkRefreshRunning) return 'Refresh already running...';
+  if (_queueRunning) return 'A refresh pass is already running - wait for it to finish first';
+  if (_kjrLookupsOpen > 0) return 'A price lookup is running - wait for it to finish first'; // its bill is written into the same queue (kjrBudgetedLookup)
+  return '';
+}
+
 async function bulkRefreshPrices(table) {
-  if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
-  if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
-  if (_kjrLookupsOpen > 0) { toast('A price lookup is running - wait for it to finish first'); return; } // its bill is written into the same queue (kjrBudgetedLookup)
+  if (_kjrBulkAsking) { toast('A bulk refresh is already waiting for your answer - answer it first'); return; } // one question at a time, a second call would share its answer and start a second run
+  const blocked = _kjrBulkBlocker();
+  if (blocked) { toast(blocked); return; }
   if (table !== 'singles' && table !== 'slabs') { toast('Only Singles and Slabs have an automatic price, the rest are priced by hand'); return; }
   // TCGdex needs no key, and a slab table has no TCGdex-free option so it needs PPT. PPT
   // counts as available when the Worker proxy is configured, it holds PPT_KEY as a secret,
@@ -21358,16 +21392,35 @@ async function bulkRefreshPrices(table) {
   if (!free.length && !ppt.length) { toast('Nothing to price automatically: ' + manual + (manual === 1 ? ' card has' : ' cards have') + ' no automatic source, price ' + (manual === 1 ? 'it' : 'them') + ' by hand'); return; }
   if (ppt.length && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
   const work = free.concat(ppt);
-  const utcDay = kjrUtcDay();
-  const limit = kjrDailyCredits();
+  // The day, the credits and the plan are read here only to word the question. It can stay open as long as the owner likes, so the run reads them again after the yes (v3.93)
+  let utcDay = kjrUtcDay();
+  let limit = kjrDailyCredits();
   // Read only until the owner says yes: a queue is not created for a run that is declined
   const seen = ppt.length ? loadQueue() : null;
-  const planLabel = PPT_PLANS[kjrPptPlan()].label;
+  let planLabel = PPT_PLANS[kjrPptPlan()].label;
   const askText = 'Refresh ' + work.length + ' ' + esc(table) + ' now?' +
     (free.length ? ' ' + free.length + ' priced free from TCGdex.' : '') +
     (ppt.length ? ' ' + ppt.length + ' use PokemonPriceTracker credits from today\'s budget (' + kjrFmtCredits(seen ? kjrCreditsLeft(seen, utcDay) : limit) + ' of ' + kjrFmtCredits(limit) + ' left on the ' + planLabel + ' plan), and the run stops when they are used up.' : '') +
     (manual ? ' ' + manual + ' with no automatic price ' + (manual === 1 ? 'is' : 'are') + ' skipped.' : '');
-  if (!await kjrConfirm(askText, {ok:'Refresh now'})) return;
+  // The question is open until the owner answers it (v3.93): the auto run waits and a pass asked for by hand is refused meanwhile (_kjrBulkAsking), so none starts under
+  // the answer. The flag is cleared on every way out, a yes, a no, Esc and a throw, and a no or a throw hands the waiting auto run back, as nothing is going to run.
+  let confirmed = false;
+  _kjrBulkAsking = true;
+  try {
+    confirmed = await kjrConfirm(askText, {ok:'Refresh now'});
+  } finally {
+    _kjrBulkAsking = false;
+    if (!confirmed) _kjrAutoRunResume();
+  }
+  if (!confirmed) return;
+  // Nothing awaits from here to the flag below, so nothing can slip in between. The question held passes back, but a lookup or a card refresh opened while it was
+  // up may still be in flight, and a run that is already going is no place to start another. Whatever is in the way, this one does nothing and says so.
+  const blockedNow = _kjrBulkBlocker();
+  if (blockedNow) { _kjrAutoRunResume(); toast('Nothing was refreshed. ' + blockedNow, 6000); return; }
+  // The credits are the saved queue's as they are now, not as the question showed them: the run loads the queue below and checks kjrCreditsLeft on it at every card
+  utcDay = kjrUtcDay();
+  limit = kjrDailyCredits();
+  planLabel = PPT_PLANS[kjrPptPlan()].label;
   _bulkRefreshRunning = true;
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
   let held = 0; // prices the guard (kjrPriceGuard) kept for the owner's OK instead of writing
@@ -21479,6 +21532,7 @@ async function bulkRefreshPrices(table) {
     }
   } finally {
     _bulkRefreshRunning = false;
+    _kjrAutoRunResume(); // the page-load auto run that waited for the question, and then for this run, goes now, once (v3.93)
     hideSyncProgress();
   }
   if (table === 'singles') renderSingles();
@@ -23985,7 +24039,7 @@ async function deleteSavedChart(id) {
       window._undoDeleteChart = null;
       const _t = document.getElementById('toast');
       if (_t) {
-        _t.classList.remove('show','toast-error','toast-warn');
+        _t.classList.remove('show','toast-error','toast-warn','toast-info');
         // Popover API, cosmetic: hidePopover() throws if already closed.
         if (_t.hidePopover && _t.matches(':popover-open')) { try { _t.hidePopover(); } catch(e){} }
         const _tMsg = document.getElementById('toast-msg');
@@ -24271,7 +24325,7 @@ function kjrStartOwnerApp() {
   // and its maintenance work unchanged.
   if (_kjrDealerPreviewOnly()) return;
   setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
-  // The day's automatic pass. A lookup in flight at this mark makes it wait for the lookup instead of being dropped (_kjrAutoRun, v3.92)
+  // The day's automatic pass. A lookup in flight at this mark makes it wait for the lookup instead of being dropped (_kjrAutoRun, v3.92), and so does the bulk refresh's open question (v3.93)
   setTimeout(() => { _kjrAutoRun(); }, 8000);
 }
 const _kjrAuthGate = document.getElementById('kjr-auth-gate');

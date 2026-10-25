@@ -111,12 +111,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.92 \(25 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.93 \(25 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.92 \(25 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.93 \(25 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -1145,14 +1145,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.92: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.93: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.92'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.92">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.93'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.93">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.92"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.92'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.93"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.93'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v95'/);
+  assert.match(sw, /const CACHE = 'kujira-v96'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

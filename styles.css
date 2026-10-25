@@ -359,6 +359,8 @@ textarea.fi{resize:vertical;min-height:70px}
 #toast.toast-error #toast-bar{background:var(--red)}
 #toast.toast-warn{border-left-color:var(--amber)}
 #toast.toast-warn #toast-bar{background:var(--amber)}
+#toast.toast-info{border-left-color:var(--blue)}
+#toast.toast-info #toast-bar{background:var(--blue)}
 @media(max-width:768px){#toast{bottom:calc(12px + env(safe-area-inset-bottom));right:12px;left:calc(var(--kjr-side-w) + 12px);max-width:none;transform:translateY(20px)}#toast.show{transform:translateY(0)}}
 /* 600px and below the tab bar is up, and its raised "+" stands above it: the toast clears both (Navigation shell section) */
 @media (max-width: 600px){#toast{bottom:calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 12px)}}

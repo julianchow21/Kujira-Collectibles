@@ -567,6 +567,7 @@ async function loadApp(opts) {
     evalErrors.push({ file: 'app.js', error: e });
     throw Object.assign(new Error('app.js failed to eval: ' + (e && e.stack || e)), { cause: e });
   }
+  const appToast = sandbox.toast; // app.js's own toast(), before features.js puts the launch intro's queue in front of it (see opts.realToast below)
   // Production mutations are owner-authenticated. Most legacy suites exercise
   // post-boot domain behaviour, so give them a deterministic verified session
   // instead of preserving the retired anonymous-write assumption. Auth tests
@@ -591,6 +592,10 @@ async function loadApp(opts) {
   // (6000, 1100, 250, 2000), so a gate that really waited would hang them on the second request. They get a gate that lets every request through, and
   // loadApp({ pace: true }) keeps the real one for the suite that tests it (tests/ppt-pacing.test.js).
   if (opts.pace !== true) sandbox._kjrPptPace = async () => {};
+  // The launch intro (features.js, v3.24) puts a queue in front of toast() for as long as it runs, and the harness never lets it finish, so toast() here is that
+  // queue and draws nothing. A suite that tests what the page's own toast draws asks for it: loadApp({ realToast: true }) puts app.js's toast() back in front, for
+  // this app only (tests/toast-info.test.js). Every other suite replaces toast with a recorder.
+  if (opts.realToast === true) sandbox.toast = appToast;
 
   // Let initDB()'s internal await chain (flushPendingTrash -> flushPendingDeletes
   // -> Promise.all([sbFetchAll...]) -> mergeTable -> ... ) and the top-level

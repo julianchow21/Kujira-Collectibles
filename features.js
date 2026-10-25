@@ -6006,7 +6006,7 @@ function kjrInspectBindRows() {
     queued.forEach(function (args) {
       if (delay === 0) orig(args[0], args[1], args[2]);
       else setTimeout(function () { orig(args[0], args[1], args[2]); }, delay);
-      delay += args[2] ? 6000 : (typeof args[1] === 'number' ? args[1] : 2800); // mirrors toast()'s own dismiss timing
+      delay += (args[2] && args[2] !== 'info') ? 6000 : (typeof args[1] === 'number' ? args[1] : 2800); // mirrors toast()'s own dismiss timing ('info' is the neutral note, no error)
     });
   }
 

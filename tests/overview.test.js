@@ -35,7 +35,8 @@ function sale(o) {
 }
 // The price code stores the UTC date (toISOString().slice(0, 10)), so a fixture does the same
 function utcDay() { return new Date().toISOString().slice(0, 10); }
-// jaLane: the Japanese lane ships OFF (PPT_JA_LANE_ENABLED), a test that needs it asks the harness for it
+// jaLane: the Japanese lane ships ON since v3.89 (PPT_JA_LANE_ENABLED, the kill switch), and loadApp({ jaLane: false }) turns it off for the app it builds, so a test that
+// means it on asks for true and every other one runs with it off, the state it names
 async function app(db, jaLane) {
   const a = await loadApp({ jaLane: !!jaLane });
   a.ctx.DB.singles = (db && db.singles) || [];
@@ -248,7 +249,7 @@ test('needs attention: the all-clear state and the populated state in the hero, 
   assert.match(hero, /data-ov-act="sales">View sales</);
   assert.doesNotMatch(hero, /non-English|manual prices|Review prices|Add card numbers|need a card number|needs a card number/, 'the old rows and wording are gone');
 
-  // a non-English single on a manual price raises no row, with the Japanese lane off (as v3.85 ships) or on
+  // a non-English single on a manual price raises no row, with the Japanese lane off (the kill switch state) or on (as it ships since v3.89)
   for (const language of ['KR', 'JP', 'CN', 'ID']) {
     for (const lane of [false, true]) {
       const x = await app({ singles: [single({ name: 'Pikachu 25 ' + language, language })] }, lane);
@@ -487,6 +488,90 @@ test('clear all filters: Singles and Slabs also drop the stale-prices-only and u
   assert.equal(draws.singles, 1);
 });
 
+// v3.90: _hasActiveFilters read the search box, the column boxes and the dropdowns, and not the chips, so with only a chip on "Clear all filters" stayed
+// hidden although v3.88 had made clearAllFilters clear the chips. The chips narrow the list, so they count, and the button says so in its title.
+test('clear all filters: the button shows while only a chip filter is on, for each chip, and hides again once it is cleared', async () => {
+  const a = await app({
+    singles: [single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard 4' })), single(pricedAgo(2, 90, { id: 's-numbered', name: 'Pikachu 25' })), single(pricedAgo(2, 90, { id: 's-nonum', name: 'Eevee' }))],
+    slabs: [slab(pricedAgo(80, 700, { id: 'l-stale' })), slab(pricedAgo(2, 700, { id: 'l-fresh' }))],
+  });
+  setClock(a, NOW_ISO);
+  const { ctx, document } = a;
+  const btn = (t) => document.getElementById('clear-filters-' + t).style.display;
+  // nothing on: no button, as ever
+  ctx.renderSingles(); ctx.renderSlabs(); ctx.renderSales();
+  assert.deepEqual([btn('singles'), btn('slabs'), btn('sales')], ['none', 'none', 'none'], 'no filter, no button');
+  assert.equal(ctx._hasActiveFilters('singles') || ctx._hasActiveFilters('slabs') || ctx._hasActiveFilters('sales'), false);
+
+  // the stale prices chip on Singles, and nothing typed anywhere
+  ctx._kjrShowStaleOnly('singles');
+  assert.equal(ctx._kjrSinglesStaleOnly, true);
+  assert.equal(document.getElementById('singles-search').value, '', 'no search, no column filter, no dropdown');
+  assert.equal(ctx._hasActiveFilters('singles'), true, 'the chip is an active filter');
+  assert.equal(btn('singles'), '', 'so the button shows');
+  assert.equal(btn('slabs'), 'none', 'and the other pages are as they were');
+  ctx.clearAllFilters('singles');
+  assert.equal(btn('singles'), 'none', 'cleared, the button goes with the filter');
+  assert.equal(ctx._hasActiveFilters('singles'), false);
+
+  // the unmatched chip on Singles
+  ctx._kjrShowUnresolvedOnly();
+  assert.equal(ctx._kjrSinglesUnresolvedOnly, true);
+  assert.equal(ctx._hasActiveFilters('singles'), true);
+  assert.equal(btn('singles'), '');
+  // the chip's own clear hides the button as well, it is the same state
+  ctx._kjrClearUnresolvedFilter();
+  assert.equal(btn('singles'), 'none');
+
+  // the stale chip on Slabs
+  ctx._kjrShowStaleOnly('slabs');
+  assert.equal(ctx._hasActiveFilters('slabs'), true);
+  assert.equal(btn('slabs'), '');
+  assert.equal(btn('singles'), 'none', 'a Slabs chip does not light the Singles button');
+  assert.equal(ctx._hasActiveFilters('singles'), false);
+  ctx._kjrClearStaleFilter('slabs');
+  assert.equal(btn('slabs'), 'none');
+
+  // Sales has no chip, and a chip flag left on for another page does not count there
+  ctx._kjrSinglesStaleOnly = true;
+  ctx._kjrSlabsStaleOnly = true;
+  ctx._kjrSinglesUnresolvedOnly = true;
+  assert.equal(ctx._hasActiveFilters('sales'), false);
+  ctx._kjrSinglesStaleOnly = false; ctx._kjrSlabsStaleOnly = false; ctx._kjrSinglesUnresolvedOnly = false;
+
+  // a typed filter still counts, with or without a chip, and clearing both takes both
+  document.getElementById('singles-search').value = 'pikachu';
+  assert.equal(ctx._hasActiveFilters('singles'), true);
+  ctx._kjrSinglesStaleOnly = true;
+  ctx.renderSingles();
+  assert.equal(btn('singles'), '');
+  ctx.clearAllFilters('singles');
+  assert.equal(btn('singles'), 'none');
+  assert.equal(ctx._kjrSinglesStaleOnly, false);
+});
+
+test('clear all filters: a chip that emptied itself (the last stale card was re-priced) takes its button with it, and the button\'s title says it clears the chips', async () => {
+  const a = await app({ singles: [single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard 4' })), single(pricedAgo(2, 90, { id: 's-fresh', name: 'New Charizard 4' }))] });
+  setClock(a, NOW_ISO);
+  const { ctx, document } = a;
+  ctx._kjrShowStaleOnly('singles');
+  assert.equal(document.getElementById('clear-filters-singles').style.display, '');
+  // the only stale card is re-priced while the page is filtered to it: renderSingles drops the filter, and the button must follow it
+  ctx.DB.singles.find(r => r.id === 's-stale').priceHistory = [{ date: agoDay(1), price: 90, source: 'TCGdex (TCGplayer)' }];
+  ctx.renderSingles();
+  assert.equal(ctx._kjrSinglesStaleOnly, false, 'the filter dropped itself');
+  assert.equal(document.getElementById('clear-filters-singles').style.display, 'none', 'and so did its button');
+  // the titles on the three buttons: Singles and Slabs name their chips, Sales has none to name
+  const title = id => html.match(new RegExp('id="' + id + '"[^>]*title="([^"]*)"'))[1];
+  assert.match(title('clear-filters-singles'), /chips/);
+  assert.match(title('clear-filters-singles'), /unresolved/);
+  assert.match(title('clear-filters-singles'), /stale prices/);
+  assert.match(title('clear-filters-slabs'), /stale prices chip/);
+  assert.doesNotMatch(title('clear-filters-slabs'), /unresolved/, 'Slabs has the one chip');
+  assert.equal(title('clear-filters-sales'), 'Clear search and column filters', 'Sales has no chip, its title is as it was');
+  for (const id of ['clear-filters-singles', 'clear-filters-slabs']) assert.match(title(id), /^Clear search, column filters, dropdown filters and the /);
+});
+
 test('clear all filters: the chips\' own clear still draws once and clears its own filter, and render false is the only way to skip the draw', async () => {
   const a = await app({ singles: [single(pricedAgo(80, 90, { id: 's-stale', name: 'Old Charizard' })), single(pricedAgo(2, 90, { id: 's-numbered', name: 'Pikachu 25' }))], slabs: [slab(pricedAgo(80, 700, { id: 'l-stale' }))] });
   setClock(a, NOW_ISO);
@@ -671,8 +756,8 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   const none = await app({ singles: [single()] });
   none.ctx.renderDashboard();
   const z = text(none.document, 'dash-hero');
-  assert.match(z, /Realised profit<\/div><div class="ov-stat-value dim">None yet</, 'nothing to describe, so no icon');
-  assert.doesNotMatch(z, /ov-info-roi/);
+  assert.match(z, /Realised profit<button type="button" class="ov-info"[^>]*>[\s\S]*?<\/button><\/div><div class="ov-stat-value dim">None yet</, 'v3.90: None yet has the same icon and bubble as every other state');
+  assert.match(z, /<span role="tooltip" id="ov-info-roi" class="ov-info-tip"><span class="ov-info-fig">No sales logged yet<\/span><span class="ov-info-what">[^<]+<\/span><\/span>/);
 
   const pending = await app({
     singles: [single()],
@@ -682,7 +767,40 @@ test('hero: realised profit is signed with its return, None yet without sales, U
   const p = text(pending.document, 'dash-hero');
   assert.match(p, /ov-stat-value dim">Unknown</);
   assert.match(p, /<div class="ov-stat-sub">1 Dealer sale pending settlement<\/div>/, 'the reason for Unknown stays visible');
-  assert.doesNotMatch(p, /ov-info-roi/, 'with no known sale there is no return to put in a bubble');
+  assert.match(p, /<span role="tooltip" id="ov-info-roi" class="ov-info-tip"><span class="ov-info-fig">No confirmed sales yet<\/span><span class="ov-info-what">[^<]+<\/span><\/span>/, 'v3.90: Unknown has the bubble too, with no return to quote');
+});
+
+// v3.90: the Realised profit figure had no bubble while it read None yet or Unknown, which is exactly when "Dealer sales awaiting settlement are
+// left out" explains the number. The bubble is the same one in every state: the figures line says what is behind the number, and under it is the
+// KJR_OV_TIPS.profit sentence, inside one button that names itself, with the same ids, the same leftward growth and the same label row.
+test('hero: the Realised profit bubble is there in every state, two lines, the same button and ids', async () => {
+  const states = {
+    'a profit': { sales: [sale({ costPrice: 100, totalCollected: 130, profit: 30 })], fig: 'ROI 30% across 1 sale' },
+    'a loss': { sales: [sale({ costPrice: 100, totalCollected: 60, profit: -40 })], fig: 'ROI -40% across 1 sale' },
+    'None yet': { sales: [], fig: 'No sales logged yet' },
+    'Unknown': { sales: [sale({ dealerPaymentStatus: 'Unknown', paymentStatus: 'Unknown', dealerRelease: '3.62', profit: null })], fig: 'No confirmed sales yet' },
+    'Unknown, two pending': { sales: [1, 2].map(() => sale({ dealerPaymentStatus: 'Unknown', paymentStatus: 'Unknown', dealerRelease: '3.62', profit: null })), fig: 'No confirmed sales yet' },
+  };
+  for (const [name, st] of Object.entries(states)) {
+    const { ctx, document } = await app({ singles: [single()], sales: st.sales });
+    ctx.renderDashboard();
+    const hero = text(document, 'dash-hero');
+    assert.match(hero, /<div class="ov-stat-label ov-info-row ov-info-end">Realised profit<button type="button" class="ov-info" aria-label="Realised profit details" aria-expanded="false" aria-describedby="ov-info-roi">/, name + ': the label row and the button');
+    const tip = hero.match(/<span role="tooltip" id="ov-info-roi" class="ov-info-tip"><span class="ov-info-fig">([^<]*)<\/span><span class="ov-info-what">([^<]*)<\/span><\/span><\/button>/);
+    assert.ok(tip, name + ': a figures line and a meaning line, inside the button');
+    assert.equal(tip[1], st.fig, name + ': the figures line');
+    assert.equal(tip[2], ctx.KJR_OV_TIPS.profit, name + ': the same sentence under every one');
+    assert.equal((hero.match(/id="ov-info-roi"/g) || []).length, 1, name + ': one bubble, one id');
+    assert.equal((hero.match(/role="tooltip"/g) || []).length, 2, name + ': this one and the Cost basis one, no more');
+    assert.doesNotMatch(hero, /<button type="button" class="ov-info"[^>]*title=/, name + ': no title to stack on the bubble');
+  }
+  // the pending line under Unknown is still the visible reason, and a figure that is a number has no such line
+  const two = await app({ singles: [single()], sales: states['Unknown, two pending'].sales });
+  two.ctx.renderDashboard();
+  assert.match(text(two.document, 'dash-hero'), /<div class="ov-stat-sub">2 Dealer sales pending settlement<\/div>/);
+  const { ctx, document } = await app({ singles: [single()], sales: states['a profit'].sales });
+  ctx.renderDashboard();
+  assert.doesNotMatch(text(document, 'dash-hero'), /class="ov-stat-sub"/);
 });
 
 test('hero: the return in the Realised profit bubble is a whole percent, signed only below zero, and absent when there is none', async () => {

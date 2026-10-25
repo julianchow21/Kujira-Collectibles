@@ -3554,7 +3554,8 @@ async function exportXlsx() {
 // v3.80: a Japanese single with no tcgdexId gets an art-only lookup too (the Japanese species name from Assets/species-ja.json,
 // the exact localId, set narrowing, a unique hit only: resolveTcgdexId opts.art). On a hit the id is written onto the row ONCE
 // with markDirty, as the English price lane does, and the image is drawn. Its misses live in the same `kjr_slab_card_ids` map
-// under "s:<id>". Japanese pricing is still manual, nothing here makes a price call.
+// under "s:<id>". Nothing here makes a price call. Since v3.89 the id this writes is what lets the Japanese price lane (PPT) take the card, a
+// Japanese single with no id stays manual until this finds one or it is typed in.
 // v3.82: only an answer is cached as a miss, in either language. A request that is rejected, times out or comes back with an HTTP error
 // other than 404 (5xx, 429, 403) is "could not tell": cooled down for a minute in this session (kjrImgUnanswered, kjrImgCoolDown),
 // asked again next session, never written to the map. The 7-day misses are a 404, an empty or ambiguous candidate list, and a card

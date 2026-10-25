@@ -111,12 +111,12 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.89 \(25 Oct\)<\/span><\/span>/);
+  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.90 \(25 Oct\)<\/span><\/span>/);
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
   // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.89 \(25 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v3\.90 \(25 Oct\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -347,16 +347,59 @@ test('Sync status menu item: closes the menu, puts focus on Settings (where the 
   assert.deepEqual(order, ['close', 'focus', 'open']);
 });
 
-test('the sync progress bar sits beside the sidebar and under the phone header, through the shell variables', async () => {
+// v3.90: the bar's look and place moved out of an inline style into the .kjr-sync-bar rules, so a phone can keep it off the Collection switcher
+const barRule = css.replace(/\/\*[\s\S]*?\*\//g, '').match(/(?:^|\n)\.kjr-sync-bar\{([^}]*)\}/)[1];
+async function drawBar(label) {
   const { ctx, document } = await loadApp();
   const bar = { style: {} };
   const real = document.getElementById.bind(document);
   document.getElementById = (id) => id === 'sync-progress-bar' ? null : real(id); // none drawn yet, so it creates one
   document.createElement = () => bar;
   document.body.appendChild = () => {};
-  ctx.showSyncProgress(1, 4, 'Importing');
-  assert.match(bar.style.cssText, /position:fixed;top:var\(--kjr-top-off,0px\);left:var\(--kjr-side-w,0px\);right:0;z-index:110;/);
-  assert.doesNotMatch(bar.style.cssText, /56px/);
+  ctx.showSyncProgress(1, 4, label || 'Importing');
+  return { ctx, bar };
+}
+
+test('the sync progress bar sits beside the sidebar and under the phone header, through the shell variables', async () => {
+  const { bar } = await drawBar();
+  assert.equal(bar.id, 'sync-progress-bar', 'the id the progress code and hideSyncProgress look it up by');
+  assert.equal(bar.className, 'kjr-sync-bar', 'the class is the whole of its look and place');
+  assert.equal(bar.style.cssText, undefined, 'no inline style: an inline top would beat the rule that keeps a phone\'s bar off the switcher');
+  assert.match(barRule, /^position:fixed;top:var\(--kjr-top-off,0px\);left:var\(--kjr-side-w,0px\);right:0;z-index:110;/);
+  assert.doesNotMatch(barRule, /56px/, 'the header height comes from --kjr-top-off, never a literal');
+  // the look the inline style had, unchanged, so the desktop bar is the bar it was
+  assert.equal(barRule, 'position:fixed;top:var(--kjr-top-off,0px);left:var(--kjr-side-w,0px);right:0;z-index:110;display:flex;flex-direction:column;gap:6px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--bg2);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:12px;color:var(--text2)');
+  // the bar still paints its progress through the one element and hides itself the way it did
+  const second = (await drawBar('Uploading')).bar;
+  assert.match(second.innerHTML, /Uploading/);
+  assert.match(second.innerHTML, /1 \/ 4 \(25%\)/);
+});
+
+test('the sync progress bar on a phone starts under the Collection switcher where that shows, so the two never overlap, and under the header everywhere else', () => {
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  // the one rule that moves it: a phone, with the switcher shown (showPage unhides #kjr-coll on the four Collection pages), nothing else
+  const moves = [...rules.matchAll(/([^{}]*\.kjr-sync-bar[^{}]*)\{([^}]*)\}/g)].map(m => [m[1].replace(/\s+/g, ' ').trim(), m[2]]);
+  assert.deepEqual(moves.map(m => m[0]), ['.kjr-sync-bar', 'body:has(#kjr-coll:not([hidden])) .kjr-sync-bar'], 'the base rule and one phone override');
+  assert.equal(moves[1][1], 'top:calc(var(--kjr-top-off) + 62px)', 'only its top moves');
+  const phone = rules.slice(rules.indexOf('@media (max-width: 600px){\n  body:has(#kjr-coll:not([hidden])) .kjr-sync-bar'));
+  assert.ok(phone.startsWith('@media (max-width: 600px){\n  body:has(#kjr-coll:not([hidden])) .kjr-sync-bar{top:calc(var(--kjr-top-off) + 62px)}\n}'), 'inside the phone query, which the switcher is hidden outside of');
+  assert.ok(rules.indexOf('.kjr-sync-bar{position:fixed') < rules.indexOf('body:has(#kjr-coll:not([hidden])) .kjr-sync-bar'), 'after the base rule');
+  // 62px is the switcher's own height and the margin it rests at: no overlap at rest (row bottom 12 + 50) and none pinned (row bottom 50)
+  const coll = rules.match(/\n  \.kjr-coll\{([^}]*)\}/)[1];
+  const seg = +rules.match(/\.kjr-coll-btn\{[^}]*min-height:(\d+)px/)[1];
+  const pad = +coll.match(/padding:(\d+)px/)[1], border = +coll.match(/border:(\d+)px solid/)[1], margin = +coll.match(/margin:(\d+)px /)[1];
+  const row = seg + 2 * pad + 2 * border;
+  assert.equal(row, 50);
+  assert.equal(margin + row, 62, 'where the switcher ends at rest, which is also as low as the pinned row\'s 12px of clearance');
+  const restBottom = margin + row, pinnedBottom = row; // from the header's bottom edge (--kjr-top-off)
+  assert.ok(62 >= restBottom && 62 >= pinnedBottom, 'the bar starts at or below the switcher in both states');
+  // it stays the same stack: over the header (100) and the switcher (90) it no longer covers, and a Settings menu's header owner is unchanged
+  const z = (sel) => +rules.match(new RegExp(sel.replace(/[.[\]()+*?^$|{}\\]/g, '\\$&') + '\\{[^}]*z-index:(\\d+)'))[1];
+  assert.equal(z('.kjr-sync-bar'), 110);
+  assert.ok(z('.kjr-sync-bar') > z('.topbar') && z('.topbar') > +coll.match(/z-index:(\d+)/)[1]);
+  // desktop is untouched: nothing but the phone query reads the switcher, and the rail and sidebar offsets still come from the shell variables
+  assert.doesNotMatch(rules.slice(0, rules.indexOf('@media (max-width: 600px){\n  body:has(#kjr-coll:not([hidden])) .kjr-sync-bar')).match(/\.kjr-sync-bar[^}]*\}/g).join(''), /kjr-coll/);
+  assert.match(rules, /@media \(max-width: 600px\)\{\s*:root\{--kjr-side-w:0px;--kjr-top-off:calc\(56px \+ env\(safe-area-inset-top\)\)\}/);
 });
 
 // ── the Holdings rows ───────────────────────────────────────────────────────────────────────────
@@ -1088,8 +1131,8 @@ test('css: the Holdings rows are 60px buttons with a 32px 63/88 thumbnail, 12px 
   assert.match(shellRules, /\.kjr-hold-lang\{font-family:var\(--font-mono\)\}/);
   assert.match(shellRules, /\.kjr-hold-price\{font-weight:600;[^}]*font-variant-numeric:tabular-nums\}/);
   assert.match(shellRules, /\.kjr-hold-pct\{font-size:12px;font-weight:600;/);
-  // v3.88: the Collection switcher is pinned under the header, so the top margin clears it too (header, the row's 50px, its 12px backing, 16px of air)
-  assert.match(shellRules, /\.kjr-hold-row\.is-inspected\{background:var\(--accent-soft\);scroll-margin:calc\(var\(--kjr-top-off\) \+ 78px\) 0 calc\(var\(--kjr-tab-h\) \+ var\(--kjr-tab-lift\) \+ env\(safe-area-inset-bottom\) \+ 16px\)\}/, 'a step that scrolls the row into view keeps it clear of the header, the pinned switcher and the tab bar');
+  // v3.88: the Collection switcher is pinned under the header, so the top margin clears it too (header, the row's 50px, 16px of air: the 12px of backing under the row went in v3.90)
+  assert.match(shellRules, /\.kjr-hold-row\.is-inspected\{background:var\(--accent-soft\);scroll-margin:calc\(var\(--kjr-top-off\) \+ 66px\) 0 calc\(var\(--kjr-tab-h\) \+ var\(--kjr-tab-lift\) \+ env\(safe-area-inset-bottom\) \+ 16px\)\}/, 'a step that scrolls the row into view keeps it clear of the header, the pinned switcher and the tab bar');
   assert.match(shellRules, /@media \(max-width: 600px\)\{\s*body:not\(\.force-tables\) \.page\.kjr-hold-on>\.card\{display:none\}\s*body:not\(\.force-tables\) \.page\.kjr-hold-on \.kjr-hold-wrap\{display:block\}/);
 });
 
@@ -1102,14 +1145,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.89: the badge, the Sentry release, the asset tags and the service worker move together', () => {
+test('v3.90: the badge, the Sentry release, the asset tags and the service worker move together', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.89'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.89">/);
+  assert.match(html, /release:\s*'kujira-collectibles@3\.90'/);
+  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.90">/);
   for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.89"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.89'"), 'sw ' + f);
+    assert.ok(html.includes('<script src="' + f + '?v=3.90"></script>'), f);
+    assert.ok(sw.includes("'./" + f + "?v=3.90'"), 'sw ' + f);
   }
-  assert.match(sw, /const CACHE = 'kujira-v92'/);
+  assert.match(sw, /const CACHE = 'kujira-v93'/);
   assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });

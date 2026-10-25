@@ -2624,18 +2624,22 @@ body{padding-left:var(--kjr-side-w)}
    hidden, and nothing else here applies.
    Pinned (v3.88): the row is sticky at --kjr-top-off, the height the phone header takes (56px and the top safe area, the header's own
    height, so a notch is cleared the way it is for the header), so it sits directly under the header while the page scrolls under it.
-   Its 12px margin is used up as soon as it sticks. It is opaque, the --bg3 track, and a --bg shadow 12px wide on every side backs the
-   gutters and the strip under it, so a row sliding past (the Holdings rows are 8px wider than the gutter) never shows beside or under
-   it. z-index 90 is over the table heads (5) and in-page popovers stay over it (150, 160), under the header (100) and its Settings
-   menu. Nothing else is sticky to the page at this width: a table head sticks inside its own wrap (overflow-x makes it the scroll
-   container), which does not scroll up and down. What the row can cover is what is scrolled into view behind it, the inspected row
-   or tile, so their scroll-margin clears the header, the row (50px), its backing (12px) and 16px of air, which is the 78px below. */
+   Its 12px margin is used up as soon as it sticks. It is opaque, the --bg3 track, and a --bg shadow 12px wide backs the gutters and the
+   top, so a row sliding past (the Holdings rows are 8px wider than the gutter) never shows beside the row. z-index 90 is over the table
+   heads (5) and in-page popovers stay over it (150, 160), under the header (100) and its Settings menu. Nothing else is sticky to the
+   page at this width: a table head sticks inside its own wrap (overflow-x makes it the scroll container), which does not scroll up and
+   down. What the row can cover is what is scrolled into view behind it, the inspected row or tile, so their scroll-margin clears the
+   header, the row (50px) and 16px of air, which is the 66px below.
+   v3.90: the backing no longer reaches below the row. It used to, 12px of --bg under the row as well, and that hid the top 12px of whatever
+   was scrolled up beneath the pinned row (the summary strip's edge, a row's top) and let a tap fall through to the card behind it. At
+   rest it hid nothing, .main starts 12px below the row. clip-path cuts the shadow at the row's bottom edge and keeps the 12px on the
+   other three sides, the shadow's corners still fill the gaps outside the row's rounded ones, and content now passes under the row alone. */
 .kjr-coll{display:none}
 .kjr-coll[hidden]{display:none}
 @media (max-width: 600px){
-  .kjr-coll{position:sticky;top:var(--kjr-top-off);z-index:90;display:flex;align-items:stretch;gap:2px;margin:12px max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 0 0 12px var(--bg)}
+  .kjr-coll{position:sticky;top:var(--kjr-top-off);z-index:90;display:flex;align-items:stretch;gap:2px;margin:12px max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 0 0 12px var(--bg);clip-path:inset(-12px -12px 0)}
   .kjr-coll::-webkit-scrollbar{display:none}
-  .kjr-tile.is-inspected,#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin-top:calc(var(--kjr-top-off) + 78px)}
+  .kjr-tile.is-inspected,#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin-top:calc(var(--kjr-top-off) + 66px)}
   .kjr-coll-btn{-webkit-appearance:none;appearance:none;flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:44px;margin:0;padding:6px 8px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--text2);font:inherit;font-size:13px;font-weight:500;line-height:16px;white-space:nowrap;cursor:pointer}
   .kjr-coll-btn[aria-current="page"]{background:var(--accent);color:var(--accent-fg);font-weight:600}
   .kjr-coll-btn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
@@ -2652,7 +2656,7 @@ body{padding-left:var(--kjr-side-w)}
 .kjr-hold{display:flex;flex-direction:column;margin-bottom:8px}
 .kjr-hold-row{-webkit-appearance:none;appearance:none;display:flex;align-items:center;gap:12px;width:calc(100% + 16px);min-height:60px;margin:0 -8px;padding:8px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;content-visibility:auto;contain-intrinsic-size:auto 60px;transition:background 0.16s ease-out}
 .kjr-hold-row:active{background:var(--bg3)}
-.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:calc(var(--kjr-top-off) + 78px) 0 calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
+.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:calc(var(--kjr-top-off) + 66px) 0 calc(var(--kjr-tab-h) + var(--kjr-tab-lift) + env(safe-area-inset-bottom) + 16px)}
 .kjr-hold-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .kjr-hold-row .kjr-thumb{width:32px;height:auto;aspect-ratio:63/88;border-radius:4px}
 .kjr-hold-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
@@ -2783,6 +2787,20 @@ body{padding-left:var(--kjr-side-w)}
 /* ── The rail's long-press labels: a long press on a rail control must not raise the system callout or start a selection ── */
 @media (hover: none) {
   .topbar .nav-btn,.topbar .kjr-side-search,.topbar .kjr-side-add,.topbar .logo,.topbar #sync-indicator,.topbar #settings-btn{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+}
+
+/* ── Import progress bar (v3.90) ──
+   showSyncProgress (app.js) draws one fixed strip while an import, an upload or a price run goes. It was an inline style and it is these
+   rules now, so a phone can place it. From 601px it is where it always was: along the top, beside the sidebar or the rail (--kjr-side-w)
+   and under the top safe area (--kjr-top-off). At 600px and below --kjr-top-off is the phone header's height, and the Collection
+   switcher is pinned at that very offset, so the bar drew straight over the switcher on the four pages an import is watched from. Where
+   the switcher is showing, the bar now starts under it: 62px is the switcher's 50px (the 44px segment, the 2px padding and the 1px border
+   on both sides) plus the 12px margin it rests at, so the bar clears the row both at rest and pinned, and sits 12px under it once it is
+   pinned. :has() reads the same hidden attribute showPage sets on the switcher, so the bar follows the page with no second state to keep
+   in step, and every other page keeps it directly under the header. The values are the inline style's, nothing else about it changed. */
+.kjr-sync-bar{position:fixed;top:var(--kjr-top-off,0px);left:var(--kjr-side-w,0px);right:0;z-index:110;display:flex;flex-direction:column;gap:6px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--bg2);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:12px;color:var(--text2)}
+@media (max-width: 600px){
+  body:has(#kjr-coll:not([hidden])) .kjr-sync-bar{top:calc(var(--kjr-top-off) + 62px)}
 }
 
 /* ═══════════ Touch sizes (iPad pass, v3.85) ═══════════

@@ -170,7 +170,7 @@ test('content: the source line says where the price came from and how long ago, 
   // no history at all
   assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'KR', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language');
   assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'KR', marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language');
-  // v3.85 ships with the Japanese lane off, so a Japanese single (with a number or without) reads like every other non-English one, as in v3.84
+  // with the Japanese lane forced off here (loadApp({ jaLane: false }), the kill switch state, the lane ships on since v3.89), a Japanese single (with a number or without) reads like every other non-English one, as in v3.84
   for (const name of ['Pikachu 25', 'Umbreon']) {
     assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name, marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language', name);
     assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name, marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language', name);
@@ -338,7 +338,7 @@ test('content: Refresh price is off in a local preview and for a single with no 
   assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', live)), { ok: true, why: '' });
   assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('slabs', slab({}))), { ok: true, why: '' }, 'slabs price through PPT');
   assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'KR', name: 'Pikachu 25' })).why, 'Manual price, no free source for this language');
-  // v3.85 ships with the Japanese lane off: a Japanese, Chinese or Indonesian single is a manual price too, with a number or without
+  // with the Japanese lane forced off here (the kill switch state, it ships on since v3.89): a Japanese, Chinese or Indonesian single is a manual price too, with a number or without
   for (const language of ['JP', 'CN', 'ID']) {
     assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Pikachu 25' }))), { ok: false, why: 'Manual price, no free source for this language' }, language);
     assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Umbreon' })).why, 'Manual price, no free source for this language', language + ' without a number');

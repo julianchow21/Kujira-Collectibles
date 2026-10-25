@@ -2549,12 +2549,14 @@ async function retrySyncDiagnostics() {
 }
 
 // ── Import progress bar ───────────────────────────────────────
+// Its look and its place are the .kjr-sync-bar rules in styles.css (v3.90, they were an inline style), so a phone can keep it clear of the
+// Collection switcher, which is pinned at the same offset under the header.
 function showSyncProgress(current, total, label) {
   let bar = document.getElementById('sync-progress-bar');
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'sync-progress-bar';
-    bar.style.cssText = 'position:fixed;top:var(--kjr-top-off,0px);left:var(--kjr-side-w,0px);right:0;z-index:110;background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text2);box-shadow:0 4px 12px rgba(0,0,0,0.25)';
+    bar.className = 'kjr-sync-bar';
     document.body.appendChild(bar);
   }
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
@@ -11379,6 +11381,15 @@ const _FILTER_INPUTS = {
              sels:['slabs-grader','slabs-grade'], statusSel:null },
   sales:   { search:'sales-search', cols:['slf-date','slf-product','slf-buyer','slf-cost','slf-revenue','slf-shipping','slf-fees','slf-days','slf-profit','slf-margin'], sels:['slf-channel'], statusSel:null }
 };
+// Is one of the session-only chip filters narrowing this table's list: the unresolved-only and stale-prices-only ones on Singles, the
+// stale-prices-only one on Slabs (the flags are declared with the chips, further down). They narrow the list as the boxes do, so they count
+// as active filters (v3.90): v3.88 made clearAllFilters clear them, but with only a chip on, this said no filter was active and the button
+// that clears them stayed hidden.
+function _kjrChipFilterOn(table) {
+  if (table === 'singles') return !!(_kjrSinglesUnresolvedOnly || _kjrSinglesStaleOnly);
+  if (table === 'slabs') return !!_kjrSlabsStaleOnly;
+  return false;
+}
 function _hasActiveFilters(table) {
   const cfg = _FILTER_INPUTS[table];
   if (!cfg) return false;
@@ -11386,6 +11397,7 @@ function _hasActiveFilters(table) {
   if (cfg.cols.some(id => (document.getElementById(id)?.value||'').trim())) return true;
   if (cfg.sels.some(id => (document.getElementById(id)?.value||'').trim())) return true;
   if (cfg.statusSel) { const v = document.getElementById(cfg.statusSel)?.value; if (v && v !== 'available') return true; }
+  if (_kjrChipFilterOn(table)) return true;
   return false;
 }
 function updateClearFiltersBtn(table) {
@@ -15620,10 +15632,11 @@ function kjrOvHeroHtml(s) {
   const pending = s.allTimePendingDealerSales || 0;
   const known = Math.max(0, sales.length - pending);
   // The figures behind each number sit in an info bubble, not under it. Only the pending-settlement line stays visible, because
-  // it explains why the profit reads Unknown. rtip is empty (no icon) while there is no known sale to describe.
+  // it explains why the profit reads Unknown. rtip is the first line of the Realised profit bubble, and every state has one (v3.90): None yet
+  // and Unknown used to have no icon, so the sentence that says why a sale may be left out was missing exactly where it is most needed.
   let rv, rcls = '', rsub = '', rtip = '';
-  if (sales.length === 0) { rv = 'None yet'; rcls = ' dim'; }
-  else if (known === 0) { rv = 'Unknown'; rcls = ' dim'; rsub = _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement'; }
+  if (sales.length === 0) { rv = 'None yet'; rcls = ' dim'; rtip = 'No sales logged yet'; }
+  else if (known === 0) { rv = 'Unknown'; rcls = ' dim'; rsub = _kjrOvPlural(pending, 'Dealer sale', 'Dealer sales') + ' pending settlement'; rtip = 'No confirmed sales yet'; }
   else {
     rv = _kjrOvSigned(s.allTimeProfit);
     rcls = s.allTimeProfit > 0 ? ' pos' : (s.allTimeProfit < 0 ? ' neg' : '');
@@ -15635,7 +15648,7 @@ function kjrOvHeroHtml(s) {
   const stats =
     '<div class="ov-stat"><div class="ov-stat-label ov-info-row">Cost basis' + _kjrOvInfo('ov-info-cost', 'Cost basis', costTip, KJR_OV_TIPS.cost) + '</div>' +
       '<div class="ov-stat-value">' + _kjrOvMoney(costBasis) + '</div></div>' +
-    '<div class="ov-stat"><div class="ov-stat-label' + (rtip ? ' ov-info-row ov-info-end' : '') + '">Realised profit' + (rtip ? _kjrOvInfo('ov-info-roi', 'Realised profit', rtip, KJR_OV_TIPS.profit) : '') + '</div>' +
+    '<div class="ov-stat"><div class="ov-stat-label ov-info-row ov-info-end">Realised profit' + _kjrOvInfo('ov-info-roi', 'Realised profit', rtip, KJR_OV_TIPS.profit) + '</div>' +
       '<div class="ov-stat-value' + rcls + '">' + esc(rv) + '</div>' +
       (rsub ? '<div class="ov-stat-sub">' + esc(rsub) + '</div>' : '') + '</div>' +
     '<div class="ov-stat">' + kjrOvAttentionHtml(s.attention || []) + '</div>';
@@ -18234,7 +18247,8 @@ async function _tcgdexCardSearch(name, num, lang, timeoutMs) {
 // opts.set (art only, features.js kjrImgRun): the row's set, applied by _tcgdexSetHintPick after the name has had its say.
 // opts.art (art only): this lookup is for a card image. English then also reads the fetched TCGdex set list when the static table
 // does not know the row's set (_kjrArtSets), and a Japanese row (lang ja) is searched by its Japanese species name (_kjrResolveJa),
-// which pricing never does: a Japanese row is manual-priced, so the price lane never calls this for one. opts.report (art only) is
+// which pricing never does: a Japanese single is priced by the PPT Japanese lane (v3.89), which takes only a card that already has a tcgdexId
+// (this art lookup is what writes it) and never resolves one, so the price code never calls this for a Japanese row. opts.report (art only) is
 // an object that gets .transient = true (and .why: 'net', 'map' or 'sets') when the answer was "could not tell" (a transport
 // failure, the species map or the set list would not load), so the caller does not record it as a 7-day miss.
 // v3.82: the English path says the same ('net'), it used to hand every failure back as a plain null, which the caller could not tell
@@ -18483,6 +18497,10 @@ function openApiSettings() {
     : `Slabs are priced from real eBay sold data via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. Both convert to SGD automatically, refreshed daily.`;
   const pptScope = jaOn ? 'slabs, plus Japanese singles with a card number and a matched card' : 'slabs';
   const pptCost = jaOn ? 'a slab search costs up to 6 credits, a single up to 3' : 'a slab search costs up to 6 credits';
+  // The plan buttons name what the app spends (PPT_PLANS[...].credits, the budget kjrDailyCredits reads), so they can not drift from it. The
+  // vendor's own quota (PPT_PLANS[...].quota, 100 and 20,000) is only ever worded as the vendor's, under the key (v3.90: the buttons said 100 and 20,000)
+  const planText = (key) => PPT_PLANS[key].label + ' (' + kjrFmtCredits(PPT_PLANS[key].credits) + ' credits a day)';
+  const vendorQuota = 'PokemonPriceTracker allows ' + kjrFmtCredits(PPT_PLANS.free.quota) + ' credits a day on a free key and ' + kjrFmtCredits(PPT_PLANS.paid.quota) + ' on a paid one, this app keeps to ' + kjrFmtCredits(PPT_PLANS.free.credits) + ' and ' + kjrFmtCredits(PPT_PLANS.paid.credits);
   // Remove any existing instance first
   document.getElementById('api-key-modal')?.remove();
   const html = `
@@ -18502,12 +18520,12 @@ function openApiSettings() {
             <label for="ppt-key-input" style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:6px">PokemonPriceTracker API Key</label>
             <input type="password" id="ppt-key-input" class="fi" placeholder="pokeprice_free_..." value="${ppt}" style="font-family:var(--font-mono);font-size:12px">
             <div style="font-size:11px;color:var(--text3);margin-top:4px">
-              <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - 100 free credits a day
+              <a href="https://www.pokemonpricetracker.com/api" target="_blank" style="color:var(--accent)">pokemonpricetracker.com/api</a> - ${vendorQuota}
             </div>
             <div id="ppt-plan-label" style="font-size:12px;color:var(--text3);font-weight:500;margin:14px 0 6px">Price plan</div>
             <div class="kjr-plan" id="ppt-plan" role="radiogroup" aria-labelledby="ppt-plan-label" aria-describedby="ppt-plan-help">
-              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="free"${plan === 'free' ? ' checked' : ''} onchange="kjrPptPlanChoose('free')"><span class="kjr-plan-txt">Free (100 credits a day)</span></label>
-              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="paid"${plan === 'paid' ? ' checked' : ''} onchange="kjrPptPlanChoose('paid')"><span class="kjr-plan-txt">Paid (20,000 credits a day)</span></label>
+              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="free"${plan === 'free' ? ' checked' : ''} onchange="kjrPptPlanChoose('free')"><span class="kjr-plan-txt">${planText('free')}</span></label>
+              <label class="kjr-plan-opt"><input type="radio" name="ppt-plan" value="paid"${plan === 'paid' ? ' checked' : ''} onchange="kjrPptPlanChoose('paid')"><span class="kjr-plan-txt">${planText('paid')}</span></label>
             </div>
             <div id="ppt-plan-help" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Switch back to Free after you cancel, or the queue pauses on the first refusal.</div>
           </div>
@@ -18644,8 +18662,10 @@ async function testApiKeys() {
   status.innerHTML = '<span style="color:var(--text3)">Testing...</span>';
   // Save first so test uses what's in the inputs
   setApiKey('ppt', document.getElementById('ppt-key-input').value);
-  // Test with a known-resolvable EN card (Charizard ex 223/197, sv03-223).
-  const result = await fetchMarketPrice({ name: 'Charizard ex 223/197', grader: null, grade: null, language: 'EN' });
+  // Test with a known-resolvable EN card (Charizard ex 223/197, sv03-223). TCGdex answers it first, so the PokemonPriceTracker key is only
+  // exercised when TCGdex misses, and that fallback search is billed into today's credits like any other (kjrBudgetedLookup, v3.90).
+  const look = await kjrBudgetedLookup({ name: 'Charizard ex 223/197', grader: null, grade: null, language: 'EN' });
+  const result = look.r;
   let html = '';
   if (result.maxUsd || result.maxEur) {
     const usdPart = result.maxUsd ? 'US$' + Math.round(result.maxUsd) : 'EUR' + result.maxEur.toFixed(2);
@@ -18654,7 +18674,9 @@ async function testApiKeys() {
     html += '<div style="color:var(--red)">✗ TCGdex: ' + (result.tcgdexError || 'no result') + '</div>';
   }
   if (result.source && /^PPT/.test(result.source)) html += '<div style="font-size:11px;color:var(--text3)">(TCGdex missed, PPT fallback served this test)</div>';
+  else if (look.refusal && !result.maxSgd) html += '<div style="color:var(--amber)">⏸ PokemonPriceTracker: not tried, ' + _kjrLookupRefusalText(look.refusal).reason + '</div>';
   else html += '<div style="color:var(--red)">✗ PokemonPriceTracker (slab fallback): ' + (result.pptError || 'not tried - TCGdex succeeded') + '</div>';
+  html += _kjrLookupCostLine(look, 'font-size:11px;color:var(--text3)');
   status.innerHTML = html;
 }
 
@@ -20361,6 +20383,8 @@ async function runRefreshQueue(manual = false) {
   if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
   // A manual bulk refresh (bulkRefreshPrices) bills the same saved queue's credits, so the two never run at once: each writes the queue back
   if (_bulkRefreshRunning) { if (manual) toast('A bulk refresh is running - wait for it to finish first'); return; }
+  // So does a hand lookup (kjrBudgetedLookup, v3.90), whose bill is written when its answer comes and would be lost under a queue held in memory
+  if (_kjrLookupsOpen > 0) { if (manual) toast('A price lookup is running - wait for it to finish first'); return; }
   if (isLocalhostPreview()) {
     if (manual) toast('Price refresh is disabled in local preview (sync off). Use the live site.');
     return;
@@ -21229,9 +21253,11 @@ function _kjrBulkKind(item, table) {
 }
 
 let _bulkRefreshRunning = false;
+let _kjrLookupsOpen = 0; // hand lookups in flight (kjrBudgetedLookup): the queue and a bulk run do not start under one, their bill goes into the same saved queue
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
   if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
+  if (_kjrLookupsOpen > 0) { toast('A price lookup is running - wait for it to finish first'); return; } // its bill is written into the same queue (kjrBudgetedLookup)
   if (table !== 'singles' && table !== 'slabs') { toast('Only Singles and Slabs have an automatic price, the rest are priced by hand'); return; }
   // TCGdex needs no key, and a slab table has no TCGdex-free option so it needs PPT. PPT
   // counts as available when the Worker proxy is configured, it holds PPT_KEY as a secret,
@@ -21664,6 +21690,105 @@ function copyListing() {
   }
 }
 
+// ── Hand lookups bill the day's credits too (v3.90) ──
+// testApiKeys (Settings, Test Keys) and searchEbay (the price lookup on Listings) are the two callers that ask the router for a plain name
+// lookup, with no tcgdexOnly, no japanese flag and no grader, so after a TCGdex miss they reach fetchPriceFromPPT's fuzzy raw search: up to
+// two requests of up to 3 credits each. They only show what comes back and never write a price, but those credits come out of the same daily
+// allowance the queue and bulkRefreshPrices spend. So, like them, a lookup asks the vendor nothing once kjrCreditsLeft says the day's budget
+// can not pay for a search or the vendor has refused for credits today (q.creditsPausedDate), it bills what the vendor says it cost into the
+// saved queue's day (q.dayCreditsUsed[utcDay]), and the vendor's own refusal sets that same pause. Where it may not ask PPT it still asks
+// TCGdex, which is free, and says why PPT was left out.
+// The fuzzy search stays reachable from these two on purpose. It is how the lookup box finds a card typed by name with no card number (TCGdex
+// needs one to match), and the only time Test Keys ever touches the PokemonPriceTracker key (TCGdex answers its known card first). Without it
+// the lookup would miss most typed names and the test would never test the key. What changed is that it is no longer free of the budget.
+// A refresh pass (the queue, bulkRefreshPrices) keeps its queue in memory and writes it back as it goes, so a bill written under one would be
+// overwritten: while one runs a lookup does not ask PPT, and the passes do not start while a lookup is in flight (_kjrLookupsOpen, declared
+// with _bulkRefreshRunning). That also keeps the vendor's pacing, which a lookup between two paced requests would break.
+
+// The record the day's credits live on, read only: the saved queue, else the side record a cleared or discarded queue left for its
+// replacement (_kjrStashCredits), else null (nothing spent as far as the app knows). Nothing is written or removed here, beyond what loadQueue
+// itself does with a queue of an older schema (it sets that queue's credits aside and drops it, whoever asks).
+function _kjrCreditsRecord() {
+  const q = loadQueue();
+  if (q) return q;
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem(KJR_CREDITS_STASH_KEY) || 'null'); } catch (e) { rec = null; }
+  return rec && typeof rec === 'object' && rec.dayCreditsUsed && typeof rec.dayCreditsUsed === 'object'
+    ? { dayCreditsUsed: rec.dayCreditsUsed, creditsVersion: 1, creditsPausedDate: rec.creditsPausedDate || null } : null;
+}
+
+// Why a hand lookup may not ask PPT right now, or null when today's budget can pay for a search. Read only, it saves nothing.
+//   { why: 'running' }              a refresh pass is running and holds the queue
+//   { why: 'paused', used, limit }  the vendor refused for credits earlier today
+//   { why: 'spent', used, limit }   what is left of the day's budget (kjrCreditsLeft) can not pay for one search
+function kjrLookupRefusal() {
+  if (_queueRunning || _bulkRefreshRunning) return { why: 'running' };
+  const day = kjrUtcDay();
+  const rec = _kjrCreditsRecord();
+  const used = kjrCreditsUsedOn(rec, day), limit = kjrDailyCredits();
+  if (rec && rec.creditsPausedDate === day) return { why: 'paused', used, limit };
+  if (kjrCreditsLeft(rec, day) < _pptEstimateCredits(null)) return { why: 'spent', used, limit };
+  return null;
+}
+
+// The refusal in words: reason is a clause that follows "not tried," or "was not asked because", next says what to do about it.
+function _kjrLookupRefusalText(refusal) {
+  if (!refusal) return { reason: '', next: '' };
+  if (refusal.why === 'running') return { reason: 'a price refresh is running and spends the same daily credits', next: 'Try again when it has finished.' };
+  const reset = 'They reset at 8am Singapore time (midnight UTC).';
+  if (refusal.why === 'paused') return { reason: 'it refused any more credits earlier today', next: reset };
+  return { reason: 'today\'s credits are used up (' + kjrFmtCredits(refusal.used) + ' of ' + kjrFmtCredits(refusal.limit) + ' on the ' + PPT_PLANS[kjrPptPlan()].label + ' plan)', next: reset };
+}
+
+// What a lookup that spent credits tells the owner, as one muted line (an empty string when it spent none)
+function _kjrLookupCostLine(look, style) {
+  const spent = look && look.r ? Number(look.r.creditsUsed) || 0 : 0;
+  if (!look || !look.billed || spent <= 0) return '';
+  return '<div style="' + style + '">PokemonPriceTracker used ' + _kjrOvPlural(spent, 'credit', 'credits') + ', ' + kjrFmtCredits(look.billed.used) + ' of ' +
+    kjrFmtCredits(look.billed.limit) + ' spent today on the ' + PPT_PLANS[kjrPptPlan()].label + ' plan</div>';
+}
+
+// Bill what a lookup cost into the day: its credits (the router's creditsUsed, the vendor's own count, else the estimate) added to
+// q.dayCreditsUsed[utcDay], and the vendor's refusal as the queue's pause. The saved queue is read fresh here, after the answer, and written
+// back in the same step (nothing awaits in between), so two lookups can not lose each other's credits. With no queue yet one is made, taking
+// the credits a discarded one left, as bulkRefreshPrices makes it. Returns { used, limit } for the screen, or null when nothing was spent.
+function _kjrBillLookup(r) {
+  const spent = Math.max(0, Number(r && r.creditsUsed) || 0);
+  const refused = !!(r && r.creditsExhausted);
+  if (!spent && !refused) return null;
+  const day = kjrUtcDay();
+  try {
+    let q = loadQueue();
+    if (!q) q = _kjrCarryCredits(buildRefreshQueue(), null);
+    _kjrAdoptCredits(q);
+    if (!q.dayCreditsUsed || typeof q.dayCreditsUsed !== 'object') q.dayCreditsUsed = {};
+    if (spent) q.dayCreditsUsed[day] = (q.dayCreditsUsed[day] || 0) + spent;
+    if (refused) q.creditsPausedDate = day;
+    saveQueue(q);
+    _kjrRedrawOverview(); // the Overview's credits figure has moved
+    if (document.getElementById('api-key-modal')) _renderQueueStatus();
+    return { used: kjrCreditsUsedOn(q, day), limit: kjrDailyCredits() };
+  } catch (e) {
+    console.warn('[lookup] could not record the credits this lookup used:', e); // bookkeeping only, the answer the owner asked for still shows
+    return null;
+  }
+}
+
+// One hand lookup through the router, inside the day's budget. descriptor is fetchMarketPrice's own (a plain name lookup, the caller never
+// sets tcgdexOnly). Resolves to { r, refusal, billed }: r the router's answer, refusal why PPT was not asked (kjrLookupRefusal, null when it
+// could be, the lookup then ran TCGdex alone), billed { used, limit } once this lookup has spent credits (null when it spent none). It
+// never writes a price. It throws what the router throws, the callers show that.
+async function kjrBudgetedLookup(descriptor) {
+  const refusal = kjrLookupRefusal();
+  _kjrLookupsOpen++;
+  try {
+    const r = await fetchMarketPrice(refusal ? Object.assign({}, descriptor, { tcgdexOnly: true }) : descriptor);
+    return { r, refusal, billed: _kjrBillLookup(r) };
+  } finally {
+    _kjrLookupsOpen--;
+  }
+}
+
 async function searchEbay() {
   const q = document.getElementById('ebay-query').value.trim();
   if (!q) { toast('Enter a search query'); return; }
@@ -21673,18 +21798,32 @@ async function searchEbay() {
 
   // TCGdex needs no key at all (free, CORS-open), so this always has a real
   // source to try - raw singles resolve via TCGdex first, falling back to
-  // PPT (client key OR Worker proxy) on a TCGdex miss. The AI-estimate
+  // PPT (client key OR Worker proxy) on a TCGdex miss, inside the day's
+  // credit budget (kjrBudgetedLookup, v3.90). The AI-estimate
   // fallback this function used to have when neither source was configured
   // is gone: it became unreachable once TCGdex removed the "no source at
   // all" case entirely (Market Price rework, Phase 6 UI-honesty pass).
   outEl.innerHTML = '<span class="ai-status">Fetching from TCGdex + PokemonPriceTracker...</span>';
-  let r;
+  let look, r;
   try {
-    r = await fetchMarketPrice({ name: q, grader: null, grade: null, language: null });
+    look = await kjrBudgetedLookup({ name: q, grader: null, grade: null, language: null });
+    r = look.r;
   } catch(err) {
     outEl.innerHTML = '<div style="color:var(--red)">Price lookup threw: ' + esc(err.message || String(err)) + '<br><span style="font-size:11px;color:var(--text3)">This usually means the price API is unreachable from your browser (CORS, network, or rate limit). Open Settings, then API settings, to check or replace the keys.</span></div>';
     return;
   }
+  // a muted line under the result when this lookup spent credits, and the amber box for a day the credits can not pay for
+  const costLine = (style) => _kjrLookupCostLine(look, style);
+  const limitBox = (head, why, next) =>
+    '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
+      '<strong>' + head + '</strong>' +
+      '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' + why + ' ' + next + '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
+        'TCGdex: ' + esc(r.tcgdexError || 'no result') + '<br>' +
+        'Or add the card number so TCGdex can price it for free instead.' +
+      '</div>' +
+      costLine('margin-top:6px;font-size:11px;color:var(--text3)') +
+    '</div>';
   if (r.maxSgd) {
     const rateNote = 'Rate: ' + (r.maxUsd ? 'US$1 = S$' : 'EUR1 = S$') + r.sgdRate.toFixed(4);
     const usdOrEur = r.maxUsd ? 'US$' + Math.round(r.maxUsd) : 'EUR' + r.maxEur.toFixed(2);
@@ -21695,18 +21834,16 @@ async function searchEbay() {
         <div style="font-size:24px;font-weight:600;margin-top:4px">S$${r.maxSgd.toFixed(0)}</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">${usdOrEur} · Confidence: ${r.confidence}</div>
         ${r.confidence === 'low' ? '<div style="font-size:11px;color:#f59e0b;margin-top:6px">⚠ Low confidence - card matched on name only, manually verify</div>' : ''}
+        ${costLine('font-size:11px;color:var(--text3);margin-top:6px')}
       </div>`;
+  } else if (look.refusal) {
+    // TCGdex had nothing and the budget (or a running refresh) kept PPT out of it: said, never guessed at and never spent
+    const why = _kjrLookupRefusalText(look.refusal);
+    outEl.innerHTML = limitBox(look.refusal.why === 'running' ? '⏳ A price refresh is running' : '⏳ Daily price-lookup limit reached',
+      'PokemonPriceTracker was not asked because ' + why.reason + '.', why.next);
   } else if (r.creditsExhausted || /HTTP 429/.test(r.pptError || '')) {
-    // PPT free plan is 100 credits/day and resets at 00:00 UTC (08:00 SGT).
-    outEl.innerHTML = '<div style="padding:10px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-size:13px">' +
-      '<strong>⏳ Daily price-lookup limit reached</strong>' +
-      '<div style="margin-top:6px;font-size:12px;color:var(--text2)">' +
-        'PokemonPriceTracker gives 100 credits a day on the free plan, and the day\'s credits are used up. They reset at 08:00 SGT (midnight UTC).' +
-      '</div>' +
-      '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
-        'Try again after the reset, or add the card number so TCGdex can price it for free instead.' +
-      '</div>' +
-      '</div>';
+    // The vendor refused for credits (its day resets at 00:00 UTC, 08:00 SGT), and the pause is saved so the queue stops asking too
+    outEl.innerHTML = limitBox('⏳ Daily price-lookup limit reached', 'PokemonPriceTracker refused any more credits today.', 'They reset at 8am Singapore time (midnight UTC).');
   } else {
     outEl.innerHTML = '<div style="padding:10px;background:var(--red-soft);border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:13px">' +
       '<strong>No price found for "' + esc(q) + '"</strong>' +
@@ -21717,6 +21854,7 @@ async function searchEbay() {
       '<div style="margin-top:8px;font-size:11px;color:var(--text3)">' +
         'Try a simpler query (e.g. just the card name plus its number).' +
       '</div>' +
+      costLine('margin-top:6px;font-size:11px;color:var(--text3)') +
       '</div>';
   }
 }

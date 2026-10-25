@@ -350,7 +350,9 @@ test('css: from 601px it is display:none and nothing else styles it, so the side
   assert.equal(sectionRules, outside + '\n' + phoneBlock, 'and the phone query is the rest of the section');
   // every rule that mentions the switcher is in that query, or is the Dealer preview hiding it, in the whole stylesheet
   const mentions = (rules.match(/kjr-coll/g) || []).length;
-  assert.equal(mentions, (phoneBlock.match(/kjr-coll/g) || []).length + (outside.match(/kjr-coll/g) || []).length + 1, 'plus the one Dealer preview line');
+  assert.equal(mentions, (phoneBlock.match(/kjr-coll/g) || []).length + (outside.match(/kjr-coll/g) || []).length + 2, 'plus the Dealer preview line and the import progress bar\'s :has() (v3.90)');
+  // the second is the progress bar asking whether the switcher is showing, to start under it. It reads the switcher and styles nothing of it
+  assert.ok(rules.includes('body:has(#kjr-coll:not([hidden])) .kjr-sync-bar{top:calc(var(--kjr-top-off) + 62px)}'));
   assert.match(css, /html\.dealer-preview-only \.kjr-coll,\n/, 'the Dealer preview hides the nav chrome, and this is nav chrome');
   assert.equal((phoneBlock.match(/@media/g) || []).length, 1, 'no second query inside');
   // the phone query turns the row on with display:flex (specificity 0,1,0) and the [hidden] rule above it (0,2,0) still wins, so a page
@@ -363,7 +365,7 @@ test('css: the row is a --bg3 track that scrolls inside itself with no bar, and 
   assert.match(row, /position:sticky;top:var\(--kjr-top-off\);z-index:90;display:flex;align-items:stretch;gap:2px;/, 'pinned, and still a positioned box, so offsetLeft is measured from the row');
   assert.match(row, /margin:12px max\(12px,env\(safe-area-inset-right\)\) 0 max\(12px,env\(safe-area-inset-left\)\);/, 'the page gutter, and the notch in landscape');
   assert.match(row, /padding:2px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;/);
-  assert.match(row, /background:var\(--bg3\);border:1px solid var\(--border2\);border-radius:var\(--radius\);box-shadow:0 0 0 12px var\(--bg\)$/, 'the look of .seg, and the page-coloured backing');
+  assert.match(row, /background:var\(--bg3\);border:1px solid var\(--border2\);border-radius:var\(--radius\);box-shadow:0 0 0 12px var\(--bg\);clip-path:inset\(-12px -12px 0\)$/, 'the look of .seg, and the page-coloured backing, cut at the row\'s bottom edge (v3.90)');
   assert.doesNotMatch(row, /(^|;)(width|min-width|max-width|flex-wrap)\s*:/, 'a block-level flex box fills the gutters and no more');
   assert.match(phoneBlock, /\.kjr-coll::-webkit-scrollbar\{display:none\}/);
 });
@@ -459,7 +461,7 @@ test('pinned: it sits over the table heads and under the header, and the page po
   assert.ok(row < zOf('.kjr-rowmenu') && row < zOf('.bottom-tab-bar') && row < zOf('.overlay'), 'and so do the row menu, the tab bar and the dialogs');
 });
 
-test('pinned: it is opaque in both themes, the track and the backing are solid tokens, and the backing reaches the screen edges and the strip under the row', () => {
+test('pinned: it is opaque in both themes, the track and the backing are solid tokens, and the backing reaches the screen edges (v3.90: and no longer the strip under the row)', () => {
   for (const [theme, t] of [['dark', dark], ['light', light]]) {
     for (const k of ['--bg', '--bg3']) assert.match(t[k], /^#[0-9A-Fa-f]{6}$/, theme + ' ' + k + ' is a solid six-digit colour, no alpha');
   }
@@ -471,6 +473,30 @@ test('pinned: it is opaque in both themes, the track and the backing are solid t
   assert.equal(spread, gutter, 'the backing is as wide as the gutter, so it fills it to the screen edge on both sides (Holdings rows are 8px wider than the gutter)');
   assert.match(rules, /body\{font-family:var\(--font-sans\);[^}]*background:var\(--bg\);/, 'the backing is the page colour, so at rest it is not seen');
   assert.ok(/@media\(max-width:700px\)\{\s*\.main\{padding:12px;/.test(rules), 'the page content that slides under it starts 12px in from the edges, the width of the backing, as .main pads at this width');
+  // the clip is as wide as the backing on the top and the two sides, so it cuts none of the backing the gutters need
+  const clip = row.match(/clip-path:inset\(-(\d+)px -(\d+)px 0\)/);
+  assert.ok(clip, 'the row clips its own shadow');
+  assert.deepEqual([+clip[1], +clip[2]], [spread, spread], 'the top and the sides keep all of the backing, only the bottom is cut');
+});
+
+// ── the backing stops at the row (v3.90) ─────────────────────────────────────────────────────
+// Until v3.90 the 12px shadow went all the way round, so under the pinned row it was a 12px strip of --bg that hid the top of whatever was scrolled
+// up beneath it (the summary strip's edge, a row's first 12px) and let a tap fall through to the card hidden behind it: at 150px of scroll,
+// elementFromPoint under the strip answered the summary label behind it. At rest nothing sat under it, .main starts 12px below the row, which is
+// why the strip was never seen on a fresh page. The harness has no layout engine, so this pins the stylesheet, and the pixels were checked in a
+// browser (the strip's bottom edge and a tap just under the row, at rest and at 150px of scroll).
+test('backing: the shadow is cut at the row\'s bottom edge, so no strip of --bg sits under the pinned row for content to hide in', () => {
+  const row = phoneBlock.match(/\n  \.kjr-coll\{([^}]*)\}/)[1];
+  // inset(top right bottom left): a negative value reaches out of the border box, 0 stops exactly at it, so the bottom is the row's own edge
+  assert.match(row, /clip-path:inset\(-12px -12px 0\)(;|$)/);
+  assert.equal((row.match(/box-shadow:/g) || []).length, 1, 'one shadow, no second one that reaches below the row');
+  assert.match(row, /box-shadow:0 0 0 12px var\(--bg\)/, 'centred on the row, not offset down');
+  assert.doesNotMatch(row, /margin-bottom/, 'and no spacer under the row to push the page about: the layout of the four pages is as it was');
+  // the shadow's corner arc is concentric with the row's own and 12px larger, so what the clip leaves is the backing at the top and the sides, and
+  // the corners inside the row's box still read as page colour. Nothing of the row itself is clipped: the clip is never tighter than its box
+  assert.match(row, /border-radius:var\(--radius\)/);
+  assert.doesNotMatch(row, /clip-path:inset\(0/);
+  assert.doesNotMatch(row, /clip-path:(?!inset)/, 'a plain inset, no path or shape that could cut the row');
 });
 
 test('pinned: nothing else is pinned to the top of the page at 600px and below, so there is no other top to move', () => {
@@ -488,13 +514,14 @@ test('pinned: nothing else is pinned to the top of the page at 600px and below, 
   assert.match(rules, /@media \(max-width: 900px\)\{\s*#kjr-inspector\{display:none!important\}/);
 });
 
-test('pinned: a row or tile scrolled into view clears the header, the row, its backing and 16px of air, and 600px and below is the only place that changes', () => {
+test('pinned: a row or tile scrolled into view clears the header, the row and 16px of air, and 600px and below is the only place that changes', () => {
   const seg = +phoneBlock.match(/\.kjr-coll-btn\{[^}]*min-height:(\d+)px/)[1];
   const pad = +phoneBlock.match(/\.kjr-coll\{[^}]*padding:(\d+)px/)[1];
   const border = +phoneBlock.match(/\.kjr-coll\{[^}]*border:(\d+)px solid/)[1];
-  const backing = +phoneBlock.match(/box-shadow:0 0 0 (\d+)px var\(--bg\)/)[1];
-  const clear = seg + 2 * pad + 2 * border + backing + 16;
-  assert.equal(clear, 78, 'the segment (44) and the track\'s padding (2) and border (1) on both sides make the 50px row, then 12px of backing and 16px of air');
+  // v3.90: the backing no longer reaches below the row (clip-path), so it is no part of the clearance: it was 12px of the 78
+  assert.match(phoneBlock, /clip-path:inset\(-12px -12px 0\)/);
+  const clear = seg + 2 * pad + 2 * border + 16;
+  assert.equal(clear, 66, 'the segment (44) and the track\'s padding (2) and border (1) on both sides make the 50px row, then 16px of air');
   const want = 'calc(var(--kjr-top-off) + ' + clear + 'px)';
   assert.ok(phoneBlock.includes('.kjr-tile.is-inspected,#page-inventory tbody tr.is-inspected,#page-slabs tbody tr.is-inspected{scroll-margin-top:' + want + '}'), 'grid tiles and table rows, the phone only');
   assert.ok(rules.includes('.kjr-hold-row.is-inspected{background:var(--accent-soft);scroll-margin:' + want + ' 0 '), 'the Holdings rows');

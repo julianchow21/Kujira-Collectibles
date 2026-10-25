@@ -332,7 +332,7 @@ test('ppt-credits: a bulk refresh stops at the refusal instead of asking for eve
   assert.ok(app.toasts.some((t) => /Done: 1 updated.*PPT credits are used up for today/.test(t)), JSON.stringify(app.toasts));
 });
 
-test('ppt-credits: the price check shows the credit message for the refusal', async () => {
+test('ppt-credits: the price check shows the credit message for the refusal, and the refusal pauses the queue too (v3.90)', async () => {
   const app = await setup();
   app.document.getElementById('ebay-query').value = 'Alpha 1';
   app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] });
@@ -340,8 +340,11 @@ test('ppt-credits: the price check shows the credit message for the refusal', as
   await app.ctx.searchEbay();
   const html = app.document.getElementById('ebay-out').innerHTML;
   assert.match(html, /Daily price-lookup limit reached/);
-  assert.match(html, /100 credits a day on the free plan/);
+  // v3.90: the message speaks for this app's budget, not the vendor's 100 (the buttons and the hint under the key do the vendor's)
+  assert.match(html, /PokemonPriceTracker refused any more credits today\. They reset at 8am Singapore time \(midnight UTC\)\./);
+  assert.doesNotMatch(html, /100 credits a day|free plan/);
   assert.doesNotMatch(html, /lookups/);
+  assert.equal(app.saved().creditsPausedDate, UTC(), 'the refusal is the queue\'s pause as well, so nothing else asks the vendor today');
 });
 
 // ── an older queue keeps working ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -593,12 +596,15 @@ test('ppt-credits: the modal has a two-option plan group beside the key field, l
   assert.equal(radios.length, 2);
   assert.match(radios[0], /value="free" checked onchange="kjrPptPlanChoose\('free'\)"/, 'Free is the one chosen by default');
   assert.doesNotMatch(radios[1], /checked /);
-  assert.match(html, /<span class="kjr-plan-txt">Free \(100 credits a day\)<\/span>/);
-  assert.match(html, /<span class="kjr-plan-txt">Paid \(20,000 credits a day\)<\/span>/);
+  // v3.90: the buttons name the budget the app spends (kjrDailyCredits: 90 and 18,000), they said the vendor's 100 and 20,000
+  assert.match(html, /<span class="kjr-plan-txt">Free \(90 credits a day\)<\/span>/);
+  assert.match(html, /<span class="kjr-plan-txt">Paid \(18,000 credits a day\)<\/span>/);
   assert.match(html, /<div id="ppt-plan-help"[^>]*>Switch back to Free after you cancel, or the queue pauses on the first refusal\.<\/div>/);
   assert.ok(html.indexOf('id="ppt-key-input"') < html.indexOf('id="ppt-plan-label"') && html.indexOf('id="ppt-plan-label"') < html.indexOf('AI Analyst'), 'right after the key field');
-  assert.match(html, /100 free credits a day/, 'the old "100 free lookups/day" is gone');
+  // the vendor's own quota is still said, once, under the key, and it is worded as the vendor's
+  assert.match(html, /pokemonpricetracker\.com\/api<\/a> - PokemonPriceTracker allows 100 credits a day on a free key and 20,000 on a paid one, this app keeps to 90 and 18,000\n/, 'the old "100 free lookups/day" is gone');
   assert.doesNotMatch(html, /lookups/);
+  assert.doesNotMatch(html.replace(/PokemonPriceTracker allows 100 credits a day on a free key and 20,000 on a paid one/, ''), /\b100 (free )?credits|20,000 credits/, 'no other 100 or 20,000 credits: the vendor\'s numbers appear in that one sentence only');
   // with the Japanese lane forced off (this suite's default), the blurb and the Search (PPT) line name slabs only (v3.84 said the same of its lane)
   assert.match(html, /Slabs are priced from real eBay sold data via <strong style="color:var\(--text\)">PokemonPriceTracker<\/strong>, within <span class="ppt-limit">90<\/span> credits a day\. Both convert to SGD automatically, refreshed daily\./);
   assert.match(html, /<strong style="color:var\(--text\)">Search \(PPT\):<\/strong> slabs, high cost → low, capped at <span class="ppt-limit">90<\/span> credits a day on the <span class="ppt-plan-name">Free<\/span> plan \(a slab search costs up to 6 credits\)<br>/);
@@ -627,6 +633,33 @@ test('ppt-credits: the modal shows the stored plan as the chosen one', async () 
   assert.match(radios[1], /value="paid" checked /);
   assert.match(app.document.body._lastInsertedHTML, /capped at <span class="ppt-limit">18,000<\/span> credits a day on the <span class="ppt-plan-name">Paid<\/span> plan/);
   assert.match(app.document.body._lastInsertedHTML, /within <span class="ppt-limit">18,000<\/span> credits a day/);
+});
+
+// v3.90: the buttons said "Free (100 credits a day)" and "Paid (20,000 credits a day)", the vendor's quotas, while the app spends 90 and 18,000 (kjrDailyCredits)
+test('ppt-credits: the plan buttons name the budget the app spends, read off PPT_PLANS, and the vendor\'s quota is only ever worded as the vendor\'s', async () => {
+  const app = await setup();
+  for (const chosen of ['free', 'paid']) {
+    app.ctx.kjrPptSetPlan(chosen);
+    app.ctx.openApiSettings();
+    const html = app.document.body._lastInsertedHTML;
+    for (const key of ['free', 'paid']) {
+      const plan = app.ctx.PPT_PLANS[key];
+      assert.ok(html.includes('<span class="kjr-plan-txt">' + plan.label + ' (' + app.ctx.kjrFmtCredits(plan.credits) + ' credits a day)</span>'), chosen + ' chosen, the ' + key + ' button says ' + plan.credits);
+    }
+    // the number on the chosen plan's button is the one the queue is held to
+    assert.ok(html.includes('(' + app.ctx.kjrFmtCredits(app.ctx.kjrDailyCredits()) + ' credits a day)</span>'), 'the chosen plan\'s own budget');
+  }
+  assert.deepEqual([app.ctx.PPT_PLANS.free.credits, app.ctx.PPT_PLANS.paid.credits], [90, 18000], 'the budget the app spends');
+  assert.deepEqual([app.ctx.PPT_PLANS.free.quota, app.ctx.PPT_PLANS.paid.quota], [100, 20000], 'the vendor\'s own quotas, held above it');
+  // where a vendor figure is said at all it is the vendor's: it names PokemonPriceTracker as the one that allows it
+  const html = app.document.body._lastInsertedHTML;
+  for (const m of html.matchAll(/\b(100|20,000) (free )?credits/g)) {
+    assert.ok(html.slice(Math.max(0, m.index - 60), m.index).includes('PokemonPriceTracker allows'), 'vendor quota: ' + m[0]);
+  }
+  assert.doesNotMatch(html, /\u2014|\u2015/, 'no em-dashes');
+  const copy = html.slice(html.indexOf('PokemonPriceTracker API Key'), html.indexOf('AI Analyst')).replace(/<[^>]*>/g, ' ').replace(/&[#\w]+;/g, '');
+  assert.match(copy, /PokemonPriceTracker allows 100 credits a day/, 'the visible words are what was measured');
+  assert.doesNotMatch(copy, /;/, 'no semicolon in the copy');
 });
 
 test('ppt-credits: choosing a plan saves it on this device, says so and redraws the queue panel, a refused one changes nothing', async () => {

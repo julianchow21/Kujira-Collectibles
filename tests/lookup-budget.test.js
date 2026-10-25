@@ -481,6 +481,38 @@ test('lookup budget: the label on the Listings lookup says what it does, TCGdex 
   assert.doesNotMatch(label, new RegExp('[' + String.fromCharCode(0x2014, 0x2015) + ';]'), 'no dash bar, no semicolon');
 });
 
+// v3.91: the card's heading said "eBay Last Sold Lookup" and its button "Search eBay", the words of the old AI lookup the v3.90 label had already
+// replaced, so the label contradicted its own heading. The function (searchEbay) and the ids (ebay-query, ebay-out) keep their names, they are code
+// and not words on a screen, and the eBay pipeline page and its nav item are another thing and are untouched.
+test('lookup wording: the heading and the button say what the lookup does and nothing in the box promises eBay', () => {
+  const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
+  const head = html.indexOf('<h3>');
+  const at = html.indexOf('<h3>🔍 Market Price Lookup</h3>');
+  assert.ok(at > head, 'the heading is the market price one');
+  const start = html.lastIndexOf('<div class="card">', at);
+  const card = html.slice(start, html.indexOf('<div id="ebay-out"', at));
+  assert.match(card, /<div class="card-head"><h3>🔍 Market Price Lookup<\/h3><span id="fx-rate-display"/);
+  assert.match(card, /<button class="btn btn-primary" onclick="searchEbay\(\)" title="Checks TCGdex first, then PokemonPriceTracker, which uses credits">Look up price<\/button>/);
+  assert.doesNotMatch(html, /Last Sold Lookup|Search eBay<\/button>/);
+  // nothing a person reads or hears in that card says eBay: its words, and every title, placeholder and aria-label in it
+  const words = card.replace(/<[^>]*>/g, ' ');
+  assert.doesNotMatch(words, /ebay/i, 'visible words');
+  const attrs = [...card.matchAll(/\b(title|placeholder|aria-label|alt|aria-describedby)="([^"]*)"/g)].map((m) => m[2]);
+  assert.ok(attrs.length >= 2, 'the button\'s title and the field\'s placeholder at least');
+  for (const a of attrs) assert.doesNotMatch(a, /ebay/i, a);
+  // the words the lookup prints are the same: its results and its errors never say eBay either (the code around them does, in names)
+  const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
+  const fn = src.slice(src.indexOf('async function searchEbay()'), src.indexOf('\n}\n', src.indexOf('async function searchEbay()')));
+  assert.doesNotMatch(fn.replace(/\/\/[^\n]*/g, '').replace('async function searchEbay()', '').replace(/getElementById\('ebay-(query|out)'\)/g, ''), /ebay/i, 'no eBay in what searchEbay shows, only in the names of the function and the two elements it reads');
+  // the in-app guide, the Settings text and the command words do not promise it either
+  const guide = html.slice(html.indexOf('id="guide-source"'), html.indexOf('</script>', html.indexOf('id="guide-source"')));
+  assert.doesNotMatch(guide, /last sold|search ebay|completed listing/i);
+  assert.match(guide, /\*\*Listings\*\* - builds a Carousell title and description and pulls the market price\./, 'the guide line for the page is still true');
+  // and the eBay pipeline page keeps its own name
+  assert.match(html, /<button class="nav-btn[^"]*" aria-label="eBay" onclick="showPage\('ebay'\)">/);
+  assert.match(html, /aria-label="Search eBay purchases"/);
+});
+
 test('lookup budget: every line the lookups print about credits is plain British English with no dash bar and no semicolon', async () => {
   const lines = [];
   for (const prep of [

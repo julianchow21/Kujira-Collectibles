@@ -19391,6 +19391,12 @@ async function fetchMarketPrice(descriptor) {
 // the queue stamps it (local, never synced), and the free lane reads that stamp off the row
 // too, so the queue does not try the card again today. The vendor refusing for credits is
 // neither a price nor a miss: it says so and writes nothing.
+// v3.91: the PPT lane spends credits, so a slab or a Japanese single is asked out of the same day's budget as the queue, a bulk run and the
+// hand lookups: kjrLookupRefusal first (the credits left can not pay for the search, the vendor refused for credits today, or a pass is
+// running), and what the answer cost is billed into q.dayCreditsUsed through _kjrBillLookup, a refusal setting the same pause. When it
+// is refused nothing is asked, nothing is written and no miss is stamped, the toast says why (_kjrRefreshRefusedToast). An English
+// single is on the free lane, TCGdex only, it spends no credits and is priced whatever the budget says. While a refresh is in flight the
+// queue and a bulk run do not start (_kjrLookupsOpen), as for a lookup: the bill is written into the same saved queue.
 // The local-preview guard lives in the callers (kjrInspectRefreshInfo, runRefreshQueue).
 async function refreshPrice(id, table) {
   const item = DB[table].find(i => i.id === id);
@@ -19409,16 +19415,32 @@ async function refreshPrice(id, table) {
     toast('Add API keys first: open Settings, then API settings');
     return;
   }
-  toast('Fetching market price...');
   // "PSA 10" typed into either field reads as PSA and 10, the way the queue reads it
   const slabGrade = isSlab ? _kjrSlabGrade(item) : null;
   const grader = isSlab ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
   const grade  = isSlab ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
   const japanese = !isSlab && lane === 'ppt'; // a single only reaches the PPT lane as a Japanese one
+  // The PPT lane is asked only when the day's credits can pay for this search (a slab's costs up to 6, a Japanese single's up to 3), the vendor
+  // has not refused for credits today and no pass is running. Otherwise it is not asked at all and the card is left exactly as it was, no miss
+  // stamp, no id, no price: there is no free source for a slab or a Japanese card to fall back to, so the toast says why and that is all.
+  if (lane === 'ppt') {
+    const refusal = kjrLookupRefusal(_pptEstimateCredits({ grader, grade }));
+    if (refusal) { _kjrRefreshRefusedToast(refusal); return; }
+  }
+  toast('Fetching market price...');
   const today = kjrLocalDay(); // the day the checked and missed markers carry: the device's local date (kjrLocalDay), history keeps UTC dates
   // The router sends a lookup to PPT's graded lane only with a grader AND a grade. Anything
   // else is its raw branch, so tcgdexOnly keeps every such call off the fuzzy PPT search.
-  const r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) && !japanese, japanese });
+  // The call counts as a lookup in flight (_kjrLookupsOpen) until its answer is billed, so no pass starts under it and writes the saved queue over
+  // the bill. The bill is written the moment the answer is in, before anything below can return: a refusal, a miss and a held price all cost credits.
+  let r;
+  _kjrLookupsOpen++;
+  try {
+    r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) && !japanese, japanese });
+    if (lane === 'ppt') _kjrBillLookup(r);
+  } finally {
+    _kjrLookupsOpen--;
+  }
   if (r.creditsExhausted) {
     toastError('PokemonPriceTracker credits are used up for today. They reset at 8am Singapore time, nothing was changed.');
     return;
@@ -19520,8 +19542,9 @@ const QUEUE_DATE_KEY  = 'pokeinv_refresh_queue_date';
 // 365 covers a year of daily refreshes per card.
 const PRICE_HISTORY_MAX = 365;
 // PPT plan and the day's credit budget (v3.85). The vendor bills in credits (see the PokemonPriceTracker block above): the free plan
-// gives 100 a day and the paid plan 20,000. The queue spends against a budget held under that, 90 and 18,000, so a hand lookup, a
-// price check or a slightly short count never meets the vendor's refusal. Credits reset at 00:00 UTC, the UTC day dayCreditsUsed is
+// gives 100 a day and the paid plan 20,000. The queue spends against a budget held under that, 90 and 18,000, so a slightly short count or
+// the last search going a few credits over never meets the vendor's refusal. Every other spender bills the same day: bulkRefreshPrices, the
+// hand lookups (v3.90, kjrBudgetedLookup) and the card inspector's Refresh price (v3.91, refreshPrice). Credits reset at 00:00 UTC, the UTC day dayCreditsUsed is
 // keyed by. Which plan the owner is on is a device setting, 'free' unless it says 'paid' (anything else reads as free). Nothing here
 // can know whether the subscription is really live: after a cancellation the vendor refuses at its own 100, the queue reads
 // "Daily credit limit exceeded" as a pause for the rest of the day, and the Settings text says to switch back to Free.
@@ -21253,7 +21276,7 @@ function _kjrBulkKind(item, table) {
 }
 
 let _bulkRefreshRunning = false;
-let _kjrLookupsOpen = 0; // hand lookups in flight (kjrBudgetedLookup): the queue and a bulk run do not start under one, their bill goes into the same saved queue
+let _kjrLookupsOpen = 0; // hand lookups (kjrBudgetedLookup) and card refreshes (refreshPrice) in flight: the queue and a bulk run do not start under one, their bill goes into the same saved queue
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
   if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
@@ -21704,6 +21727,9 @@ function copyListing() {
 // A refresh pass (the queue, bulkRefreshPrices) keeps its queue in memory and writes it back as it goes, so a bill written under one would be
 // overwritten: while one runs a lookup does not ask PPT, and the passes do not start while a lookup is in flight (_kjrLookupsOpen, declared
 // with _bulkRefreshRunning). That also keeps the vendor's pacing, which a lookup between two paced requests would break.
+// v3.91: the card inspector's Refresh price (refreshPrice) is the third caller of these helpers, for the slabs and Japanese singles it asks PPT
+// about, with the search's own cost as need (6 for a slab, 3 for a Japanese single). Unlike a lookup it has nothing to fall back to when the
+// budget says no, so it asks nothing and says why (_kjrRefreshRefusedToast).
 
 // The record the day's credits live on, read only: the saved queue, else the side record a cleared or discarded queue left for its
 // replacement (_kjrStashCredits), else null (nothing spent as far as the app knows). Nothing is written or removed here, beyond what loadQueue
@@ -21717,27 +21743,45 @@ function _kjrCreditsRecord() {
     ? { dayCreditsUsed: rec.dayCreditsUsed, creditsVersion: 1, creditsPausedDate: rec.creditsPausedDate || null } : null;
 }
 
-// Why a hand lookup may not ask PPT right now, or null when today's budget can pay for a search. Read only, it saves nothing.
-//   { why: 'running' }              a refresh pass is running and holds the queue
-//   { why: 'paused', used, limit }  the vendor refused for credits earlier today
-//   { why: 'spent', used, limit }   what is left of the day's budget (kjrCreditsLeft) can not pay for one search
-function kjrLookupRefusal() {
+// Why a hand lookup, or a card's Refresh price (v3.91), may not ask PPT right now, or null when today's budget can pay for the search. Read only,
+// it saves nothing. need is what the search can cost in credits (_pptEstimateCredits: 3 for a plain or Japanese search, 6 for a slab with its
+// eBay data), a lookup passes none and gets the plain search's 3.
+//   { why: 'running' }                    a refresh pass is running and holds the queue
+//   { why: 'paused', used, limit }        the vendor refused for credits earlier today
+//   { why: 'spent', used, limit, need }   what is left of the day's budget (kjrCreditsLeft) can not pay for one such search
+function kjrLookupRefusal(need) {
   if (_queueRunning || _bulkRefreshRunning) return { why: 'running' };
+  const cost = need > 0 ? need : _pptEstimateCredits(null);
   const day = kjrUtcDay();
   const rec = _kjrCreditsRecord();
   const used = kjrCreditsUsedOn(rec, day), limit = kjrDailyCredits();
   if (rec && rec.creditsPausedDate === day) return { why: 'paused', used, limit };
-  if (kjrCreditsLeft(rec, day) < _pptEstimateCredits(null)) return { why: 'spent', used, limit };
+  if (kjrCreditsLeft(rec, day) < cost) return { why: 'spent', used, limit, need: cost };
   return null;
 }
 
-// The refusal in words: reason is a clause that follows "not tried," or "was not asked because", next says what to do about it.
+// The refusal in words: reason is a clause that follows "not tried," or "was not asked because", next says what to do about it. A search that
+// costs more than a plain one (a slab's) and a day with some credits left but too few for it says so, "used up" would be untrue.
 function _kjrLookupRefusalText(refusal) {
   if (!refusal) return { reason: '', next: '' };
   if (refusal.why === 'running') return { reason: 'a price refresh is running and spends the same daily credits', next: 'Try again when it has finished.' };
   const reset = 'They reset at 8am Singapore time (midnight UTC).';
   if (refusal.why === 'paused') return { reason: 'it refused any more credits earlier today', next: reset };
-  return { reason: 'today\'s credits are used up (' + kjrFmtCredits(refusal.used) + ' of ' + kjrFmtCredits(refusal.limit) + ' on the ' + PPT_PLANS[kjrPptPlan()].label + ' plan)', next: reset };
+  const plan = PPT_PLANS[kjrPptPlan()].label;
+  const left = Math.max(0, refusal.limit - refusal.used);
+  if (refusal.need > PPT_SEARCH_CREDITS && left > 0) {
+    return { reason: 'only ' + _kjrOvPlural(left, 'credit is', 'credits are') + ' left today (' + kjrFmtCredits(refusal.used) + ' of ' + kjrFmtCredits(refusal.limit) + ' used on the ' + plan + ' plan) and this search can cost up to ' + refusal.need, next: reset };
+  }
+  return { reason: 'today\'s credits are used up (' + kjrFmtCredits(refusal.used) + ' of ' + kjrFmtCredits(refusal.limit) + ' on the ' + plan + ' plan)', next: reset };
+}
+
+// The toast a card's Refresh price shows when the PPT lane was not asked (v3.91): the lookups' own words (_kjrLookupRefusalText) and that
+// nothing was changed. The credits being gone or refused is a stop, so the red toast the vendor's own refusal already uses, a running pass is
+// only a wait.
+function _kjrRefreshRefusedToast(refusal) {
+  const why = _kjrLookupRefusalText(refusal);
+  const msg = 'PokemonPriceTracker was not asked because ' + why.reason + '. ' + why.next + ' Nothing was changed.';
+  if (refusal.why === 'running') toast(msg, 6000); else toastError(msg);
 }
 
 // What a lookup that spent credits tells the owner, as one muted line (an empty string when it spent none)
@@ -21748,10 +21792,11 @@ function _kjrLookupCostLine(look, style) {
     kjrFmtCredits(look.billed.limit) + ' spent today on the ' + PPT_PLANS[kjrPptPlan()].label + ' plan</div>';
 }
 
-// Bill what a lookup cost into the day: its credits (the router's creditsUsed, the vendor's own count, else the estimate) added to
-// q.dayCreditsUsed[utcDay], and the vendor's refusal as the queue's pause. The saved queue is read fresh here, after the answer, and written
-// back in the same step (nothing awaits in between), so two lookups can not lose each other's credits. With no queue yet one is made, taking
-// the credits a discarded one left, as bulkRefreshPrices makes it. Returns { used, limit } for the screen, or null when nothing was spent.
+// Bill what a lookup (or a card's Refresh price, v3.91) cost into the day: its credits (the router's creditsUsed, the vendor's own count, else
+// the estimate) added to q.dayCreditsUsed[utcDay], and the vendor's refusal as the queue's pause. The saved queue is read fresh here, after the
+// answer, and written back in the same step (nothing awaits in between), so two of them can not lose each other's credits. With no queue yet one
+// is made, taking the credits a discarded one left, as bulkRefreshPrices makes it. Returns { used, limit } for the screen, or null when nothing
+// was spent.
 function _kjrBillLookup(r) {
   const spent = Math.max(0, Number(r && r.creditsUsed) || 0);
   const refused = !!(r && r.creditsExhausted);

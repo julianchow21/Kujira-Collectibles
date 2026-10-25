@@ -33,12 +33,12 @@ const LANE_SEED = () => ({
 });
 
 // The switch is forced off here (loadApp({ jaLane: false }), the kill-switch state: the constant ships true since v3.89), which gives back the v3.84 rules.
-test('refresh-queue: buildRefreshQueue - slabs->ppt lane, EN numbered singles->tcgdex lane, every non-English single manual while the Japanese lane is off (as shipped)', async () => {
+test('refresh-queue: buildRefreshQueue - slabs->ppt lane, EN numbered singles->tcgdex lane, every non-English single manual while the Japanese lane is forced off (the kill switch state, the lane ships on)', async () => {
   const { ctx } = await loadApp({ seed: LANE_SEED(), jaLane: false });
   const q = plain(ctx.buildRefreshQueue());
   assert.strictEqual(q.totalRows, 6, 'totalRows counts every eligible row, including manual-lane ones');
   assert.strictEqual(q.totalItems, 2, 'only tcgdex+ppt lane items make it into the ordered queue - manual-lane cards are excluded entirely');
-  assert.deepStrictEqual(q.items.map((i) => i.id), ['s1', 'sl1'], 'free lane first, then the PPT slabs, the Japanese single is manual as in v3.84');
+  assert.deepStrictEqual(q.items.map((i) => i.id), ['s1', 'sl1'], 'free lane first, then the PPT slabs, the Japanese single is manual with the lane forced off, as in v3.84');
   assert.strictEqual(q.items.find((i) => i.id === 'sl1').lane, 'ppt');
   assert.strictEqual(q.items.find((i) => i.id === 's1').lane, 'tcgdex');
 });

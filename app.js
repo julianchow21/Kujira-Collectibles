@@ -12232,7 +12232,7 @@ function _mktFreshDot(item) {
 
 // Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
 // row. Auto-pricing by language (see _queueLaneFor): a Japanese single with a card
-// number is priced by the Japanese lane (v3.85, once it is switched on), any
+// number and a matched card is priced by the Japanese lane (v3.85, once it is switched on), any
 // other non-EN raw single (CN/ID/KR/...) is manual by product design, not a per-card data
 // problem - distinct from an EN "unresolved" card, which the user CAN fix by
 // adding the card number, fixing it, or setting a TCGdex ID override. Slabs are
@@ -12249,14 +12249,16 @@ function _mktEmptyCellTitle(item) {
   const isEnglish = lang === 'EN' || lang === '';
   if (!isSlab && kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)'; // the owner's own reason wins
   if (!isSlab && !isEnglish) {
-    // A Japanese single with a card number is priced by the Japanese lane (v3.85, with the lane on): an empty cell means it has not been asked yet, or
-    // the vendor found no single card for it. A stale estimate says why its stored price is not shown. Without a number a Japanese single is the
-    // same fix as an English card, add one. Every other case, and every non-English single while the lane is off, is a manual price.
+    // A Japanese single with a card number and a matched card (a TCGdex id, v3.89) is priced by the Japanese lane (v3.85, with the lane on): an empty
+    // cell means it has not been asked yet, or the vendor found no single card for it. A stale estimate says why its stored price is not shown. Without
+    // a number a Japanese single is the same fix as an English card, add one, and with a number but no matched card it needs the match first. Every
+    // other case, and every non-English single while the lane is off, is a manual price.
     const onLane = _kjrJapaneseLane(item);
     if (onLane && item._tcgdexMissDate) return 'No unique match on PokemonPriceTracker, check the name and number';
     if (stale) return 'The stored price is an old PokemonPriceTracker match that is not counted';
     if (onLane) return '';
-    return _kjrPptJaLangs().includes(lang) ? 'Add or fix the card number for exact pricing' : 'Manual price, no free source for this language';
+    if (!_kjrPptJaLangs().includes(lang)) return 'Manual price, no free source for this language';
+    return (_baseCardName(item.name) && _tcgdexNumber(item.name)) ? _kjrJaNeedsMatchText() : 'Add or fix the card number for exact pricing';
   }
   if (!isSlab && !item.tcgdexId) {
     const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
@@ -18477,9 +18479,9 @@ function openApiSettings() {
   // named only while that lane runs
   const jaOn = kjrPptJaLaneOn();
   const pptBlurb = jaOn
-    ? `Slabs are priced from real eBay sold data, and Japanese singles with a card number from the Japanese TCGplayer market, both via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. All convert to SGD automatically, refreshed daily.`
+    ? `Slabs are priced from real eBay sold data, and Japanese singles with a card number and a matched card from the Japanese TCGplayer market, both via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. All convert to SGD automatically, refreshed daily.`
     : `Slabs are priced from real eBay sold data via <strong style="color:var(--text)">PokemonPriceTracker</strong>, within <span class="ppt-limit">${limit}</span> credits a day. Both convert to SGD automatically, refreshed daily.`;
-  const pptScope = jaOn ? 'slabs, plus Japanese singles with a card number' : 'slabs';
+  const pptScope = jaOn ? 'slabs, plus Japanese singles with a card number and a matched card' : 'slabs';
   const pptCost = jaOn ? 'a slab search costs up to 6 credits, a single up to 3' : 'a slab search costs up to 6 credits';
   // Remove any existing instance first
   document.getElementById('api-key-modal')?.remove();
@@ -18802,12 +18804,14 @@ const PPT_EBAY_CREDITS = 3;
 // The pptError of a refusal for credits. The queue, refreshPrice, bulkRefreshPrices and the price check all read creditsExhausted, not this text.
 const PPT_CREDIT_ERROR = 'PPT daily credit limit reached';
 
-// The Japanese lane (v3.85, see "The Japanese lane" below) ships OFF. It waits on a live check of the vendor's Japanese response: the currency a
-// Japanese card is priced in (a yen amount stored as dollars would corrupt real money data), the card names it returns and what its cardNumber
-// looks like. It is switched on in a follow-up, after that check. While this is false every non-English single is manual exactly as in v3.84,
-// nothing sends language=japanese, and no screen says the lane runs. A test turns it on through the harness (loadApp({ jaLane: true }) replaces
-// kjrPptJaLaneOn), it never edits this line.
-const PPT_JA_LANE_ENABLED = false;
+// The Japanese lane (v3.85, see "The Japanese lane" below) was built OFF and is ON from v3.89. It waited on a live check of the vendor's Japanese
+// answer, made on 24/10/2026: the card name is English ("Umbreon ex - 093/187"), cardNumber "093/187", setName "SV8a: Terastal Fest ex" (the set code,
+// a colon, the English set name) and prices.market is in US dollars with no currency field (the currency guard below still reads one if it ever
+// appears). The same check showed the search ignores the card number ("Vaporeon 30" returned other 030 cards, "Vaporeon SV8a" the right one), so the
+// lane searches the name and the SET CODE of the row's tcgdexId and takes only a card filed under that code (fetchJapanesePriceFromPPT, _kjrPickJapanese).
+// The switch stays as the kill switch. While it is false every non-English single is manual exactly as in v3.84, nothing sends language=japanese,
+// and no screen says the lane runs. A test forces either state through the harness (loadApp({ jaLane }) replaces kjrPptJaLaneOn), it never edits this line.
+const PPT_JA_LANE_ENABLED = true;
 function kjrPptJaLaneOn() { return PPT_JA_LANE_ENABLED === true; }
 
 // The credits one queue item costs when nothing better is known: a slab (it has a grader and a grade) is a search with eBay, anything else a plain one
@@ -18910,12 +18914,13 @@ function _kjrCardNumberMatches(cardNumber, num) {
   return _kjrLocalIdMatches(_pptNumerator(cardNumber), num);
 }
 
-// ── The Japanese lane (v3.85): a Japanese single with a card number, priced from the vendor's Japanese catalogue ──
-// OFF until a live check of the vendor's answer (PPT_JA_LANE_ENABLED above). The lane covers JAPANESE singles only. The Worker passes one
+// ── The Japanese lane (v3.85, on since v3.89): a Japanese single with a card number and a matched card, priced from the vendor's Japanese catalogue ──
+// Switched by PPT_JA_LANE_ENABLED above. A matched card is a TCGdex id that gives a set code, which the card art lookup writes onto a Japanese
+// single, a single with no id yet is manual until it has one (_kjrJapaneseLane). The lane covers JAPANESE singles only. The Worker passes one
 // language flag, language=japanese, and a Chinese or Indonesian card's number does not reliably match the Japanese sets, so a price from that
 // catalogue could be another card's, and a wrong card's price is worse than none. Chinese, Indonesian, Korean and every other language stay
 // manual, with the lane on as well. The strict match keeps the Japanese lane honest too (one card whose number is the row's number, whose
-// name and mechanic tags fit, nothing guessed).
+// name and mechanic tags fit, and which the vendor files under the set the row's TCGdex id names, nothing guessed).
 // A function, not a constant, so a render before the queue code has run can not trip over it, and so a test can switch the lane on.
 function _kjrPptJaLangs() { return kjrPptJaLaneOn() ? ['JP'] : []; }
 
@@ -18954,20 +18959,46 @@ function _kjrPptCardIsJapanese(c) {
   if (v == null || String(v).trim() === '') return true;
   return /^(jp|ja|jpn)$|japan/i.test(String(v).trim());
 }
+// The set code a row's TCGdex id carries (v3.89): the id up to its last "-", "SV8a-030" gives SV8a and "SV-P-001" gives SV-P (the cut
+// kjrTcgdexCandidates makes for setId). '' for a row with no id, or an id with no "-" to cut at: no matched card, the row has no set to search by
+// or to check and a Japanese single in that state is manual (_kjrJapaneseLane).
+function _kjrPptSetCode(tcgdexId) {
+  const id = typeof tcgdexId === 'string' ? tcgdexId.trim() : '';
+  const cut = id.lastIndexOf('-');
+  return cut > 0 ? id.slice(0, cut).trim() : '';
+}
+// The set code the vendor files a card under (v3.89): its setName up to the first colon, trimmed. The Japanese setName is the code, a colon and
+// the English set name ("SV8a: Terastal Fest ex", "M6a: MEGA Expansion 30th Celebration", 24/10/2026 live probe). '' for a setName that is not
+// text or has no colon, which never equals a row's code.
+function _kjrPptCardSetCode(c) {
+  const s = c && typeof c.setName === 'string' ? c.setName : '';
+  const cut = s.indexOf(':');
+  return cut > 0 ? s.slice(0, cut).trim() : '';
+}
 // Exactly one card, or none. The cards a search returned are cut to those whose number is the row's number, whose name fits and whose
-// language is Japanese, the same card listed twice (one id) counts once. { card } for exactly one, { ambiguous: n } for several, {} for none.
+// language is Japanese, the same card listed twice (one id) counts once. The vendor's search ignores the card number, so the set says which
+// card of that name this is: the card must be filed under the row's set code (setCode, _kjrPptSetCode) too, the code in front of
+// its setName's first colon equal to the row's whole and without regard to case, so SV8 never takes a card filed under SV8a and a setName with
+// no colon is no match at all. A card of the right number and name in another set is never a price. With no set code there is nothing to
+// check a card against, so nothing is taken (v3.89, a row with no matched card is manual and is never asked, this keeps a direct call honest too).
+// { card } for exactly one, { ambiguous: n } for several, { setMismatch: n } when n cards fit the number, the name and the language and the
+// set was the only thing wrong (a miss of its own, so a first live run can tell it from a card the vendor does not have), {} for none.
 // More than one is never resolved by a guess, the row is left unpriced for the owner to look at.
-function _kjrPickJapanese(cards, name) {
+function _kjrPickJapanese(cards, name, setCode) {
   const base = _baseCardName(name), num = _tcgdexNumber(name);
-  if (!base || !num || !Array.isArray(cards)) return {};
+  const want = String(setCode == null ? '' : setCode).trim().toLowerCase();
+  if (!base || !num || !want || !Array.isArray(cards)) return {};
   const seen = new Set(), ok = [];
+  let wrongSet = 0;
   for (const c of cards) {
     if (!c || typeof c !== 'object') continue;
     if (c.id != null) { const id = String(c.id); if (seen.has(id)) continue; seen.add(id); }
     if (!_kjrCardNumberMatches(_pptCardNumber(c), num) || !_kjrPptNameFits(base, c.name) || !_kjrPptCardIsJapanese(c)) continue;
+    if (_kjrPptCardSetCode(c).toLowerCase() !== want) { wrongSet++; continue; }
     ok.push(c);
   }
-  return ok.length === 1 ? { card: ok[0] } : (ok.length ? { ambiguous: ok.length } : {});
+  if (ok.length) return ok.length === 1 ? { card: ok[0] } : { ambiguous: ok.length };
+  return wrongSet ? { setMismatch: wrongSet } : {};
 }
 // The currency a vendor card prices in: USD unless it names one. A currency field on the card or on its prices block ('currency',
 // 'priceCurrency' or 'currencyCode') is read as a 3 letter code, one that is there but is not a code ("$", "yen") comes back as '?' and
@@ -18986,13 +19017,19 @@ function _pptCurrencyOf(card) {
   return 'USD';
 }
 
-// Price a Japanese single: one search of the Japanese catalogue for "<name without its number> <number>", then the one card that fits.
+// Price a Japanese single: one search of the Japanese catalogue, then the one card that fits. The vendor's Japanese search ignores the card
+// number (24/10/2026 live probe: "Vaporeon 30" returned other 030 cards, "Vaporeon SV8a" the right one), so the search is "<name without
+// its number> <set code>", the set code the row's TCGdex id gives (tcgdexId, "SV8a-030" gives SV8a, see _kjrPptSetCode), and the card must be
+// filed under that code (_kjrPickJapanese). A row with no matched card has no set to search by or to check, and a name and a number alone
+// can not tell which of several sets' cards it is (v3.89): it is refused here with no request, it is 'manual' in _queueLaneFor and is never
+// asked, the card art lookup writes the id that moves it into this lane.
 // Resolves to { amount, currency, source, cardName, _ppt_requests, _ppt_credits } for a price, otherwise { error, ... } with
 //   creditsExhausted   the daily credit limit (nothing is a miss)
 //   pptTransient       the answer never came (HTTP error, network) or can not be used yet (no exchange rate, or the lane is off), nothing is a miss either
-// and neither of those flags for a real miss (no card number, no card, several cards, no price, an unreadable currency).
+// and neither of those flags for a real miss (no card number, no set code, no card, several cards, no price, an unreadable currency, and
+// 'set code mismatch': a card of this number and name that the vendor files under another set).
 // language is the row's own language and must read as Japanese. Anything else is refused before any request is made.
-async function fetchJapanesePriceFromPPT(name, language) {
+async function fetchJapanesePriceFromPPT(name, language, tcgdexId) {
   try {
     // While the lane is off nothing is asked, and with it on only a Japanese card is: a Chinese or Indonesian card's number does not reliably
     // match the Japanese sets, and a wrong card's price is worse than none. Neither refusal is a verdict on the card.
@@ -19001,12 +19038,14 @@ async function fetchJapanesePriceFromPPT(name, language) {
     if (!String(name || '').trim()) return { error: 'no card name', _ppt_requests: 0 };
     const base = _baseCardName(name), num = _tcgdexNumber(name);
     if (!base || !num) return { error: 'no card number', _ppt_requests: 0 };
-    const res = await _pptSearch(base + ' ' + num, { japanese: true });
+    const setCode = _kjrPptSetCode(tcgdexId);
+    if (!setCode) return { error: 'no set code', _ppt_requests: 0 }; // no matched card: no request, and no fallback to the name and the number
+    const res = await _pptSearch(base + ' ' + setCode, { japanese: true });
     if (res.exhausted) return { error: PPT_CREDIT_ERROR, creditsExhausted: true, _ppt_requests: 0 };
     if (res.transport) return { error: res.transport, pptTransient: true, _ppt_requests: 0 };
     const bill = { _ppt_requests: 1, _ppt_credits: res.credits };
-    const pick = _kjrPickJapanese(res.cards, name);
-    if (!pick.card) return Object.assign({ error: pick.ambiguous ? 'no unique match (' + pick.ambiguous + ' cards fit)' : 'no match' }, bill);
+    const pick = _kjrPickJapanese(res.cards, name, setCode);
+    if (!pick.card) return Object.assign({ error: pick.ambiguous ? 'no unique match (' + pick.ambiguous + ' cards fit)' : (pick.setMismatch ? 'set code mismatch' : 'no match') }, bill);
     const card = pick.card;
     const currency = _pptCurrencyOf(card);
     if (currency === '?') return Object.assign({ error: 'unreadable currency' }, bill);
@@ -19145,9 +19184,11 @@ async function fetchPriceFromPPT(name, grader, grade, language) {
 //   SLAB (has grader): PPT's eBay graded lane, unchanged behaviour - TCGdex
 //        has no graded prices at all. tcgdexOnly has no effect here. A grader
 //        with no grade is an incomplete slab and a miss with no request, never a raw card.
-//   JAPANESE (japanese: true, no grader): the PPT lane's Japanese singles (v3.85, off until PPT_JA_LANE_ENABLED is switched on, and Japanese only).
-//        One search of the Japanese catalogue, one card that fits or a miss, TCGdex is never asked. Its price is the card's TCGplayer market,
-//        converted to SGD from the currency it names. While the lane is off, or for any other language, nothing is asked (fetchJapanesePriceFromPPT).
+//   JAPANESE (japanese: true, no grader): the PPT lane's Japanese singles (v3.85, on since v3.89 through PPT_JA_LANE_ENABLED, and Japanese only).
+//        One search of the Japanese catalogue, one card that fits or a miss, TCGdex is never asked. tcgdexId only supplies the set code the search
+//        and the match use (_kjrPptSetCode), it is never resolved or written back here. Its price is the card's TCGplayer market,
+//        converted to SGD from the currency it names, so maxSgd is always S$ and the price guard compares S$ with S$. While the lane is off, or for
+//        any other language, nothing is asked (fetchJapanesePriceFromPPT).
 // Returns { maxUsd|maxEur, maxSgd, unit, source, confidence, creditsUsed, tcgdexError, tcgdexTransient, pptError, pptTransient,
 //   creditsExhausted, resolvedTcgdexId, resolvedCardName }. creditsUsed is in PPT credits (0 for TCGdex). unit is the currency the price
 // came in when it is not the maxUsd or maxEur one. classifyResult/
@@ -19174,7 +19215,7 @@ async function fetchMarketPrice(descriptor) {
   }
 
   if (!isSlab && japanese) {
-    const pptRes = await fetchJapanesePriceFromPPT(name, language);
+    const pptRes = await fetchJapanesePriceFromPPT(name, language, tcgdexId);
     const credits = pptRes._ppt_credits || 0;
     const miss = (extra) => Object.assign({
       maxUsd: null, maxEur: null, maxSgd: null,
@@ -19316,7 +19357,8 @@ async function fetchMarketPrice(descriptor) {
 //     Worker proxy is configured, it holds PPT_KEY as a secret, so a missing key in this
 //     browser must not block it. Only with the proxy off (PRICE_PROXY_BASE falsy) is a
 //     local key required, the same test runRefreshQueue makes.
-//   - a Japanese single with a card number (v3.85, only while the Japanese lane is switched on, PPT_JA_LANE_ENABLED): the Japanese
+//   - a Japanese single with a card number and a matched card, a TCGdex id (v3.85, only while the Japanese lane is switched on,
+//     PPT_JA_LANE_ENABLED): the Japanese
 //     lane. One search of the vendor's Japanese catalogue that takes exactly one card or none (fetchJapanesePriceFromPPT), so it
 //     needs the same PPT availability test as a slab. A miss is stamped like the free lane's.
 //   - a single that is non-English (and not that one) or has no card number, or a slab with no
@@ -19334,8 +19376,9 @@ async function refreshPrice(id, table) {
   const isSlab = table === 'slabs';
   // buildRefreshQueue never hands a single a grader or a grade, so a single is routed without them. A
   // Slabs row goes in as it is: with a grader it is the PPT lane, without one the queue
-  // sends it to the free lane or leaves it manual, and so does this.
-  const lane = _queueLaneFor(isSlab ? item : Object.assign({}, item, { grader: null, grade: null }));
+  // sends it to the free lane (English) or leaves it manual (any other language, v3.89: the Japanese lane is for singles), and so does this.
+  // The table goes with it, a DB row does not carry its own, so a Slabs row routes exactly as its queue entry does.
+  const lane = _queueLaneFor(isSlab ? item : Object.assign({}, item, { grader: null, grade: null }), table);
   if (lane === 'manual') {
     toast(isSlab ? 'Add the grader and grade to price this slab' : _kjrManualReason(item));
     return;
@@ -19641,7 +19684,7 @@ function clearQueue() {
 // from, and a numberless EN name is often a custom/joke card with no real
 // market at all ("Umbreon Custom Card"), so sending it to PPT would waste
 // the daily slab credits on an unmatchable search. After this rule the
-// 'ppt' lane contains slabs and (v3.85, once the Japanese lane is switched on) Japanese singles with a number - every
+// 'ppt' lane contains slabs and (v3.85, once the Japanese lane is switched on) Japanese singles with a number and a matched card - every
 // other raw single is either 'tcgdex' or 'manual'. A numberless EN card is still surfaced to the user though (see
 // _kjrUnresolvedSingles), since adding a card number is a real fix that
 // moves it into the tcgdex lane. A single the owner flagged as a custom card
@@ -19649,19 +19692,23 @@ function clearQueue() {
 // name, language or a cached tcgdexId say: zero API calls, no miss stamps, and
 // it leaves the "could not be matched" list. The flag only says "do not
 // auto-match, do not nag", the card keeps whatever market price was typed in.
-// v3.85 adds one exception to "non-EN is manual": a JAPANESE single with a card number
-// is the 'ppt' lane's Japanese lane (_kjrJapaneseLane), priced from the vendor's Japanese
-// catalogue by a strict one-card match. It ships OFF (PPT_JA_LANE_ENABLED), and while it is
+// v3.85 adds one exception to "non-EN is manual": a JAPANESE single with a card number and a matched card
+// (a TCGdex id that gives a set code, v3.89) is the 'ppt' lane's Japanese lane (_kjrJapaneseLane), priced from the vendor's Japanese
+// catalogue by a strict one-card match. One with no id yet stays manual until the card art lookup writes it. It is on from v3.89 (PPT_JA_LANE_ENABLED), and while it is
 // off every non-EN single is manual, exactly as in v3.84. Chinese, Indonesian, Korean and the
 // rest stay manual with it on too (_kjrPptJaLangs says which). A slab is a row whose
 // grader and grade read as a real grader and grade (_kjrSlabGrade), so "PSA 10"
 // typed into the grade field alone is a slab too.
-function _queueLaneFor(item) {
+// The Japanese lane is for SINGLES (v3.89). A row of the Slabs table with no grader is no slab and no single, so in any language but English
+// it is 'manual', never the Japanese lane: it once got 'ppt' here and the queue sent it to the old fuzzy name-only PPT search, which wrote a
+// wrong-set card's price. An English one keeps the free lane as before. The table is the entry's own (a queue entry carries table) or the
+// caller's second argument (a DB row does not), so a row routes the same wherever it is asked about.
+function _queueLaneFor(item, table) {
   if (item.grader || _kjrSlabGrade(item)) return 'ppt'; // slab - TCGdex has no graded prices, language rule doesn't apply
   if (kjrIsCustomCard(item)) return 'manual'; // custom card: priced by hand, never matched
   const lang = (item.language || 'EN').toString().trim().toUpperCase();
   const isEnglish = lang === 'EN' || lang === '';
-  if (!isEnglish) return _kjrJapaneseLane(item) ? 'ppt' : 'manual'; // Japanese with a number, with the lane on: the Japanese lane. Any other non-EN: never auto-priced, zero API calls
+  if (!isEnglish) return _kjrJapaneseLane(item, table || item.table) ? 'ppt' : 'manual'; // Japanese single with a number and a matched card, with the lane on: the Japanese lane. Any other non-EN, a Japanese single with no id yet, or a Slabs row with no grader: never auto-priced, zero API calls
   if (item.tcgdexId) return 'tcgdex'; // already resolved, skip straight to the free lane
   const hasNameAndNumber = !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
   return hasNameAndNumber ? 'tcgdex' : 'manual'; // no number - manual, not a PPT fuzzy-search fallback
@@ -19676,18 +19723,28 @@ function _kjrSlabGrade(item) {
   return r.grader && r.grade ? { grader: r.grader, grade: r.grade } : null;
 }
 // Is this non-custom single a Japanese-lane card: a language the Japanese lane covers (_kjrPptJaLangs: Japanese, and none while the lane is
-// off) and a name that carries a card number to match on. Nothing else about the row matters, an art id on tcgdexId does not move it.
-function _kjrJapaneseLane(item) {
+// off), a name that carries a card number to match on, and a MATCHED card, a TCGdex id that gives a set code (_kjrPptSetCode). The vendor's
+// Japanese search ignores the card number, so the set code is what it is asked and what its answer is checked against (v3.89). A Japanese single
+// with no id yet is manual, like a Chinese one: nothing is asked for it and nothing is guessed from its name and number, until the card art
+// lookup writes the id (or it is typed in the edit form). The id is also what moves it in, the next run adds it to the PPT lane (_pptLaneTopUp).
+// table (optional, a queue entry carries its own) says where the row lives: a row of the Slabs table is never a Japanese-lane card (v3.89).
+function _kjrJapaneseLane(item, table) {
   if (!item || kjrIsCustomCard(item)) return false;
+  if ((table || item.table) === 'slabs') return false; // the lane is for singles, a Slabs row with no grader is no slab and no single
   const lang = (item.language || 'EN').toString().trim().toUpperCase();
-  return _kjrPptJaLangs().includes(lang) && !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
+  return _kjrPptJaLangs().includes(lang) && !!(_baseCardName(item.name) && _tcgdexNumber(item.name)) && !!_kjrPptSetCode(item.tcgdexId);
 }
+// What a Japanese single with a card number and no matched card is told (v3.89): the one wording the inspector, the Refresh price toast and the
+// empty market cell share. A function, not a constant, so a render before the pricing code has run can not trip over it.
+function _kjrJaNeedsMatchText() { return 'Needs a matched card first, the card art lookup finds it or add its TCGdex ID'; }
 // Why a single is on the manual lane, in the words the card inspector and the Refresh price toast share. A Japanese card without a number
-// is the same fix as an English one, add the number and it joins the Japanese lane (with the lane on, otherwise it reads like any other language).
+// is the same fix as an English one, add the number and it moves on (with the lane on, otherwise it reads like any other language). One with a
+// number and no matched card is told to get the match first (v3.89).
 function _kjrManualReason(item) {
   if (kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)';
   const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
   if (lang !== 'EN' && !_kjrPptJaLangs().includes(lang)) return 'Manual price, no free source for this language';
+  if (lang !== 'EN' && _baseCardName(item.name) && _tcgdexNumber(item.name)) return _kjrJaNeedsMatchText(); // the number is there, so the match is what is missing
   return 'Add or fix the card number for exact pricing';
 }
 // The currency a priced result came in, for the history entry: its own unit when it names one, else USD when it has a USD amount, else EUR
@@ -19727,7 +19784,9 @@ function buildRefreshQueue() {
   // separately. Without language in the key they collapsed into one lookup and
   // shared a single (wrong for one of them) price. Untagged cards default to
   // EN so they still dedupe together. A custom card (priced by hand) is part of the key
-  // too: it must neither lend its manual lane to a plain duplicate nor take a copied price.
+  // too: it must neither lend its manual lane to a plain duplicate nor take a copied price. A Slabs row with no grader is the same (v3.89): it is
+  // no single, and in a language the Japanese lane takes it is 'manual' (_queueLaneFor), so as the first of a group, slabs come first, it would
+  // swallow a same-name Japanese single as a copy and leave that single without a lookup.
   const seen = new Map(); // uniqueKey → id of the primary (first) item
   const queue = [];
   for (const item of all) {
@@ -19736,7 +19795,8 @@ function buildRefreshQueue() {
       '|' + (item.language ? item.language.toString().toUpperCase() : 'EN') +
       (item.grader ? '|' + item.grader.toLowerCase() : '') +
       (item.grade  ? '|' + item.grade  : '') +
-      (item.customCard ? '|custom' : '');
+      (item.customCard ? '|custom' : '') +
+      (item.table === 'slabs' && !item.grader ? '|slabs' : '');
     if (!seen.has(key)) {
       seen.set(key, item.id);
       queue.push({ ...item, isPrimary: true, copyTargets: [], uniqueKey: key, lane: _queueLaneFor(item) });
@@ -20299,6 +20359,8 @@ function isLocalhostPreview() {
 let _queueRunning = false;
 async function runRefreshQueue(manual = false) {
   if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
+  // A manual bulk refresh (bulkRefreshPrices) bills the same saved queue's credits, so the two never run at once: each writes the queue back
+  if (_bulkRefreshRunning) { if (manual) toast('A bulk refresh is running - wait for it to finish first'); return; }
   if (isLocalhostPreview()) {
     if (manual) toast('Price refresh is disabled in local preview (sync off). Use the live site.');
     return;
@@ -20489,7 +20551,7 @@ function _tcgdexLaneItems(q) {
   for (const item of (q && Array.isArray(q.tcgdexRetry)) ? q.tcgdexRetry : []) {
     if (!item || known.has(item.table + ':' + item.id)) continue;
     const row = DB[item.table]?.find(r => r.id === item.id);
-    if (!row || (row.status || 'Available') !== 'Available' || _queueLaneFor(row) !== 'tcgdex') continue;
+    if (!row || (row.status || 'Available') !== 'Available' || _queueLaneFor(row, item.table) !== 'tcgdex') continue;
     item.name = row.name;
     item.language = row.language || null;
     item.tcgdexId = row.tcgdexId || null;
@@ -20798,11 +20860,15 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
     const live = DB[item.table] && DB[item.table].find(r => r.id === item.id);
     if (!live || (item.table === 'singles' && kjrIsCustomCard(live))) { advancedItems.push(item); continue; }
     // A raw single in the PPT lane is a Japanese one (_queueLaneFor), a slab carries its grader and grade. One the Japanese lane does not take
-    // is not asked about either: the lane is off (PPT_JA_LANE_ENABLED), the card is not Japanese, or its number is gone. _kjrJapaneseLane is the
-    // one rule and a queue entry can be older than it (a queue saved while the lane was on). It sends no request and passes no verdict on the
-    // card, so nothing is stamped as unmatched.
+    // is not asked about either: the lane is off (PPT_JA_LANE_ENABLED), the card is not Japanese, its number is gone, or its matched card is (the row
+    // has no TCGdex id with a set code now). _kjrJapaneseLane is the one rule and a queue entry can be older than it (a queue saved while the lane
+    // was on, or before the id was cleared). It sends no request and passes no verdict on the card, so nothing is stamped as unmatched.
     const japanese = item.table === 'singles' && !item.grader;
     if (japanese && !_kjrJapaneseLane(live)) { advancedItems.push(item); continue; }
+    // The third kind of entry is neither (v3.89): a Slabs row with no grader. _queueLaneFor sends it to 'manual' so a queue built now never holds
+    // one, but a queue saved by an older build can, and with no grader and no Japanese lane the router below would take it for a raw card and run
+    // the old fuzzy name-only PPT search, which once wrote a wrong-set card's price. It is not asked about at all: no request, no credit, no verdict.
+    if (!japanese && !item.grader) { advancedItems.push(item); continue; }
     // Stop before a request today's credits can not pay for. A slab is a search with eBay (6), a Japanese single a plain one (3).
     if (creditsLeft - creditsSpent < _pptEstimateCredits(item)) {
       for (let j = i; j < batch.length; j++) retryItems.push(batch[j]);
@@ -20813,7 +20879,9 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
       'Queue: ' + (q.cursor + done + failedData + failedTransport + 1) + '/' + q.totalItems +
       ' · Credits used today ' + kjrFmtCredits(usedToday + creditsSpent) + ' of ' + kjrFmtCredits(limit));
 
-    const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: item.tcgdexId||null, japanese });
+    // A Japanese single's search and match use the set code of its tcgdexId (_kjrPptSetCode), and the queue entry can be older than the row: the art
+    // lookup writes that id after the queue was built, and the owner may have fixed it since. The row is the truth, the entry's copy is not read for it.
+    const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: (japanese ? live.tcgdexId : item.tcgdexId)||null, japanese });
     creditsSpent += r.creditsUsed || 0; // bill what the answers cost, in credits (their own metadata, else the estimate)
     // Persist a freshly-resolved id on the queue's own item copy so a
     // requeue (retry/tomorrow) skips the resolve round-trip next time.
@@ -20950,8 +21018,9 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
 // matching _queueLaneFor's 'manual' lane exactly) - was briefly
 // "_kjrChineseUnpriceable" mid-rework when the check was CN-only, renamed
 // once it broadened so a JP/ID/KR card never surfaces as "Chinese" in the UI.
-// A Japanese single with a card number is no longer one of them once the Japanese lane is switched on (v3.85, PPT_JA_LANE_ENABLED, the
-// lane prices it), one without a number still is. While the lane is off, every non-English single is one of them, as in v3.84.
+// A Japanese single with a card number and a matched card (a TCGdex id, v3.89) is no longer one of them once the Japanese lane is switched on
+// (v3.85, PPT_JA_LANE_ENABLED, the lane prices it), one without a number or without the match still is: it is counted here, never as unresolved,
+// like a Chinese one, until the card art lookup writes its id. While the lane is off, every non-English single is one of them, as in v3.84.
 function _kjrManualLangCards() {
   return (DB.singles || []).filter(i => {
     if ((i.status||'Available') !== 'Available') return false;
@@ -20967,7 +21036,8 @@ function _kjrManualLangCards() {
 // _runTcgdexLane's self-heal loop, cleared automatically once the card is
 // priced or the date rolls over). Never counts KR or other manual-language cards - those are
 // manual by design (_kjrManualLangCards above), not "unresolved". A Japanese card (with the lane on)
-// is counted only once the Japanese lane found no unique match for it. Mirrors
+// is counted only once the Japanese lane found no unique match for it (so it has a matched card, a TCGdex id, and a number, v3.89: one
+// with no id yet is manual and is not counted, like a Chinese one). Mirrors
 // _queueLaneFor's resolvability check for the no-number case. A custom card
 // (kjrIsCustomCard) is never unresolved, whatever its name or a stale miss
 // stamp say: the owner told us it has no match by design, so it must not count
@@ -20979,7 +21049,8 @@ function _kjrUnresolvedSingles() {
     const lang = (i.language||'EN').toString().trim().toUpperCase();
     // A Japanese single the Japanese lane asked about and the vendor had no single card for (v3.85, the lane stamps the same local marker
     // the free lane does) is unresolved too. Its art id on tcgdexId says nothing about its price, so it does not clear it. One that was
-    // never asked, or has no card number, or any non-English single while the lane is off, is manual like any other non-English card.
+    // never asked, or has no card number or no matched card (no TCGdex id yet), or any non-English single while the lane is off, is manual like any
+    // other non-English card.
     if (lang !== 'EN' && lang !== '') return _kjrJapaneseLane(i) && !!i._tcgdexMissDate;
     if (i.tcgdexId) return false; // already resolved
     if (i._tcgdexMissDate) return true; // had a number, TCGdex tried today and found no unique match
@@ -21021,11 +21092,11 @@ function _renderQueueStatus() {
   // What the Search (PPT) lane prices and what stays manual, in words that are true for the Japanese lane's switch (PPT_JA_LANE_ENABLED)
   const jaOn = kjrPptJaLaneOn();
   const pptTip = (jaOn
-    ? 'Slabs (eBay sold data), plus Japanese singles with a card number (TCGplayer market), priced via PokemonPriceTracker. A slab search costs up to 6 credits, a single up to 3.'
+    ? 'Slabs (eBay sold data), plus Japanese singles with a card number and a matched card (TCGplayer market), priced via PokemonPriceTracker. A slab search costs up to 6 credits, a single up to 3.'
     : 'Slabs (eBay sold data), priced via PokemonPriceTracker. A slab search costs up to 6 credits.') +
     ' The ' + PPT_PLANS[kjrPptPlan()].label + ' plan is held to ' + kjrFmtCredits(limit) + ' credits a day.';
   const manualNote = jaOn
-    ? ' priced manually. Only a Japanese card with a card number has an automatic source, add the number to a Japanese card to price it automatically.'
+    ? ' priced manually. Only a Japanese card with a card number and a matched card has an automatic source, the card art lookup finds the match, or add the TCGdex ID to the card.'
     : ' priced manually, no free source for that language.';
   const creditsPausedToday = q.creditsPausedDate === utcDay; // the vendor refused for credits today (its day, UTC)
   const creditsSpentOut = creditsPausedToday || kjrCreditsLeft(q, utcDay) === 0;
@@ -21127,22 +21198,69 @@ async function startFreshQueue() {
   toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Exact (TCGdex): ' + tcgdexCount + ' · Search (PPT): ' + pptCount);
 }
 
-// Old bulkRefreshPrices kept for per-table manual use (bypasses queue).
-// Mirrors the queue runner's error handling: auto-pauses on consecutive
-// transport failures so we don't grind through all items when the API is
-// down, and surfaces the dominant error in the toast.
+// ── Manual bulk refresh of one table (v3.89) ──
+// A console tool, no button in the page calls it. It prices what the queue prices, by the queue's rules, out of the queue's budget.
+//   - Each row goes to the lane _queueLaneFor gives it, read the way refreshPrice reads it (_kjrBulkKind). An English single with a card number or a
+//     TCGdex id is asked of TCGdex ALONE (tcgdexOnly: free, and the old name-only PPT search is never reached from here). A slab (a grader and a grade)
+//     goes to the PPT eBay lane and a Japanese single with a card number and a matched card (a TCGdex id) to the set-checked Japanese lane. Every
+//     other row is skipped and counted: Chinese, Indonesian and Korean singles, a Japanese single with no matched card yet, a card with no number, a
+//     custom card, a Slabs row with no grader (it is no slab, and a raw card is never handed to the PPT catalogue). Nothing is priced for a skipped
+//     row and no request is made for it.
+//   - The PPT lane spends the QUEUE'S credits for today's vendor day (kjrUtcDay). Each answer is billed into the saved queue's dayCreditsUsed, nothing
+//     is asked once kjrDailyCredits() cannot pay for the next search or the vendor has refused for credits today (creditsPausedDate), and a refusal for
+//     credits sets that same creditsPausedDate, so a bulk run and the queue can not spend the one day twice. The first 429 or 403 stops the run. None of
+//     these stops stamps a miss on any card. The queue and this refuse to start while the other is running (_queueRunning, _bulkRefreshRunning).
+//   - Pacing: after a PPT request it waits the plan's gap (kjrRequestGapMs, 6 seconds Free and 1.1 Paid) before the next request, after a TCGdex one
+//     the free lane's own TCGDEX_GAP_MS. The free rows go first, so a run that stops at the budget has already done everything that costs nothing.
+//   - Every price still goes through _kjrPriceGate (the price guard), and the auto-pause after 5 failures in a row stays.
+//
+// What a bulk run does with one row, from the lane the queue gives it:
+//   'slab'      a Slabs row with a grader (or a grade that reads as one): the PPT eBay lane
+//   'japanese'  a Japanese single with a card number and a matched card (the lane on): the set-checked Japanese lane
+//   'free'      an English single with a card number or a TCGdex id, or a Slabs row with no grader that the free lane would take: TCGdex only
+//   'manual'    anything else: not asked, not priced
+function _kjrBulkKind(item, table) {
+  if (table === 'slabs') {
+    if (item.grader || _kjrSlabGrade(item)) return 'slab';
+    return _queueLaneFor(item, table) === 'tcgdex' ? 'free' : 'manual'; // a Japanese row with no grader is no slab and no single, _queueLaneFor says manual (v3.89)
+  }
+  const lane = _queueLaneFor(Object.assign({}, item, { grader: null, grade: null }), table);
+  return lane === 'ppt' ? 'japanese' : (lane === 'tcgdex' ? 'free' : 'manual');
+}
+
 let _bulkRefreshRunning = false;
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
+  if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
+  if (table !== 'singles' && table !== 'slabs') { toast('Only Singles and Slabs have an automatic price, the rest are priced by hand'); return; }
   // TCGdex needs no key, and a slab table has no TCGdex-free option so it needs PPT. PPT
   // counts as available when the Worker proxy is configured, it holds PPT_KEY as a secret,
   // so a key missing from this browser only blocks with the proxy off (v3.75). The same
   // test runRefreshQueue and refreshPrice make.
   if (table === 'slabs' && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
-  // A custom card is priced by hand and takes no automatic price, so the bulk path leaves it alone as the queue does
-  const items = DB[table].filter(i => (i.status||'Available') === 'Available' && !(table === 'singles' && kjrIsCustomCard(i)));
-  if (!items.length) { toast('No available items to refresh'); return; }
-  if (!await kjrConfirm('Manually refresh all ' + items.length + ' ' + esc(table) + ' now? This uses API credits outside the queue. Use the queue for scheduled refreshes.', {ok:'Refresh now'})) return;
+  const rows = DB[table].filter(i => (i.status||'Available') === 'Available');
+  if (!rows.length) { toast('No available items to refresh'); return; }
+  // free rows first, then the PPT ones (see the block above), the manual ones are only counted
+  const free = [], ppt = [];
+  let manual = 0;
+  rows.forEach(item => {
+    const kind = _kjrBulkKind(item, table);
+    if (kind === 'manual') manual++;
+    else (kind === 'free' ? free : ppt).push({ item, kind });
+  });
+  if (!free.length && !ppt.length) { toast('Nothing to price automatically: ' + manual + (manual === 1 ? ' card has' : ' cards have') + ' no automatic source, price ' + (manual === 1 ? 'it' : 'them') + ' by hand'); return; }
+  if (ppt.length && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
+  const work = free.concat(ppt);
+  const utcDay = kjrUtcDay();
+  const limit = kjrDailyCredits();
+  // Read only until the owner says yes: a queue is not created for a run that is declined
+  const seen = ppt.length ? loadQueue() : null;
+  const planLabel = PPT_PLANS[kjrPptPlan()].label;
+  const askText = 'Refresh ' + work.length + ' ' + esc(table) + ' now?' +
+    (free.length ? ' ' + free.length + ' priced free from TCGdex.' : '') +
+    (ppt.length ? ' ' + ppt.length + ' use PokemonPriceTracker credits from today\'s budget (' + kjrFmtCredits(seen ? kjrCreditsLeft(seen, utcDay) : limit) + ' of ' + kjrFmtCredits(limit) + ' left on the ' + planLabel + ' plan), and the run stops when they are used up.' : '') +
+    (manual ? ' ' + manual + ' with no automatic price ' + (manual === 1 ? 'is' : 'are') + ' skipped.' : '');
+  if (!await kjrConfirm(askText, {ok:'Refresh now'})) return;
   _bulkRefreshRunning = true;
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
   let held = 0; // prices the guard (kjrPriceGuard) kept for the owner's OK instead of writing
@@ -21154,73 +21272,112 @@ async function bulkRefreshPrices(table) {
   // gets miscounted as a real data failure.
   const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
   const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
-  let creditsOut = false;
-  for (const item of items) {
-    showSyncProgress(done + held + failedData + failedTransport, items.length, 'Refreshing ' + table + '…');
-    let wasHeld = false, gate = null;
-    // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
-    // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
-    const slabGrade = table === 'slabs' ? _kjrSlabGrade(item) : null;
-    const japanese = table === 'singles' && _queueLaneFor(Object.assign({}, item, { grader: null, grade: null })) === 'ppt';
-    const r = await fetchMarketPrice({ name: item.name, grader: slabGrade ? slabGrade.grader : (item.grader||null), grade: slabGrade ? slabGrade.grade : (item.grade||null), language: item.language||null, tcgdexId: item.tcgdexId||null, japanese });
-    // the vendor says the day's credits are gone: nothing in this run can be priced, so it stops here instead of asking for the rest
-    if (r.creditsExhausted) { creditsOut = true; break; }
-    const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
-    if (r.resolvedTcgdexId && !item.tcgdexId) {
-      item.tcgdexId = r.resolvedTcgdexId;
-      if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
+  // The first of these from either source stops the run, the way the queue pauses at the first one (PPT's free plan blocks a key for 24 hours after a burst of 429s)
+  const isHardBlock = e => /403|429|blocked|abuse/i.test(e || '');
+  let creditsOut = false;   // the vendor said "Daily credit limit exceeded"
+  let budgetStop = false;   // what is left of today's credits will not pay for the next search
+  let hardBlock = '';       // the first 429 or 403, as the source worded it
+  let stoppedAt = -1;       // the index of the first card a stop left unpriced
+  let q = null;             // the queue, whose credits the PPT lane spends
+  try {
+    if (ppt.length) {
+      q = loadQueue();
+      if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
+      _kjrAdoptCredits(q);
     }
-    if (r.maxSgd) {
-      const newPrice = r.maxSgd.toFixed(0);
-      if (japanese && item._tcgdexMissDate) item._tcgdexMissDate = null; // priced now, no longer "could not be matched"
-      // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
-      // + no new id to cache means nothing to sync, so only stamp the local
-      // priced-today marker and skip history/markDirty. Still counts as a
-      // successful pass (the fetch did confirm the price).
-      if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
-        item._tcgdexPricedDate = kjrLocalDay();
-        _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
-      } else if ((gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence)) !== 'write') {
-        // The price guard (kjrPriceGuard): not written, it waits on the card for the owner's OK. It is not an update, so it is counted apart.
-        held++;
-        wasHeld = true;
-        if (idIsNew && gate !== 'held') markDirty(table, item.id); // the resolved id is kept and still has to sync (a new hold has marked the row already)
-      } else {
-        item.marketPrice = newPrice;
-        delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
-        _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
-        item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
-        if (!item.priceHistory) item.priceHistory = [];
-        item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
-        if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
-        if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
-        }
-        markDirty(table, item.id);
+    let waitMs = 0; // the gap the last request asks for before the next one is made
+    for (let i = 0; i < work.length; i++) {
+      const { item, kind } = work[i];
+      const isPpt = kind !== 'free';
+      const japanese = kind === 'japanese';
+      // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
+      // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
+      const slabGrade = kind === 'slab' ? _kjrSlabGrade(item) : null;
+      const grader = kind === 'slab' ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
+      const grade = kind === 'slab' ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
+      // Stop before a search today's credits can not pay for: a slab is a search with eBay (6), a Japanese single a plain one (3). A refusal earlier
+      // today (creditsPausedDate) leaves nothing to spend.
+      if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; break; }
+      if (waitMs) await new Promise(res => setTimeout(res, waitMs));
+      showSyncProgress(done + held + failedData + failedTransport, work.length, 'Refreshing ' + table + '…');
+      let wasHeld = false, gate = null;
+      // Every call carries one of the three: tcgdexOnly (TCGdex alone, the PPT name search is not reached), japanese (the set-checked lane) or a
+      // grader with its grade (the eBay lane). The raw lane's fuzzy PPT fallback needs none of them, so nothing here can reach it.
+      const r = await fetchMarketPrice(kind === 'slab'
+        ? { name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null }
+        : { name: item.name, grader: null, grade: null, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !japanese, japanese });
+      waitMs = isPpt ? kjrRequestGapMs() : TCGDEX_GAP_MS;
+      if (isPpt) {
+        // bill what the answer cost into the queue's day, in credits (their own metadata, else the estimate)
+        const spent = r.creditsUsed || 0;
+        if (spent > 0) { q.dayCreditsUsed[utcDay] = (q.dayCreditsUsed[utcDay] || 0) + spent; saveQueue(q); }
+        // the vendor says the day's credits are gone: nothing more can be priced, so it stops here instead of asking for the rest, and the queue
+        // learns it too. The card is neither priced nor missed.
+        if (r.creditsExhausted) { creditsOut = true; stoppedAt = i; q.creditsPausedDate = utcDay; saveQueue(q); break; }
       }
-      if (!wasHeld) done++;
-      consecTransport = 0;
-    } else {
-      const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
-      errs.forEach(e => { errorTally[e] = (errorTally[e]||0) + 1; });
-      const transport = errs.length && errs.every(isTransport);
-      if (transport) { failedTransport++; consecTransport++; }
-      else            { failedData++;       consecTransport = 0; }
-      markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
-      // A Japanese card the vendor had no single card for lands in the Singles banner, like the queue does it. An answer that never came
-      // (pptTransient) says nothing about the card and stamps nothing.
-      if (japanese && !r.pptTransient) item._tcgdexMissDate = kjrLocalDay();
-      // Auto-pause if the API is clearly unhappy - saves time and credits.
-      if (consecTransport >= 5) { aborted = true; break; }
+      if (!r.maxSgd) {
+        // The first 429 or 403 stops the run before anything about the card is written: it is no verdict on it, so no miss is stamped
+        const trigger = [r.pptError, r.tcgdexError].find(isHardBlock);
+        if (trigger) { hardBlock = trigger; stoppedAt = i; failedTransport++; errorTally[trigger] = (errorTally[trigger]||0) + 1; break; }
+      }
+      const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
+      if (r.resolvedTcgdexId && !item.tcgdexId) {
+        item.tcgdexId = r.resolvedTcgdexId;
+        if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
+      }
+      if (r.maxSgd) {
+        const newPrice = r.maxSgd.toFixed(0);
+        if (japanese && item._tcgdexMissDate) item._tcgdexMissDate = null; // priced now, no longer "could not be matched"
+        // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
+        // + no new id to cache means nothing to sync, so only stamp the local
+        // priced-today marker and skip history/markDirty. Still counts as a
+        // successful pass (the fetch did confirm the price).
+        if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
+          item._tcgdexPricedDate = kjrLocalDay();
+          _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
+        } else if ((gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence)) !== 'write') {
+          // The price guard (kjrPriceGuard): not written, it waits on the card for the owner's OK. It is not an update, so it is counted apart.
+          held++;
+          wasHeld = true;
+          if (idIsNew && gate !== 'held') markDirty(table, item.id); // the resolved id is kept and still has to sync (a new hold has marked the row already)
+        } else {
+          item.marketPrice = newPrice;
+          delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
+          _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
+          item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
+          if (!item.priceHistory) item.priceHistory = [];
+          item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
+          if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
+          if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+          }
+          markDirty(table, item.id);
+        }
+        if (!wasHeld) done++;
+        consecTransport = 0;
+      } else {
+        const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
+        errs.forEach(e => { errorTally[e] = (errorTally[e]||0) + 1; });
+        const transport = errs.length && errs.every(isTransport);
+        if (transport) { failedTransport++; consecTransport++; }
+        else            { failedData++;       consecTransport = 0; }
+        markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
+        // A Japanese card the vendor had no single card for lands in the Singles banner, like the queue does it. An answer that never came
+        // (pptTransient) says nothing about the card and stamps nothing.
+        if (japanese && !r.pptTransient) item._tcgdexMissDate = kjrLocalDay();
+        // Auto-pause if the API is clearly unhappy - saves time and credits.
+        if (consecTransport >= 5) { aborted = true; break; }
+      }
+      saveData();
     }
-    saveData();
-    await new Promise(r => setTimeout(r, 1100));
+  } finally {
+    _bulkRefreshRunning = false;
+    hideSyncProgress();
   }
-  hideSyncProgress();
-  _bulkRefreshRunning = false;
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
-  if (held) _kjrRedrawOverview(); // the Overview's Needs attention count has a new row to show
+  if (held || q) _kjrRedrawOverview(); // the Overview's Needs attention count has a new row to show, and its credits figure has moved
+  if (q && document.getElementById('api-key-modal')) _renderQueueStatus();
   const failedTotal = failedData + failedTransport;
   const errSummary  = Object.entries(errorTally).sort((a,b) => b[1]-a[1]).slice(0,2)
                             .map(([err,n]) => n + '× ' + err).join(', ');
@@ -21232,9 +21389,14 @@ async function bulkRefreshPrices(table) {
     : /no match|no price/i.test(dominant)                    ? ' · names don\'t match catalogue'
     : /network|fetch|aborted|timeout|cors/i.test(dominant)   ? ' · network blocked'
     : '';
-  const tail = creditsOut ? ' · ⏸ PPT credits are used up for today, they reset at 8am Singapore time'
+  const notPriced = stoppedAt >= 0 ? ' (' + (work.length - stoppedAt) + ' not priced)' : '';
+  // the vendor's refusal, now or earlier today, reads the same: the credits are gone, whatever the count says
+  const vendorRefused = creditsOut || (budgetStop && !!q && q.creditsPausedDate === utcDay);
+  const tail = vendorRefused ? ' · ⏸ PPT credits are used up for today, they reset at 8am Singapore time' + notPriced
+    : budgetStop ? ' · ⏸ PPT credits are used up for today (' + kjrFmtCredits(kjrCreditsUsedOn(q, utcDay)) + ' of ' + kjrFmtCredits(limit) + ' on the ' + planLabel + ' plan), they reset at 8am Singapore time' + notPriced
+    : hardBlock ? ' · ⏸ stopped at the first refusal (' + hardBlock + '), nothing was marked as unmatched' + notPriced
     : aborted ? ' · ⏸ auto-paused after 5 failures in a row' : '';
-  toast('Done: ' + done + ' updated' + (held ? ', ' + held + ' held for your OK (Overview, Needs attention)' : '') + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
+  toast('Done: ' + done + ' updated' + (held ? ', ' + held + ' held for your OK (Overview, Needs attention)' : '') + (manual ? ', ' + manual + ' skipped (no automatic price)' : '') + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
 
@@ -23853,16 +24015,6 @@ function applyDetectedType() {
     toast('Import type set to: ' + _detectedImportType);
   }
 }
-
-// ── HIG: Sales sub loading spinner on page switch ──
-(function() {
-  const _orig = window.showPage;
-  window.showPage = function(id) {
-    if (_orig) _orig(id);
-    // Sales subline removed - the stat cards convey all the info.
-    if (id === 'sales') { /* no-op */ }
-  };
-})();
 
 buildColMenus();
 // Inventory never hydrates or paints until the owner session has passed the

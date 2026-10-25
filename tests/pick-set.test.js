@@ -349,11 +349,14 @@ test('sheet: a row edited to another name or number is asked again, and a row th
 });
 
 test('sheet: a numberless card, a Japanese card and a custom card are drawn exactly as before, with no search', async () => {
-  const rows = [single('n1', 'Umbreon Custom Card'), single('j1', 'Pikachu 25', Object.assign({ language: 'JP' }, MISS)), single('k1', 'Mew 8', Object.assign({ language: 'KR' }, MISS))];
+  // j1 has a number and a matched card (a TCGdex id), so the Japanese lane asked about it and missed. j2 has a number and no matched card yet (v3.89): it is
+  // manual like the Korean one, never asked, so never on the list
+  const rows = [single('n1', 'Umbreon Custom Card'), single('j1', 'Pikachu 25', Object.assign({ language: 'JP', tcgdexId: 'SV1S-025' }, MISS)), single('j2', 'Pikachu 26', Object.assign({ language: 'JP' }, MISS)), single('k1', 'Mew 8', Object.assign({ language: 'KR' }, MISS))];
   const app = await setup(rows, { jaLane: true });
   app.route();
   const cards = Array.from(app.ctx._kjrCustomUnmatchedSorted());
-  assert.equal(cards.length, 2, 'the numberless one and the Japanese one the lane missed; Korean is manual by design');
+  assert.equal(cards.length, 2, 'the numberless one and the Japanese one the lane missed; Korean and a Japanese card with no matched card are manual by design');
+  assert.deepEqual(Array.from(cards.map((c) => c.id)).sort(), ['j1', 'n1']);
   for (const c of cards) assert.equal(app.ctx.kjrCustomPickable(c), false, c.id);
   assert.equal(app.ctx.kjrCustomReviewHtml(cards, [], app.ctx._kjrCustomPicks), app.ctx.kjrCustomReviewHtml(cards, []), 'the same markup with and without the picker lookup');
   app.ctx.kjrCustomReviewOpen();

@@ -25,13 +25,14 @@ const LANE_SEED = () => ({
   slabs: [{ id: 'sl1', name: 'Charizard', grader: 'PSA', grade: '10', costPrice: 500, status: 'Available' }],
   singles: [
     { id: 's1', name: 'Pikachu 25', language: 'EN', costPrice: 10, status: 'Available' },   // -> tcgdex
-    { id: 's2', name: 'Eevee 1', language: 'JP', costPrice: 5, status: 'Available' },        // -> ppt when the Japanese lane is on (v3.85), manual while it is off
+    { id: 's2', name: 'Eevee 1', language: 'JP', tcgdexId: 'SV1S-001', costPrice: 5, status: 'Available' }, // -> ppt with the Japanese lane on (v3.85, shipped on since v3.89), it has a number and a matched card, manual with the switch off
     { id: 's3', name: 'Custom Card', language: 'EN', costPrice: 1, status: 'Available' },    // -> manual (no number)
     { id: 's4', name: 'Eevee 1', language: 'KR', costPrice: 1, status: 'Available' },        // -> manual (a language the Japanese lane does not cover)
     { id: 's5', name: 'Eevee 1', language: 'CN', costPrice: 1, status: 'Available' },        // -> manual, with the Japanese lane on as well
   ],
 });
 
+// The switch is forced off here (loadApp({ jaLane: false }), the kill-switch state: the constant ships true since v3.89), which gives back the v3.84 rules.
 test('refresh-queue: buildRefreshQueue - slabs->ppt lane, EN numbered singles->tcgdex lane, every non-English single manual while the Japanese lane is off (as shipped)', async () => {
   const { ctx } = await loadApp({ seed: LANE_SEED(), jaLane: false });
   const q = plain(ctx.buildRefreshQueue());
@@ -53,6 +54,11 @@ test('refresh-queue: buildRefreshQueue - with the Japanese lane on, slabs and Ja
   assert.strictEqual(q.items.find((i) => i.id === 's2').lane, 'ppt');
   assert.strictEqual(q.items.find((i) => i.id === 's1').lane, 'tcgdex');
   assert.deepStrictEqual(q.items.map((i) => i.id), ['s1', 'sl1', 's2'], 'free lane first, then the PPT slabs, then the PPT singles');
+  // a Japanese single with no matched card (v3.89) is manual and is not queued: the card art lookup writes the id, and a rebuild then holds it
+  ctx.DB.singles.find((r) => r.id === 's2').tcgdexId = '';
+  assert.deepStrictEqual(plain(ctx.buildRefreshQueue().items).map((i) => i.id), ['s1', 'sl1'], 'no id, no queue entry');
+  ctx.DB.singles.find((r) => r.id === 's2').tcgdexId = 'SV1S-001';
+  assert.deepStrictEqual(plain(ctx.buildRefreshQueue().items).map((i) => i.id), ['s1', 'sl1', 's2'], 'with the id it is queued again, nothing else to do');
 });
 
 test('refresh-queue: buildRefreshQueue - duplicate name+language singles dedupe to one primary + copyTargets, no duplicate ids', async () => {

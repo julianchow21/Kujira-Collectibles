@@ -16,7 +16,8 @@ test('pricing-lanes: _queueLaneFor - a Korean (or any other unlisted language) r
   assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'TH' }), 'manual');
 });
 
-// v3.85 ships with the Japanese lane OFF (PPT_JA_LANE_ENABLED), so every non-English single is manual exactly as in v3.84
+// The Japanese lane is forced OFF here through the harness (loadApp({ jaLane: false }), the kill-switch state), so every non-English single is manual
+// exactly as in v3.84. v3.85 built the lane and shipped it off, v3.89 switched it on (PPT_JA_LANE_ENABLED is true), the lane-on rules follow below.
 test('pricing-lanes: _queueLaneFor - with the Japanese lane off, as v3.85 ships, every non-English raw single is manual, with a number or without', async () => {
   const { ctx } = await loadApp({ jaLane: false });
   assert.strictEqual(ctx.kjrPptJaLaneOn(), false);
@@ -32,15 +33,17 @@ test('pricing-lanes: _queueLaneFor - with the Japanese lane off, as v3.85 ships,
   assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'EN' }), 'tcgdex');
 });
 
-// with the lane switched on (the harness, loadApp({ jaLane: true })) the one exception is a JAPANESE single with a card number
-test('pricing-lanes: _queueLaneFor - with the lane on a Japanese single with a card number is the ppt lane, Chinese and Indonesian ones stay manual', async () => {
+// with the lane switched on (the harness, loadApp({ jaLane: true })) the one exception is a JAPANESE single with a card number AND a matched card
+// (a TCGdex id that gives a set code, v3.89: the vendor's Japanese search ignores the number, so the set code is what it is asked)
+test('pricing-lanes: _queueLaneFor - with the lane on a Japanese single with a card number and a matched card is the ppt lane, one with no match yet and the Chinese and Indonesian ones stay manual', async () => {
   const { ctx } = await loadApp({ jaLane: true });
   assert.strictEqual(ctx.kjrPptJaLaneOn(), true);
-  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP' }), 'ppt');
-  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu', language: 'JP' }), 'manual', 'no card number to match on');
-  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP', tcgdexId: 'SV2a-025' }), 'ppt', 'an art id does not move it');
-  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP', customCard: true }), 'manual', 'a custom card is priced by hand');
-  assert.strictEqual(ctx._queueLaneFor({ name: 'Charizard ex 006/165', language: 'jp ' }), 'ppt', 'the language is read as the app reads it everywhere');
+  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP', tcgdexId: 'SV2a-025' }), 'ppt');
+  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP' }), 'manual', 'no matched card yet: manual until the card art lookup writes the id');
+  for (const tcgdexId of ['', '   ', null, 'SV2a025', '-025']) assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP', tcgdexId }), 'manual', JSON.stringify(tcgdexId) + ': an id with no set code is no match');
+  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu', language: 'JP', tcgdexId: 'SV2a-025' }), 'manual', 'no card number to match on');
+  assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language: 'JP', tcgdexId: 'SV2a-025', customCard: true }), 'manual', 'a custom card is priced by hand');
+  assert.strictEqual(ctx._queueLaneFor({ name: 'Charizard ex 006/165', language: 'jp ', tcgdexId: 'SV2a-006' }), 'ppt', 'the language is read as the app reads it everywhere');
   // their numbering does not reliably match the Japanese sets, a wrong card's price is worse than none
   for (const language of ['CN', 'ID', 'cn', ' id ']) {
     assert.strictEqual(ctx._queueLaneFor({ name: 'Pikachu 25', language }), 'manual', language);
@@ -69,8 +72,9 @@ const MIXED_DB = () => ({
   singles: [
     { id: 's_en_numbered', name: 'Pikachu 25', language: 'EN', status: 'Available' }, // resolvable, not unresolved
     { id: 's_en_numberless', name: 'Umbreon Custom Card', language: 'EN', status: 'Available' }, // unresolved (no number)
-    { id: 's_jp', name: 'Pikachu 25', language: 'JP', status: 'Available' }, // Japanese lane (v3.85) when it is on: priced by PPT, neither manual-language nor unresolved
-    { id: 's_jp_nonum', name: 'Pikachu', language: 'JP', status: 'Available' }, // Japanese without a number: priced by hand
+    { id: 's_jp', name: 'Pikachu 25', language: 'JP', status: 'Available', tcgdexId: 'SV2a-025' }, // Japanese lane (v3.85) when it is on: a number and a matched card, priced by PPT, neither manual-language nor unresolved
+    { id: 's_jp_noid', name: 'Pikachu 25', language: 'JP', status: 'Available' }, // Japanese with a number and no matched card yet (v3.89): priced by hand, like a Chinese one, until the card art lookup writes its id
+    { id: 's_jp_nonum', name: 'Pikachu', language: 'JP', status: 'Available', tcgdexId: 'SV2a-025' }, // Japanese without a number: priced by hand
     { id: 's_cn', name: 'Pikachu 25', language: 'CN', status: 'Available' }, // Chinese: manual, with the lane on as well
     { id: 's_kr', name: 'Pikachu 25', language: 'KR', status: 'Available' }, // manual-language, NOT unresolved
     { id: 's_cn_sold', name: 'Some Card', language: 'CN', status: 'Sold' }, // manual-language but SOLD - excluded from both
@@ -82,7 +86,7 @@ const MIXED_DB = () => ({
 test('pricing-lanes: _kjrManualLangCards / _kjrUnresolvedSingles against a mixed seeded DB, the Japanese lane off as shipped', async () => {
   const { ctx } = await loadApp({ seed: MIXED_DB(), jaLane: false });
   const manualLang = plain(ctx._kjrManualLangCards()).map(r => r.id).sort();
-  assert.deepStrictEqual(manualLang, ['s_cn', 's_jp', 's_jp_nonum', 's_kr'], 'every Available non-EN card is manual, as in v3.84 (sold CN excluded)');
+  assert.deepStrictEqual(manualLang, ['s_cn', 's_jp', 's_jp_noid', 's_jp_nonum', 's_kr'], 'every Available non-EN card is manual, as in v3.84 (sold CN excluded)');
   const unresolved = plain(ctx._kjrUnresolvedSingles()).map(r => r.id).sort();
   assert.deepStrictEqual(unresolved, ['s_en_missdate', 's_en_numberless'].sort());
 });
@@ -90,10 +94,11 @@ test('pricing-lanes: _kjrManualLangCards / _kjrUnresolvedSingles against a mixed
 test('pricing-lanes: _kjrManualLangCards / _kjrUnresolvedSingles against the same DB, the Japanese lane on', async () => {
   const { ctx } = await loadApp({ seed: MIXED_DB(), jaLane: true });
   const manualLang = plain(ctx._kjrManualLangCards()).map(r => r.id).sort();
-  assert.deepStrictEqual(manualLang, ['s_cn', 's_jp_nonum', 's_kr'], 'the numbered Japanese one is a Japanese-lane card, the Chinese one is not');
+  assert.deepStrictEqual(manualLang, ['s_cn', 's_jp_noid', 's_jp_nonum', 's_kr'], 'the numbered and matched Japanese one is a Japanese-lane card, the Chinese one and the one with no matched card are not');
   const unresolved = plain(ctx._kjrUnresolvedSingles()).map(r => r.id).sort();
   assert.deepStrictEqual(unresolved, ['s_en_missdate', 's_en_numberless'].sort(), 'a Japanese card never asked is not unresolved either');
   ctx.DB.singles.find(r => r.id === 's_jp')._tcgdexMissDate = '2026-01-01';
   ctx.DB.singles.find(r => r.id === 's_cn')._tcgdexMissDate = '2026-01-01';
-  assert.deepStrictEqual(plain(ctx._kjrUnresolvedSingles()).map(r => r.id).sort(), ['s_en_missdate', 's_en_numberless', 's_jp'].sort(), 'the lane asked about the Japanese one and found no unique card, a Chinese one is never asked');
+  ctx.DB.singles.find(r => r.id === 's_jp_noid')._tcgdexMissDate = '2026-01-01'; // a stamp the lane could not have left on it, it is never asked
+  assert.deepStrictEqual(plain(ctx._kjrUnresolvedSingles()).map(r => r.id).sort(), ['s_en_missdate', 's_en_numberless', 's_jp'].sort(), 'the lane asked about the Japanese one and found no unique card, a Chinese one and one with no matched card are never asked');
 });

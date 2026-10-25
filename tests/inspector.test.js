@@ -182,12 +182,19 @@ test('content: the source line says where the price came from and how long ago, 
   assert.match(sealed, /Manual price, no free source for this language/);
 });
 
-test('content: with the Japanese lane on a Japanese single with a number reads like an English card, a Chinese or Indonesian one stays a manual price', async () => {
+test('content: with the Japanese lane on a Japanese single with a number and a matched card reads like an English card, one with no match needs it first, a Chinese or Indonesian one stays a manual price', async () => {
   const { ctx } = await loadApp({ jaLane: true });
-  // priced by the Japanese lane, so typed in, or not checked yet. One without a number is told what to add, as an English card is.
-  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price');
-  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', marketPrice: '', priceHistory: undefined }), NOW), 'No market price checked yet');
-  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name: 'Umbreon', marketPrice: 90, priceHistory: [] }), NOW), 'Add or fix the card number for exact pricing');
+  // a number and a matched card (a TCGdex id): priced by the Japanese lane, so typed in, or not checked yet. One without a number is told what to add,
+  // as an English card is, and one with a number and no matched card (v3.89) is told it needs the match first.
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', tcgdexId: 'SV8a-093', marketPrice: 90, priceHistory: [] }), NOW), 'Manual price');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', tcgdexId: 'SV8a-093', marketPrice: '', priceHistory: undefined }), NOW), 'No market price checked yet');
+  const NEEDS = 'Needs a matched card first, the card art lookup finds it or add its TCGdex ID';
+  for (const tcgdexId of ['', 'SV8a093']) {
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', tcgdexId, marketPrice: 90, priceHistory: [] }), NOW), NEEDS, JSON.stringify(tcgdexId));
+    assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', tcgdexId, marketPrice: '', priceHistory: undefined }), NOW), NEEDS, JSON.stringify(tcgdexId));
+  }
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name: 'Umbreon', tcgdexId: 'SV8a-093', marketPrice: 90, priceHistory: [] }), NOW), 'Add or fix the card number for exact pricing');
+  assert.equal(ctx.kjrInspectPriceLine('singles', single({ language: 'JP', name: 'Umbreon', tcgdexId: '', marketPrice: 90, priceHistory: [] }), NOW), 'Add or fix the card number for exact pricing', 'no number: the number first');
   for (const language of ['CN', 'ID']) {
     assert.equal(ctx.kjrInspectPriceLine('singles', single({ language, marketPrice: 90, priceHistory: [] }), NOW), 'Manual price, no free source for this language', language);
     assert.equal(ctx.kjrInspectPriceLine('singles', single({ language, name: 'Umbreon', marketPrice: '', priceHistory: undefined }), NOW), 'Manual price, no free source for this language', language);
@@ -348,10 +355,11 @@ test('content: Refresh price is off in a local preview and for a single with no 
   assert.match(ctx.kjrInspectHtml('singles', live, { now: NOW }), /data-insp-act="refresh" aria-disabled="true" title="Price refresh is disabled in local preview/);
 });
 
-test('content: with the Japanese lane on Refresh price is on for a Japanese single with a number, and a Chinese or Indonesian single stays a manual price', async () => {
+test('content: with the Japanese lane on Refresh price is on for a Japanese single with a number and a matched card, off until it is matched, and a Chinese or Indonesian single stays a manual price', async () => {
   const { ctx } = await loadApp({ jaLane: true });
-  assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Pikachu 25' }))), { ok: true, why: '' }, 'priced by the Japanese lane');
-  assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Umbreon' })).why, 'Add or fix the card number for exact pricing', 'without a number it asks for one');
+  assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Pikachu 25', tcgdexId: 'SV2a-025' }))), { ok: true, why: '' }, 'priced by the Japanese lane');
+  assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Pikachu 25', tcgdexId: '' }))), { ok: false, why: 'Needs a matched card first, the card art lookup finds it or add its TCGdex ID' }, 'no matched card yet (v3.89)');
+  assert.equal(ctx.kjrInspectRefreshInfo('singles', single({ language: 'JP', name: 'Umbreon', tcgdexId: 'SV2a-025' })).why, 'Add or fix the card number for exact pricing', 'without a number it asks for one');
   for (const language of ['CN', 'ID', 'KR']) assert.deepEqual(plain(ctx.kjrInspectRefreshInfo('singles', single({ language, name: 'Pikachu 25' }))), { ok: false, why: 'Manual price, no free source for this language' }, language);
 });
 

@@ -580,7 +580,8 @@ async function loadApp(opts) {
     evalErrors.push({ file: 'features.js', error: e });
     throw Object.assign(new Error('features.js failed to eval: ' + (e && e.stack || e)), { cause: e });
   }
-  // The Japanese price lane ships OFF (PPT_JA_LANE_ENABLED in app.js, it waits on a live check of the vendor's answer). A suite that needs a state
+  // The Japanese price lane ships ON since v3.89 (PPT_JA_LANE_ENABLED in app.js, switched on after the 24/10/2026 live check of the vendor's answer, and
+  // the constant stays the kill switch). A suite that needs a state
   // asks for it here: loadApp({ jaLane: true }) replaces the lane's one reader with "on" and loadApp({ jaLane: false }) with "off", for this app
   // only, so a test of either state does not depend on the constant's value. Left out, the constant applies as shipped. Nothing edits the constant.
   if (opts.jaLane === true) sandbox.kjrPptJaLaneOn = () => true;

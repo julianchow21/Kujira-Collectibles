@@ -4990,10 +4990,12 @@ function kjrInspectPriceLine(table, item, now) {
   }
   var lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
   if (table !== 'slabs' && lang !== 'EN' && !(typeof _kjrJapaneseLane === 'function' && _kjrJapaneseLane(item))) {
-    // priced by hand. A Japanese single with a card number is not one of these once the Japanese lane is on (v3.85), so it falls
-    // through to the typed-in and not-checked-yet lines below. One without a number says what to add, like an English card.
+    // priced by hand. A Japanese single with a card number and a matched card is not one of these once the Japanese lane is on (v3.85, v3.89), so it
+    // falls through to the typed-in and not-checked-yet lines below. One without a number says what to add, like an English card, and one with a
+    // number and no matched card says it needs the match first (the shared wording of _kjrManualReason).
     var jaLangs = typeof _kjrPptJaLangs === 'function' ? _kjrPptJaLangs() : [];
-    return jaLangs.indexOf(lang) >= 0 && !kjrIsCustomCard(item) ? 'Add or fix the card number for exact pricing' : 'Manual price, no free source for this language';
+    if (jaLangs.indexOf(lang) >= 0 && !kjrIsCustomCard(item)) return typeof _kjrManualReason === 'function' ? _kjrManualReason(item) : 'Add or fix the card number for exact pricing';
+    return 'Manual price, no free source for this language';
   }
   if (parseFloat(item.marketPrice) > 0) return ago ? 'Manual price · checked ' + ago : 'Manual price';
   var why = typeof _mktEmptyCellTitle === 'function' ? _mktEmptyCellTitle(item) : '';
@@ -5060,7 +5062,7 @@ function kjrInspectChartHtml(item, now) {
     '</svg><div class="kjr-insp-legend">' + key + '</div>';
 }
 // Can the price be refreshed from here, and if not, why. Same guards as the queue: a local preview never prices,
-// and a single with no automatic source (non-English other than a Japanese one with a card number, or no card number) is priced by hand.
+// and a single with no automatic source (non-English other than a Japanese one with a card number and a matched card, or no card number) is priced by hand.
 function kjrInspectRefreshInfo(table, item) {
   if (typeof isLocalhostPreview === 'function' && isLocalhostPreview()) {
     return { ok: false, why: 'Price refresh is disabled in local preview (sync off). Use the live site.' };

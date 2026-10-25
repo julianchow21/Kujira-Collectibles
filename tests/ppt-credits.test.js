@@ -41,7 +41,7 @@ async function drain(fn, timers, seen) {
 }
 
 // total: what the vendor says each search cost. Slab searches carry includeEbay, so a total of 6 is the real price of one.
-// jaLane: the Japanese lane ships OFF (PPT_JA_LANE_ENABLED), a test that needs it asks the harness for it
+// jaLane: this suite forces the Japanese lane OFF unless a test asks for it (the constant PPT_JA_LANE_ENABLED is true since v3.89), so each test names the state it means
 async function setup(seed, opts) {
   const o = Object.assign({ total: 6, local: null, jaLane: false }, opts || {});
   const app = await loadApp({ seed: Object.assign({ singles: [], slabs: [] }, seed), localStorage: o.local || undefined, jaLane: o.jaLane });
@@ -382,9 +382,9 @@ test('ppt-credits: an old queue that had spent the old 30 requests has spent its
 
 test('ppt-credits: a complete older queue picks up a Japanese single it never had, without a rebuild and without touching the credits', async () => {
   const slabs = manySlabs(1);
-  const seed = { slabs, singles: [single('j1', 'Pikachu 25', { language: 'JP', marketPrice: 40 })] };
+  const seed = { slabs, singles: [single('j1', 'Pikachu 25', { language: 'JP', tcgdexId: 'SV1S-025', marketPrice: 40 })] }; // a number and a matched card (v3.89)
   const app = await setup(seed, { jaLane: true });
-  app.fetchMock.route('/ppt/cards', (url) => answer([{ id: 'jp', name: 'Pikachu', cardNumber: '25/100', setName: 'S', language: 'Japanese', prices: { market: 8 } }], 3));
+  app.fetchMock.route('/ppt/cards', (url) => answer([{ id: 'jp', name: 'Pikachu', cardNumber: '25/100', setName: 'SV1S: Scarlet ex', language: 'Japanese', prices: { market: 8 } }], 3));
   const old = queueWith(slabs.map(entryOf), { cursor: 1, completed: true, dayCreditsUsed: { [UTC()]: 2 }, totalRows: 1 });
   delete old.creditsVersion; delete old.freeLaneDay;
   app.localStorage.setItem(QUEUE_KEY, JSON.stringify(old));
@@ -403,7 +403,7 @@ test('ppt-credits: a complete older queue picks up a Japanese single it never ha
 
 test('ppt-credits: topping up adds only what the queue does not hold, copies stay copies, and a queue with nothing to add is left as it was', async () => {
   const slabs = manySlabs(2);
-  const app = await setup({ slabs, singles: [single('j1', 'Pikachu 25', { language: 'JP' }), single('j2', 'Pikachu 25', { language: 'JP' })] }, { jaLane: true });
+  const app = await setup({ slabs, singles: [single('j1', 'Pikachu 25', { language: 'JP', tcgdexId: 'SV1S-025' }), single('j2', 'Pikachu 25', { language: 'JP', tcgdexId: 'SV1S-025' })] }, { jaLane: true });
   const held = entryOf(slabs[0]);
   const q = queueWith([held, Object.assign({}, entryOf(slabs[1]), { copyTargets: [] })], { cursor: 1, totalRows: 2 });
   const before = JSON.stringify(q);
@@ -549,13 +549,13 @@ test('ppt-credits: the queue panel says "credits used today X of Y" for the plan
 
 test('ppt-credits: with the Japanese lane on the tile\'s title names Japanese singles only, never Chinese or Indonesian ones', async () => {
   const slabs = manySlabs(2);
-  const app = await setup({ slabs, singles: [single('c1', 'Pikachu 25', { language: 'CN' }), single('j1', 'Pikachu 25', { language: 'JP' }), single('j2', 'Pikachu', { language: 'JP' })] }, { jaLane: true });
+  const app = await setup({ slabs, singles: [single('c1', 'Pikachu 25', { language: 'CN' }), single('j1', 'Pikachu 25', { language: 'JP', tcgdexId: 'SV1S-025' }), single('j2', 'Pikachu', { language: 'JP', tcgdexId: 'SV1S-025' }), single('j3', 'Pikachu 26', { language: 'JP' })] }, { jaLane: true });
   app.localStorage.setItem(QUEUE_KEY, JSON.stringify(queueWith(slabs.map(entryOf), { dayCreditsUsed: { [UTC()]: 24 } })));
   app.ctx._renderQueueStatus();
   const panel = app.document.getElementById('queue-status-panel').innerHTML;
-  assert.match(panel, /title="Slabs \(eBay sold data\), plus Japanese singles with a card number \(TCGplayer market\), priced via PokemonPriceTracker\. A slab search costs up to 6 credits, a single up to 3\. The Free plan is held to 90 credits a day\."/);
+  assert.match(panel, /title="Slabs \(eBay sold data\), plus Japanese singles with a card number and a matched card \(TCGplayer market\), priced via PokemonPriceTracker\. A slab search costs up to 6 credits, a single up to 3\. The Free plan is held to 90 credits a day\."/);
   assert.doesNotMatch(panel, /Chinese|Indonesian/);
-  assert.match(panel, /2 non-English cards priced manually\. Only a Japanese card with a card number has an automatic source, add the number to a Japanese card to price it automatically\./, 'the Chinese card and the numberless Japanese one are manual');
+  assert.match(panel, /3 non-English cards priced manually\. Only a Japanese card with a card number and a matched card has an automatic source, the card art lookup finds the match, or add the TCGdex ID to the card\./, 'the Chinese card, the numberless Japanese one and the Japanese one with no matched card are manual');
 });
 
 test('ppt-credits: spent credits, and a vendor refusal, are said in the panel and the Run button stays usable', async () => {
@@ -599,7 +599,7 @@ test('ppt-credits: the modal has a two-option plan group beside the key field, l
   assert.ok(html.indexOf('id="ppt-key-input"') < html.indexOf('id="ppt-plan-label"') && html.indexOf('id="ppt-plan-label"') < html.indexOf('AI Analyst'), 'right after the key field');
   assert.match(html, /100 free credits a day/, 'the old "100 free lookups/day" is gone');
   assert.doesNotMatch(html, /lookups/);
-  // the Japanese lane ships off, so the blurb and the Search (PPT) line name slabs only (v3.84 said the same of its lane)
+  // with the Japanese lane forced off (this suite's default), the blurb and the Search (PPT) line name slabs only (v3.84 said the same of its lane)
   assert.match(html, /Slabs are priced from real eBay sold data via <strong style="color:var\(--text\)">PokemonPriceTracker<\/strong>, within <span class="ppt-limit">90<\/span> credits a day\. Both convert to SGD automatically, refreshed daily\./);
   assert.match(html, /<strong style="color:var\(--text\)">Search \(PPT\):<\/strong> slabs, high cost → low, capped at <span class="ppt-limit">90<\/span> credits a day on the <span class="ppt-plan-name">Free<\/span> plan \(a slab search costs up to 6 credits\)<br>/);
   assert.doesNotMatch(html, /Japanese|Chinese|Indonesian/, 'no claim that a lane runs which does not');
@@ -612,8 +612,8 @@ test('ppt-credits: with the Japanese lane on the blurb and the Search (PPT) line
   const app = await setup(undefined, { jaLane: true });
   app.ctx.openApiSettings();
   const html = app.document.body._lastInsertedHTML;
-  assert.match(html, /Slabs are priced from real eBay sold data, and Japanese singles with a card number from the Japanese TCGplayer market, both via <strong style="color:var\(--text\)">PokemonPriceTracker<\/strong>, within <span class="ppt-limit">90<\/span> credits a day\. All convert to SGD automatically, refreshed daily\./);
-  assert.match(html, /<strong style="color:var\(--text\)">Search \(PPT\):<\/strong> slabs, plus Japanese singles with a card number, high cost → low, capped at <span class="ppt-limit">90<\/span> credits a day on the <span class="ppt-plan-name">Free<\/span> plan \(a slab search costs up to 6 credits, a single up to 3\)<br>/);
+  assert.match(html, /Slabs are priced from real eBay sold data, and Japanese singles with a card number and a matched card from the Japanese TCGplayer market, both via <strong style="color:var\(--text\)">PokemonPriceTracker<\/strong>, within <span class="ppt-limit">90<\/span> credits a day\. All convert to SGD automatically, refreshed daily\./);
+  assert.match(html, /<strong style="color:var\(--text\)">Search \(PPT\):<\/strong> slabs, plus Japanese singles with a card number and a matched card, high cost → low, capped at <span class="ppt-limit">90<\/span> credits a day on the <span class="ppt-plan-name">Free<\/span> plan \(a slab search costs up to 6 credits, a single up to 3\)<br>/);
   assert.doesNotMatch(html, /Chinese|Indonesian/);
   assert.doesNotMatch(html, new RegExp('[' + String.fromCharCode(0x2014, 0x2015) + ']'), 'no em-dashes');
 });

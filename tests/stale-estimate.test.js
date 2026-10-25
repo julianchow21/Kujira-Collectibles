@@ -26,7 +26,7 @@ const row = (o) => Object.assign({
 const withHistory = (base, entries, o) => Object.assign({}, base, { priceHistory: entries }, o || {});
 const entry = (o) => Object.assign({ date: '2026-06-10', price: 645, unit: 'USD', source: 'PPT' }, o);
 
-// laneOn: the Japanese lane ships OFF (PPT_JA_LANE_ENABLED), so a test that needs it asks the harness for it
+// laneOn: this helper forces the Japanese lane OFF unless a test asks for it (the constant PPT_JA_LANE_ENABLED is true since v3.89), so each test names the state it means
 async function setup(singles, slabs, laneOn) {
   const app = await loadApp({ jaLane: !!laneOn, seed: { singles: singles || [], slabs: slabs || [] } });
   app.toasts = [];
@@ -253,7 +253,7 @@ test('stale-estimate: a stale card with no cost is an empty cell that says why, 
   const noCost = Object.assign(UMBREON(), { id: 'nc1', costPrice: '' });                                    // Japanese with a number, not asked yet
   const missed = Object.assign(UMBREON(), { id: 'nc2', costPrice: '', _tcgdexMissDate: '2026-10-20' });    // asked, no unique card
   const korean = Object.assign(UMBREON(), { id: 'nc3', costPrice: '', language: 'KR' });                    // no lane at all
-  // the lane ships off, so every non-English card gets the same reason, whichever language it is
+  // the lane is forced off here (the default of setup), so every non-English card gets the same reason, whichever language it is
   const { ctx, document } = await setup([noCost, missed, korean, row({ id: 'n1' })]);
   assert.equal(ctx._mktEmptyCellTitle(ctx.DB.singles[0]), why, 'nothing else to say, so it says that');
   assert.equal(ctx._mktEmptyCellTitle(ctx.DB.singles[1]), why, 'a miss stamp means nothing while the lane is off');
@@ -320,7 +320,7 @@ async function drain(fn, timers) {
   }
   return p;
 }
-const jpCard = (o) => Object.assign({ id: 'jp-93', name: 'Umbreon ex', cardNumber: '093/187', setName: 'Terastal Festival ex', language: 'Japanese', prices: { market: 12.5 } }, o);
+const jpCard = (o) => Object.assign({ id: 'jp-93', name: 'Umbreon ex', cardNumber: '093/187', setName: 'SV8a: Terastal Fest ex', language: 'Japanese', prices: { market: 12.5 } }, o); // the vendor's setName is the set code, a colon, the set name (v3.89)
 const answer = (cards) => jsonResponse({ data: cards, metadata: { apiCallsConsumed: { total: 3 } } });
 async function lane(rows, cards) {
   const app = await setup(rows, [], true);
@@ -368,7 +368,7 @@ test('stale-estimate: a fresh price EQUAL to the stale one still writes its hist
 });
 
 test('stale-estimate: rule 3, when the Japanese lane finds no match the card stays on its cost, never on the old price', async () => {
-  for (const [label, cards] of [['no card', []], ['two cards', [jpCard({ id: 'a' }), jpCard({ id: 'b', setName: 'Other' })]], ['another number', [jpCard({ cardNumber: '094/187' })]]]) {
+  for (const [label, cards] of [['no card', []], ['two cards', [jpCard({ id: 'a' }), jpCard({ id: 'b', setName: 'SV8a: Other' })]], ['another number', [jpCard({ cardNumber: '094/187' })]]]) {
     const app = await lane([UMBREON()], cards);
     const before = snap(app.single('u93'));
     await drain(() => app.ctx.runRefreshQueue(false), app.timers);

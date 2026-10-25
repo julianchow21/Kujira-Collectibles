@@ -355,11 +355,12 @@ test('the order is read off the live inventory: a sold card is gone, a new card 
 });
 
 test('with the Japanese lane on, Japanese singles and slabs share one order by value; with it off a Japanese single is not in it', async () => {
-  const seed = () => ({ slabs: [slab('s1', 'Charizard 4', { marketPrice: 30 })], singles: [single('j1', 'Pikachu 25', { language: 'JP', costPrice: 10, marketPrice: 40 }), single('j2', 'Eevee 9', { language: 'JP', costPrice: 10, marketPrice: 20 })] });
+  // j3 is the most valuable and has a number but no matched card yet (v3.89): it is manual and is not in the order until the card art lookup writes its id
+  const seed = () => ({ slabs: [slab('s1', 'Charizard 4', { marketPrice: 30 })], singles: [single('j1', 'Pikachu 25', { language: 'JP', tcgdexId: 'SV1S-025', costPrice: 10, marketPrice: 40 }), single('j2', 'Eevee 9', { language: 'JP', tcgdexId: 'SV1S-009', costPrice: 10, marketPrice: 20 }), single('j3', 'Mew 8', { language: 'JP', costPrice: 10, marketPrice: 90 })] });
   const on = await setup(seed(), { jaLane: true });
   const q = queueWith([]);
   on.ctx._pptLaneRoll(q, ISO(0));
-  assert.deepEqual(plain(q.items.map((i) => i.id)), ['j1', 's1', 'j2'], 'by value across both tables');
+  assert.deepEqual(plain(q.items.map((i) => i.id)), ['j1', 's1', 'j2'], 'by value across both tables, the card with no match is not in it');
   const off = await setup(seed(), { jaLane: false });
   const q2 = queueWith([]);
   off.ctx._pptLaneRoll(q2, ISO(0));

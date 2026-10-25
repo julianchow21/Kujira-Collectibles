@@ -399,7 +399,7 @@ test('stale-estimate: Chinese and Indonesian cards are never replaced by the Jap
   }
 });
 
-test('stale-estimate: with the lane off, as v3.85 ships, a stale card stays on its cost, nothing is asked and nothing replaces the old price', async () => {
+test('stale-estimate: with the Japanese lane forced off (the kill switch state), a stale card stays on its cost, nothing is asked and nothing replaces the old price', async () => {
   const app = await setup([UMBREON(), LOW_CONF()]);
   app.fetchMock.route('/ppt/cards', () => answer([jpCard()]));
   app.fetchMock.calls.length = 0;

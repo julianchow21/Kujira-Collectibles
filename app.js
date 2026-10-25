@@ -18860,6 +18860,37 @@ function _pptCreditLimitBody(body) {
   return /daily credit limit/i.test(text);
 }
 
+// ── One pace for every PPT request (v3.92) ──
+// The free plan's key was blocked for 24 hours when requests came 1.1 seconds apart, so the plan's gap (kjrRequestGapMs: 6 seconds Free, 1.1 Paid) is the
+// least time between two requests, whoever sends them. The queue and a bulk run sleep it after each answer, but the card inspector's Refresh price, the price
+// lookup and Test Keys did not, so two of them in a row, or one straight after a pass, went out back to back. _pptSearch is the one place a PPT URL is built and
+// fetched, so the gate sits there and nothing reaches the vendor around it: _kjrPptPace holds a request back until the gap since the last one has gone, and the
+// request stamps the time again when its answer is in (_kjrPptStamp), so the gap counts from the answer, the way the queue's own sleep does. A caller that has
+// slept the gap already (the queue, a bulk run) finds it gone and adds no wait. A search that needs a second request (the base-name retry) waits the gap too.
+// TCGdex never comes here. The wait is measured again after each sleep, so two callers at once take turns and never go out together. The stamp is in memory: a
+// reload, another tab or another device starts a fresh count.
+// A hand action (a lookup or a card refresh is in flight, _kjrLookupsOpen) says why it is waiting, a pass shows its own progress bar and stays quiet.
+const KJR_PPT_PACE_TOAST_MS = 500; // a shorter wait is slept without a toast, nobody notices it
+const KJR_PPT_PACE_ROUNDS = 10;    // sleeps one request may take before it goes anyway, so a clock that does not move can never make this spin
+let _kjrPptLastAt = 0;             // Date.now() when the last PPT request was sent, moved to when its answer came in (0: none yet)
+async function _kjrPptPace() {
+  let told = false;
+  for (let round = 0; round < KJR_PPT_PACE_ROUNDS; round++) {
+    const gap = kjrRequestGapMs(); // read each round, the owner may change the plan while a request waits
+    const now = Date.now();
+    if (_kjrPptLastAt > now) _kjrPptLastAt = now; // the clock was set back: wait one gap, never the hours it is behind
+    const wait = _kjrPptLastAt + gap - now;
+    if (wait <= 0) break;
+    if (!told && _kjrLookupsOpen > 0 && wait >= KJR_PPT_PACE_TOAST_MS) {
+      told = true;
+      toast('Waiting ' + _kjrOvPlural(Math.ceil(wait / 1000), 'second', 'seconds') + ' to keep within the ' + PPT_PLANS[kjrPptPlan()].label + ' plan\'s pace', Math.min(Math.max(wait, 2800), 8000));
+    }
+    await new Promise(res => setTimeout(res, wait));
+  }
+  _kjrPptLastAt = Date.now(); // this request goes now, so a caller arriving while it is in the air counts its gap from here
+}
+function _kjrPptStamp() { _kjrPptLastAt = Date.now(); }
+
 // One search. Through the Worker, which holds the key and answers CORS, or direct with a local key when the proxy is off. The Worker takes
 // exactly limit=3 and the two flags above, nothing else, so that is all this can send.
 //   { transport: 'HTTP 503' }        the vendor or the Worker refused or crashed, nothing billed (or the Japanese lane is off, nothing sent)
@@ -18870,21 +18901,27 @@ async function _pptSearch(query, opts) {
   // The only place language=japanese is built, so the only place the lane's switch (PPT_JA_LANE_ENABLED) has to be enforced. It refuses, it
   // never drops the flag: the same words asked of the English catalogue would come back as other cards.
   if (o.japanese && !kjrPptJaLaneOn()) return { transport: 'Japanese lane is off' };
+  // The gate (v3.92, above): the only wait, and nothing below it awaits before the fetch, so the key and the URL are read at the moment of sending
+  await _kjrPptPace();
   const qs = 'search=' + encodeURIComponent(query) + '&limit=3' + (o.includeEbay ? '&includeEbay=true' : '') + (o.japanese ? '&language=japanese' : '');
   const url = PRICE_PROXY_BASE
     ? PRICE_PROXY_BASE + '/ppt/cards?' + qs
     : 'https://www.pokemonpricetracker.com/api/v2/cards?' + qs;
   const headers = PRICE_PROXY_BASE ? {} : { 'Authorization': 'Bearer ' + (getApiKey('ppt') || '') };
-  const r = await fetch(url, { headers });
-  if (!r.ok) {
-    let body = null;
-    try { body = await r.json(); } catch (e) { /* not JSON, an ordinary refusal */ }
-    return _pptCreditLimitBody(body) ? { exhausted: true } : { transport: 'HTTP ' + r.status }; // refused or crashed: not billed, no fallback search
+  try {
+    const r = await fetch(url, { headers });
+    if (!r.ok) {
+      let body = null;
+      try { body = await r.json(); } catch (e) { /* not JSON, an ordinary refusal */ }
+      return _pptCreditLimitBody(body) ? { exhausted: true } : { transport: 'HTTP ' + r.status }; // refused or crashed: not billed, no fallback search
+    }
+    const data = await r.json();
+    if (_pptCreditLimitBody(data)) return { exhausted: true };
+    const cards = data && Array.isArray(data.data) ? data.data.filter(c => c && typeof c === 'object') : [];
+    return { cards, credits: _pptCreditsOf(data, !!o.includeEbay) };
+  } finally {
+    _kjrPptStamp(); // the answer is in, or never came: the next request counts its gap from now
   }
-  const data = await r.json();
-  if (_pptCreditLimitBody(data)) return { exhausted: true };
-  const cards = data && Array.isArray(data.data) ? data.data.filter(c => c && typeof c === 'object') : [];
-  return { cards, credits: _pptCreditsOf(data, !!o.includeEbay) };
 }
 
 // ── What a PPT card says: the eBay sold price of a grade ──
@@ -19440,6 +19477,7 @@ async function refreshPrice(id, table) {
     if (lane === 'ppt') _kjrBillLookup(r);
   } finally {
     _kjrLookupsOpen--;
+    _kjrAutoRunResume(); // the page-load auto run that found this lookup open goes now (v3.92), after the price below is written
   }
   if (r.creditsExhausted) {
     toastError('PokemonPriceTracker credits are used up for today. They reset at 8am Singapore time, nothing was changed.');
@@ -19550,7 +19588,7 @@ const PRICE_HISTORY_MAX = 365;
 // "Daily credit limit exceeded" as a pause for the rest of the day, and the Settings text says to switch back to Free.
 // The gap between requests is the plan's too. The free plan keeps the old 6 seconds: hitting 100 a day at 1.1 seconds apart tripped
 // the vendor's abuse detector (50 429s in 5 minutes = key block for 24h), and 6 seconds is well under its rate limit. The paid plan
-// is a higher tier with its own limit, so it gets 1.1 seconds.
+// is a higher tier with its own limit, so it gets 1.1 seconds. Since v3.92 every PPT request is held to the gap at one gate, _kjrPptPace in _pptSearch.
 const PPT_PLAN_KEY = 'pokeinv_ppt_plan';
 const PPT_PLANS = {
   free: { label: 'Free', credits: 90, gapMs: 6000, quota: 100 },
@@ -21277,6 +21315,26 @@ function _kjrBulkKind(item, table) {
 
 let _bulkRefreshRunning = false;
 let _kjrLookupsOpen = 0; // hand lookups (kjrBudgetedLookup) and card refreshes (refreshPrice) in flight: the queue and a bulk run do not start under one, their bill goes into the same saved queue
+
+// The page-load auto run waits for a lookup, it is not dropped (v3.92). runRefreshQueue turns an automatic call away while a lookup is in flight (above), and
+// the 8 second mark after load (kjrStartOwnerApp) is the only automatic call there is, so a lookup open at that moment cost the day its pass until the next load.
+// Now _kjrAutoRun notes that it is waiting, and the last lookup to close (_kjrAutoRunResume, from the finally of kjrBudgetedLookup and refreshPrice) lets it go.
+// One flag, no timer and no polling, and the run is called once per load: once it has been called nothing sets the flag again. A pass already running is the
+// day's work being done, so nothing waits for it (the answer runRefreshQueue would give), and one that has started by the time the lookup closes is not run a
+// second time. A pass the owner asks for by hand can not start while a lookup is open (it is refused), so none starts in between.
+let _kjrAutoRunWaiting = false; // the auto run found a lookup in flight and waits for the last one to close
+function _kjrAutoRun() {
+  if (_queueRunning || _bulkRefreshRunning) return;
+  if (_kjrLookupsOpen > 0) { _kjrAutoRunWaiting = true; return; }
+  runRefreshQueue(false);
+}
+function _kjrAutoRunResume() {
+  if (!_kjrAutoRunWaiting || _kjrLookupsOpen > 0) return;
+  _kjrAutoRunWaiting = false;
+  // a microtask, so the closing lookup's own tail finishes first (a card refresh writes its price right after), and _kjrAutoRun waits again if another lookup opened since
+  Promise.resolve().then(_kjrAutoRun);
+}
+
 async function bulkRefreshPrices(table) {
   if (_bulkRefreshRunning) { toast('Refresh already running...'); return; }
   if (_queueRunning) { toast('A refresh pass is already running - wait for it to finish first'); return; }
@@ -21831,6 +21889,7 @@ async function kjrBudgetedLookup(descriptor) {
     return { r, refusal, billed: _kjrBillLookup(r) };
   } finally {
     _kjrLookupsOpen--;
+    _kjrAutoRunResume(); // the page-load auto run that found this lookup open goes now (v3.92)
   }
 }
 
@@ -24212,7 +24271,8 @@ function kjrStartOwnerApp() {
   // and its maintenance work unchanged.
   if (_kjrDealerPreviewOnly()) return;
   setTimeout(() => { if (typeof purgeExpiredTrash === 'function') purgeExpiredTrash(); }, 5000);
-  setTimeout(() => { runRefreshQueue(false); }, 8000);
+  // The day's automatic pass. A lookup in flight at this mark makes it wait for the lookup instead of being dropped (_kjrAutoRun, v3.92)
+  setTimeout(() => { _kjrAutoRun(); }, 8000);
 }
 const _kjrAuthGate = document.getElementById('kjr-auth-gate');
 if (!_kjrAuthGate || _kjrAuthGate.tagName !== 'SECTION') {

@@ -18,7 +18,7 @@ test('pricing-lanes: _queueLaneFor - a Korean (or any other unlisted language) r
 
 // The Japanese lane is forced OFF here through the harness (loadApp({ jaLane: false }), the kill-switch state), so every non-English single is manual
 // exactly as in v3.84. v3.85 built the lane and shipped it off, v3.89 switched it on (PPT_JA_LANE_ENABLED is true), the lane-on rules follow below.
-test('pricing-lanes: _queueLaneFor - with the Japanese lane off, as v3.85 ships, every non-English raw single is manual, with a number or without', async () => {
+test('pricing-lanes: _queueLaneFor - with the Japanese lane forced off (the kill switch state), every non-English raw single is manual, with a number or without', async () => {
   const { ctx } = await loadApp({ jaLane: false });
   assert.strictEqual(ctx.kjrPptJaLaneOn(), false);
   for (const language of ['JP', 'CN', 'ID', 'KR', 'TH']) {
@@ -83,7 +83,7 @@ const MIXED_DB = () => ({
   ],
 });
 
-test('pricing-lanes: _kjrManualLangCards / _kjrUnresolvedSingles against a mixed seeded DB, the Japanese lane off as shipped', async () => {
+test('pricing-lanes: _kjrManualLangCards / _kjrUnresolvedSingles against a mixed seeded DB, with the Japanese lane forced off (the kill switch state)', async () => {
   const { ctx } = await loadApp({ seed: MIXED_DB(), jaLane: false });
   const manualLang = plain(ctx._kjrManualLangCards()).map(r => r.id).sort();
   assert.deepStrictEqual(manualLang, ['s_cn', 's_jp', 's_jp_noid', 's_jp_nonum', 's_kr'], 'every Available non-EN card is manual, as in v3.84 (sold CN excluded)');

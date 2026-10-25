@@ -899,7 +899,7 @@ test('art-ja: a Japanese single with no matched card is manual and no pass asks 
   assert.deepEqual(plain(app.ctx._kjrManualLangCards()), [], 'it is no longer a manual price');
 });
 
-test('art-ja: with the Japanese price lane off, as v3.85 ships, the art id is still art only and the Japanese row is a manual price, no call', async () => {
+test('art-ja: with the Japanese price lane forced off (the kill switch state), the art id is still art only and the Japanese row is a manual price, no call', async () => {
   const app = await setup({ singles: [jp()] });
   await app.runSingle('j1');
   assert.equal(app.single('j1').tcgdexId, 'SV2a-006', 'the art lookup is unaffected by the switch');

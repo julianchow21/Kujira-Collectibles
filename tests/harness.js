@@ -586,6 +586,11 @@ async function loadApp(opts) {
   // only, so a test of either state does not depend on the constant's value. Left out, the constant applies as shipped. Nothing edits the constant.
   if (opts.jaLane === true) sandbox.kjrPptJaLaneOn = () => true;
   else if (opts.jaLane === false) sandbox.kjrPptJaLaneOn = () => false;
+  // The PPT pacing gate (v3.92, _kjrPptPace in _pptSearch) holds every request back until the plan's gap since the last one has gone, measured on the clock and
+  // slept through setTimeout, which this harness never fires by itself. Most suites send several PPT requests inside a second and drain only the waits they know
+  // (6000, 1100, 250, 2000), so a gate that really waited would hang them on the second request. They get a gate that lets every request through, and
+  // loadApp({ pace: true }) keeps the real one for the suite that tests it (tests/ppt-pacing.test.js).
+  if (opts.pace !== true) sandbox._kjrPptPace = async () => {};
 
   // Let initDB()'s internal await chain (flushPendingTrash -> flushPendingDeletes
   // -> Promise.all([sbFetchAll...]) -> mergeTable -> ... ) and the top-level

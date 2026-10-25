@@ -45,6 +45,7 @@ test('static accessibility: primary navigation and unlabelled searches have stab
     ['kjr-bb-search', 'Search booster boxes'],
     ['kjr-ebay-search', 'Search eBay purchases'],
     ['guide-search', 'Search guide'],
+    ['ebay-query', 'Card name for the price lookup'], // the Listings "Market Price Lookup" box, v3.92: it had a placeholder and nothing else
   ]) {
     assert.match(html, new RegExp(`<input[^>]*id="${id}"[^>]*aria-label="${label}"[^>]*>`));
   }

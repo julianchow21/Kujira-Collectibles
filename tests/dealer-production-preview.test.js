@@ -43,7 +43,7 @@ test('production fixture serves the real page with a loopback-only synthetic tra
   assert.match(html, /DEALER FIXTURE/);
   assert.doesNotMatch(html, /<script[^>]+src="https?:\/\//i);
   assert.doesNotMatch(html, /<link[^>]+href="https?:\/\//i);
-  assert.match(html, /dealer-production-ui\.js\?v=3\.94/);
+  assert.match(html, /dealer-production-ui\.js\?v=3\.95/);
   assert.match(html, /#kjr-production-fixture-tools\{bottom:96px!important/);
   assert.match(html, /production command contract accepts candidate fields at the/);
   assert.match(html, /mode === 'existing' \? 'Fixture Graded Charizard' : 'Fixture golden candidate'/);

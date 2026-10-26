@@ -19612,12 +19612,14 @@ function kjrPptPlan() {
   return v === 'paid' ? 'paid' : 'free';
 }
 // Only 'free' and 'paid' are plans. Anything else is refused and changes nothing. A plan change gives today's vendor refusal a fresh
-// start, the owner may have just upgraded, so the next run asks the vendor again (a refusal costs nothing).
+// start, the owner may have just upgraded, so the next run asks the vendor again (a refusal costs nothing). The pause goes from the saved
+// queue and from the copy a running pass or bulk run holds (_kjrHeldQueue, v3.95), or that copy's next save would put it back.
 function kjrPptSetPlan(plan) {
   if (plan !== 'free' && plan !== 'paid') return false;
   try { localStorage.setItem(PPT_PLAN_KEY, plan); } catch (e) { return false; }
   const q = loadQueue();
   if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
+  if (_kjrHeldQueue && _kjrHeldQueue.creditsPausedDate) _kjrHeldQueue.creditsPausedDate = null;
   return true;
 }
 function kjrDailyCredits() { return PPT_PLANS[kjrPptPlan()].credits; }
@@ -20549,10 +20551,12 @@ async function runRefreshQueue(manual = false) {
       // the next auto (page-load) run to finish them, not wait for tomorrow.
       // Manual "run now" always re-enters regardless.
       _queueRunning = true;
+      _kjrHeldQueue = q;
       try {
         await _runRefreshQueueBody(q, 0, manual, utcDay, kjrCreditsUsedOn(q, utcDay), today);
       } finally {
         _queueRunning = false;
+        _kjrHeldQueue = null;
         hideSyncProgress();
       }
       return;
@@ -20574,16 +20578,19 @@ async function runRefreshQueue(manual = false) {
     // for today" and reports the tcgdex outcome), so nothing further to do
     // here beyond the run itself.
     _queueRunning = true;
+    _kjrHeldQueue = q;
     try {
       await _runRefreshQueueBody(q, 0, manual, utcDay, usedToday, today);
     } finally {
       _queueRunning = false;
+      _kjrHeldQueue = null;
       hideSyncProgress();
     }
     return;
   }
 
   _queueRunning = true;
+  _kjrHeldQueue = q;
   // Everything from here on is wrapped in try/finally so a thrown error
   // (network blip, a bug in classifyResult, whatever) can never leave
   // _queueRunning stuck true forever - that would permanently block every
@@ -20596,6 +20603,7 @@ async function runRefreshQueue(manual = false) {
     await _runRefreshQueueBody(q, creditsLeft, manual, utcDay, usedToday, today);
   } finally {
     _queueRunning = false;
+    _kjrHeldQueue = null;
     hideSyncProgress();
   }
 }
@@ -21354,6 +21362,15 @@ function _kjrBulkKind(item, table) {
 let _bulkRefreshRunning = false;
 let _kjrLookupsOpen = 0; // hand lookups (kjrBudgetedLookup) and card refreshes (refreshPrice) in flight: the queue and a bulk run do not start under one, their bill goes into the same saved queue
 
+// The queue a pass or a bulk run holds in memory, null when none does (v3.95). A plan change (kjrPptSetPlan) clears the vendor's pause for the day, and it cleared it on
+// the saved queue alone. The pass and the bulk run keep their own copy of the queue and write it back as they go, so the pass's next save put the pause back (PPT stayed
+// off for the day without a word) and the bulk run went on reading the pause in its copy and stopped every PPT row at it. The plan is the owner's setting, so the change
+// is never refused for a holder: it clears the pause on this copy as well, in the same step as on the saved one. The holder's own checks and saves then need no re-read
+// of storage and no rule of their own, and a refusal the vendor gives after the change sets the pause on the same copy and is saved as ever. Set beside _queueRunning
+// (runRefreshQueue) and once bulkRefreshPrices has loaded or built its queue, cleared in the same finally as the flag. A running pass still asks the vendor nothing
+// this pass, its budget was read when it started, the next run asks on the new plan.
+let _kjrHeldQueue = null;
+
 // The bulk refresh's question holds a pass back too (v3.93). bulkRefreshPrices asks "Refresh N singles now?" before it starts, and the owner can take as long as they
 // like to answer. A pass that started in that time (the page-load auto run at its 8 second mark, or Run Today's Batch) would hold the saved queue in memory while the
 // yes started a bulk run on the same queue and the same credits, and each would write the queue back over the other. So while the question is open (_kjrBulkAsking)
@@ -21480,6 +21497,7 @@ async function bulkRefreshPrices(table) {
       if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
       _kjrAdoptCredits(q);
     }
+    _kjrHeldQueue = q; // held until the finally below (v3.95): a plan change clears the vendor's pause on this copy too, see the declaration
     let waitMs = 0; // the gap the last request asks for before the next one is made
     for (let i = 0; i < work.length; i++) {
       const { item, kind } = work[i];
@@ -21573,6 +21591,7 @@ async function bulkRefreshPrices(table) {
   } finally {
     _bulkRefreshRunning = false;
     _kjrAutoRunResume(); // the page-load auto run that waited for the question, and then for this run, goes now, once (v3.93)
+    _kjrHeldQueue = null;
     hideSyncProgress();
   }
   if (table === 'singles') renderSingles();

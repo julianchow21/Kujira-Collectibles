@@ -329,14 +329,18 @@ test('queue edit: every writer of the saved queue is known, and the two that rep
     if (/\bsaveQueue\(/.test(line) || /localStorage\.removeItem\(QUEUE_KEY\)/.test(line)) writers.add(fn);
   }
   // A new writer fails this on purpose: read it against _kjrQueueEditBlocker (does it hold the queue in memory, does it replace or drop it) before adding it here.
-  // kjrPptSetPlan: one field, read and written in one step.  loadQueue: drops a queue of an old schema, setting its credits aside.  The pass and the bulk run own the queue
-  // while their flag is up.  _kjrBillLookup: read, added to and written in one step after the answer.  startFreshQueue and clearQueue are the two that this suite guards.
+  // kjrPptSetPlan: one field, read and written in one step, and it is never refused for a holder (the plan is the owner's setting), so since v3.95 it clears that field on
+  // the copy a running pass or bulk run holds as well (_kjrHeldQueue), or the holder's next save put the pause back (tests/plan-change.test.js). A one-step write alone was
+  // not enough.  loadQueue: drops a queue of an old schema, setting its credits aside.  The pass and the bulk run own the queue while their flag is up.  _kjrBillLookup:
+  // read, added to and written in one step after the answer, and never under a holder (kjrLookupRefusal says running).  startFreshQueue and clearQueue are the two that
+  // this suite guards.
   assert.deepEqual([...writers].sort(), ['_kjrBillLookup', '_runRefreshQueueBody', 'bulkRefreshPrices', 'clearQueue', 'kjrPptSetPlan', 'loadQueue', 'runRefreshQueue', 'startFreshQueue']);
   const body = (name) => {
     const at = src.indexOf('function ' + name + '(');
     assert.ok(at >= 0, name);
     return src.slice(at, at + 10 + src.slice(at + 10).search(/\n(?:async )?function /));
   };
+  assert.match(body('kjrPptSetPlan'), /_kjrHeldQueue\.creditsPausedDate = null;/, 'the plan change clears the pause on the held copy too (v3.95), the one-step write alone is not its approval');
   const start = body('startFreshQueue');
   assert.match(start, /const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toast\(blocked\); return; \}\s*if \(!await kjrConfirm\(/, 'a look, then the question');
   assert.match(start, /\{ok:'Rebuild queue'\}\)\) return;\s*const blockedNow = _kjrQueueEditBlocker\(\);\s*if \(blockedNow\) \{ toast\('Nothing was rebuilt\. ' \+ blockedNow, 6000\); return; \}/, 'and another look straight after the yes');

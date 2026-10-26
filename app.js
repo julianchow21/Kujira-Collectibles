@@ -11808,6 +11808,10 @@ if (document.readyState === 'loading') {
 
 // =========== TOAST ===========
 let toastTimer;
+// The timer that takes the look (toast-error, toast-warn, toast-info) off 300 ms after a dismissal, once the fade is over (v3.96). Both dismissals set it and toast()
+// cancels it before it draws. It was untracked: a toast shown inside those 300 ms had its class removed under it by the earlier dismissal, so a toastInfo turned into
+// the success look while its icon stayed blue.
+let toastClassTimer;
 function toastDismiss() {
   const t = document.getElementById('toast');
   if (!t) return;
@@ -11815,7 +11819,8 @@ function toastDismiss() {
   t.classList.remove('show');
   // Popover API teardown, cosmetic: hidePopover() throws if already closed.
   if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
-  setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
+  clearTimeout(toastClassTimer);
+  toastClassTimer = setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
 }
 function toast(msg, dur=2800, isError=false) {
   const t    = document.getElementById('toast');
@@ -11829,6 +11834,7 @@ function toast(msg, dur=2800, isError=false) {
   const isWarn = !isError && !isInfo && typeof msg === 'string' && msg.startsWith('⚠');
   // Strip leading warning glyph so it doesn't appear twice
   const displayMsg = isWarn ? msg.replace(/^⚠\s*/, '') : msg;
+  clearTimeout(toastClassTimer); // a dismissal in the last 300 ms must not take this toast's look away under it (v3.96)
   t.classList.remove('toast-error','toast-warn','toast-info');
   if (isError) {
     t.classList.add('toast-error');
@@ -11863,7 +11869,8 @@ function toast(msg, dur=2800, isError=false) {
     t.classList.remove('show');
     // Popover API, cosmetic: hidePopover() throws if already closed.
     if (t.hidePopover && t.matches(':popover-open')) { try { t.hidePopover(); } catch(e){} }
-    setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
+    clearTimeout(toastClassTimer);
+    toastClassTimer = setTimeout(() => t.classList.remove('toast-error','toast-warn','toast-info'), 300);
   }, isError ? 6000 : dur);
 }
 function toastError(msg) { toast(msg, 6000, true); }
@@ -20469,6 +20476,9 @@ async function runRefreshQueue(manual = false) {
   if (_kjrBulkAsking) { if (manual) toast('A bulk refresh is waiting for your answer - answer it first'); return; }
   // So does a hand lookup (kjrBudgetedLookup, v3.90), whose bill is written when its answer comes and would be lost under a queue held in memory
   if (_kjrLookupsOpen > 0) { if (manual) toast('A price lookup is running - wait for it to finish first'); return; }
+  // The automatic call stands down for the rest of this load once a bulk run has ended on the vendor's refusal or five failures in a row (v3.96, _kjrBulkBlocked): it is
+  // handed back from that run's finally and would ask the vendor again within seconds. A pass asked for by hand still goes, that is the owner's choice
+  if (!manual && _kjrBulkBlocked) return;
   if (isLocalhostPreview()) {
     if (manual) toast('Price refresh is disabled in local preview (sync off). Use the live site.');
     return;
@@ -20921,6 +20931,8 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
   let done = 0, failedData = 0, failedTransport = 0, copied = 0;
   let consecTransport = 0;
   let creditsSpent = 0;         // PPT credits the answers of this batch cost (a slab search is up to 6, a Japanese single up to 3, a fallback search adds its own)
+  const spentByDay = {};        // the same credits by the UTC day each request went out on (v3.96): a pass can cross 00:00 UTC, and each answer is billed to its own day
+  let refusedDay = null;        // the UTC day the vendor refused for credits on (v3.96), the day that is paused below
   const errorTally = {};        // { 'HTTP 429': 17, 'no match': 3 ... }
   const advancedItems = [];     // items whose cursor position we'll commit
   const retryItems    = [];     // items kept for tomorrow (transport-failed)
@@ -20995,8 +21007,10 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
 
     // A Japanese single's search and match use the set code of its tcgdexId (_kjrPptSetCode), and the queue entry can be older than the row: the art
     // lookup writes that id after the queue was built, and the owner may have fixed it since. The row is the truth, the entry's copy is not read for it.
+    const sentDay = kjrUtcDay(); // the UTC day this request goes out on (v3.96): its answer is billed to it, and a refusal pauses it
     const r = await fetchMarketPrice({ name: item.name, grader: item.grader, grade: item.grade, language: item.language, tcgdexId: (japanese ? live.tcgdexId : item.tcgdexId)||null, japanese });
     creditsSpent += r.creditsUsed || 0; // bill what the answers cost, in credits (their own metadata, else the estimate)
+    if (r.creditsUsed > 0) spentByDay[sentDay] = (spentByDay[sentDay] || 0) + r.creditsUsed;
     // Persist a freshly-resolved id on the queue's own item copy so a
     // requeue (retry/tomorrow) skips the resolve round-trip next time.
     if (r.resolvedTcgdexId && !item.tcgdexId) item.tcgdexId = r.resolvedTcgdexId;
@@ -21023,6 +21037,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
       // towards the five in a row): this card and everything after it stay queued exactly where they are, the cursor does not move past
       // them, nothing is stamped, and no further request is made today.
       creditsRefused = true;
+      refusedDay = sentDay;
       for (let j = i; j < batch.length; j++) retryItems.push(batch[j]);
       break;
     } else { // transport
@@ -21079,9 +21094,14 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
   // 429/403 or crashed with 5xx or said the credits are gone - not metered, and we retry tomorrow anyway). Counting cards would
   // under-bill and risk silently overrunning PPT's daily limit. A queue saved by an older version counted requests: its figures are
   // turned into credits here, once (_kjrAdoptCredits), before this batch is added.
+  // Each answer goes to the UTC day its request went out on (v3.96, spentByDay), where the whole batch went to the day the pass began on (pptDay): a pass that
+  // crossed 00:00 UTC (08:00 Singapore) put the new day's answers on the old day, and a refusal after the reset paused the old day. The batch is still sized and
+  // checked against the day the pass began on (creditsLeft was read for it): after a reset that is the stricter of the two days, so neither day is over-spent,
+  // and the next pass reads the new day in full. Only the bulk run (bulkRefreshPrices) checks the new day's budget from the reset on.
   _kjrAdoptCredits(q);
-  q.dayCreditsUsed[pptDay] = (q.dayCreditsUsed[pptDay] || 0) + creditsSpent;
-  if (creditsRefused) q.creditsPausedDate = pptDay; // nothing more is asked of the vendor today, it resets at 00:00 UTC (8am Singapore)
+  spentByDay[pptDay] = spentByDay[pptDay] || 0; // the day the pass began on is stamped as it always was, with 0 when nothing was spent
+  Object.keys(spentByDay).forEach(day => { q.dayCreditsUsed[day] = (q.dayCreditsUsed[day] || 0) + spentByDay[day]; });
+  if (creditsRefused) q.creditsPausedDate = refusedDay; // nothing more is asked of the vendor that day, it resets at 00:00 UTC (8am Singapore)
   if (q.cursor >= q.items.length) q.completed = true;
   // Stamp the last error reason so the dashboard / settings panel can
   // surface it instead of just "100 failed".
@@ -21340,10 +21360,15 @@ async function clearQueueAsk() {
 //     asked for by hand is refused, and after a yes the run looks again (_kjrBulkBlocker) before it starts, reading the day and the credits as they are by then,
 //     not as the question showed them. The auto run that waited goes once the run has finished, and so does one that came due while the run was going (v3.94).
 //   - A run can last hours on the Paid plan and cross 00:00 UTC (08:00 Singapore, v3.94): the day is read again for every card, so from the reset it checks and bills the new
-//     day's budget (kjrCreditsLeft, dayCreditsUsed) and a pause or a spent budget on the old day does not carry over. The old day keeps the total it had.
+//     day's budget (kjrCreditsLeft, dayCreditsUsed) and a pause or a spent budget on the old day does not carry over. The old day keeps the total it had. v3.96: the day is
+//     read once the gap is over, so the budget check is made on the day the request goes out on (a reset inside the gap used to stop the run at the old day's spent budget),
+//     and a stop at the budget quotes the plan and limit that decided it, not the ones read after the yes (the owner can change the plan while the run goes).
 //   - Pacing: after a PPT request it waits the plan's gap (kjrRequestGapMs, 6 seconds Free and 1.1 Paid) before the next request, after a TCGdex one
 //     the free lane's own TCGDEX_GAP_MS. The free rows go first, so a run that stops at the budget has already done everything that costs nothing.
 //   - Every price still goes through _kjrPriceGate (the price guard), and the auto-pause after 5 failures in a row stays.
+//   - The list holds ids, not rows (v3.96, _kjrBulkWork and _kjrBulkRow): it is made again after the yes, and each row is read from its table as its turn comes and once
+//     more as its price is written. A row that is gone or no longer Available at either point is left out and counted, never priced and never written to.
+//   - A run that ends on the vendor's refusal (the first 429 or 403) or five failures in a row stands the page-load auto run down for this load (v3.96, _kjrBulkBlocked).
 //
 // What a bulk run does with one row, from the lane the queue gives it:
 //   'slab'      a Slabs row with a grader (or a grade that reads as one): the PPT eBay lane
@@ -21361,6 +21386,13 @@ function _kjrBulkKind(item, table) {
 
 let _bulkRefreshRunning = false;
 let _kjrLookupsOpen = 0; // hand lookups (kjrBudgetedLookup) and card refreshes (refreshPrice) in flight: the queue and a bulk run do not start under one, their bill goes into the same saved queue
+
+// What ended the last bulk run of this load, when that was the vendor's refusal (the first 429 or 403, in the source's words) or five transport failures in a row, and ''
+// otherwise (v3.96). Since v3.94 the page-load auto run waits for a bulk run and goes from its finally, so after such an end the day's pass asked the vendor again within
+// seconds (or TCGdex, which had just refused as well), and on the Free plan a burst of 429s earns the key a 24 hour block. runRefreshQueue turns the automatic call away
+// while this is set, for the rest of the load, a pass asked for by hand still goes. bulkRefreshPrices sets it as its loop ends, before its finally hands the auto run back.
+// A run that ends any other way (done, out of credits, a throw) leaves it alone, and the auto run goes as it has since v3.94.
+let _kjrBulkBlocked = '';
 
 // The queue a pass or a bulk run holds in memory, null when none does (v3.95). A plan change (kjrPptSetPlan) clears the vendor's pause for the day, and it cleared it on
 // the saved queue alone. The pass and the bulk run keep their own copy of the queue and write it back as they go, so the pass's next save put the pause back (PPT stayed
@@ -21421,6 +21453,29 @@ function _kjrQueueEditBlocker() {
   return _kjrBulkBlocker(); // a pass, or a lookup or card refresh in flight
 }
 
+// The rows a bulk run of one table prices, as ids read off the live inventory (v3.96): the Available rows the lanes take, free rows first, then the PPT ones, and the count
+// of rows with no automatic price. bulkRefreshPrices reads it once to word its question and again after the yes. The row objects themselves are never kept, see _kjrBulkRow.
+function _kjrBulkWork(table) {
+  const free = [], ppt = [];
+  let manual = 0;
+  (DB[table] || []).forEach(item => {
+    if ((item.status||'Available') !== 'Available') return;
+    const kind = _kjrBulkKind(item, table);
+    if (kind === 'manual') manual++;
+    else (kind === 'free' ? free : ppt).push(item.id);
+  });
+  return { free, ppt, manual };
+}
+// The live row of an id, or null when it is gone from the table or no longer Available (v3.96). A bulk run holds ids, not rows: its question can stay open as long as the owner
+// likes and the run itself lasts hours on the Paid plan, and in that time a storage event from another tab (mergeIntoMemory) or a cloud pull swaps in new row objects, and a row
+// is sold or trashed. A row object kept from before was priced all the same (up to 6 credits on a Sold card), the price was written onto the detached copy and markDirty called
+// on the live row, which never got it, and the toast counted it as updated. So the run reads the row here as its turn comes (and prices it as it is now, _kjrBulkKind reads it
+// again) and once more before its price is written, and a row that is gone at either point is left out and counted.
+function _kjrBulkRow(table, id) {
+  const row = (DB[table] || []).find(r => r.id === id);
+  return row && (row.status||'Available') === 'Available' ? row : null;
+}
+
 async function bulkRefreshPrices(table) {
   if (_kjrBulkAsking) { toast('A bulk refresh is already waiting for your answer - answer it first'); return; } // one question at a time, a second call would share its answer and start a second run
   const blocked = _kjrBulkBlocker();
@@ -21431,19 +21486,13 @@ async function bulkRefreshPrices(table) {
   // so a key missing from this browser only blocks with the proxy off (v3.75). The same
   // test runRefreshQueue and refreshPrice make.
   if (table === 'slabs' && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
-  const rows = DB[table].filter(i => (i.status||'Available') === 'Available');
-  if (!rows.length) { toast('No available items to refresh'); return; }
-  // free rows first, then the PPT ones (see the block above), the manual ones are only counted
-  const free = [], ppt = [];
-  let manual = 0;
-  rows.forEach(item => {
-    const kind = _kjrBulkKind(item, table);
-    if (kind === 'manual') manual++;
-    else (kind === 'free' ? free : ppt).push({ item, kind });
-  });
+  // The rows by id, free rows first, then the PPT ones (see the block above), the manual ones only counted (v3.96, _kjrBulkWork): read here to word the question, and
+  // again after the yes for the run
+  let { free, ppt, manual } = _kjrBulkWork(table);
+  if (!free.length && !ppt.length && !manual) { toast('No available items to refresh'); return; }
   if (!free.length && !ppt.length) { toast('Nothing to price automatically: ' + manual + (manual === 1 ? ' card has' : ' cards have') + ' no automatic source, price ' + (manual === 1 ? 'it' : 'them') + ' by hand'); return; }
   if (ppt.length && !PRICE_PROXY_BASE && !getApiKey('ppt')) { toast('Add API keys first: open Settings, then API settings'); openApiSettings(); return; }
-  const work = free.concat(ppt);
+  let work = free.concat(ppt);
   // The day, the credits and the plan are read here only to word the question. It can stay open as long as the owner likes, so the run reads them again after the yes (v3.93)
   let utcDay = kjrUtcDay();
   let limit = kjrDailyCredits();
@@ -21469,13 +21518,20 @@ async function bulkRefreshPrices(table) {
   // up may still be in flight, and a run that is already going is no place to start another. Whatever is in the way, this one does nothing and says so.
   const blockedNow = _kjrBulkBlocker();
   if (blockedNow) { _kjrAutoRunResume(); toast('Nothing was refreshed. ' + blockedNow, 6000); return; }
-  // The credits are the saved queue's as they are now, not as the question showed them: the run loads the queue below and checks kjrCreditsLeft on it at every card
+  // The rows as they are after the yes (v3.96): one sold, trashed or moved to the manual lane while the question was open is not on the list, one added or matched since is.
+  // The question's counts were its wording only. With nothing left the run says so and hands the waiting auto run back, as a blocked run does
+  ({ free, ppt, manual } = _kjrBulkWork(table));
+  work = free.concat(ppt);
+  if (!work.length) { _kjrAutoRunResume(); toast('Nothing was refreshed. No ' + esc(table) + ' with an automatic price are left', 6000); return; }
+  // The credits are the saved queue's as they are now, not as the question showed them: the run loads the queue below and checks kjrCreditsLeft on it at every card.
+  // The day, the limit and the plan are the run's starting values, a stop at the budget reads them again as it is decided (v3.96)
   utcDay = kjrUtcDay();
   limit = kjrDailyCredits();
   planLabel = PPT_PLANS[kjrPptPlan()].label;
   _bulkRefreshRunning = true;
   let done = 0, failedData = 0, failedTransport = 0, consecTransport = 0;
   let held = 0; // prices the guard (kjrPriceGuard) kept for the owner's OK instead of writing
+  let gone = 0; // rows sold or removed while the run was going: gone or no longer Available as their turn came, or as their price was to be written (v3.96)
   const errorTally = {};
   let aborted = false;
   // Same NON_ATTEMPT sentinel-stripping as the queue's classifyResult -
@@ -21492,15 +21548,28 @@ async function bulkRefreshPrices(table) {
   let stoppedAt = -1;       // the index of the first card a stop left unpriced
   let q = null;             // the queue, whose credits the PPT lane spends
   try {
-    if (ppt.length) {
-      q = loadQueue();
-      if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
-      _kjrAdoptCredits(q);
-    }
+    // The queue, whose credits the PPT lane spends, held whatever the list holds (v3.96): a row can move into the PPT lane while the run goes (a slab given its grade, a
+    // Japanese single matched by the art lookup) and is then priced as it is now, out of the same budget. A run of free rows alone used to hold none. A queue saved by an
+    // older version counted requests and is read as credits once, a fresh one counts credits from the start and carries the day's (_kjrCarryCredits)
+    q = loadQueue();
+    if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
+    else { _kjrAdoptCredits(q); }
     _kjrHeldQueue = q; // held until the finally below (v3.95): a plan change clears the vendor's pause on this copy too, see the declaration
     let waitMs = 0; // the gap the last request asks for before the next one is made
     for (let i = 0; i < work.length; i++) {
-      const { item, kind } = work[i];
+      // The gap first (v3.96): the plan's after a PPT request, the free lane's after a TCGdex one. The day, the row and the budget are read once it is over, so a reset or a
+      // change inside the gap is seen. The vendor's day can change in the middle of a run (v3.94): on the Paid plan a run lasts hours, and 00:00 UTC is 08:00 in Singapore,
+      // so the day is read again for every card. From the reset the run checks and bills the new day (the queue's pass bills the new day too, and checks its batch against
+      // the day it began on), and a pause or a spent budget on the old day does not carry over (kjrCreditsLeft reads a pause for its own day only).
+      if (waitMs) await new Promise(res => setTimeout(res, waitMs));
+      utcDay = kjrUtcDay(); // the request goes out on this day: its budget is checked on it, and its answer is billed to it, or paused on it
+      waitMs = 0; // the gap is over, a row left out below does not wait it again
+      // The row as it is now (v3.96, _kjrBulkRow), priced on the lane it has now, the way the queue reads its rows. Gone, sold or trashed since the list was made, it is left
+      // out and counted. Moved to the manual lane, it is counted there. A grader cleared since does not send a graderless row to the vendor as a slab
+      let item = _kjrBulkRow(table, work[i]);
+      if (!item) { gone++; continue; }
+      const kind = _kjrBulkKind(item, table);
+      if (kind === 'manual') { manual++; continue; }
       const isPpt = kind !== 'free';
       const japanese = kind === 'japanese';
       // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
@@ -21508,16 +21577,11 @@ async function bulkRefreshPrices(table) {
       const slabGrade = kind === 'slab' ? _kjrSlabGrade(item) : null;
       const grader = kind === 'slab' ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
       const grade = kind === 'slab' ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
-      // The vendor's day can change in the middle of a run (v3.94): on the Paid plan a run lasts hours, and 00:00 UTC is 08:00 in Singapore. So the day is read again for every
-      // card, here for the check and below, after the gap, for the request and its bill. From the reset the run checks and bills the new day, as the queue does when its next
-      // pass finds a new day, and a pause or a spent budget on the old day does not carry over (kjrCreditsLeft reads a pause for its own day only).
-      utcDay = kjrUtcDay();
       // Stop before a search today's credits can not pay for: a slab is a search with eBay (6), a Japanese single a plain one (3). A refusal earlier
-      // today (creditsPausedDate) leaves nothing to spend.
-      if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; break; }
-      if (waitMs) await new Promise(res => setTimeout(res, waitMs));
-      utcDay = kjrUtcDay(); // the gap can end on the other side of the reset: the request goes out on this day, and its answer is billed to it, or paused on it
-      showSyncProgress(done + held + failedData + failedTransport, work.length, 'Refreshing ' + table + '…');
+      // today (creditsPausedDate) leaves nothing to spend. The stop quotes the plan that decided it (v3.96): the limit is read live in kjrCreditsLeft, and the one
+      // read after the yes could name the other plan in the toast ("87 of 18,000 on the Paid plan" after a switch to Free)
+      if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; limit = kjrDailyCredits(); planLabel = PPT_PLANS[kjrPptPlan()].label; break; }
+      showSyncProgress(i, work.length, 'Refreshing ' + table + '…');
       let wasHeld = false, gate = null;
       // Every call carries one of the three: tcgdexOnly (TCGdex alone, the PPT name search is not reached), japanese (the set-checked lane) or a
       // grader with its grade (the eBay lane). The raw lane's fuzzy PPT fallback needs none of them, so nothing here can reach it.
@@ -21538,6 +21602,10 @@ async function bulkRefreshPrices(table) {
         const trigger = [r.pptError, r.tcgdexError].find(isHardBlock);
         if (trigger) { hardBlock = trigger; stoppedAt = i; failedTransport++; errorTally[trigger] = (errorTally[trigger]||0) + 1; break; }
       }
+      // The answer is in, the row may not be (v3.96): read again before anything is written on it. Gone, the answer is dropped and the row counted, its credits were spent
+      // (the row changed under its own request)
+      item = _kjrBulkRow(table, work[i]);
+      if (!item) { gone++; continue; }
       const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
       if (r.resolvedTcgdexId && !item.tcgdexId) {
         item.tcgdexId = r.resolvedTcgdexId;
@@ -21588,6 +21656,9 @@ async function bulkRefreshPrices(table) {
       }
       saveData();
     }
+    // The vendor has just refused, or failed five times in a row: the day's automatic pass must not ask it again this load (v3.96, _kjrBulkBlocked). Marked here, before the
+    // finally hands the waiting auto run back
+    if (hardBlock || aborted) _kjrBulkBlocked = hardBlock || 'five failures in a row';
   } finally {
     _bulkRefreshRunning = false;
     _kjrAutoRunResume(); // the page-load auto run that waited for the question, and then for this run, goes now, once (v3.93)
@@ -21616,7 +21687,7 @@ async function bulkRefreshPrices(table) {
     : budgetStop ? ' · ⏸ PPT credits are used up for today (' + kjrFmtCredits(kjrCreditsUsedOn(q, utcDay)) + ' of ' + kjrFmtCredits(limit) + ' on the ' + planLabel + ' plan), they reset at 8am Singapore time' + notPriced
     : hardBlock ? ' · ⏸ stopped at the first refusal (' + hardBlock + '), nothing was marked as unmatched' + notPriced
     : aborted ? ' · ⏸ auto-paused after 5 failures in a row' : '';
-  toast('Done: ' + done + ' updated' + (held ? ', ' + held + ' held for your OK (Overview, Needs attention)' : '') + (manual ? ', ' + manual + ' skipped (no automatic price)' : '') + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
+  toast('Done: ' + done + ' updated' + (held ? ', ' + held + ' held for your OK (Overview, Needs attention)' : '') + (manual ? ', ' + manual + ' skipped (no automatic price)' : '') + (gone ? ', ' + gone + ' left out (sold or removed while the run was going)' : '') + (failedTotal ? ', ' + failedTotal + ' failed' + (errSummary ? ' (' + errSummary + ')' : '') : '') + advice + tail, 7000);
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
 }
 

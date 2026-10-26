@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { ROOT } = require('./harness.js');
+const { RELEASE, escapeRegExp } = require('./version.js'); // the build the page should carry, written once (tests/version.js)
 
 const UI_SOURCE = fs.readFileSync(ROOT + '/dealer-ui.js', 'utf8');
 
@@ -126,7 +127,7 @@ test('Dealer UI keeps Release 0 money and identity decisions explicit', () => {
   assert.match(src, /protocol === 'http:' \|\| protocol === 'https:'/);
   assert.doesNotMatch(src, /hostname === '0\.0\.0\.0'/);
   assert.doesNotMatch(src, /\.local\$\/\.test\(hostname\)/);
-  assert.match(html, /release:\s*'kujira-collectibles@3\.95'/);
+  assert.match(html, new RegExp("release:\\s*'" + escapeRegExp(RELEASE) + "'"));
   assert.doesNotMatch(html, /release:\s*'kujira-collectibles@3\.61'/);
 });
 

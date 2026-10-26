@@ -6,11 +6,13 @@
 // server ("Restore queued locally. Waiting for server confirmation…"). A result, a refusal, a warning and an error keep their own looks.
 // Every other suite replaces toast with a recorder. This one runs the REAL toast against the harness's stub elements and reads what it drew, so the ordinary
 // variants are pinned here too: the neutral one must not move them.
+// v3.96 drives the results that finish work to their end (the bulk refresh and queue pass summaries, the rebuild's "Queue built"), where the v3.94 test below could
+// only call the refusals that return before any work, and reads the tick off the page for each.
 process.env.TZ = 'Asia/Singapore';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { loadApp, ROOT } = require('./harness.js');
+const { loadApp, jsonResponse, ROOT } = require('./harness.js');
 const { setClock } = require('./clock.js');
 
 const VARIANTS = ['toast-error', 'toast-warn', 'toast-info'];
@@ -191,7 +193,8 @@ test('toast: only the started-and-not-finished messages take the neutral note, e
   const miss = await heldRefresh(app, 'single_seed_1');
   await miss.answer({ maxSgd: 0, tcgdexError: 'no price', pptError: 'not applicable' });
   assert.deepEqual(seen.map((a) => [a[0].startsWith('No price found') ? 'a miss' : a[0], a[2]]), [['Fetching market price...', 'info'], ['a miss', true]]);
-  // the bulk refresh's summary and its refusals, the queue's refusals and summary, the rebuild: ticks, as they were
+  // the refusals of the bulk refresh, the pass and the rebuild: ticks, as they were. They return before any work, so this only reaches them. What those runs draw when they
+  // finish (the bulk refresh's "Done", the pass's "Queue:", the rebuild's "Queue built") is driven to the end by the three tests under "the results that finish work" below
   seen.length = 0;
   app.ctx.kjrConfirm = async () => true;
   app.ctx._queueRunning = true;
@@ -221,6 +224,90 @@ test('toast: a Trash restore that waits for the server is the neutral note, and 
   // the acknowledgement that follows the queued note is in the sync code, and it is the tick
   assert.match(src, /toast\('Restore synced'\)/);
   assert.doesNotMatch(src, /toastInfo\('Restore synced'/);
+});
+
+// ── v3.96: the results that finish work ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// A summary says the work is done, so it keeps the tick, and a neutral note on it would read as "still going". These runs go all the way through against stubbed fetch, and each
+// summary is read twice: the arguments the page gave toast() (no third place, the way toastInfo would fill it) and what the real toast drew on the stub elements.
+
+// the collection: Raichu 26 is an English single the free lane prices at S$8, Alpha 1 a PSA 10 slab the PPT lane prices at S$101
+async function runsApp() {
+  const app = await loadApp({ realToast: true, seed: {
+    singles: [{ id: 'b', name: 'Raichu 26', language: 'EN', type: 'raw', status: 'Available', costPrice: 5, marketPrice: '', priceHistory: [] }],
+    slabs: [{ id: 's1', name: 'Alpha 1', grader: 'PSA', grade: '10', type: 'slab', language: 'EN', status: 'Available', costPrice: 500, marketPrice: '', priceHistory: [] }],
+  } });
+  setClock(app, '2026-10-26T04:00:00Z'); // noon in Singapore, so the free lane's day and the vendor's day are both 26/10/2026 whenever the suite runs
+  app.fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
+  app.fetchMock.route('/ppt/cards', (url) => {
+    const u = new URL(url);
+    const m = /^(.+) (\d+)$/.exec(u.searchParams.get('search') || '');
+    const card = m && u.searchParams.get('includeEbay') === 'true'
+      ? [{ id: 'v-' + m[2], name: m[1], cardNumber: m[2] + '/100', setName: 'Set', ebay: { salesByGrade: { psa10: { smartMarketPrice: { price: 100 + Number(m[2]) } } } } }] : [];
+    return jsonResponse({ data: card, metadata: { apiCallsConsumed: { total: card.length ? 6 : 3 } } });
+  });
+  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
+    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
+    if (list) return decodeURIComponent(list[2]) === '26' ? jsonResponse([{ id: 'set-26' }]) : jsonResponse([]);
+    if (/\/cards\/set-26$/.test(url)) return jsonResponse({ id: 'set-26', pricing: { tcgplayer: { holofoil: { marketPrice: 8 } } } });
+    return jsonResponse({}, 404);
+  });
+  app.ctx.kjrConfirm = async () => true; // a yes to "Refresh now" and to "Rebuild queue"
+  // every toast the page draws, with what the screen showed the moment it was drawn
+  app.drawn = [];
+  const real = app.ctx.toast;
+  app.ctx.toast = (...a) => { const r = real(...a); app.drawn.push({ args: a, look: look(app) }); return r; };
+  // a run waits between cards through the sandbox's setTimeout, which the harness never fires by itself: fire those waits, and fail rather than hang when the run does not end
+  app.finish = async (p) => {
+    let done = false;
+    p.then(() => { done = true; }, () => { done = true; });
+    for (let i = 0; i < 400 && !done; i++) {
+      await new Promise((r) => setImmediate(r));
+      app.timers.flush((e) => [6000, 1100, 250, 2000].includes(e.delay));
+    }
+    if (!done) throw new Error('the run did not finish');
+    return p;
+  };
+  return app;
+}
+// the one toast a run drew that starts like this
+function summaryOf(app, re) {
+  const found = app.drawn.filter((d) => re.test(String(d.args[0])));
+  assert.equal(found.length, 1, 'one toast matches ' + re + ', the run drew ' + JSON.stringify(app.drawn.map((d) => d.args[0])));
+  return found[0];
+}
+// a plain toast: asked for with no variant, and drawn as the tick on the accent with no variant class
+function assertTick(d) {
+  assert.equal(d.args[2], undefined, 'asked for with no variant (not "info", not an error): ' + d.args[0]);
+  assert.deepEqual(d.look, { classes: [], shown: true, icon: '✓', colour: 'var(--accent)', msg: d.args[0] }, 'and drawn as the tick: ' + d.args[0]);
+}
+
+test('toast: the bulk refresh summary, "Done: ...", keeps the tick when the run finishes', async () => {
+  const app = await runsApp();
+  await app.finish(app.ctx.bulkRefreshPrices('singles'));
+  assert.equal(app.ctx.DB.singles[0].marketPrice, '8', 'the run priced the card, it did not turn back at a refusal');
+  const done = summaryOf(app, /^Done: /);
+  assert.equal(done.args[0], 'Done: 1 updated');
+  assert.equal(done.args[1], 7000, 'and keeps the 7 seconds it asks for');
+  assertTick(done);
+});
+
+test('toast: the queue pass summary, "Queue: ...", keeps the tick when the pass finishes', async () => {
+  const app = await runsApp();
+  await app.finish(app.ctx.runRefreshQueue(true));
+  assert.equal(app.ctx.DB.slabs[0].marketPrice, '101', 'the pass priced the slab through the PPT lane');
+  assert.equal(app.ctx.DB.singles[0].marketPrice, '8', 'and the single through the free lane');
+  const summary = summaryOf(app, /^Queue: /);
+  assert.equal(summary.args[0], 'Queue: 1 fetched · Exact (TCGdex): 1/1 priced · ✅ Complete!');
+  assert.equal(summary.args[1], 7000, 'and keeps the 7 seconds it asks for');
+  assertTick(summary);
+});
+
+test('toast: the rebuild, "Queue built: ...", keeps the tick when the queue is built', async () => {
+  const app = await runsApp();
+  await app.finish(app.ctx.startFreshQueue());
+  const built = summaryOf(app, /^Queue built: /);
+  assert.equal(built.args[0], 'Queue built: 2 unique cards (2 rows) · Exact (TCGdex): 1 · Search (PPT): 1');
+  assertTick(built);
 });
 
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────

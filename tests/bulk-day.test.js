@@ -237,7 +237,7 @@ test('bulk day: a run that crosses the reset and then uses up the new day\'s cre
 
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-test('bulk day: the day is read again for every card, before the budget check and after the gap, and nothing in the loop keeps the day the run began on', () => {
+test('bulk day: the day is read again for every card, once the gap is over and before the budget check, and nothing in the loop keeps the day the run began on', () => {
   const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
   const at = src.indexOf('\nasync function bulkRefreshPrices(');
   const body = src.slice(at, at + 1 + src.slice(at + 1).search(/\n(?:async )?function /));
@@ -247,7 +247,7 @@ test('bulk day: the day is read again for every card, before the budget check an
   assert.ok(loop.length > 1000, 'the loop was found');
   assert.match(loop, /\n\s*utcDay = kjrUtcDay\(\);\s*\/\/[^\n]*\n(?:[^\n]*\n)*?\s*if \(isPpt && kjrCreditsLeft\(q, utcDay\) < _pptEstimateCredits\(\{ grader, grade \}\)\) \{ budgetStop = true;/, 'read, then the check');
   assert.match(loop, /if \(waitMs\) await new Promise\(res => setTimeout\(res, waitMs\)\);\s*utcDay = kjrUtcDay\(\);/, 'read again once the gap is over, as the request goes out');
-  assert.equal((loop.match(/utcDay = kjrUtcDay\(\)/g) || []).length, 2, 'twice a card, and nowhere else in the loop');
+  assert.equal((loop.match(/utcDay = kjrUtcDay\(\)/g) || []).length, 1, 'once a card, after the gap and before the check (v3.96), and nowhere else in the loop');
   assert.match(loop, /q\.dayCreditsUsed\[utcDay\] = \(q\.dayCreditsUsed\[utcDay\] \|\| 0\) \+ spent/, 'the bill is the day of the request');
   assert.match(loop, /q\.creditsPausedDate = utcDay/, 'and so is the pause');
   assert.match(body, /\n\s*utcDay = kjrUtcDay\(\);\s*limit = kjrDailyCredits\(\);\s*planLabel = /, 'the read after the yes is still there');

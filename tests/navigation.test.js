@@ -10,6 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { loadApp, makeSeed, plain, ROOT } = require('./harness.js');
+const { BADGE, RELEASE, ASSETS, VERSION, tag, escapeRegExp } = require('./version.js'); // the build the page should carry, written once (tests/version.js)
 
 const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 const css = fs.readFileSync(ROOT + '/styles.css', 'utf8');
@@ -111,12 +112,13 @@ test('footer: the sync button keeps its attributes in order, is never hidden, an
   const inner = topbar.slice(topbar.indexOf(btn), topbar.indexOf('</button>', topbar.indexOf(btn)));
   assert.match(inner, /<span class="kjr-sync-dot" aria-hidden="true"><\/span>/);
   assert.match(inner, /<span class="kjr-sync-line1" id="sync-label">Not synced yet<\/span>/);
-  assert.match(inner, /<span class="kjr-sync-line2"><span id="sync-ago"><\/span><span id="app-ver" title="[^"]*">v3\.95 \(26 Oct\)<\/span><\/span>/);
+  // the badge is pinned here, once: its place in the button and the build it shows (BADGE, tests/version.js)
+  assert.match(inner, new RegExp('<span class="kjr-sync-line2"><span id="sync-ago"></span><span id="app-ver" title="[^"]*">' + escapeRegExp(BADGE) + '</span></span>'));
   assert.match(topbar, /<span class="sr-only" id="sync-live" role="status"><\/span>/, 'a change of state is announced from here');
-  // the badge is one line with the shape qc.sh and misc-consistency parse, and there is one of it
+  // the badge is one line with the shape qc.sh and misc-consistency parse (v, digits and dots, a space), and there is one of it
   const line = html.split('\n').filter(l => l.includes('id="app-ver"'));
   assert.equal(line.length, 1);
-  assert.match(line[0], /id="app-ver"[^>]*>v3\.95 \(26 Oct\)<\/span>/);
+  assert.match(line[0], /id="app-ver"[^>]*>v[0-9][0-9.]* \([^)]*\)<\/span>/);
   assert.doesNotMatch(line[0].match(/<span id="app-ver"[^>]*>/)[0], /style=/, 'no inline style, the stylesheet sizes it');
 });
 
@@ -1145,14 +1147,14 @@ test('css: motion is 160ms ease-out and is switched off for reduced motion', () 
 });
 
 // ── the version ─────────────────────────────────────────────────────────────────────────────────
-test('v3.95: the badge, the Sentry release, the asset tags and the service worker move together', () => {
-  const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /release:\s*'kujira-collectibles@3\.95'/);
-  assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=3\.95">/);
-  for (const f of ['app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) {
-    assert.ok(html.includes('<script src="' + f + '?v=3.95"></script>'), f);
-    assert.ok(sw.includes("'./" + f + "?v=3.95'"), 'sw ' + f);
-  }
-  assert.match(sw, /const CACHE = 'kujira-v98'/);
-  assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
+// The page's half of a bump. The number is written once, in tests/version.js. The badge is pinned in the footer test above, the worker's half (CACHE and the precached URLs)
+// in sw-update.test.js, so each part of a half-done bump fails in one place and none is checked twice.
+test('build: the Sentry release and the eight asset tags in the page carry the current version', () => {
+  assert.match(html, new RegExp("release:\\s*'" + escapeRegExp(RELEASE) + "'"));
+  assert.ok(html.includes('<link rel="stylesheet" href="' + tag('styles.css') + '">'), 'styles.css');
+  for (const f of ASSETS.filter((a) => a !== 'styles.css')) assert.ok(html.includes('<script src="' + tag(f) + '"></script>'), f);
+  // and the page tags no other local asset, or one a later bump would leave behind (a CDN address has a colon and is none of this suite's business)
+  const tagged = [...html.matchAll(/(?:src|href)="([^"?:]+)\?v=([^"]+)"/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(tagged.map(([f]) => f).sort(), [...ASSETS].sort(), 'the page tags exactly the eight assets in tests/version.js');
+  for (const [f, v] of tagged) assert.equal(v, VERSION, f + ' is at the current version');
 });

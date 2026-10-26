@@ -4,14 +4,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { ROOT } = require('./harness.js');
+const { ASSETS, CACHE, tag, escapeRegExp } = require('./version.js'); // the build the worker should carry, written once (tests/version.js)
 
-test('sw-update: v3.95 badge, asset URLs and cache v98 are pinned', () => {
-  const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
+// The worker's half of a bump: a new CACHE name is what makes every client drop the old shell, and the precache list holds each app asset at its new ?v= URL, so the
+// install fetches the new bytes and not the old ones. The page's half (badge, Sentry release, the eight tags) is pinned in navigation.test.js, each part once.
+test('sw-update: the cache name and every precached app asset carry the current build, the vendored library keeps its own', () => {
   const sw = fs.readFileSync(ROOT + '/sw.js', 'utf8');
-  assert.match(html, /id="app-ver"[^>]*>v3\.95 \(26 Oct\)</);
-  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) assert.ok(html.includes(asset + '?v=3.95'));
-  assert.match(sw, /const CACHE = 'kujira-v98'/);
-  for (const asset of ['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']) assert.ok(sw.includes(asset + '?v=3.95'));
+  assert.match(sw, new RegExp("const CACHE = '" + escapeRegExp(CACHE) + "'"));
+  for (const asset of ASSETS) assert.ok(sw.includes("'./" + tag(asset) + "'"), 'sw CORE ' + asset);
+  assert.match(sw, /'\.\/Assets\/lib\/three\.module\.js\?v=3\.31'/, 'the vendored library keeps its own version');
 });
 
 test('sw-update: waiting update action is a keyboard-native button which posts SKIP_WAITING', () => {

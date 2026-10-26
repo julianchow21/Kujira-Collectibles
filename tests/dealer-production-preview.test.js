@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const preview = require('./dealer-production-preview.cjs');
+const { tag } = require('./version.js'); // the build the page should carry, written once (tests/version.js)
 
 function fakeResponse() {
   return {
@@ -43,7 +44,7 @@ test('production fixture serves the real page with a loopback-only synthetic tra
   assert.match(html, /DEALER FIXTURE/);
   assert.doesNotMatch(html, /<script[^>]+src="https?:\/\//i);
   assert.doesNotMatch(html, /<link[^>]+href="https?:\/\//i);
-  assert.match(html, /dealer-production-ui\.js\?v=3\.95/);
+  assert.ok(html.includes(tag('dealer-production-ui.js')), 'the fixture serves the real page, at the current ' + tag('dealer-production-ui.js'));
   assert.match(html, /#kjr-production-fixture-tools\{bottom:96px!important/);
   assert.match(html, /production command contract accepts candidate fields at the/);
   assert.match(html, /mode === 'existing' \? 'Fixture Graded Charizard' : 'Fixture golden candidate'/);

@@ -316,25 +316,263 @@ test('queue edit: under a bulk run that has billed credits, a Rebuild and a Clea
   assert.ok(app.toasts.some((t) => /^Done: 3 updated$/.test(t)), JSON.stringify(app.toasts));
 });
 
+// ── the scan for writers ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Every way a script can write or remove the saved queue's two keys (QUEUE_KEY and QUEUE_DATE_KEY, defined in app.js), found in the source and filed under the top-level
+// statement it really sits in. It reads tokens, not lines, so it sees what a line match cannot:
+//   - a key named by its constant or by the string it holds, in any call (setItem, removeItem), a bracket assignment, an alias of the storage or of the key, or a call split over lines
+//   - saveQueue called, handed on (.then(saveQueue)) or reached through window, and localStorage.clear(), which takes the queue with everything else
+//   - comments, strings and regular expressions that only mention a name are skipped, and a call inside a template's ${...} is code
+// A hit is filed under the declaration it is inside, found at column 0 and brace depth 0: a function, a class, or a const, let or var holding an arrow, a function expression
+// or an object of methods. Code that runs on load (a listener, an IIFE, window.x = ...) has no name and is filed under its own line. The first scan filed a hit under the nearest
+// earlier "function" line, so a writer written as a const arrow or a method sat under whichever approved function came before it. A plain read, getItem(KEY), and the two
+// definitions are not writers. Every script of the page shares app.js's global scope, so every one of them is scanned (below).
+// Its limits: a regular expression straight after ) or } reads as a division, which does no harm unless the pattern holds a quote, a backtick or a brace, and then the scan
+// most likely fails to balance and throws, where it would otherwise go quiet. A key built from pieces ('pokeinv_' + 'refresh_queue') or swept by a prefix is out of reach of any source scan.
+const QUEUE_NAMES = ['QUEUE_KEY', 'QUEUE_DATE_KEY'];
+const QUEUE_STRINGS = ['pokeinv_refresh_queue', 'pokeinv_refresh_queue_date']; // what they hold, so a key spelt out is found too (the credits side record is a third key, not the queue)
+const DECLARES = ['const', 'let', 'var'];
+const REGEX_AFTER = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+
+// the tokens of a script: ids, numbers, strings (a template with no ${} is a string), punctuation one character at a time, each with its line, its column and the depth of
+// the brackets open around it. Comments and regular expression text are dropped, a template's own text is dropped but the code in its ${} is kept
+function lexScript(src) {
+  const n = src.length;
+  const lineStarts = [0];
+  for (let k = 0; k < n; k++) if (src.charCodeAt(k) === 10) lineStarts.push(k + 1);
+  const lineAt = (pos) => { let lo = 0, hi = lineStarts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1; } return lo; };
+  const fail = (what, pos) => { throw new Error('writer scan cannot read the script: ' + what + ' (line ' + (lineAt(pos) + 1) + ')'); };
+  const toks = [];
+  const open = []; // the brackets still open: { ( [ and ${ (a template's substitution)
+  const add = (type, value, pos) => { const ln = lineAt(pos); toks.push({ type, value, pos, line: ln + 1, col: pos - lineStarts[ln], depth: open.length }); };
+  // a template's text from `from` to its closing backtick or its next ${
+  const templateText = (from) => {
+    for (let j = from; j < n; j++) {
+      if (src[j] === '\\') j++;
+      else if (src[j] === '`') return { end: j + 1, raw: src.slice(from, j), subst: false };
+      else if (src[j] === '$' && src[j + 1] === '{') return { end: j + 2, raw: src.slice(from, j), subst: true };
+    }
+    return fail('a template is never closed', from);
+  };
+  const idChar = (ch) => /[\w$]/.test(ch) || ch > '\x7f'; // an identifier may hold any letter, so anything past ASCII counts
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+    if (c === '/' && src[i + 1] === '*') { const end = src.indexOf('*/', i + 2); if (end < 0) fail('a comment is never closed', i); i = end + 2; continue; }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && src[j] !== c) { if (src[j] === '\\') j++; else if (src[j] === '\n') fail('a string is never closed', i); j++; }
+      if (j >= n) fail('a string is never closed', i);
+      add('str', src.slice(i + 1, j), i);
+      i = j + 1; continue;
+    }
+    if (c === '`') {
+      const t = templateText(i + 1);
+      if (t.subst) { add('tpl', '`', i); open.push('${'); } else add('str', t.raw, i);
+      i = t.end; continue;
+    }
+    if (c === '}' && open[open.length - 1] === '${') { // the end of a substitution: the template's text goes on
+      open.pop();
+      const t = templateText(i + 1);
+      if (t.subst) open.push('${');
+      i = t.end; continue;
+    }
+    if (c >= '0' && c <= '9') { let j = i + 1; while (j < n && /[\w.]/.test(src[j])) j++; add('num', src.slice(i, j), i); i = j; continue; }
+    if (idChar(c)) { let j = i + 1; while (j < n && idChar(src[j])) j++; add('id', src.slice(i, j), i); i = j; continue; }
+    if (c === '/') { // a regular expression where a value is expected, else a division
+      const prev = toks[toks.length - 1];
+      if (!prev || (prev.type === 'punct' && !')]}'.includes(prev.value)) || (prev.type === 'id' && REGEX_AFTER.has(prev.value))) {
+        let j = i + 1, inClass = false;
+        while (j < n && (src[j] !== '/' || inClass)) {
+          if (src[j] === '\\') j++;
+          else if (src[j] === '[') inClass = true;
+          else if (src[j] === ']') inClass = false;
+          else if (src[j] === '\n') fail('a regular expression is never closed', i);
+          j++;
+        }
+        if (j >= n) fail('a regular expression is never closed', i);
+        j++;
+        while (j < n && /[a-z]/.test(src[j])) j++;
+        add('regex', src.slice(i, j), i);
+        i = j; continue;
+      }
+    }
+    if (c === '{' || c === '(' || c === '[') { add('punct', c, i); open.push(c); i++; continue; }
+    if (c === '}' || c === ')' || c === ']') {
+      add('punct', c, i);
+      if (open.pop() !== { '}': '{', ')': '(', ']': '[' }[c]) fail('unbalanced ' + c, i);
+      i++; continue;
+    }
+    add('punct', c, i); i++;
+  }
+  if (open.length) fail('a ' + open[open.length - 1] + ' is never closed', n - 1);
+  return toks;
+}
+
+// what the top-level statement starting at token i is called: the function, class, const, let or var it declares, else its own line
+function statementName(toks, i, src) {
+  const at = (k) => toks[k] || { type: '', value: '' };
+  let k = i;
+  if (at(k).type === 'id' && at(k).value === 'async' && at(k + 1).value === 'function') k++;
+  if (at(k).type === 'id' && at(k).value === 'function') { k++; if (at(k).value === '*') k++; if (at(k).type === 'id') return at(k).value; }
+  else if (at(k).type === 'id' && at(k).value === 'class' && at(k + 1).type === 'id') return at(k + 1).value;
+  else if (at(k).type === 'id' && DECLARES.includes(at(k).value) && at(k + 1).type === 'id') return at(k + 1).value;
+  const t = toks[i];
+  const eol = src.indexOf('\n', t.pos);
+  return '<code at line ' + t.line + ': ' + src.slice(t.pos, eol < 0 ? undefined : eol).trim().slice(0, 60) + '>';
+}
+
+// whether token i writes or removes the queue, and how: 'key' (a queue key named by its constant or its string, outside a plain read), 'saveQueue' or 'clear'
+function queueHitAt(toks, i) {
+  const at = (k) => toks[i + k] || { type: '', value: '' };
+  const t = at(0), prev = at(-1), next = at(1);
+  const read = prev.value === '(' && prev.type === 'punct' && at(-2).type === 'id' && at(-2).value === 'getItem' && next.value === ')' && next.type === 'punct';
+  if (t.type === 'id' && t.value === 'saveQueue') return prev.type === 'id' && prev.value === 'function' ? null : 'saveQueue'; // its own declaration is no call
+  if (t.type === 'str' && t.value === 'saveQueue') return 'saveQueue'; // window['saveQueue'](q)
+  if (t.type === 'id' && QUEUE_NAMES.includes(t.value)) return (prev.type === 'id' && DECLARES.includes(prev.value)) || read ? null : 'key';
+  if (t.type === 'str' && QUEUE_STRINGS.includes(t.value)) {
+    const defines = prev.value === '=' && QUEUE_NAMES.includes(at(-2).value) && DECLARES.includes(at(-3).value);
+    return defines || read ? null : 'key';
+  }
+  if (t.type === 'id' && t.value === 'localStorage') { // .clear(), ?.clear() and ['clear']()
+    const o = next.value === '?' ? 1 : 0;
+    if ((at(1 + o).value === '.' && at(2 + o).type === 'id' && at(2 + o).value === 'clear') || (at(1).value === '[' && at(2).type === 'str' && at(2).value === 'clear')) return 'clear';
+  }
+  return null;
+}
+
+// every hit in a script as { line, kind, name }, name being the top-level statement it is inside
+function scanQueueWriters(src) {
+  const toks = lexScript(src);
+  const hits = [];
+  let inside = '<before the first statement>';
+  toks.forEach((t, i) => {
+    const closer = t.type === 'punct' && ')]}'.includes(t.value);
+    if (t.depth === 0 && t.col === 0 && !closer && !(t.type === 'id' && ['else', 'catch', 'finally'].includes(t.value))) inside = statementName(toks, i, src);
+    const kind = queueHitAt(toks, i);
+    if (kind) hits.push({ line: t.line, kind, name: inside });
+  });
+  return hits;
+}
+
+test('queue edit: the writer scan finds every spelling of a write or a removal, and files it under the statement it is really in', () => {
+  // an approved function first, so a hit filed under "the function before it" is told apart from one filed under its own statement
+  const after = (code) => scanQueueWriters('function loadQueue() {\n  return 1;\n}\n' + code + '\n').map((h) => h.name + ' ' + h.kind);
+  // the spellings the first scan missed (it matched saveQueue( and removeItem(QUEUE_KEY) on a line), and the ones it matched
+  const SPELLINGS = [
+    ['setItem on the key', 'function w() { localStorage.setItem(QUEUE_KEY, "{}"); }', 'w key'],
+    ['removeItem on the date key', 'function w() { localStorage.removeItem(QUEUE_DATE_KEY); }', 'w key'],
+    ['setItem on the date key', 'function w() { localStorage.setItem(QUEUE_DATE_KEY, "2026-10-26"); }', 'w key'],
+    ['the key spelt out, setItem', 'function w() { localStorage.setItem(\'pokeinv_refresh_queue\', "{}"); }', 'w key'],
+    ['the date key spelt out, removeItem', 'function w() { localStorage.removeItem("pokeinv_refresh_queue_date"); }', 'w key'],
+    ['the key in a template with nothing in it', 'function w() { localStorage.setItem(`pokeinv_refresh_queue`, "{}"); }', 'w key'],
+    ['a bracket assignment', 'function w() { localStorage[QUEUE_KEY] = "{}"; }', 'w key'],
+    ['a delete through brackets', 'function w() { delete localStorage[QUEUE_DATE_KEY]; }', 'w key'],
+    ['through window (the first scan found this one too)', 'function w() { window.localStorage.removeItem(QUEUE_KEY); }', 'w key'],
+    ['a call split over lines', 'function w() {\n  localStorage.setItem(\n    QUEUE_KEY,\n    "{}"\n  );\n}', 'w key'],
+    ['an alias of the storage', 'function w() { const s = localStorage; s.setItem(QUEUE_KEY, "{}"); }', 'w key'],
+    ['an alias of the key', 'function w() { const k = QUEUE_KEY; localStorage.removeItem(k); }', 'w key'],
+    ['removeItem on the key (the first scan found this one too)', 'function w() { localStorage.removeItem(QUEUE_KEY); }', 'w key'],
+    ['saveQueue called (the first scan found this one too)', 'function w(q) { saveQueue(q); }', 'w saveQueue'],
+    ['saveQueue handed on', 'function w(q) { return Promise.resolve(q).then(saveQueue); }', 'w saveQueue'],
+    ['saveQueue through window (the first scan found this one too)', 'function w(q) { window.saveQueue(q); }', 'w saveQueue'],
+    ['saveQueue through a string', 'function w(q) { window["saveQueue"](q); }', 'w saveQueue'],
+    ['saveQueue inside a template', 'const w = `<p>${saveQueue(q)}</p>`;', 'w saveQueue'],
+    ['localStorage.clear()', 'function w() { localStorage.clear(); }', 'w clear'],
+    ['localStorage?.clear()', 'function w() { localStorage?.clear(); }', 'w clear'],
+    ['localStorage["clear"]()', 'function w() { window.localStorage["clear"](); }', 'w clear'],
+  ];
+  for (const [label, code, want] of SPELLINGS) assert.deepEqual(after(code), [want], label);
+  // the ways a top-level statement can be written, each holding one write: the hit belongs to the statement, never to loadQueue above it
+  const SHAPES = [
+    ['a const holding an arrow', 'const w = (q) => {\n  saveQueue(q);\n};'],
+    ['a const holding an async arrow', 'const w = async (q) => {\n  saveQueue(q);\n};'],
+    ['a let holding a function expression', 'let w = function () {\n  saveQueue(q);\n};'],
+    ['a var holding a named function expression', 'var w = function inner() {\n  saveQueue(q);\n};'],
+    ['a method of an object held by a const', 'const w = {\n  other: 1,\n  go() {\n    saveQueue(q);\n  },\n};'],
+    ['a property function of an object held by a const', 'const w = {\n  go: function () { localStorage.removeItem(QUEUE_KEY); },\n};'],
+    ['a method of a class', 'class w {\n  go() {\n    saveQueue(q);\n  }\n}'],
+    ['an async function', 'async function w() {\n  saveQueue(q);\n}'],
+    ['a generator', 'function* w() {\n  saveQueue(q);\n}'],
+    ['a function inside a function', 'function w() {\n  function inner() {\n    saveQueue(q);\n  }\n}'],
+  ];
+  for (const [label, code] of SHAPES) assert.deepEqual(after(code).map((s) => s.split(' ')[0]), ['w'], label);
+  // code that runs on load has no name: it is filed under its own line, which is line 4 here
+  const LOADED = [
+    ['a property of window', 'window.w = function () {\n  saveQueue(q);\n};', 'window.w = function () {'],
+    ['a listener', "document.addEventListener('click', () => {\n  saveQueue(q);\n});", "document.addEventListener('click', () => {"],
+    ['an IIFE', '(function () {\n  saveQueue(q);\n})();', '(function () {'],
+    ['an if', 'if (ok) {\n  saveQueue(q);\n}', 'if (ok) {'],
+  ];
+  for (const [label, code, line] of LOADED) assert.deepEqual(after(code).map((s) => s.split(' saveQueue')[0]), ['<code at line 4: ' + line + '>'], label);
+  // two hits in one statement are two entries under one name (clearQueue drops both keys)
+  assert.deepEqual(scanQueueWriters('function clearQueue() {\n  localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY);\n}').map((h) => h.name + ' ' + h.kind), ['clearQueue key', 'clearQueue key']);
+});
+
+test('queue edit: the writer scan stays quiet for what is no writer, and does not lose its place in strings, templates, regular expressions and divisions', () => {
+  const QUIET = [
+    ['a comment line', '// saveQueue(q) and localStorage.setItem(QUEUE_KEY, x)'],
+    ['a trailing comment', 'const a = 1; // saveQueue(q) and localStorage.removeItem(QUEUE_DATE_KEY)'],
+    ['a block comment', '/* saveQueue(q);\n   localStorage.removeItem(QUEUE_KEY); */'],
+    ['a string that only mentions it', "const a = 'call saveQueue(q) or localStorage.setItem(QUEUE_KEY, x) here';"],
+    ['text in a template', 'const a = `<button onclick="saveQueue(q)">${x}</button> localStorage.clear()`;'],
+    ['a regular expression', 'const a = /saveQueue\\(|QUEUE_KEY/.test(s);'],
+    ['a read by the constant', "function w() { return JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); }"],
+    ['a read by the string', "function w() { return localStorage.getItem('pokeinv_refresh_queue'); }"],
+    ['the two definitions', "const QUEUE_KEY = 'pokeinv_refresh_queue';\nconst QUEUE_DATE_KEY = 'pokeinv_refresh_queue_date';"],
+    ['the declaration of saveQueue, and a longer name that starts with it', 'function saveQueue(q) { return q; }\nasync function saveQueue2(q) { return q; }'],
+    ['the credits side record, which is not the queue', "function w() { localStorage.setItem('pokeinv_refresh_queue_credits', '{}'); localStorage.removeItem(KJR_CREDITS_STASH_KEY); }"],
+    ['another key', "function w() { localStorage.setItem('pokeinv_ppt_plan', 'paid'); localStorage.removeItem('kjr_price_cache'); }"],
+    ['a property that is not the function', 'function w(o) { return o.save + o.saveQueueAt; }'],
+  ];
+  for (const [label, code] of QUIET) assert.deepEqual(scanQueueWriters(code), [], label);
+  // a quote, a backtick or slashes inside a regular expression, a division, a template within a template: none may swallow or shift the writer that follows
+  const TRAPS = [
+    ['a quote in a regular expression', "const r = /'[^']*/g;\nfunction w() { saveQueue(q); }"],
+    ['a backtick in a regular expression', 'const r = /`+/g;\nfunction w() { saveQueue(q); }'],
+    ['slashes in a regular expression', 'const r = /https?:\\/\\/[^/]+\\//;\nfunction w() { saveQueue(q); }'],
+    ['a slash inside a character class', 'const r = /[/]x/;\nfunction w() { saveQueue(q); }'],
+    ['divisions', 'const a = b / 2, c = d / 3 / e;\nfunction w() { saveQueue(q); }'],
+    ['a division after a bracket', 'const a = (b + 1) / 2 + c[0] / 3;\nfunction w() { saveQueue(q); }'],
+    ['a regular expression after return', 'function v() { return /\'/.test(s); }\nfunction w() { saveQueue(q); }'],
+    ['a template inside a template', 'const t = `a ${`b ${c}`} d`;\nfunction w() { saveQueue(q); }'],
+    ['braces in strings and templates', "const t = '}{' + `}{ ${x}`;\nfunction w() { saveQueue(q); }"],
+    ['an escaped quote', "const t = 'it\\'s';\nfunction w() { saveQueue(q); }"],
+  ];
+  for (const [label, code] of TRAPS) assert.deepEqual(scanQueueWriters(code).map((h) => h.name + ' ' + h.kind + ' ' + h.line), ['w saveQueue 2'], label);
+  // a script it cannot read is an error, not a clean bill
+  assert.throws(() => scanQueueWriters('function w() {\n  saveQueue(q);\n'), /never closed/);
+  assert.throws(() => scanQueueWriters('function w() {\n  saveQueue(q);\n}}'), /unbalanced/);
+  assert.throws(() => scanQueueWriters("const a = 'saveQueue;"), /string is never closed/);
+  assert.throws(() => scanQueueWriters('const a = `saveQueue'), /template is never closed/);
+  assert.throws(() => scanQueueWriters('const a = /saveQueue'), /regular expression is never closed/);
+  assert.throws(() => scanQueueWriters('const a = 1; /* saveQueue'), /comment is never closed/);
+});
+
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 test('queue edit: every writer of the saved queue is known, and the two that replace or drop it ask _kjrQueueEditBlocker before and after the question', () => {
   const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
-  const writers = new Set();
-  let fn = null;
-  for (const line of src.split('\n')) {
-    const m = /^(?:async )?function (\w+)\(/.exec(line);
-    if (m) fn = m[1];
-    if (/^\s*\/\//.test(line) || /^function saveQueue\(/.test(line)) continue;
-    if (/\bsaveQueue\(/.test(line) || /localStorage\.removeItem\(QUEUE_KEY\)/.test(line)) writers.add(fn);
-  }
+  const hits = scanQueueWriters(src);
+  const where = hits.map((h) => h.name + ' (line ' + h.line + ', ' + h.kind + ')').join(', ');
+  // saveQueue is the primitive the others write through, each caller is listed below, so it holds one setItem of the queue key and nothing else
+  assert.deepEqual(hits.filter((h) => h.name === 'saveQueue').map((h) => h.kind), ['key'], 'saveQueue is a single write of the queue key: ' + where);
+  const writers = new Set(hits.filter((h) => h.name !== 'saveQueue').map((h) => h.name));
   // A new writer fails this on purpose: read it against _kjrQueueEditBlocker (does it hold the queue in memory, does it replace or drop it) before adding it here.
   // kjrPptSetPlan: one field, read and written in one step, and it is never refused for a holder (the plan is the owner's setting), so since v3.95 it clears that field on
   // the copy a running pass or bulk run holds as well (_kjrHeldQueue), or the holder's next save put the pause back (tests/plan-change.test.js). A one-step write alone was
   // not enough.  loadQueue: drops a queue of an old schema, setting its credits aside.  The pass and the bulk run own the queue while their flag is up.  _kjrBillLookup:
   // read, added to and written in one step after the answer, and never under a holder (kjrLookupRefusal says running).  startFreshQueue and clearQueue are the two that
   // this suite guards.
-  assert.deepEqual([...writers].sort(), ['_kjrBillLookup', '_runRefreshQueueBody', 'bulkRefreshPrices', 'clearQueue', 'kjrPptSetPlan', 'loadQueue', 'runRefreshQueue', 'startFreshQueue']);
+  assert.deepEqual([...writers].sort(), ['_kjrBillLookup', '_runRefreshQueueBody', 'bulkRefreshPrices', 'clearQueue', 'kjrPptSetPlan', 'loadQueue', 'runRefreshQueue', 'startFreshQueue'], 'found: ' + where);
+  // every script the page loads shares app.js's global scope, saveQueue and the keys included, so a writer in any of them is a writer: the others have none
+  const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
+  const scripts = [...html.matchAll(/<script src="([A-Za-z0-9_./-]+)\?v=[^"]*"><\/script>/g)].map((m) => m[1]);
+  assert.ok(scripts.includes('app.js') && scripts.includes('features.js') && scripts.length >= 7, 'the page loads ' + scripts.join(', '));
+  for (const file of scripts.filter((f) => f !== 'app.js')) {
+    assert.deepEqual(scanQueueWriters(fs.readFileSync(ROOT + '/' + file, 'utf8')), [], file + ' never writes or removes the saved queue');
+  }
   const body = (name) => {
     const at = src.indexOf('function ' + name + '(');
     assert.ok(at >= 0, name);

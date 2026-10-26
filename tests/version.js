@@ -4,9 +4,9 @@
 // the eight tags), sw-update.test.js (the worker: CACHE and the precached URLs), dealer-ui.test.js (the Sentry release) and dealer-production-preview.test.js (the
 // fixture serves the current tag). A bump that forgets this file fails them all, and a bump that forgets the page or the worker fails the suite that reads that file.
 // qc.sh and misc-consistency.test.js read the badge off the page instead and check the tags and the release against it, they need no edit.
-const VERSION = '3.96';
+const VERSION = '3.97';
 const BADGE_DATE = '26 Oct';
-const CACHE = 'kujira-v99';
+const CACHE = 'kujira-v100';
 
 // the eight assets index.html loads with a ?v= tag, in the order it lists them, and the order sw.js precaches them in. The vendored three.js keeps its own version
 const ASSETS = Object.freeze(['styles.css', 'app.js', 'features.js', 'dealer-money.js', 'dealer-desk.js', 'dealer-ui.js', 'dealer-store.js', 'dealer-production-ui.js']);

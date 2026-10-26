@@ -3606,16 +3606,24 @@ function kjrCardImageKey(tcgdexId, lang) {
   var l = lang ? String(lang) : 'en';
   return l === 'en' ? id : l + ':' + id;
 }
+// The id typed on a row (tcgdexId), trimmed, '' when it has none.
+function _kjrTypedId(row) { return String(row.tcgdexId == null ? '' : row.tcgdexId).trim(); }
+// The TCGdex language of a row's language value, 'en' where the app's resolver is not loaded.
+function _kjrTcgdexLang(language) { return typeof _tcgdexLang === 'function' ? _tcgdexLang(language) : 'en'; }
+// A stored JSON object map, parsed. A blank, unreadable or non-object value (an array included) reads as an empty map.
+function _kjrParseObjMap(raw) {
+  try {
+    var parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch (e) { /* unreadable, start empty */ }
+  return {};
+}
 function kjrImgMapLoad() {
   if (_kjrImgMem) return _kjrImgMem;
-  var m = {};
-  try {
-    var raw = localStorage.getItem(KJR_IMG_KEY);
-    var parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed;
-  } catch (e) { m = {}; }
-  _kjrImgMem = m;
-  return m;
+  var raw = null;
+  try { raw = localStorage.getItem(KJR_IMG_KEY); } catch (e) { /* storage blocked, start empty */ }
+  _kjrImgMem = _kjrParseObjMap(raw);
+  return _kjrImgMem;
 }
 // Cache only. Learning bases comes in bursts (a screenful of lookups answers within a second or two) and the whole map, up to 4000
 // entries, is rewritten each time, so a change only marks the map dirty and the write goes out once the burst has been quiet for
@@ -3634,11 +3642,7 @@ function kjrImgMapFlush() {
 // Another tab wrote the map while this one still held unwritten entries: keep ours on top of theirs, so neither side loses an
 // answer. A miss of ours never replaces an image of theirs. The merged map is written at the next flush.
 function kjrImgMapMerge(raw) {
-  var theirs = {};
-  try {
-    var parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) theirs = parsed;
-  } catch (e) { theirs = {}; }
+  var theirs = _kjrParseObjMap(raw);
   var mine = _kjrImgMem || {};
   Object.keys(mine).forEach(function (k) {
     if (k === '__proto__') return;
@@ -3714,14 +3718,10 @@ function kjrRememberCardImageMiss(tcgdexId, lang) {
 // matches and resolves again. A slab's own tcgdexId always wins over any link.
 function kjrSlabMapLoad() {
   if (_kjrSlabMem) return _kjrSlabMem;
-  var m = {};
-  try {
-    var raw = localStorage.getItem(KJR_SLAB_LINK_KEY);
-    var parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed;
-  } catch (e) { m = {}; }
-  _kjrSlabMem = m;
-  return m;
+  var raw = null;
+  try { raw = localStorage.getItem(KJR_SLAB_LINK_KEY); } catch (e) { /* storage blocked, start empty */ }
+  _kjrSlabMem = _kjrParseObjMap(raw);
+  return _kjrSlabMem;
 }
 function kjrSlabMapSave() {
   try { localStorage.setItem(KJR_SLAB_LINK_KEY, JSON.stringify(_kjrSlabMem || {})); return true; } catch (e) { return false; }
@@ -3732,16 +3732,17 @@ function kjrSlabMapSave() {
 // matches, so that slab is looked up again (the image map, keyed by card id, is left alone). It also keeps two slabs that share
 // a name but not a set from borrowing each other's link (kjrSlabLinkBySig).
 function kjrSlabSig(slab) {
-  var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab && slab.language) : 'en';
+  var lang = _kjrTcgdexLang(slab && slab.language);
   var set = String(slab && slab.set || '').trim();
   return String(slab && slab.name || '').trim() + '|' + lang + (set ? '|set:' + set : '');
 }
-// The slab row for a placeholder's or a job's slab id, or null once it is gone.
-function kjrSlabRow(sid) {
-  var rows = (typeof DB !== 'undefined' && DB && Array.isArray(DB.slabs)) ? DB.slabs : [];
+// The row of a table ('slabs' or 'singles') for a placeholder's or a job's id, or null once it is gone.
+function _kjrArtRow(table, sid) {
+  var rows = (typeof DB !== 'undefined' && DB && Array.isArray(DB[table])) ? DB[table] : [];
   for (var i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === String(sid)) return rows[i]; }
   return null;
 }
+function kjrSlabRow(sid) { return _kjrArtRow('slabs', sid); }
 function kjrSlabLinkState(slab) {
   if (!slab || slab.id == null) return { state: 'none' };
   var m = kjrSlabMapLoad(), sid = String(slab.id);
@@ -3784,11 +3785,7 @@ function kjrSlabLinkBySig(sig) {
 // ── Japanese singles with no id (v3.80). A hit is written onto the row (tcgdexId), so the map only keeps a MISS, under "s:<id>"
 // with the signature it was looked up for (name|lang|set, the slab signature), 7 days like every miss. A renamed or re-set row
 // no longer matches it and is looked up again. A single's id can never collide with a slab's key, the "s:" prefix keeps them apart.
-function kjrSingleRow(sid) {
-  var rows = (typeof DB !== 'undefined' && DB && Array.isArray(DB.singles)) ? DB.singles : [];
-  for (var i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === String(sid)) return rows[i]; }
-  return null;
-}
+function kjrSingleRow(sid) { return _kjrArtRow('singles', sid); }
 function kjrSingleMissFresh(row) {
   if (!row || row.id == null) return false;
   var m = kjrSlabMapLoad(), k = 's:' + String(row.id);
@@ -3815,8 +3812,8 @@ function kjrAdoptSingleId(row, id, cardName) {
 function kjrArtState(item, table) {
   var none = { state: 'none' };
   if (!item) return none;
-  var lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(item.language) : 'en';
-  var id = String(item.tcgdexId == null ? '' : item.tcgdexId).trim();
+  var lang = _kjrTcgdexLang(item.language);
+  var id = _kjrTypedId(item);
   // Only a name with a card number can resolve (the same test the price lane uses).
   var resolvable = function () {
     return typeof _baseCardName === 'function' && typeof _tcgdexNumber === 'function' && !!(_baseCardName(item.name) && _tcgdexNumber(item.name));
@@ -4202,8 +4199,8 @@ async function kjrImgRun(job, keys) {
       // a shallow copy, and the row is only touched once the answer is in and still fits the row as it is NOW.
       var srow = kjrSingleRow(job.single);
       if (!srow) return; // deleted meanwhile
-      lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(srow.language) : 'en';
-      var typed = String(srow.tcgdexId == null ? '' : srow.tcgdexId).trim();
+      lang = _kjrTcgdexLang(srow.language);
+      var typed = _kjrTypedId(srow);
       if (typed) {
         // It carries an id now (typed in the edit modal after this placeholder was drawn): that wins, fetch that card's image.
         var typedKey = kjrCardImageKey(typed, lang);
@@ -4218,10 +4215,10 @@ async function kjrImgRun(job, keys) {
         id = await resolveTcgdexId(copy, { set: srow.set, art: true, report: report });
         var live = kjrSingleRow(job.single);
         if (!live) return; // deleted while the lookup ran
-        var theirs = String(live.tcgdexId == null ? '' : live.tcgdexId).trim();
+        var theirs = _kjrTypedId(live);
         if (theirs) {
           // an id arrived while we looked (typed in the edit modal): it wins, ours is dropped
-          lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(live.language) : 'en';
+          lang = _kjrTcgdexLang(live.language);
           var theirKey = kjrCardImageKey(theirs, lang);
           if (!theirKey) return;
           id = theirs;
@@ -4248,8 +4245,8 @@ async function kjrImgRun(job, keys) {
       var slab = kjrSlabRow(job.slab);
       if (!slab) return; // deleted meanwhile
       // The row's own language (v3.80), English or Japanese, so a Japanese slab is searched and fetched on /ja/.
-      lang = typeof _tcgdexLang === 'function' ? _tcgdexLang(slab.language) : 'en';
-      var own = String(slab.tcgdexId == null ? '' : slab.tcgdexId).trim();
+      lang = _kjrTcgdexLang(slab.language);
+      var own = _kjrTypedId(slab);
       if (own) {
         // It carries an id of its own now (typed after this placeholder was drawn), and that always wins:
         // fetch that card's image, link nothing.

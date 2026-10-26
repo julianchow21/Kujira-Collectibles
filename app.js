@@ -11264,7 +11264,7 @@ function kjrIsStaleEstimate(i) {
   let oldPpt = false;
   if (!legacy && String(last.source == null ? '' : last.source).trim().toUpperCase() === 'PPT') {
     const d = _parseHistDate(last.date);
-    oldPpt = !d || _kjrIsoDay(d.getTime()) <= UNTIL;
+    oldPpt = !d || kjrLocalDay(d.getTime()) <= UNTIL;
   }
   if (!legacy && !oldPpt) return false;
   if (i.grader || _kjrSlabGrade(i)) return false; // a slab, never a single
@@ -11307,13 +11307,16 @@ function sortItems(items, table) {
   // Numbers/words containing leading digits should land at the BOTTOM when
   // sorting alphabetically (so "Charizard" comes before "100-card lot").
   const startsWithDigit = v => /^[\s$]*-?\d/.test(String(v||''));
-  return [...items].sort((a, b) => {
+  const rows = [...items];
+  // The market column's value reads each row's price history: value every row once, not twice per comparison.
+  const mktValue = col === 'marketPrice' ? new Map(rows.map(i => [i, effectiveMarketInfo(i).value])) : null;
+  return rows.sort((a, b) => {
     // Special-case marketPrice: use the effective value (manual override,
     // cached lookup, or cost-price estimate). All other columns read
     // directly from the row.
     let av, bv;
     if (col === 'marketPrice') {
-      av = effectiveMarketInfo(a).value; bv = effectiveMarketInfo(b).value;
+      av = mktValue.get(a); bv = mktValue.get(b);
       // "Empty" means truly no value anywhere - neither a manual/cached
       // price nor a cost-price estimate. Rows with a cost-price estimate
       // now sort among the real values instead of always landing last -
@@ -12218,12 +12221,6 @@ function _parseHistDate(dateStr) {
   return null;
 }
 
-// 'YYYY-MM-DD' of a local-midnight timestamp, the form price dates are stored in
-function _kjrIsoDay(ts) {
-  const d = new Date(ts);
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-}
-
 // Whole calendar days from the day a price was checked to today, 0 for today or a date ahead of it. ts is the local midnight of a stored
 // price date, and those dates are UTC dates (the price code writes toISOString().slice(0,10)), so today is read as the UTC day too: a
 // price checked an hour ago is "today" in the first 8 hours of a Singapore morning as well, not "1 day ago". The free lane's
@@ -12257,7 +12254,7 @@ function _mktFreshDot(item) {
   const sourceNote = last && last.source ? (' · ' + last.source) : '';
   const confNote = last && last.confidence ? (' · ' + last.confidence + ' confidence') : '';
   const lowNote = isLow ? ' · approx, fuzzy match' : '';
-  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + _kjrIsoDay(ts) + ' (' + ago + ')' + sourceNote + confNote + lowNote + '"></span>';
+  return '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;margin-left:4px;vertical-align:middle;flex-shrink:0;cursor:help" title="Refreshed ' + kjrLocalDay(ts) + ' (' + ago + ')' + sourceNote + confNote + lowNote + '"></span>';
 }
 
 // Explain WHY a market cell is empty, for the <td title="..."> on an unpriced
@@ -12450,7 +12447,7 @@ function _kjrCustomReason(item) {
 // (no picks, no answer, a card just marked) is drawn exactly as it always was.
 function _kjrCustomRowHtml(item, done, picks) {
   const name = String(item.name == null || item.name === '' ? '-' : item.name);
-  const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  const lang = _kjrLangOf(item);
   const bits = ['<span class="badge b-lang">' + esc(lang) + '</span>'];
   if (item.set) bits.push('<span class="kjr-cr-set">' + esc(item.set) + '</span>');
   if (!done) bits.push('<span class="kjr-cr-why">' + esc(_kjrCustomReason(item)) + '</span>');
@@ -12474,7 +12471,7 @@ function kjrCustomReviewHtml(cards, marked, picks) {
       '<div class="hig-empty-title">All cards matched or marked custom</div>' +
       '<div class="hig-empty-sub">Custom cards keep the price you set.</div></div>';
   } else {
-    html += '<p class="kjr-cr-lead">' + n + ' card' + (n !== 1 ? 's' : '') + ' could not be matched. Open one to add its set code and number, or a TCGdex ID. ' +
+    html += '<p class="kjr-cr-lead">' + _kjrOvPlural(n, 'card', 'cards') + ' could not be matched. Open one to add its set code and number, or a TCGdex ID. ' +
       'A custom card is priced by hand and never flagged. <button type="button" class="kjr-cr-link" data-cr-act="filter">Show in list</button></p>' +
       '<ul class="kjr-cr-list" aria-label="Unmatched cards">' + cards.slice(0, KJR_CUSTOM_SHEET_MAX).map(c => _kjrCustomRowHtml(c, false, picks)).join('') + '</ul>';
     if (n > KJR_CUSTOM_SHEET_MAX) {
@@ -12673,7 +12670,7 @@ async function _kjrCustomPickRun(key, cand, label) {
       await refreshPrice(item.id, 'singles');
       priced = item._tcgdexPricedDate === kjrLocalDay(); // both a changed and an unchanged price stamp it, a miss or a refusal does not
     } catch (err) { console.warn('[pick the set] the price refresh failed, the match stays:', err); }
-    const synced = await _kjrCandFlush();
+    const synced = await _kjrFlushDirtyOk('pick the set');
     // the price guard (v3.86) can hold the price this match just fetched, the match stays and the toast says the price is waiting for the owner's OK
     toast('Matched to ' + label + (kjrPriceHold(item) ? ', but its price looks wrong and is waiting for your OK' : (priced ? '' : ', the price will follow on the next pass')) +
       (synced ? '' : '. Saved on this device, cloud sync will retry, check the sync indicator'), synced ? 4000 : 6000, !synced);
@@ -12689,16 +12686,16 @@ async function _kjrCustomPickRun(key, cand, label) {
     if (dash && dash.classList && dash.classList.contains('active')) renderDashboard(); // the Overview under the sheet, or after it closed mid-save, shows the new counts
   }
 }
-// Upload after a pick: the dirty rows only, through _flushDirtyToSupabase, the path the Custom card action uses (_kjrCustomFlush). Not
-// saveAllToSupabase, which would re-upload every table with a progress bar and an "All data synced" toast for each pick. Resolves to
-// false when the upload was refused or failed (the row stays dirty and retries), so the pick can say so in its one final toast: a toast
-// of its own here would be replaced at once by "Matched to ...".
-async function _kjrCandFlush() {
+// Upload after a pick or a price decision: the dirty rows only, through _flushDirtyToSupabase, the path the Custom card action uses
+// (_kjrCustomFlush). Not saveAllToSupabase, which would re-upload every table with a progress bar and an "All data synced" toast for each
+// one. Resolves to false when the upload was refused or failed (the row stays dirty and retries), so the caller can say so in its one final
+// toast: a toast of its own here would be replaced at once by the caller's. label names the caller in the console line.
+async function _kjrFlushDirtyOk(label) {
   try {
     const res = await _flushDirtyToSupabase();
     return !(res && (res.status === 'error' || res.status === 'blocked'));
   } catch (e) {
-    console.error('[pick the set] cloud flush failed:', e);
+    console.error('[' + label + '] cloud flush failed:', e);
     return false;
   }
 }
@@ -12741,7 +12738,7 @@ function kjrCustomReviewRender(force) {
   const { cards, html } = _kjrCustomBody();
   if (force || body._kjrCrHtml !== html) { body._kjrCrHtml = html; body.innerHTML = html; }
   const live = document.getElementById('kjr-custom-live');
-  if (live) live.textContent = cards.length ? cards.length + ' card' + (cards.length !== 1 ? 's' : '') + ' left to review' : 'All cards matched or marked custom';
+  if (live) live.textContent = cards.length ? _kjrOvPlural(cards.length, 'card', 'cards') + ' left to review' : 'All cards matched or marked custom';
 }
 // Redraw the sheet when it is open, and ask for any row the redraw brought in that has no candidates yet. Called from
 // _renderUnresolvedBanner, i.e. after every renderSingles.
@@ -19509,7 +19506,7 @@ async function refreshPrice(id, table) {
   const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId);
   // Persist a freshly-resolved TCGdex id (and matched name) even when this
   // call itself missed - so the NEXT refresh skips the resolve round-trip.
-  if (r.resolvedTcgdexId && !item.tcgdexId) {
+  if (idIsNew) {
     item.tcgdexId = r.resolvedTcgdexId;
     if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
   }
@@ -19669,12 +19666,17 @@ function _kjrStashCredits(q) {
     localStorage.setItem(KJR_CREDITS_STASH_KEY, JSON.stringify({ dayCreditsUsed: q.dayCreditsUsed || {}, creditsPausedDate: q.creditsPausedDate || null }));
   } catch (e) { /* the credits are bookkeeping, a queue is still discarded when they can not be kept */ }
 }
-function _kjrTakeStashedCredits() {
+// The side record as a queue-shaped record, or null when there is none or it is not that shape. Read only.
+function _kjrReadStash() {
   let rec = null;
   try { rec = JSON.parse(localStorage.getItem(KJR_CREDITS_STASH_KEY) || 'null'); } catch (e) { rec = null; }
-  try { localStorage.removeItem(KJR_CREDITS_STASH_KEY); } catch (e) { /* nothing to do */ }
   return rec && typeof rec === 'object' && rec.dayCreditsUsed && typeof rec.dayCreditsUsed === 'object'
     ? { dayCreditsUsed: rec.dayCreditsUsed, creditsVersion: 1, creditsPausedDate: rec.creditsPausedDate || null } : null;
+}
+function _kjrTakeStashedCredits() {
+  const rec = _kjrReadStash();
+  try { localStorage.removeItem(KJR_CREDITS_STASH_KEY); } catch (e) { /* nothing to do */ }
+  return rec;
 }
 function _kjrCarryCredits(fresh, old) {
   if (!fresh) return fresh;
@@ -19847,12 +19849,14 @@ function _kjrJapaneseLane(item, table) {
 // What a Japanese single with a card number and no matched card is told (v3.89): the one wording the inspector, the Refresh price toast and the
 // empty market cell share. A function, not a constant, so a render before the pricing code has run can not trip over it.
 function _kjrJaNeedsMatchText() { return 'Needs a matched card first, the card art lookup finds it or add its TCGdex ID'; }
+// A row's language as shown and compared, upper case, a blank is EN
+function _kjrLangOf(row) { return String(row.language || 'EN').trim().toUpperCase() || 'EN'; }
 // Why a single is on the manual lane, in the words the card inspector and the Refresh price toast share. A Japanese card without a number
 // is the same fix as an English one, add the number and it moves on (with the lane on, otherwise it reads like any other language). One with a
 // number and no matched card is told to get the match first (v3.89).
 function _kjrManualReason(item) {
   if (kjrIsCustomCard(item)) return 'Custom card, price by hand (no auto-match)';
-  const lang = String(item.language || 'EN').trim().toUpperCase() || 'EN';
+  const lang = _kjrLangOf(item);
   if (lang !== 'EN' && !_kjrPptJaLangs().includes(lang)) return 'Manual price, no free source for this language';
   if (lang !== 'EN' && _baseCardName(item.name) && _tcgdexNumber(item.name)) return _kjrJaNeedsMatchText(); // the number is there, so the match is what is missing
   return 'Add or fix the card number for exact pricing';
@@ -20218,7 +20222,7 @@ function _kjrHoldsSorted() {
 function kjrPriceHoldRowHtml(r) {
   const it = r.item, h = it.priceHold;
   const name = String(it.name == null || it.name === '' ? '-' : it.name);
-  const lang = String(it.language || 'EN').trim().toUpperCase() || 'EN';
+  const lang = _kjrLangOf(it);
   const bits = ['<span class="badge b-lang">' + esc(lang) + '</span>'];
   if (r.table === 'slabs') {
     const g = _kjrSlabGrade(it);
@@ -20316,17 +20320,6 @@ function _kjrHoldsFocusRestore(snap) {
     kind[Math.min(snap.index, kind.length - 1)] || all('[data-ph-act]')[0] || document.getElementById('kjr-holds-title');
   if (target && typeof target.focus === 'function') target.focus();
 }
-// Upload after a decision: the dirty rows only, through _flushDirtyToSupabase, the path the unmatched-cards sheet uses. Resolves to false when
-// the upload was refused or failed (the row stays dirty and retries), so the decision can say so in its one toast.
-async function _kjrHoldsFlush() {
-  try {
-    const res = await _flushDirtyToSupabase();
-    return !(res && (res.status === 'error' || res.status === 'blocked'));
-  } catch (e) {
-    console.error('[price holds] cloud flush failed:', e);
-    return false;
-  }
-}
 const KJR_HOLD_SYNC_NOTE = '. Saved on this device, cloud sync will retry, check the sync indicator';
 // Accept: the history entry is the one the pass would have written (date, price, unit, source, confidence, all from the hold, the date being
 // the day the price was last seen).
@@ -20352,7 +20345,7 @@ async function kjrPriceHoldAccept(table, id) {
   clLog('edit', table, item.name || String(item.id), 'marketPrice: ' + _clFmtVal('marketPrice', before > 0 ? before : '') + ' → ' + _clFmtVal('marketPrice', price) + ' (held price accepted)');
   _kjrPriceHoldsRedraw(table);
   _kjrHoldsFocusRestore(snap);
-  const synced = await _kjrHoldsFlush();
+  const synced = await _kjrFlushDirtyOk('price holds');
   toast('Accepted ' + _kjrOvMoney(price) + ' for ' + (item.name || 'the card') + (synced ? '' : KJR_HOLD_SYNC_NOTE), synced ? 4000 : 6000, !synced);
   return true;
 }
@@ -20372,7 +20365,7 @@ async function kjrPriceHoldReject(table, id) {
   clLog('edit', table, item.name || String(item.id), 'held price ' + _clFmtVal('marketPrice', price) + ' rejected');
   _kjrPriceHoldsRedraw(table);
   _kjrHoldsFocusRestore(snap);
-  const synced = await _kjrHoldsFlush();
+  const synced = await _kjrFlushDirtyOk('price holds');
   toast((kept > 0 ? 'Kept ' + _kjrOvMoney(kept) : 'No price set') + '. If the match is wrong, open the card to fix it' + (synced ? '' : KJR_HOLD_SYNC_NOTE), synced ? 5000 : 6000, !synced);
   return true;
 }
@@ -20632,8 +20625,8 @@ const TCGDEX_GAP_MS = 250;
 // _tcgdexLaneHasWork (the outer runRefreshQueue gate, so an auto run on page
 // load can tell "genuinely nothing left today" apart from "stamp says today
 // but an interrupted pass left cards unattempted").
-function _tcgdexPricedToday(item, today) {
-  const row = DB[item.table]?.find(i => i.id === item.id);
+function _tcgdexPricedToday(item, today, byTable) {
+  const row = _tcgdexLiveRow(item, byTable);
   // A row with no market price still counts when the guard is holding a price for it (v3.86, kjrPriceHold): the hold stamped today's marker
   // so the lane would not ask again, and a card with no price to show would otherwise be asked on every run of the day.
   if (!row || (!row.marketPrice && !kjrPriceHold(row))) return false;
@@ -20648,10 +20641,23 @@ function _tcgdexPricedToday(item, today) {
 // queue item and on the live row, and refreshPrice stamps the row alone, so the lane has
 // to look at both or a card that just missed from the inspector would be tried again by
 // the next pass.
-function _tcgdexMissedToday(item, today) {
+function _tcgdexMissedToday(item, today, byTable) {
   if (item._tcgdexMissDate === today) return true;
-  const row = DB[item.table]?.find(i => i.id === item.id);
+  const row = _tcgdexLiveRow(item, byTable);
   return !!row && row._tcgdexMissDate === today;
+}
+
+// The live row a lane item stands for: the first row of its table with its id. A caller that asks about many cards passes byTable, a Map it
+// keeps for that one synchronous pass (each table's id-to-row Map is made on first use), so a table is read once and not once per card.
+function _tcgdexLiveRow(item, byTable) {
+  if (!byTable) return DB[item.table]?.find(i => i.id === item.id);
+  let ids = byTable.get(item.table);
+  if (!ids) {
+    ids = new Map();
+    (DB[item.table] || []).forEach(r => { if (r.id === r.id && !ids.has(r.id)) ids.set(r.id, r); }); // find takes the first of equal ids and never matches a NaN one
+    byTable.set(item.table, ids);
+  }
+  return ids.get(item.id);
 }
 
 // Who the free lane asks TCGdex about this run. It reads the LIVE INVENTORY every time, not the queue's own lane entries. The lane used
@@ -20690,7 +20696,8 @@ function _tcgdexLaneItems(q) {
 // "genuinely fully done today" (no work, nothing is requested until tomorrow). It reads the live inventory (_tcgdexLaneItems), so a
 // queue that finished its PPT lane long ago still has work every new day.
 function _tcgdexLaneHasWork(q, today) {
-  return _tcgdexLaneItems(q).some(i => !_tcgdexPricedToday(i, today) && !_tcgdexMissedToday(i, today));
+  const byTable = new Map();
+  return _tcgdexLaneItems(q).some(i => !_tcgdexPricedToday(i, today, byTable) && !_tcgdexMissedToday(i, today, byTable));
 }
 
 // Free-lane pass: every English free-lane card that still needs an attempt
@@ -20755,12 +20762,15 @@ async function _runTcgdexLane(q, manual, today) {
     const row = DB[item.table]?.find(i => i.id === item.id);
     if (row) row._tcgdexMissDate = val;
   };
-  if (manual) laneItems.forEach(item => { if (_tcgdexMissedToday(item, today)) setMissDate(item, null); });
-  const todo = manual ? laneItems.slice() : laneItems.filter(item => !_tcgdexPricedToday(item, today) && !_tcgdexMissedToday(item, today));
+  const byTable = new Map(); // the live rows for the clearing and the list below, read once (no await before the list is made)
+  if (manual) laneItems.forEach(item => { if (_tcgdexMissedToday(item, today, byTable)) setMissDate(item, null); });
   // Cards an auto run leaves alone because they are already priced today still count as priced in the pass's numbers
-  // ("Exact (TCGdex): 120/120 today"), a same-day re-run must not read as 0 of 120.
-  const asking = new Set(todo);
-  const alreadyPriced = laneItems.filter(item => !asking.has(item) && _tcgdexPricedToday(item, today)).length;
+  // ("Exact (TCGdex): 120/120 today"), a same-day re-run must not read as 0 of 120. A manual run asks every card, so it leaves none alone.
+  let alreadyPriced = 0;
+  const todo = manual ? laneItems.slice() : laneItems.filter(item => {
+    if (_tcgdexPricedToday(item, today, byTable)) { alreadyPriced++; return false; }
+    return !_tcgdexMissedToday(item, today, byTable);
+  });
   let done = 0, failedData = 0, recovered = 0, skipped = laneItems.length - todo.length;
   let rateLimited = false;
   const errorTally = {};
@@ -20845,9 +20855,20 @@ function _tcgdexNote(result) {
 function _kjrRenderAfterPricing() {
   renderSingles();
   renderSlabs();
-  const dash = document.getElementById('page-dashboard');
-  if (dash && dash.classList && dash.classList.contains('active') && typeof renderDashboard === 'function') renderDashboard();
+  _kjrRedrawOverview();
 }
+
+// How the queue's pass and bulkRefreshPrices read the tcgdexError/pptError pair of a fetchMarketPrice() result.
+// Sentinels from sources that never actually attempted a request: a disabled/no-key source, OR a lane where that source flatly doesn't apply
+// - TCGdex is never tried for slabs, PPT is never consulted again once TCGdex already succeeded. Shared by classifyResult AND tallyErrors -
+// the tally once included them, so the toast read "2 failed (2× disabled, 1× no match)" with the real trigger (a 429) pushed out of the top-2
+// by sentinel noise. CRITICAL: 'not applicable' must stay in this list, or a slab's "TCGdex never tried" sentinel poisons the
+// every(isTransport) check exactly like the old 'disabled' bug, and a TCGdex-hit raw single (PPT never tried) gets miscounted as a real
+// data failure.
+const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
+function isTransport(e) { return /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e); }
+// The first of these from either source stops a pass or a run (PPT's free plan blocks a key for 24 hours after a burst of 429s)
+function isHardBlockError(e) { return /403|429|blocked|abuse/i.test(e || ''); }
 
 // pptDay is the PPT lane's day (the UTC date, the vendor's clock) and usedToday the credits spent on it. localDay is the free lane's day
 // (the device's local date), left out it is read from the clock. See kjrLocalDay for why the two differ.
@@ -20947,16 +20968,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
   //   'credits'   → the vendor refused for credits: pause for today, the card is neither missed nor skipped (cursor stays)
   //   'data'      → both sources said "no match" or "no price data"  (burn credit, advance)
   //   'transport' → HTTP error, rate limit, network failure          (don't burn credit, retry)
-  // Sentinels from sources that never actually attempted a request: a
-  // disabled/no-key source, OR a lane where that source flatly doesn't apply
-  // - TCGdex is never tried for slabs, PPT is never consulted again once
-  // TCGdex already succeeded. Shared by classifyResult AND tallyErrors - the
-  // tally once included them, so the toast read "2 failed (2× disabled, 1×
-  // no match)" with the real trigger (a 429) pushed out of the top-2 by
-  // sentinel noise. CRITICAL: 'not applicable' must stay in this list, or a
-  // slab's "TCGdex never tried" sentinel poisons the every(isTransport)
-  // check below exactly like the old 'disabled' bug.
-  const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
+  // NON_ATTEMPT, isTransport and isHardBlockError are defined above this function, where the sentinel rule is explained.
   function classifyResult(r) {
     if (r.maxSgd) return 'ok';
     if (r.creditsExhausted) return 'credits'; // decided by the flag, never by reading the error text
@@ -20969,7 +20981,6 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
     // Only errors from sources that tried count.
     const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
     if (!errs.length) return 'data'; // no real attempt errors - treat as data
-    const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
     if (errs.every(isTransport)) return 'transport';
     return 'data'; // at least one source returned a meaningful "no match"
   }
@@ -21050,7 +21061,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
       // the block lasts 24h. Burning more requests against a blocked key
       // only deepens the block. Previously we waited for 5 consecutive
       // failures, which was 5× too many on the way to a 24h lockout.
-      const isHardBlock = [r.pptError, r.tcgdexError].some(e => /403|429|blocked|abuse/i.test(e || ''));
+      const isHardBlock = [r.pptError, r.tcgdexError].some(isHardBlockError);
       if (isHardBlock || consecTransport >= TRANSPORT_FAIL_PAUSE) {
         const top = Object.entries(errorTally).sort((a,b) => b[1]-a[1])[0];
         // Carry the actual refusal (e.g. "HTTP 429") into the reason. The old
@@ -21059,7 +21070,7 @@ async function _runRefreshQueueBody(q, creditsLeft, manual, pptDay, usedToday, l
         // in this string, so a 429 must NOT say "blocked". A one-off 429 pause
         // is the protection working, not a broken key (verified: the key
         // answered 200 OK the morning after such a pause).
-        const trigger = [r.pptError, r.tcgdexError].find(e => /403|429|blocked|abuse/i.test(e || '')) || 'rate limit';
+        const trigger = [r.pptError, r.tcgdexError].find(isHardBlockError) || 'rate limit';
         pausedReason = isHardBlock ? 'PPT refused (' + trigger.slice(0, 40) + ')' : (top ? top[0] : 'transport');
         // Move remaining (unfetched) items into retryItems so they aren't
         // dropped from the queue.
@@ -21534,14 +21545,6 @@ async function bulkRefreshPrices(table) {
   let gone = 0; // rows sold or removed while the run was going: gone or no longer Available as their turn came, or as their price was to be written (v3.96)
   const errorTally = {};
   let aborted = false;
-  // Same NON_ATTEMPT sentinel-stripping as the queue's classifyResult -
-  // 'not applicable'/'disabled' must not poison the transport check, or a
-  // slab (TCGdex never tried) or a TCGdex-hit raw single (PPT never tried)
-  // gets miscounted as a real data failure.
-  const NON_ATTEMPT = /^(disabled|no api key|not applicable)$/i;
-  const isTransport = e => /^HTTP \d/i.test(e) || /network|fetch|failed|aborted|timeout|cors|rate.?limit|429|403|blocked|abuse/i.test(e);
-  // The first of these from either source stops the run, the way the queue pauses at the first one (PPT's free plan blocks a key for 24 hours after a burst of 429s)
-  const isHardBlock = e => /403|429|blocked|abuse/i.test(e || '');
   let creditsOut = false;   // the vendor said "Daily credit limit exceeded"
   let budgetStop = false;   // what is left of today's credits will not pay for the next search
   let hardBlock = '';       // the first 429 or 403, as the source worded it
@@ -21599,7 +21602,7 @@ async function bulkRefreshPrices(table) {
       }
       if (!r.maxSgd) {
         // The first 429 or 403 stops the run before anything about the card is written: it is no verdict on it, so no miss is stamped
-        const trigger = [r.pptError, r.tcgdexError].find(isHardBlock);
+        const trigger = [r.pptError, r.tcgdexError].find(isHardBlockError);
         if (trigger) { hardBlock = trigger; stoppedAt = i; failedTransport++; errorTally[trigger] = (errorTally[trigger]||0) + 1; break; }
       }
       // The answer is in, the row may not be (v3.96): read again before anything is written on it. Gone, the answer is dropped and the row counted, its credits were spent
@@ -21607,7 +21610,7 @@ async function bulkRefreshPrices(table) {
       item = _kjrBulkRow(table, work[i]);
       if (!item) { gone++; continue; }
       const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
-      if (r.resolvedTcgdexId && !item.tcgdexId) {
+      if (idIsNew) {
         item.tcgdexId = r.resolvedTcgdexId;
         if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
       }
@@ -21979,10 +21982,7 @@ function copyListing() {
 function _kjrCreditsRecord() {
   const q = loadQueue();
   if (q) return q;
-  let rec = null;
-  try { rec = JSON.parse(localStorage.getItem(KJR_CREDITS_STASH_KEY) || 'null'); } catch (e) { rec = null; }
-  return rec && typeof rec === 'object' && rec.dayCreditsUsed && typeof rec.dayCreditsUsed === 'object'
-    ? { dayCreditsUsed: rec.dayCreditsUsed, creditsVersion: 1, creditsPausedDate: rec.creditsPausedDate || null } : null;
+  return _kjrReadStash();
 }
 
 // Why a hand lookup, or a card's Refresh price (v3.91), may not ask PPT right now, or null when today's budget can pay for the search. Read only,

@@ -285,3 +285,21 @@ test('dates: _kjrDaysHeld keeps a same-day sale at 0 days', async () => {
   const { ctx } = await loadApp();
   assert.strictEqual(ctx._kjrDaysHeld('11 Jan 2025', '11 Jan 2025'), 0);
 });
+
+// v3.99: the refresh queue's "Queue built" date read the browser's locale (11/3/2026 in a US-locale pane). kjrFmtDmy writes DD/MM/YYYY on the device's calendar, whatever
+// the locale says, and '' for a date that does not read
+test('dates: kjrFmtDmy writes DD/MM/YYYY with leading zeros from an ISO stamp, a Date or a number, and never the browser locale', async () => {
+  const { ctx } = await loadApp();
+  const AppDate = ctx.Date; // the app's own realm
+  const realLocale = AppDate.prototype.toLocaleDateString;
+  AppDate.prototype.toLocaleDateString = function () { return 'US LOCALE'; }; // a US-locale browser, for this test only
+  try {
+    const at = new Date(2026, 10, 3, 9, 30); // 3 Nov 2026 on this device's calendar
+    assert.strictEqual(ctx.kjrFmtDmy(at.toISOString()), '03/11/2026');
+    assert.strictEqual(ctx.kjrFmtDmy(at), '03/11/2026');
+    assert.strictEqual(ctx.kjrFmtDmy(at.getTime()), '03/11/2026');
+    assert.strictEqual(ctx.kjrFmtDmy(new Date(2026, 0, 25).getTime()), '25/01/2026');
+    assert.strictEqual(new AppDate(0).toLocaleDateString(), 'US LOCALE', 'the stand-in locale is the one the app sees');
+  } finally { AppDate.prototype.toLocaleDateString = realLocale; }
+  for (const bad of [undefined, null, '', 'not a date', NaN]) assert.strictEqual(ctx.kjrFmtDmy(bad), '', String(bad));
+});

@@ -4,6 +4,8 @@
 // time it is given (it is no error), the words carry the message and the icon shape and colour are only a second cue.
 // v3.94 gives it the other two messages that mean "started, not finished": the card Refresh price's "Fetching market price..." and a Trash restore that waits for the
 // server ("Restore queued locally. Waiting for server confirmation…"). A result, a refusal, a warning and an error keep their own looks.
+// v3.99: a refusal of the refresh queue (a pass, a bulk run, a rebuild, a clear or a card refresh turned away because something else holds the queue) drew the tick,
+// which reads as done. It now asks for the warning look by toast()'s third place ('warn', through toastWarn), the look "Pricing paused" already has.
 // Every other suite replaces toast with a recorder. This one runs the REAL toast against the harness's stub elements and reads what it drew, so the ordinary
 // variants are pinned here too: the neutral one must not move them.
 // v3.96 drives the results that finish work to their end (the bulk refresh and queue pass summaries, the rebuild's "Queue built"), where the v3.94 test below could
@@ -135,6 +137,47 @@ test('toast: the pacing toast is the neutral one, a hand action held back for th
   await gate;
 });
 
+// ── v3.99: the not done look for a refusal of the queue ──────────────────────────────────────────────────────────────────────────────────────
+
+test('toast: toastWarn draws the warning look without a glyph in the words, keeps its dismiss time, and travels in the third place of toast()', async () => {
+  const app = await loadApp({ realToast: true });
+  assert.deepEqual(delays(added(app, () => app.ctx.toastWarn('Nothing was cleared. Another tab is refreshing prices. Try again when it has finished', 6000))), [6000]);
+  assert.deepEqual(look(app), { classes: ['toast-warn'], shown: true, icon: '⚠', colour: '#f59e0b', msg: 'Nothing was cleared. Another tab is refreshing prices. Try again when it has finished' });
+  assert.deepEqual(delays(added(app, () => app.ctx.toastWarn('Queue already running...'))), [2800], 'the usual time when none is asked: it is no error');
+  assert.notEqual(look(app).icon, '✓');
+  // a glyph in the words is not shown twice, the same as the glyph-led warning
+  app.ctx.toastWarn('⚠ Careful');
+  assert.equal(look(app).msg, 'Careful');
+  // a plain toast after it is the tick again
+  app.ctx.toast('Saved');
+  assert.deepEqual(look(app), { classes: [], shown: true, icon: '✓', colour: 'var(--accent)', msg: 'Saved' });
+  const seen = [];
+  const real = app.ctx.toast;
+  app.ctx.toast = (...a) => { seen.push(a); return real(...a); };
+  app.ctx.toastWarn('Hello', 3000);
+  assert.deepEqual(seen, [['Hello', 3000, 'warn']]);
+});
+
+test('toast: every refusal of the refresh queue asks for the warning look, from the in-tab guards to the other tab\'s lock, and the plan change\'s pause note too', () => {
+  const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  // the refusals, as the code words them: none is drawn with the tick any more
+  const refusals = [
+    "toastWarn('Nothing was rebuilt. ' + KJR_QUEUE_LOCK_BUSY, 6000)", "toastWarn('Nothing was rebuilt. ' + blockedNow, 6000)",
+    "toastWarn('Nothing was cleared. ' + KJR_QUEUE_LOCK_BUSY, 6000)", "toastWarn('Nothing was cleared. ' + blocked, 6000)",
+    "toastWarn('Nothing was refreshed. ' + KJR_QUEUE_LOCK_BUSY, 6000)", "toastWarn('Nothing was refreshed. ' + blockedNow, 6000)",
+    "toastWarn('Nothing was refreshed. No ' + esc(table) + ' with an automatic price are left', 6000)",
+    'if (manual) toastWarn(KJR_QUEUE_LOCK_BUSY, 6000)', 'if (manual) toastWarn(busyNow)', 'if (blocked) { toastWarn(blocked); return; }',
+    "toastWarn('The plan is saved, but today\\'s credits pause stays", "if (refusal.why === 'running') toastWarn(msg, 6000); else toastError(msg);",
+  ];
+  for (const r of refusals) assert.ok(code.includes(r), r);
+  assert.doesNotMatch(code, /[^\w]toast\('Nothing was (?:rebuilt|cleared|refreshed)\./, 'no "Nothing was" refusal keeps the tick');
+  assert.doesNotMatch(code, /[^\w]toast\(KJR_QUEUE_LOCK_BUSY/, 'nor the busy message');
+  assert.doesNotMatch(code, /[^\w]toast\((?:blocked|blockedNow|busyNow)\)/, 'nor an in-tab guard\'s words');
+  assert.doesNotMatch(code, /[^\w]toast\('The plan is saved, but/, 'nor the plan change\'s pause note');
+  assert.match(code, /function toastWarn\(msg, dur\) \{ toast\(msg, dur, 'warn'\); \}/);
+});
+
 // ── v3.94: the messages that mean started and not finished ─────────────────────────────────────────────────────────────────────────────────
 
 // a card Refresh price whose answer the test holds, so the toast on the screen while it is in flight can be read
@@ -193,8 +236,9 @@ test('toast: only the started-and-not-finished messages take the neutral note, e
   const miss = await heldRefresh(app, 'single_seed_1');
   await miss.answer({ maxSgd: 0, tcgdexError: 'no price', pptError: 'not applicable' });
   assert.deepEqual(seen.map((a) => [a[0].startsWith('No price found') ? 'a miss' : a[0], a[2]]), [['Fetching market price...', 'info'], ['a miss', true]]);
-  // the refusals of the bulk refresh, the pass and the rebuild: ticks, as they were. They return before any work, so this only reaches them. What those runs draw when they
-  // finish (the bulk refresh's "Done", the pass's "Queue:", the rebuild's "Queue built") is driven to the end by the three tests under "the results that finish work" below
+  // the refusals of the bulk refresh, the pass and the rebuild: the warning look since v3.99, not the tick and not the neutral note. They return before any work, so this
+  // only reaches them. What those runs draw when they finish (the bulk refresh's "Done", the pass's "Queue:", the rebuild's "Queue built") is driven to the end by the
+  // three tests under "the results that finish work" below, and keeps the tick
   seen.length = 0;
   app.ctx.kjrConfirm = async () => true;
   app.ctx._queueRunning = true;
@@ -209,7 +253,7 @@ test('toast: only the started-and-not-finished messages take the neutral note, e
     'A bulk refresh is running - wait for it to finish first',
     'A bulk refresh is running - wait for it to finish first',
   ]);
-  for (const a of seen) assert.equal(a[2], undefined, a[0] + ' keeps the tick: a refusal is not a note about work in progress');
+  for (const a of seen) assert.equal(a[2], 'warn', a[0] + ' is the warning look: a refusal is not done, and not a note about work in progress either');
 });
 
 test('toast: a Trash restore that waits for the server is the neutral note, and the server\'s acknowledgement and every other restore message keep the tick', () => {

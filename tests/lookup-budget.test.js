@@ -294,7 +294,7 @@ test('lookup budget: with no queue and nothing spent, the first lookup that spen
   const app = await setup();
   const keys = () => JSON.stringify(Array.from({ length: app.localStorage.length }, (_, i) => app.localStorage.key(i)).sort());
   const before = keys();
-  assert.equal(app.ctx.kjrLookupRefusal(), null, 'a fresh day has room');
+  assert.equal(await app.ctx.kjrLookupRefusal(), null, 'a fresh day has room'); // v3.99: it resolves to the answer, it peeks at the queue's lock first
   assert.equal(keys(), before, 'asking is read only');
   await app.search('Alpha 1');
   assert.deepEqual(plain(app.saved().dayCreditsUsed), { [UTC()]: 3 });

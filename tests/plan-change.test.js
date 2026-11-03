@@ -235,7 +235,10 @@ test('plan change: kjrPptSetPlan clears the held copy in the same step, and the 
   assert.match(src, /^let _kjrHeldQueue = null;$/m, 'one in-memory reference, nothing is saved for it');
   // v3.98: both inside the one task the queue's lock is held for (_kjrWithQueueLock), read afresh there, and the plan is saved whatever the lock says
   assert.match(body('kjrPptSetPlan'), /_kjrWithQueueLock\(\(\) => \{\s*const q = loadQueue\(\);\s*if \(q && q\.creditsPausedDate\) \{ q\.creditsPausedDate = null; saveQueue\(q\); \}\s*if \(_kjrHeldQueue && _kjrHeldQueue\.creditsPausedDate\) _kjrHeldQueue\.creditsPausedDate = null;\s*\}, /, 'the saved queue and the held copy, nothing awaits between them');
-  assert.match(body('kjrPptSetPlan'), /\.catch\([^\n]*\);\s*return true;\s*\}/, 'and the plan change itself still answers true at once');
+  // v3.99: the clear's promise is kept so the caller's onSettled can follow it, and nothing awaits it before the answer
+  assert.match(body('kjrPptSetPlan'), /^function kjrPptSetPlan\(plan, onSettled\) \{\s*if \(plan !== 'free' && plan !== 'paid'\) return false;[\s\S]*const settled = _kjrWithQueueLock\(/);
+  assert.match(body('kjrPptSetPlan'), /\}\)\.catch\(e => console\.warn\('\[queue\] plan change could not clear the pause:', e\)\);\s*if \(typeof onSettled === 'function'\) settled\.then\(\(\) => onSettled\(\)\)\.catch\([^\n]*\);\s*return true;\s*\}/, 'and the plan change itself still answers true at once, onSettled follows the clear');
+  assert.doesNotMatch(body('kjrPptSetPlan'), /\bawait\b/, 'nothing in it awaits');
   const run = body('runRefreshQueue');
   assert.equal((run.match(/_queueRunning = true;/g) || []).length, 3, 'the three places a pass starts');
   assert.equal((run.match(/_queueRunning = true;\s*_kjrHeldQueue = q;/g) || []).length, 3, 'each holds the queue where the flag goes up');

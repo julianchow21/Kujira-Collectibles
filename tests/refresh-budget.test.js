@@ -488,9 +488,9 @@ test('refresh budget: the refusal toasts are plain British English with no dash 
   assert.deepEqual(plain(app.ctx._kjrLookupRefusalText({ why: 'spent', used: 88, limit: 90 })), { reason: 'today\'s credits are used up (88 of 90 on the Free plan)', next: RESET });
   assert.deepEqual(plain(app.ctx._kjrLookupRefusalText({ why: 'spent', used: 88, limit: 90, need: 3 })), { reason: 'today\'s credits are used up (88 of 90 on the Free plan)', next: RESET }, 'a plain search is worded as before');
   assert.deepEqual(plain(app.ctx._kjrLookupRefusalText({ why: 'spent', used: 90, limit: 90, need: 6 })), { reason: 'today\'s credits are used up (90 of 90 on the Free plan)', next: RESET }, 'nothing left reads used up for a slab too');
-  assert.equal(app.ctx.kjrLookupRefusal(), null, 'no argument is the plain search\'s 3');
+  assert.equal(await app.ctx.kjrLookupRefusal(), null, 'no argument is the plain search\'s 3'); // v3.99: it resolves to the answer
   app.saveQueue({ dayCreditsUsed: { [UTC()]: 85 } });
-  assert.equal(app.ctx.kjrLookupRefusal(), null, '5 left pays for a plain search');
-  assert.equal(app.ctx.kjrLookupRefusal(3), null);
-  assert.deepEqual(plain(app.ctx.kjrLookupRefusal(6)), { why: 'spent', used: 85, limit: 90, need: 6 }, 'and not for a slab\'s');
+  assert.equal(await app.ctx.kjrLookupRefusal(), null, '5 left pays for a plain search');
+  assert.equal(await app.ctx.kjrLookupRefusal(3), null);
+  assert.deepEqual(plain(await app.ctx.kjrLookupRefusal(6)), { why: 'spent', used: 85, limit: 90, need: 6 }, 'and not for a slab\'s');
 });

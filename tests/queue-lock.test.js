@@ -7,6 +7,12 @@
 //   - the other tab refuses a pass, a bulk run, Rebuild Queue and Clear with a toast, its automatic run stands down quietly, and the plan change keeps the pause
 //   - nothing in the refused tab writes the saved queue, the date key or the credits side record, and it asks no vendor
 //   - a tab that holds the lock runs a nested call at once (Web Locks are not re-entrant), and with no navigator.locks every task runs at once, as before v3.98
+// v3.99 adds query() to the fake, as the browser has it, and the peek the app makes with it (_kjrQueueLockBusyElsewhere):
+//   - a hand lookup and a card's Refresh price in the other tab ask PPT nothing and bill nothing while the lock is held, and say so with the busy words
+//   - Rebuild Queue and Clear in the other tab refuse before their question, and still refuse after the yes when the lock was taken while the question was open
+//   - every refusal of the queue is the warning look (toastWarn), not the tick
+//   - a plan change with the lock granted redraws the queue's panel once the pause is cleared, so the panel does not still show it
+//   - with no query() (or no navigator.locks at all) nothing is peeked at and nothing waits on a peek, as before v3.99
 // Fetch is stubbed (tests/harness.js), nothing here reaches a real API.
 process.env.TZ = 'Asia/Singapore';
 const nodeTest = require('node:test');
@@ -28,7 +34,8 @@ const slabRow = (id, name) => ({ id, name, grader: 'PSA', grade: '10', type: 'sl
 const SEED = { singles: [], slabs: [slabRow('s1', 'Alpha 1'), slabRow('s2', 'Bravo 2')] };
 
 // A Web Locks manager as the browser keeps one per origin: exclusive locks by name, a request that can not be granted waits its turn, one with ifAvailable is
-// answered at once with null. The callback's promise settling lets the lock go, whether it resolved or threw. Every request is logged.
+// answered at once with null. The callback's promise settling lets the lock go, whether it resolved or threw. Every request is logged. query() answers a step later
+// with the locks held now, as the browser's does (a snapshot, so it can be out of date once read), and is counted in queries.
 function fakeLocks() {
   const held = new Set();
   const waiting = new Map();
@@ -41,8 +48,14 @@ function fakeLocks() {
       if (next) next();
     });
   };
+  const queries = [];
   return {
-    held, log,
+    held, log, queries,
+    query() {
+      const snap = { held: [...held].map((name) => ({ name, mode: 'exclusive', clientId: 'some-tab' })), pending: [] };
+      queries.push(snap);
+      return Promise.resolve().then(() => snap);
+    },
     request(name, opts, cb) {
       if (typeof opts === 'function') { cb = opts; opts = {}; }
       log.push({ name, ifAvailable: !!(opts && opts.ifAvailable) });
@@ -61,9 +74,11 @@ async function tab(shared, opts) {
   const app = await loadApp(Object.assign({ seed: SEED, storage: shared.storage }, shared.locks ? { locks: shared.locks } : {}, opts || {}));
   app.clock = setClock(app, AT);
   app.toasts = [];
-  app.ctx.toast = (m) => app.toasts.push(String(m));
-  app.ctx.toastError = (m) => app.toasts.push('ERR ' + String(m));
-  app.ctx.kjrConfirm = async () => true;
+  app.looks = []; // the variant each toast asked for: 'tick' for a plain one, else toast()'s third place ('warn', 'info')
+  app.ctx.toast = (m, d, kind) => { app.toasts.push(String(m)); app.looks.push(kind === undefined || kind === false ? 'tick' : kind); };
+  app.ctx.toastError = (m) => { app.toasts.push('ERR ' + String(m)); app.looks.push('error'); };
+  app.asked = 0; // questions put to the owner
+  app.ctx.kjrConfirm = async () => { app.asked++; return true; };
   app.fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
   // While app.hold() is on, every PPT answer waits for app.letGo()
   app.holding = null;
@@ -152,19 +167,43 @@ for (const [what, start] of Object.entries(HOLDERS)) {
     b.toasts.length = 0;
     await b.ctx.runRefreshQueue(false);
     assert.deepEqual(b.toasts, [], 'the automatic call says nothing');
-    // Rebuild Queue, after the owner's yes
+    // Rebuild Queue, refused before the question (v3.99, the peek)
+    b.asked = 0;
     await b.ctx.startFreshQueue();
     assert.deepEqual(b.toasts, ['Nothing was rebuilt. ' + BUSY]);
-    // Clear, after the owner's yes
+    // Clear, refused before the question as well
     b.toasts.length = 0;
     await b.ctx.clearQueueAsk();
     assert.deepEqual(b.toasts, ['Nothing was cleared. ' + BUSY]);
+    assert.equal(b.asked, 0, 'neither asked the owner a question it would only refuse');
     // a bulk run, after the owner's yes: refused, its flag back down, and the toast says nothing was refreshed
     b.toasts.length = 0;
     await finish(b, b.ctx.bulkRefreshPrices('slabs'));
     assert.deepEqual(b.toasts, ['Nothing was refreshed. ' + BUSY]);
     assert.equal(b.ctx._bulkRefreshRunning, false);
     assert.equal(b.ctx._kjrHeldQueue, null);
+    // a hand lookup (v3.99): the peek finds the lock held, so PPT is not asked and nothing is billed, the TCGdex lane is free and still answers
+    const look = await b.ctx.kjrBudgetedLookup({ name: 'Alpha 1', grader: null, grade: null, language: null }); // a plain name lookup, as searchEbay asks
+    assert.deepEqual(plain(look.refusal), { why: 'running', elsewhere: true });
+    assert.equal(look.billed, null, 'nothing billed, nothing was spent');
+    assert.equal(b.ctx._kjrLookupsOpen, 0, 'and the lookup is no longer counted in flight');
+    // a card's Refresh price on a slab: refused before the request, the card left as it was, and the busy words in the warning look
+    b.toasts.length = 0; b.looks.length = 0;
+    const row = JSON.stringify(b.ctx.DB.slabs.find((r) => r.id === 's1'));
+    await b.ctx.refreshPrice('s1', 'slabs');
+    assert.deepEqual(b.toasts, ['PokemonPriceTracker was not asked because another tab is refreshing prices. Try again when it has finished. Nothing was changed.']);
+    assert.ok(b.toasts[0].includes(BUSY.charAt(0).toLowerCase() + BUSY.slice(1)), 'the busy message\'s own words');
+    assert.deepEqual(b.looks, ['warn']);
+    assert.equal(JSON.stringify(b.ctx.DB.slabs.find((r) => r.id === 's1')), row, 'the card is as it was');
+    assert.equal(b.ctx._kjrLookupsOpen, 0);
+    // every refusal above is the warning look, not the tick (the automatic call said nothing at all)
+    b.toasts.length = 0; b.looks.length = 0;
+    await b.ctx.runRefreshQueue(true);
+    await b.ctx.startFreshQueue();
+    await b.ctx.clearQueueAsk();
+    await finish(b, b.ctx.bulkRefreshPrices('slabs'));
+    assert.deepEqual(b.looks, ['warn', 'warn', 'warn', 'warn'], JSON.stringify(b.toasts));
+    assert.ok(shared.locks.queries.length > 0, 'tab B peeked');
 
     assert.equal(b.ppt().length, 0, 'tab B asked the vendor nothing');
     assert.deepEqual(snapshot(shared), snap, 'the saved queue, the date key and the credits side record are as tab A left them');
@@ -202,6 +241,7 @@ test('queue lock: a plan change in the other tab saves the plan, keeps the pause
   assert.equal(JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate, utc, 'the pause stays on the saved queue');
   assert.equal(b.toasts.length, 1, JSON.stringify(b.toasts));
   assert.match(b.toasts[0], /^The plan is saved, but today's credits pause stays while another tab is refreshing prices\. /);
+  assert.deepEqual(b.looks, ['warn'], 'a note that the pause stays is a not done, not the tick (v3.99)');
   await end();
   // with the lock free the same change clears the pause under the lock, and says nothing more
   paused();
@@ -313,6 +353,119 @@ test('queue lock: a queue of an older schema is left alone by a tab without the 
   assert.equal(shared.storage.getItem(QUEUE_KEY), null, 'the holder drops it');
 });
 
+// ── v3.99: the peek, the after-yes check, the plan change's redraw and the fallback ────────────────────────────────────────────────────────
+
+// a question held open until the test answers it
+const heldQuestions = (app) => {
+  app.asks = [];
+  app.ctx.kjrConfirm = (msg) => new Promise((resolve) => app.asks.push({ msg: String(msg), resolve }));
+};
+
+for (const edit of ['rebuild', 'clear']) {
+  test('queue lock: a ' + edit + ' whose question is open when the other tab takes the lock is refused after the yes, the peek before the question can not stand in for that', async () => {
+    const { shared, a, b } = await twoTabs();
+    savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 } }, a);
+    heldQuestions(b);
+    const asking = edit === 'rebuild' ? b.ctx.startFreshQueue() : b.ctx.clearQueueAsk();
+    await tick();
+    assert.equal(b.asks.length, 1, 'the lock was free at the peek, so the owner is asked');
+    const end = await HOLDERS['a bulk run'](a); // tab A takes the lock while the question is open
+    const snap = snapshot(shared);
+    b.toasts.length = 0; b.looks.length = 0;
+    b.asks[0].resolve(true);
+    await asking;
+    assert.deepEqual(b.toasts, [(edit === 'rebuild' ? 'Nothing was rebuilt. ' : 'Nothing was cleared. ') + BUSY]);
+    assert.deepEqual(b.looks, ['warn']);
+    assert.deepEqual(snapshot(shared), snap, 'nothing was written');
+    await end();
+  });
+}
+
+test('queue lock: with the lock free the peek finds nothing, a lookup asks PPT and bills the day, and a rebuild and a clear go ahead', async () => {
+  const { shared, a, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 } }, a);
+  assert.equal(await b.ctx._kjrQueueLockBusyElsewhere(), false);
+  assert.equal(await b.ctx.kjrLookupRefusal(), null);
+  const look = await b.ctx.kjrBudgetedLookup({ name: 'Alpha 1', grader: null, grade: null, language: null });
+  assert.equal(look.refusal, null);
+  assert.ok(b.ppt().length >= 1, 'PPT was asked');
+  assert.ok(look.billed && look.billed.used > 30, 'and the bill landed on the saved queue');
+  assert.equal(shared.locks.log.filter((r) => r.name === LOCK).length, 0, 'a lookup only looks at the lock, it never asks for it');
+  b.toasts.length = 0;
+  await b.ctx.startFreshQueue();
+  assert.ok(b.toasts.some((t) => /^Queue built: /.test(t)), JSON.stringify(b.toasts));
+  await b.ctx.clearQueueAsk();
+  assert.equal(shared.storage.getItem(QUEUE_KEY), null, 'cleared');
+  assert.equal(b.asked, 2, 'each asked its question');
+  // a lock this tab holds is its own: the peek makes no look and lets the in-memory guards speak
+  await b.ctx._kjrWithQueueLock(() => { assert.equal(b.ctx._kjrQueueLockBusyElsewhere(), null); });
+});
+
+test('queue lock: a plan change with the lock granted clears the pause and the queue\'s panel is drawn again without it', async () => {
+  const { shared, a, b } = await twoTabs();
+  const utc = new Date(Date.parse(AT)).toISOString().slice(0, 10);
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [utc]: 30 }, creditsPausedDate: utc }, a);
+  const panel = b.document.getElementById('queue-status-panel');
+  const PAUSE = /PokemonPriceTracker says today's credits are used up\./;
+  b.ctx._renderQueueStatus();
+  assert.match(panel.innerHTML, PAUSE, 'the panel shows the pause to begin with');
+  b.ctx.kjrPptPlanChoose('paid');
+  assert.equal(b.ctx.kjrPptPlan(), 'paid', 'the plan is saved at once');
+  assert.match(panel.innerHTML, PAUSE, 'the draw made at once still shows it: the lock is granted a step later, and the pause is cleared under it');
+  await tick();
+  assert.equal(JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate, null, 'cleared under the lock');
+  assert.equal(shared.locks.held.has(LOCK), false, 'and the lock let go');
+  assert.doesNotMatch(panel.innerHTML, PAUSE, 'the panel was drawn again once the clear had landed');
+  assert.match(panel.innerHTML, /Queue built 25\/10\/2026 ·/, 'with the queue\'s date as DD/MM/YYYY');
+  // kjrPptSetPlan still answers at once, and its onSettled comes once the clear has landed, refused or not
+  let settled = 0;
+  assert.equal(b.ctx.kjrPptSetPlan('free', () => { settled++; }), true);
+  assert.equal(settled, 0, 'not in the same step');
+  await tick();
+  assert.equal(settled, 1);
+  const end = await HOLDERS['a pass'](a);
+  assert.equal(b.ctx.kjrPptSetPlan('paid', () => { settled++; }), true);
+  await tick();
+  assert.equal(settled, 2, 'and when the other tab held the lock');
+  await end();
+});
+
+test('queue lock: with no query() or no navigator.locks nothing is peeked at and nothing waits on a peek, as before v3.99', async () => {
+  // request() alone, shared by two tabs: the v3.98 lock still guards every write, the lookup is not turned away by it
+  const real = fakeLocks();
+  const shared = { storage: createLocalStorage(), locks: { held: real.held, log: real.log, request: real.request } };
+  const a = await tab(shared);
+  const b = await tab(shared);
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 } }, a);
+  const end = await HOLDERS['a bulk run'](a);
+  assert.equal(b.ctx._kjrQueueLockBusyElsewhere(), null, 'no look to make');
+  assert.equal(await b.ctx.kjrLookupRefusal(), null, 'the lookup is not turned away by a lock it can not see, as in v3.98');
+  // the question comes in the same step, as before v3.99, and the lock still refuses the rebuild after the yes
+  heldQuestions(b);
+  const asking = b.ctx.startFreshQueue();
+  assert.equal(b.asks.length, 1, 'asked in the same step');
+  b.toasts.length = 0;
+  b.asks[0].resolve(true);
+  await asking;
+  assert.deepEqual(b.toasts, ['Nothing was rebuilt. ' + BUSY]);
+  await end();
+  // no navigator.locks at all: the same, and the lookup and the clear go ahead
+  const none = await tab({ storage: createLocalStorage(), locks: null });
+  assert.equal(none.ctx._kjrQueueLockBusyElsewhere(), null);
+  heldQuestions(none);
+  const clearing = none.ctx.clearQueueAsk();
+  assert.equal(none.asks.length, 1, 'asked in the same step');
+  none.asks[0].resolve(false);
+  await clearing;
+  // a query() that fails is no look either: false, said in the console, and the lookup goes on
+  const failing = fakeLocks();
+  failing.query = () => Promise.reject(new Error('InvalidStateError'));
+  const odd = await tab({ storage: createLocalStorage(), locks: failing });
+  assert.equal(await odd.ctx._kjrQueueLockBusyElsewhere(), false);
+  assert.equal(await odd.ctx.kjrLookupRefusal(), null);
+  assert.ok(odd.consoleWarnings.some((w) => /queue lock could not be looked at/.test(JSON.stringify(w))), JSON.stringify(odd.consoleWarnings));
+});
+
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 test('queue lock: one named lock, asked for with ifAvailable, around every read-modify-write of the saved queue', () => {
@@ -334,25 +487,42 @@ test('queue lock: one named lock, asked for with ifAvailable, around every read-
   const lockAt = run.indexOf('return _kjrWithQueueLock(async () => {');
   assert.ok(lockAt > 0 && lockAt < run.indexOf('loadQueue()') && lockAt < run.indexOf('saveQueue('), 'every read and write of the pass is inside the lock');
   assert.ok(run.indexOf('if (!manual && _kjrBulkBlocked) return;') < lockAt, 'the in-memory guards are kept, before the lock');
-  assert.match(run.slice(lockAt), /^return _kjrWithQueueLock\(async \(\) => \{\s*(?:\/\/[^\n]*\n\s*)*const busyNow = _kjrQueueEditBlocker\(\);\s*if \(busyNow\) \{ if \(manual\) toast\(busyNow\); return; \}/);
-  assert.match(run, /\}, \(\) => \{ if \(manual\) toast\(KJR_QUEUE_LOCK_BUSY, 6000\); \}\);\n\}\n/, 'refused quietly when automatic, with the toast by hand');
+  assert.match(run.slice(lockAt), /^return _kjrWithQueueLock\(async \(\) => \{\s*(?:\/\/[^\n]*\n\s*)*const busyNow = _kjrQueueEditBlocker\(\);\s*if \(busyNow\) \{ if \(manual\) toastWarn\(busyNow\); return; \}/);
+  assert.match(run, /\}, \(\) => \{ if \(manual\) toastWarn\(KJR_QUEUE_LOCK_BUSY, 6000\); \}\);\n\}\n/, 'refused quietly when automatic, with the warning toast by hand (v3.99)');
   // the bulk run: the flag goes up, then the lock, then the queue is read
   const bulk = body('bulkRefreshPrices');
   const bulkLock = bulk.indexOf('await _kjrWithQueueLock(async () => {');
   assert.ok(bulk.indexOf('_bulkRefreshRunning = true;') < bulkLock && bulkLock < bulk.indexOf('q = loadQueue();'), 'flag, lock, read');
   assert.match(bulk, /\}, \(\) => \{ lockBusy = true; \}\);\s*\} finally \{/);
-  assert.match(bulk, /if \(lockBusy\) \{ toast\('Nothing was refreshed\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return; \}/);
+  assert.match(bulk, /if \(lockBusy\) \{ toastWarn\('Nothing was refreshed\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return; \}/);
   // Rebuild, Clear and the plan change hold it for their one read and write
-  assert.match(body('startFreshQueue'), /await _kjrWithQueueLock\(\(\) => \{[\s\S]*?loadQueue\(\)\);\s*saveQueue\(q\);\s*return q;\s*\}, \(\) => \{ toast\('Nothing was rebuilt\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return null; \}\);/);
+  assert.match(body('startFreshQueue'), /await _kjrWithQueueLock\(\(\) => \{[\s\S]*?loadQueue\(\)\);\s*saveQueue\(q\);\s*return q;\s*\}, \(\) => \{ toastWarn\('Nothing was rebuilt\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return null; \}\);/);
   assert.match(body('clearQueueAsk'), /await _kjrWithQueueLock\(clearQueue, /);
   assert.match(body('kjrPptSetPlan'), /_kjrWithQueueLock\(\(\) => \{\s*const q = loadQueue\(\);/);
+  // v3.99: the peek is a query() only, it takes no lock, and it is made before the lookups ask PPT and before Rebuild and Clear ask the owner
+  const peek = body('_kjrQueueLockBusyElsewhere');
+  assert.match(peek, /if \(!locks \|\| typeof locks\.query !== 'function' \|\| _kjrQueueLockHeld\) return null;/, 'no look to make: null, and the caller awaits nothing');
+  assert.match(peek, /locks\.query\(\)/);
+  assert.doesNotMatch(peek, /locks\.request\(/);
+  assert.match(body('kjrLookupRefusal'), /^function kjrLookupRefusal\(need\) \{\s*const peek = _kjrQueueLockBusyElsewhere\(\);\s*if \(peek && await peek\) return \{ why: 'running', elsewhere: true \};\s*if \(_queueRunning \|\| _bulkRefreshRunning\) return \{ why: 'running' \};/, 'the peek first, the in-memory reads after it');
+  assert.match(src, /\nasync function kjrLookupRefusal\(need\) \{/);
+  assert.match(body('kjrBudgetedLookup'), /_kjrLookupsOpen\+\+;[^\n]*\n\s*try \{\s*const refusal = await kjrLookupRefusal\(\);/, 'counted in flight before it asks');
+  const refresh = body('refreshPrice');
+  assert.ok(refresh.indexOf('_kjrLookupsOpen++;') < refresh.indexOf('await kjrLookupRefusal('), 'and so is a card refresh');
+  for (const [fn, words] of [['startFreshQueue', 'Nothing was rebuilt. '], ['clearQueueAsk', 'Nothing was cleared. ']]) {
+    const f = body(fn);
+    const at = f.indexOf('if (peek && await peek) { toastWarn(\'' + words + '\' + KJR_QUEUE_LOCK_BUSY, 6000); return; }');
+    assert.ok(at > 0 && at < f.indexOf('kjrConfirm('), fn + ' peeks before the question');
+    assert.ok(f.indexOf('_kjrWithQueueLock(') > f.indexOf('kjrConfirm('), fn + ' and still checks under the lock after the yes');
+  }
+  assert.match(body('kjrPptPlanChoose'), /kjrPptSetPlan\(plan, \(\) => \{ if \(typeof _renderQueueStatus === 'function'\) _renderQueueStatus\(\); \}\)/, 'the plan change redraws once the clear has settled');
   // loadQueue drops an old queue only where it may write
   assert.match(body('loadQueue'), /if \(_kjrQueueWritable\(\)\) localStorage\.removeItem\(QUEUE_KEY\);/);
 });
 
 test('queue lock: the new toasts are plain British English with no dash bar and no semicolon', () => {
   const src = fs.readFileSync(ROOT + '/app.js', 'utf8');
-  const plan = /toast\('(The plan is saved, but today\\'s credits pause stays[^']*(?:\\'[^']*)*)'/.exec(src);
+  const plan = /toastWarn\('(The plan is saved, but today\\'s credits pause stays[^']*(?:\\'[^']*)*)'/.exec(src);
   assert.ok(plan, 'the plan change\'s toast');
   for (const words of [BUSY, plan[1]]) {
     assert.doesNotMatch(words, /[—–;]| - /, words);

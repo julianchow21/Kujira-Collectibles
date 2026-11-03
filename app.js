@@ -11832,11 +11832,13 @@ function toast(msg, dur=2800, isError=false) {
   const msgEl= document.getElementById('toast-msg');
   const bar  = document.getElementById('toast-bar');
   // v3.93: 'info' in the third place (toastInfo) is a neutral note, neither done nor wrong. It is no error, so it keeps the dismiss time it was given
+  // v3.99: 'warn' in the third place (toastWarn) asks for the warning look without a glyph in the words. It is no error either
   const isInfo = isError === 'info';
-  if (isInfo) isError = false;
-  const isWarn = !isError && !isInfo && typeof msg === 'string' && msg.startsWith('⚠');
+  const askedWarn = isError === 'warn';
+  if (isInfo || askedWarn) isError = false;
+  const isWarn = askedWarn || (!isError && !isInfo && typeof msg === 'string' && msg.startsWith('⚠'));
   // Strip leading warning glyph so it doesn't appear twice
-  const displayMsg = isWarn ? msg.replace(/^⚠\s*/, '') : msg;
+  const displayMsg = isWarn && typeof msg === 'string' ? msg.replace(/^⚠\s*/, '') : msg;
   clearTimeout(toastClassTimer); // a dismissal in the last 300 ms must not take this toast's look away under it (v3.96)
   t.classList.remove('toast-error','toast-warn','toast-info');
   if (isError) {
@@ -11882,6 +11884,9 @@ function toastError(msg) { toast(msg, 6000, true); }
 // started and not finished: the card Refresh price's "Fetching market price..." (refreshPrice) and a Trash restore waiting for the server (restoreFromTrash).
 // A result, a refusal, a warning and an error keep their own looks.
 function toastInfo(msg, dur) { toast(msg, dur, 'info'); }
+// Not done (v3.99): the warning icon in amber where toast() draws the tick, which reads as done. For a refusal of the refresh queue, a run, a rebuild, a clear or a
+// lookup that was turned away because something else holds the queue, here or in another tab. The app's other not done note, "Pricing paused", is this same look.
+function toastWarn(msg, dur) { toast(msg, dur, 'warn'); }
 
 // =========== ERROR THROTTLE (Tier-1 data-integrity toasts) ===========
 // A silent catch on a data-integrity write (cloud delete, trash write, DB
@@ -18641,8 +18646,10 @@ function openApiSettings() {
 
 // The plan radios in the Price API settings. Saved the moment one is chosen (it is a choice, not a key to test), on this device only. A plan
 // that can not be saved puts the control back to the plan that is in force.
+// v3.99: the pause is cleared under the queue's lock, which can be granted a step after the call, so the queue's panel is drawn again once that has settled as well as at
+// once. Otherwise it could still show the pause after an upgrade until something else drew it.
 function kjrPptPlanChoose(plan) {
-  const ok = kjrPptSetPlan(plan);
+  const ok = kjrPptSetPlan(plan, () => { if (typeof _renderQueueStatus === 'function') _renderQueueStatus(); });
   const now = kjrPptPlan();
   Array.from(document.querySelectorAll('input[name="ppt-plan"]')).forEach(el => { el.checked = el.value === now; });
   // the two places the open dialog states the budget (the blurb at the top and the Search (PPT) line) follow the plan at once
@@ -19476,11 +19483,8 @@ async function refreshPrice(id, table) {
   // The PPT lane is asked only when the day's credits can pay for this search (a slab's costs up to 6, a Japanese single's up to 3), the vendor
   // has not refused for credits today and no pass is running. Otherwise it is not asked at all and the card is left exactly as it was, no miss
   // stamp, no id, no price: there is no free source for a slab or a Japanese card to fall back to, so the toast says why and that is all.
-  if (lane === 'ppt') {
-    const refusal = kjrLookupRefusal(_pptEstimateCredits({ grader, grade }));
-    if (refusal) { _kjrRefreshRefusedToast(refusal); return; }
-  }
-  toastInfo('Fetching market price...'); // started, not finished: the neutral note, the tick is for the price that comes back (v3.94)
+  // v3.99: nor while another tab holds the queue's lock (kjrLookupRefusal peeks at it), its run would save over this refresh's bill. The question can wait on that peek,
+  // so the call counts as a lookup in flight from before it is asked, and no pass starts in this tab meanwhile. A refusal still changes nothing on the card.
   const today = kjrLocalDay(); // the day the checked and missed markers carry: the device's local date (kjrLocalDay), history keeps UTC dates
   // The router sends a lookup to PPT's graded lane only with a grader AND a grade. Anything
   // else is its raw branch, so tcgdexOnly keeps every such call off the fuzzy PPT search.
@@ -19489,6 +19493,11 @@ async function refreshPrice(id, table) {
   let r;
   _kjrLookupsOpen++;
   try {
+    if (lane === 'ppt') {
+      const refusal = await kjrLookupRefusal(_pptEstimateCredits({ grader, grade }));
+      if (refusal) { _kjrRefreshRefusedToast(refusal); return; }
+    }
+    toastInfo('Fetching market price...'); // started, not finished: the neutral note, the tick is for the price that comes back (v3.94)
     r = await fetchMarketPrice({ name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !(grader && grade) && !japanese, japanese });
     if (lane === 'ppt') _kjrBillLookup(r);
   } finally {
@@ -19620,17 +19629,20 @@ function kjrPptPlan() {
 // queue and from the copy a running pass or bulk run holds (_kjrHeldQueue, v3.95), or that copy's next save would put it back.
 // v3.98: the pause is cleared under the queue's lock (_kjrWithQueueLock). In this tab, or with no lock to ask for, that is at once, as before. While another tab
 // holds the lock its run holds the queue and would write the pause straight back, so the plan is still saved but the pause stays, and the owner is told.
-function kjrPptSetPlan(plan) {
+// v3.99: that note is the warning look (toastWarn), not the tick. The answer is still true or false at once, callers rely on it, so the clear itself can land a step
+// later, once the lock is granted. onSettled (optional) is called once it has landed, been refused or failed, so a screen that shows the pause can draw it again then.
+function kjrPptSetPlan(plan, onSettled) {
   if (plan !== 'free' && plan !== 'paid') return false;
   try { localStorage.setItem(PPT_PLAN_KEY, plan); } catch (e) { return false; }
-  _kjrWithQueueLock(() => {
+  const settled = _kjrWithQueueLock(() => {
     const q = loadQueue();
     if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
     if (_kjrHeldQueue && _kjrHeldQueue.creditsPausedDate) _kjrHeldQueue.creditsPausedDate = null;
   }, () => {
     const q = loadQueue(); // read only here, loadQueue drops nothing without the lock
-    if (q && q.creditsPausedDate) toast('The plan is saved, but today\'s credits pause stays while another tab is refreshing prices. Run the queue by hand once it has finished to ask again', 7000);
+    if (q && q.creditsPausedDate) toastWarn('The plan is saved, but today\'s credits pause stays while another tab is refreshing prices. Run the queue by hand once it has finished to ask again', 7000);
   }).catch(e => console.warn('[queue] plan change could not clear the pause:', e));
+  if (typeof onSettled === 'function') settled.then(() => onSettled()).catch(e => console.warn('[queue] plan change could not redraw after the pause clear:', e));
   return true;
 }
 function kjrDailyCredits() { return PPT_PLANS[kjrPptPlan()].credits; }
@@ -19709,6 +19721,14 @@ function kjrLocalDay(now) {
   const d = new Date(now == null ? Date.now() : now);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
+// A date as the owner reads it, DD/MM/YYYY on this device's calendar (v3.99), never in the browser's locale: a US-locale browser showed the queue's date as 11/3/2026.
+// '' for a date that does not read.
+function kjrFmtDmy(when) {
+  const t = when == null || when === '' ? NaN : new Date(when).getTime();
+  if (!Number.isFinite(t)) return '';
+  const [y, m, d] = kjrLocalDay(t).split('-');
+  return d + '/' + m + '/' + y;
+}
 // 'YYYY-MM-DD' one calendar day before another, 'YYYY-MM-DD' in and out (UTC arithmetic on the date alone, so no clock or zone is involved)
 function _kjrDayBefore(day) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day));
@@ -19783,7 +19803,7 @@ function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q))
 // question), because the question can stay open as long as they like. Returns whether the queue was cleared.
 function clearQueue() {
   const blocked = _kjrQueueEditBlocker();
-  if (blocked) { toast('Nothing was cleared. ' + blocked, 6000); return false; }
+  if (blocked) { toastWarn('Nothing was cleared. ' + blocked, 6000); return false; }
   _kjrStashCredits(loadQueue()); // Clear drops the progress, not the credits already spent today
   localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY);
   return true;
@@ -19800,6 +19820,8 @@ function clearQueue() {
 //   - the lock goes when the task ends, however it ends: a return, a refusal or a throw (the browser releases it when the callback's promise settles)
 //   - a browser with no navigator.locks (the check _withCrossTabRowLocks makes) runs every task at once, as before v3.98, and so does one whose request fails
 //   - loadQueue drops a queue of an older schema only where it may write (_kjrQueueWritable). The lookups' bill (_kjrBillLookup) is a one-step write and is not held
+//   - v3.99: a lookup, Rebuild Queue and Clear first peek at the lock (_kjrQueueLockBusyElsewhere). While another tab holds it a lookup asks PPT nothing, so it has no
+//     bill to lose, and Rebuild and Clear refuse before their question. The peek is only a look, so Rebuild and Clear still check under the lock after the yes
 const KJR_QUEUE_LOCK = 'kjr-refresh-queue';
 const KJR_QUEUE_LOCK_BUSY = 'Another tab is refreshing prices. Try again when it has finished';
 let _kjrQueueLockHeld = false; // this tab holds KJR_QUEUE_LOCK
@@ -19828,6 +19850,20 @@ function _kjrWithQueueLock(task, onBusy) {
     if (granted) throw e; // the task (or onBusy) threw, the lock has already gone
     console.warn('[queue] the queue lock could not be asked for, running without it:', e);
     return now();
+  });
+}
+// Does another tab hold the queue's lock right now (v3.99)? A look only, it takes nothing: navigator.locks.query() lists the locks held for this origin. It returns null
+// when there is no look to make (no lock API, no query(), or this tab holds the lock, whose own guards speak for it), so a caller goes on in the same step, exactly as
+// before v3.99. Otherwise a promise of true or false. A query that fails is false, as no look. The flag is read again once the answer is in, a lock this tab took
+// meanwhile is its own. What it answers can be out of date a moment later: a tab can take the lock just after the look said it was free.
+function _kjrQueueLockBusyElsewhere() {
+  const locks = _kjrQueueLocks();
+  if (!locks || typeof locks.query !== 'function' || _kjrQueueLockHeld) return null;
+  let asked;
+  try { asked = Promise.resolve(locks.query()); } catch (e) { asked = Promise.reject(e); }
+  return asked.then(state => !_kjrQueueLockHeld && !!(state && Array.isArray(state.held) && state.held.some(l => l && l.name === KJR_QUEUE_LOCK)), e => {
+    console.warn('[queue] the queue lock could not be looked at, going on without the look:', e);
+    return false;
   });
 }
 
@@ -20511,14 +20547,15 @@ function isLocalhostPreview() {
 // Run today's batch - called on page load and manually from settings
 let _queueRunning = false;
 async function runRefreshQueue(manual = false) {
-  if (_queueRunning) { if (manual) toast('Queue already running...'); return; }
+  // v3.99: a pass turned away because something else holds the queue says so with the warning look (toastWarn), not the tick, here and below
+  if (_queueRunning) { if (manual) toastWarn('Queue already running...'); return; }
   // A manual bulk refresh (bulkRefreshPrices) bills the same saved queue's credits, so the two never run at once: each writes the queue back
-  if (_bulkRefreshRunning) { if (manual) toast('A bulk refresh is running - wait for it to finish first'); return; }
+  if (_bulkRefreshRunning) { if (manual) toastWarn('A bulk refresh is running - wait for it to finish first'); return; }
   // And not while its question is open (v3.93): the owner's yes starts that run on the queue as it is then, so a pass must not start under the dialog.
   // The automatic call is held back before it gets here (_kjrAutoRun waits for the question), only a direct call is turned away
-  if (_kjrBulkAsking) { if (manual) toast('A bulk refresh is waiting for your answer - answer it first'); return; }
+  if (_kjrBulkAsking) { if (manual) toastWarn('A bulk refresh is waiting for your answer - answer it first'); return; }
   // So does a hand lookup (kjrBudgetedLookup, v3.90), whose bill is written when its answer comes and would be lost under a queue held in memory
-  if (_kjrLookupsOpen > 0) { if (manual) toast('A price lookup is running - wait for it to finish first'); return; }
+  if (_kjrLookupsOpen > 0) { if (manual) toastWarn('A price lookup is running - wait for it to finish first'); return; }
   // The automatic call stands down for the rest of this load once a bulk run has ended on the vendor's refusal or five failures in a row (v3.96, _kjrBulkBlocked): it is
   // handed back from that run's finally and would ask the vendor again within seconds. A pass asked for by hand still goes, that is the owner's choice
   if (!manual && _kjrBulkBlocked) return;
@@ -20541,7 +20578,7 @@ async function runRefreshQueue(manual = false) {
     // The lock can come a moment after the call, so the guards above that a lookup, a bulk run or its question could have changed are read again. With no lock to ask
     // for the task runs in the same step as the guards and this finds nothing
     const busyNow = _kjrQueueEditBlocker();
-    if (busyNow) { if (manual) toast(busyNow); return; }
+    if (busyNow) { if (manual) toastWarn(busyNow); return; }
     // Clear yesterday's "paused" sticky state on every manual run so the
     // user can re-trigger after a config change (e.g. wiring up the Worker)
     // without waiting until tomorrow. Without this, the dashboard chip would
@@ -20667,7 +20704,7 @@ async function runRefreshQueue(manual = false) {
       _kjrHeldQueue = null;
       hideSyncProgress();
     }
-  }, () => { if (manual) toast(KJR_QUEUE_LOCK_BUSY, 6000); });
+  }, () => { if (manual) toastWarn(KJR_QUEUE_LOCK_BUSY, 6000); });
 }
 
 // TCGDEX_GAP_MS - TCGdex is free and unthrottled (no documented rate limit),
@@ -21341,7 +21378,7 @@ function _renderQueueStatus() {
       ${manualLangCount > 0 ? manualLangCount + ' non-English card' + (manualLangCount!==1?'s':'') + manualNote : ''}
     </div>` : ''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      Queue built ${new Date(q.createdAt).toLocaleDateString()} ·
+      Queue built ${kjrFmtDmy(q.createdAt)} ·
       ${q.items.filter(i=>i.copyTargets?.length).length} cards will copy price to duplicates
     </div>
     ${(() => {
@@ -21393,19 +21430,24 @@ async function startFreshQueue() {
   // that's running would get silently clobbered by the next in-flight save.
   // A bulk run does the same (it bills each answer into the queue it holds), and v3.94 turns a rebuild away while the bulk refresh's question is open or a lookup is in
   // flight as well (_kjrQueueEditBlocker). The question below can stay open as long as the owner likes, so the check is made again after the yes.
+  // v3.99: another tab that holds the queue's lock turns the rebuild away before the question too (_kjrQueueLockBusyElsewhere), so the owner is not asked for nothing. The
+  // peek comes first, so the in-memory check right before the question is read after it. A refusal is the warning look (toastWarn), not the tick
+  const peek = _kjrQueueLockBusyElsewhere(); // null with nothing to look at, and then nothing is awaited before the question, as before
+  if (peek && await peek) { toastWarn('Nothing was rebuilt. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
   const blocked = _kjrQueueEditBlocker();
-  if (blocked) { toast(blocked); return; }
+  if (blocked) { toastWarn(blocked); return; }
   if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
   // The second look, the read and the write are made under the queue's lock (v3.98, _kjrWithQueueLock), in one step. Another tab running a pass or a bulk run holds it,
-  // and its next save would write over the rebuild, so the rebuild is refused and says why
+  // and its next save would write over the rebuild, so the rebuild is refused and says why. The peek above can not stand in for this: the lock can be taken while the
+  // question is open
   const built = await _kjrWithQueueLock(() => {
     const blockedNow = _kjrQueueEditBlocker();
-    if (blockedNow) { toast('Nothing was rebuilt. ' + blockedNow, 6000); return null; }
+    if (blockedNow) { toastWarn('Nothing was rebuilt. ' + blockedNow, 6000); return null; }
     // the progress starts again, the credits already spent today do not (they are the vendor's count, not the queue's)
     const q = _kjrCarryCredits(buildRefreshQueue(), loadQueue());
     saveQueue(q);
     return q;
-  }, () => { toast('Nothing was rebuilt. ' + KJR_QUEUE_LOCK_BUSY, 6000); return null; });
+  }, () => { toastWarn('Nothing was rebuilt. ' + KJR_QUEUE_LOCK_BUSY, 6000); return null; });
   if (!built) return;
   const q = built;
   _renderQueueStatus();
@@ -21416,10 +21458,14 @@ async function startFreshQueue() {
 
 // The Clear button (v3.94): turned away before the question when the queue is held (_kjrQueueEditBlocker), and clearQueue looks again after the yes.
 // v3.98: clearQueue runs under the queue's lock (_kjrWithQueueLock), and is refused while another tab holds it
+// v3.99: and before the question too, when a peek finds another tab holding it (_kjrQueueLockBusyElsewhere). The check under the lock after the yes stays, the lock can be
+// taken while the question is open. A refusal is the warning look (toastWarn), not the tick
 async function clearQueueAsk() {
+  const peek = _kjrQueueLockBusyElsewhere(); // null with nothing to look at, and then nothing is awaited before the question, as before
+  if (peek && await peek) { toastWarn('Nothing was cleared. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
   const blocked = _kjrQueueEditBlocker();
-  if (blocked) { toast(blocked); return; }
-  if (await kjrConfirm('Clear queue?', {ok:'Clear', danger:true}) && await _kjrWithQueueLock(clearQueue, () => { toast('Nothing was cleared. ' + KJR_QUEUE_LOCK_BUSY, 6000); return false; })) _renderQueueStatus();
+  if (blocked) { toastWarn(blocked); return; }
+  if (await kjrConfirm('Clear queue?', {ok:'Clear', danger:true}) && await _kjrWithQueueLock(clearQueue, () => { toastWarn('Nothing was cleared. ' + KJR_QUEUE_LOCK_BUSY, 6000); return false; })) _renderQueueStatus();
 }
 
 // ── Manual bulk refresh of one table (v3.89) ──
@@ -21555,9 +21601,10 @@ function _kjrBulkRow(table, id) {
 }
 
 async function bulkRefreshPrices(table) {
-  if (_kjrBulkAsking) { toast('A bulk refresh is already waiting for your answer - answer it first'); return; } // one question at a time, a second call would share its answer and start a second run
+  // v3.99: a run turned away because something else holds the queue says so with the warning look (toastWarn), not the tick, here and after the yes
+  if (_kjrBulkAsking) { toastWarn('A bulk refresh is already waiting for your answer - answer it first'); return; } // one question at a time, a second call would share its answer and start a second run
   const blocked = _kjrBulkBlocker();
-  if (blocked) { toast(blocked); return; }
+  if (blocked) { toastWarn(blocked); return; }
   if (table !== 'singles' && table !== 'slabs') { toast('Only Singles and Slabs have an automatic price, the rest are priced by hand'); return; }
   // TCGdex needs no key, and a slab table has no TCGdex-free option so it needs PPT. PPT
   // counts as available when the Worker proxy is configured, it holds PPT_KEY as a secret,
@@ -21595,12 +21642,12 @@ async function bulkRefreshPrices(table) {
   // Nothing awaits from here to the flag below, so nothing can slip in between. The question held passes back, but a lookup or a card refresh opened while it was
   // up may still be in flight, and a run that is already going is no place to start another. Whatever is in the way, this one does nothing and says so.
   const blockedNow = _kjrBulkBlocker();
-  if (blockedNow) { _kjrAutoRunResume(); toast('Nothing was refreshed. ' + blockedNow, 6000); return; }
+  if (blockedNow) { _kjrAutoRunResume(); toastWarn('Nothing was refreshed. ' + blockedNow, 6000); return; }
   // The rows as they are after the yes (v3.96): one sold, trashed or moved to the manual lane while the question was open is not on the list, one added or matched since is.
   // The question's counts were its wording only. With nothing left the run says so and hands the waiting auto run back, as a blocked run does
   ({ free, ppt, manual } = _kjrBulkWork(table));
   work = free.concat(ppt);
-  if (!work.length) { _kjrAutoRunResume(); toast('Nothing was refreshed. No ' + esc(table) + ' with an automatic price are left', 6000); return; }
+  if (!work.length) { _kjrAutoRunResume(); toastWarn('Nothing was refreshed. No ' + esc(table) + ' with an automatic price are left', 6000); return; }
   // The credits are the saved queue's as they are now, not as the question showed them: the run loads the queue below and checks kjrCreditsLeft on it at every card.
   // The day, the limit and the plan are the run's starting values, a stop at the budget reads them again as it is decided (v3.96)
   utcDay = kjrUtcDay();
@@ -21740,7 +21787,7 @@ async function bulkRefreshPrices(table) {
     _kjrHeldQueue = null;
     hideSyncProgress();
   }
-  if (lockBusy) { toast('Nothing was refreshed. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
+  if (lockBusy) { toastWarn('Nothing was refreshed. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (held || q) _kjrRedrawOverview(); // the Overview's Needs attention count has a new row to show, and its credits figure has moved
@@ -22062,9 +22109,17 @@ function _kjrCreditsRecord() {
 // it saves nothing. need is what the search can cost in credits (_pptEstimateCredits: 3 for a plain or Japanese search, 6 for a slab with its
 // eBay data), a lookup passes none and gets the plain search's 3.
 //   { why: 'running' }                    a refresh pass is running and holds the queue
+//   { why: 'running', elsewhere: true }   another tab holds the queue's lock (v3.99)
 //   { why: 'paused', used, limit }        the vendor refused for credits earlier today
 //   { why: 'spent', used, limit, need }   what is left of the day's budget (kjrCreditsLeft) can not pay for one such search
-function kjrLookupRefusal(need) {
+// v3.99: it resolves to the answer, as it peeks at the queue's lock first (_kjrQueueLockBusyElsewhere). Another tab's pass or bulk run holds the queue in memory and would
+// save over this lookup's bill, and by then the credits are spent, so PPT is not asked at all. The peek comes first and the reads of this tab's memory after it, in the
+// step the caller goes on in. A small race stays: another tab can take the lock a moment after the peek, while PPT answers, and its next save can then write over the bill.
+// The vendor still counts those credits, only the app's tally of the day falls short by them. With no lock API, or no query(), nothing is awaited before the reads, as
+// before v3.99. The callers count themselves as a lookup in flight (_kjrLookupsOpen) before they ask, so no pass starts in this tab while the peek is out.
+async function kjrLookupRefusal(need) {
+  const peek = _kjrQueueLockBusyElsewhere();
+  if (peek && await peek) return { why: 'running', elsewhere: true };
   if (_queueRunning || _bulkRefreshRunning) return { why: 'running' };
   const cost = need > 0 ? need : _pptEstimateCredits(null);
   const day = kjrUtcDay();
@@ -22079,6 +22134,7 @@ function kjrLookupRefusal(need) {
 // costs more than a plain one (a slab's) and a day with some credits left but too few for it says so, "used up" would be untrue.
 function _kjrLookupRefusalText(refusal) {
   if (!refusal) return { reason: '', next: '' };
+  if (refusal.why === 'running' && refusal.elsewhere) return { reason: 'another tab is refreshing prices', next: 'Try again when it has finished.' }; // KJR_QUEUE_LOCK_BUSY's words
   if (refusal.why === 'running') return { reason: 'a price refresh is running and spends the same daily credits', next: 'Try again when it has finished.' };
   const reset = 'They reset at 8am Singapore time (midnight UTC).';
   if (refusal.why === 'paused') return { reason: 'it refused any more credits earlier today', next: reset };
@@ -22092,11 +22148,11 @@ function _kjrLookupRefusalText(refusal) {
 
 // The toast a card's Refresh price shows when the PPT lane was not asked (v3.91): the lookups' own words (_kjrLookupRefusalText) and that
 // nothing was changed. The credits being gone or refused is a stop, so the red toast the vendor's own refusal already uses, a running pass is
-// only a wait.
+// only a wait, so the warning look (v3.99, toastWarn), not the tick.
 function _kjrRefreshRefusedToast(refusal) {
   const why = _kjrLookupRefusalText(refusal);
   const msg = 'PokemonPriceTracker was not asked because ' + why.reason + '. ' + why.next + ' Nothing was changed.';
-  if (refusal.why === 'running') toast(msg, 6000); else toastError(msg);
+  if (refusal.why === 'running') toastWarn(msg, 6000); else toastError(msg);
 }
 
 // What a lookup that spent credits tells the owner, as one muted line (an empty string when it spent none)
@@ -22139,9 +22195,9 @@ function _kjrBillLookup(r) {
 // could be, the lookup then ran TCGdex alone), billed { used, limit } once this lookup has spent credits (null when it spent none). It
 // never writes a price. It throws what the router throws, the callers show that.
 async function kjrBudgetedLookup(descriptor) {
-  const refusal = kjrLookupRefusal();
-  _kjrLookupsOpen++;
+  _kjrLookupsOpen++; // counted from before the question (v3.99), it can wait on the peek at the queue's lock, and no pass may start in this tab meanwhile
   try {
+    const refusal = await kjrLookupRefusal();
     const r = await fetchMarketPrice(refusal ? Object.assign({}, descriptor, { tcgdexOnly: true }) : descriptor);
     return { r, refusal, billed: _kjrBillLookup(r) };
   } finally {
@@ -22200,7 +22256,7 @@ async function searchEbay() {
   } else if (look.refusal) {
     // TCGdex had nothing and the budget (or a running refresh) kept PPT out of it: said, never guessed at and never spent
     const why = _kjrLookupRefusalText(look.refusal);
-    outEl.innerHTML = limitBox(look.refusal.why === 'running' ? '⏳ A price refresh is running' : '⏳ Daily price-lookup limit reached',
+    outEl.innerHTML = limitBox(look.refusal.elsewhere ? '⏳ Another tab is refreshing prices' : look.refusal.why === 'running' ? '⏳ A price refresh is running' : '⏳ Daily price-lookup limit reached',
       'PokemonPriceTracker was not asked because ' + why.reason + '.', why.next);
   } else if (r.creditsExhausted || /HTTP 429/.test(r.pptError || '')) {
     // The vendor refused for credits (its day resets at 00:00 UTC, 08:00 SGT), and the pause is saved so the queue stops asking too

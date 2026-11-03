@@ -580,15 +580,17 @@ test('queue edit: every writer of the saved queue is known, and the two that rep
   };
   assert.match(body('kjrPptSetPlan'), /_kjrHeldQueue\.creditsPausedDate = null;/, 'the plan change clears the pause on the held copy too (v3.95), the one-step write alone is not its approval');
   const start = body('startFreshQueue');
-  assert.match(start, /const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toast\(blocked\); return; \}\s*if \(!await kjrConfirm\(/, 'a look, then the question');
+  // v3.99: the peek at another tab's lock comes first, then the in-memory look, then the question. Every refusal is the warning look (toastWarn), not the tick
+  assert.match(start, /const peek = _kjrQueueLockBusyElsewhere\(\);[^\n]*\n\s*if \(peek && await peek\) \{ toastWarn\('Nothing was rebuilt\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return; \}\s*const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toastWarn\(blocked\); return; \}\s*if \(!await kjrConfirm\(/, 'a peek, a look, then the question');
   // v3.98: the second look is the first thing done under the queue's lock (_kjrWithQueueLock), with the read and the write in the same step
-  assert.match(start, /\{ok:'Rebuild queue'\}\)\) return;\s*(?:\/\/[^\n]*\n\s*)*const built = await _kjrWithQueueLock\(\(\) => \{\s*const blockedNow = _kjrQueueEditBlocker\(\);\s*if \(blockedNow\) \{ toast\('Nothing was rebuilt\. ' \+ blockedNow, 6000\); return null; \}/, 'and another look straight after the yes');
+  assert.match(start, /\{ok:'Rebuild queue'\}\)\) return;\s*(?:\/\/[^\n]*\n\s*)*const built = await _kjrWithQueueLock\(\(\) => \{\s*const blockedNow = _kjrQueueEditBlocker\(\);\s*if \(blockedNow\) \{ toastWarn\('Nothing was rebuilt\. ' \+ blockedNow, 6000\); return null; \}/, 'and another look straight after the yes');
   const afterYes = start.slice(start.indexOf('const blockedNow'), start.indexOf('saveQueue(q);'));
   assert.doesNotMatch(afterYes.replace(/\/\/[^\n]*/g, ''), /\bawait\b/, 'nothing awaits between that look and the save');
   assert.match(afterYes, /_kjrCarryCredits\(buildRefreshQueue\(\), loadQueue\(\)\)/, 'and the credits travel');
-  assert.match(body('clearQueue'), /^function clearQueue\(\) \{\s*const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toast\('Nothing was cleared\. ' \+ blocked, 6000\); return false; \}\s*_kjrStashCredits\(loadQueue\(\)\);/);
+  assert.match(body('clearQueue'), /^function clearQueue\(\) \{\s*const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toastWarn\('Nothing was cleared\. ' \+ blocked, 6000\); return false; \}\s*_kjrStashCredits\(loadQueue\(\)\);/);
   // v3.98: after the yes clearQueue runs under the queue's lock (_kjrWithQueueLock), and is refused with a toast while another tab holds it
-  assert.match(body('clearQueueAsk'), /const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toast\(blocked\); return; \}\s*if \(await kjrConfirm\('Clear queue\?', \{ok:'Clear', danger:true\}\) && await _kjrWithQueueLock\(clearQueue, \(\) => \{ toast\('Nothing was cleared\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return false; \}\)\) _renderQueueStatus\(\);/);
+  // v3.99: and a peek at another tab's lock comes before the question too
+  assert.match(body('clearQueueAsk'), /const peek = _kjrQueueLockBusyElsewhere\(\);[^\n]*\n\s*if \(peek && await peek\) \{ toastWarn\('Nothing was cleared\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return; \}\s*const blocked = _kjrQueueEditBlocker\(\);\s*if \(blocked\) \{ toastWarn\(blocked\); return; \}\s*if \(await kjrConfirm\('Clear queue\?', \{ok:'Clear', danger:true\}\) && await _kjrWithQueueLock\(clearQueue, \(\) => \{ toastWarn\('Nothing was cleared\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return false; \}\)\) _renderQueueStatus\(\);/);
   assert.match(src, /<button class="btn btn-sm" style="color:var\(--red\)" onclick="clearQueueAsk\(\)">✕ Clear<\/button>/, 'the Clear button asks through the function that looks first');
   assert.doesNotMatch(src, /onclick="[^"]*clearQueue\(\)/, 'and nothing in the page calls clearQueue without the question');
   const blocker = body('_kjrQueueEditBlocker');

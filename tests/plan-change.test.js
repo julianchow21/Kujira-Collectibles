@@ -8,6 +8,9 @@
 //   - the plan is always saved, a pass, a bulk run, the bulk question or a lookup in flight never refuses it
 //   - after the holder finishes the saved queue has no pause from before the change, and a refusal the vendor gives after the change still pauses the day
 //   - the open bulk question and a lookup in flight hold no copy, they read the saved queue after the change, as before
+// v4.0: kjrPptSetPlan tells its onSettled how the pause clear ended ({ refused: true } only when another tab held the queue's lock and a pause stays, the case it warns
+// about), and the plan dialog (kjrPptPlanChoose) draws one toast from that: the warning when the clear was refused, else the tick. It drew the tick at once and the warning a
+// moment later. With no lock to ask for, or with this tab holding it, the tick is still drawn in the same step.
 // Fetch is stubbed (tests/harness.js) and the clock is faked (tests/clock.js), nothing here reaches a real API.
 process.env.TZ = 'Asia/Singapore';
 const nodeTest = require('node:test');
@@ -40,11 +43,12 @@ const jaCard = (search) => {
 // TCGdex: card number 26 is set-26 at 8 and 27 is set-27 at 9, it knows no other number
 const TCG_PRICES = { 26: 8, 27: 9 };
 
-async function setup(seed) {
-  const app = await loadApp({ seed: Object.assign({ singles: [], slabs: [] }, seed), jaLane: true });
+async function setup(seed, opts) {
+  const app = await loadApp(Object.assign({ seed: Object.assign({ singles: [], slabs: [] }, seed), jaLane: true }, opts || {}));
   app.clock = setClock(app, AT);
   app.toasts = [];
-  app.ctx.toast = (m) => app.toasts.push(String(m));
+  app.looks = []; // the look each toast asked for: 'tick' for a plain one, else toast()'s third place ('warn', 'info')
+  app.ctx.toast = (m, d, kind) => { app.toasts.push(String(m)); app.looks.push(kind === undefined || kind === false ? 'tick' : kind); };
   app.ctx.toastError = (m) => app.toasts.push('ERR ' + String(m));
   app.ctx.kjrConfirm = async () => true;
   app.fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
@@ -223,6 +227,107 @@ test('plan change: a lookup in flight holds no queue, its end does not put the p
   assert.equal(b.saved().creditsPausedDate, DAY, 'the refusal after the change is the day\'s pause');
 });
 
+// ── v4.0: how the pause clear ended, and one toast for a plan change ─────────────────────────────────────────────────────────────────────
+
+const QUEUE_LOCK = 'kjr-refresh-queue';
+const WARN = /^The plan is saved, but today's credits pause stays while another tab is refreshing prices\. Run the queue by hand once it has finished to ask again$/;
+const tick = async (n) => { for (let i = 0; i < (n || 10); i++) await new Promise((r) => setImmediate(r)); };
+// The queue's lock as the browser answers a request made with ifAvailable: granted (free) or null (another tab holds it). Every other lock the app asks for is granted.
+// Every request for the queue's lock is logged.
+function queueLocks(busy) {
+  const log = [];
+  return {
+    log,
+    request(name, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = {}; }
+      if (name !== QUEUE_LOCK) return Promise.resolve().then(() => cb({ name, mode: 'exclusive' }));
+      log.push({ name, ifAvailable: !!(opts && opts.ifAvailable) });
+      return Promise.resolve().then(() => cb(busy ? null : { name, mode: 'exclusive' }));
+    },
+  };
+}
+// each way the clear can go: the lock is free, another tab holds it (with a pause that stays, and with none to keep), and there is no lock to ask for
+const CLEARS = [
+  { name: 'the lock is free and a pause is cleared', locks: () => queueLocks(false), pause: DAY, refused: false, pauseAfter: null, warned: false },
+  { name: 'another tab holds the lock and a pause stays', locks: () => queueLocks(true), pause: DAY, refused: true, pauseAfter: DAY, warned: true },
+  { name: 'another tab holds the lock and there is no pause to keep', locks: () => queueLocks(true), pause: null, refused: false, pauseAfter: null, warned: false },
+  { name: 'there is no lock to ask for and a pause is cleared', locks: () => null, pause: DAY, refused: false, pauseAfter: null, warned: false },
+];
+
+test('plan change: kjrPptSetPlan tells onSettled how the pause clear ended, refused only when another tab held the lock and a pause stays', async () => {
+  for (const c of CLEARS) {
+    const locks = c.locks();
+    const app = await setup({ slabs: [slabRow('s1', 'Alpha 1')] }, locks ? { locks } : {});
+    app.saveQueue({ dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: c.pause });
+    const outcomes = [];
+    assert.equal(app.ctx.kjrPptSetPlan('paid', (o) => outcomes.push(plain(o))), true, c.name + ': answers true at once');
+    assert.deepEqual(outcomes, [], c.name + ': and onSettled does not come in the same step');
+    await tick();
+    assert.deepEqual(outcomes, [{ refused: c.refused }], c.name);
+    assert.equal(app.saved().creditsPausedDate, c.pauseAfter, c.name + ': the saved pause');
+    assert.equal(app.toasts.length, c.warned ? 1 : 0, c.name + ': ' + JSON.stringify(app.toasts));
+    if (c.warned) { assert.match(app.toasts[0], WARN, c.name); assert.deepEqual(app.looks, ['warn'], c.name); }
+    assert.equal(app.ctx.kjrPptPlan(), 'paid', c.name + ': the plan is saved whatever the lock says');
+  }
+  // a call without a callback is as it was in v3.99, and a plan that is no plan or can not be saved is false with no callback
+  const app = await setup({}, { locks: queueLocks(true) });
+  assert.equal(app.ctx.kjrPptSetPlan('free'), true);
+  let called = 0;
+  assert.equal(app.ctx.kjrPptSetPlan('platinum', () => { called++; }), false);
+  await tick();
+  assert.equal(called, 0, 'a refused plan settles nothing');
+});
+
+test('plan change: a pause clear that fails is no refusal, the console says so and onSettled still comes', async () => {
+  const app = await setup({}, { locks: queueLocks(false) });
+  app.ctx.loadQueue = () => { throw new Error('storage gone'); };
+  const outcomes = [];
+  assert.equal(app.ctx.kjrPptSetPlan('paid', (o) => outcomes.push(plain(o))), true);
+  await tick();
+  assert.deepEqual(outcomes, [{ refused: false }]);
+  assert.ok(app.consoleWarnings.some((w) => /plan change could not clear the pause/.test(JSON.stringify(w))), JSON.stringify(app.consoleWarnings));
+  assert.deepEqual(app.toasts, [], 'a failed clear says nothing of its own');
+  assert.equal(app.ctx.kjrPptPlan(), 'paid');
+});
+
+test('plan change: the plan dialog draws one toast whatever the lock says, the warning when the pause stays and else the tick, and the radios and labels never wait', async () => {
+  for (const c of CLEARS) {
+    const locks = c.locks();
+    const app = await setup({ slabs: [slabRow('s1', 'Alpha 1')] }, locks ? { locks } : {});
+    app.saveQueue({ dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: c.pause });
+    const radios = ['free', 'paid'].map((value) => ({ value, checked: value === 'free' }));
+    const limit = { textContent: '90' }, name = { textContent: 'Free' };
+    app.document.querySelectorAll = (sel) => sel === 'input[name="ppt-plan"]' ? radios : sel === '.ppt-limit' ? [limit] : sel === '.ppt-plan-name' ? [name] : [];
+    app.ctx.kjrPptPlanChoose('paid');
+    assert.deepEqual([radios.map((r) => r.checked), limit.textContent, name.textContent], [[false, true], '18,000', 'Paid'], c.name + ': the dialog follows the plan at once');
+    // with a lock to ask for the toast waits for its outcome, with none the tick is drawn in the same step as the choice
+    assert.deepEqual(app.toasts, locks ? [] : [PLAN_TOAST], c.name + ': at once');
+    await tick();
+    if (c.warned) {
+      assert.equal(app.toasts.length, 1, c.name + ': ' + JSON.stringify(app.toasts));
+      assert.match(app.toasts[0], WARN, c.name);
+      assert.deepEqual(app.looks, ['warn'], c.name);
+    } else {
+      assert.deepEqual(app.toasts, [PLAN_TOAST], c.name);
+      assert.deepEqual(app.looks, ['tick'], c.name);
+    }
+    assert.equal(app.saved().creditsPausedDate, c.pauseAfter, c.name + ': the saved pause');
+  }
+});
+
+test('plan change: the plan dialog\'s tick is drawn after a clear that fails too, and never twice', async () => {
+  const app = await setup({}, { locks: queueLocks(false) });
+  const real = app.ctx.loadQueue;
+  app.ctx.loadQueue = () => { if (app.ctx._kjrQueueLockHeld) throw new Error('storage gone'); return real(); }; // fails inside the clear only, the panel's own read is fine
+  app.ctx.kjrPptPlanChoose('paid');
+  assert.deepEqual(app.toasts, [], 'not yet');
+  await tick();
+  assert.deepEqual(app.toasts, [PLAN_TOAST], 'the plan is saved, so the owner is told so, once');
+  app.ctx.kjrPptPlanChoose('platinum');
+  await tick();
+  assert.deepEqual(app.toasts, [PLAN_TOAST, 'Could not save the price plan on this device'], 'a plan that is no plan is the one refusal, at once');
+});
+
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 test('plan change: kjrPptSetPlan clears the held copy in the same step, and the pass and the bulk run hold and release it with their flags', () => {
@@ -237,7 +342,11 @@ test('plan change: kjrPptSetPlan clears the held copy in the same step, and the 
   assert.match(body('kjrPptSetPlan'), /_kjrWithQueueLock\(\(\) => \{\s*const q = loadQueue\(\);\s*if \(q && q\.creditsPausedDate\) \{ q\.creditsPausedDate = null; saveQueue\(q\); \}\s*if \(_kjrHeldQueue && _kjrHeldQueue\.creditsPausedDate\) _kjrHeldQueue\.creditsPausedDate = null;\s*\}, /, 'the saved queue and the held copy, nothing awaits between them');
   // v3.99: the clear's promise is kept so the caller's onSettled can follow it, and nothing awaits it before the answer
   assert.match(body('kjrPptSetPlan'), /^function kjrPptSetPlan\(plan, onSettled\) \{\s*if \(plan !== 'free' && plan !== 'paid'\) return false;[\s\S]*const settled = _kjrWithQueueLock\(/);
-  assert.match(body('kjrPptSetPlan'), /\}\)\.catch\(e => console\.warn\('\[queue\] plan change could not clear the pause:', e\)\);\s*if \(typeof onSettled === 'function'\) settled\.then\(\(\) => onSettled\(\)\)\.catch\([^\n]*\);\s*return true;\s*\}/, 'and the plan change itself still answers true at once, onSettled follows the clear');
+  assert.match(body('kjrPptSetPlan'), /\}\)\.catch\(e => console\.warn\('\[queue\] plan change could not clear the pause:', e\)\);\s*if \(typeof onSettled === 'function'\) settled\.then\(\(\) => onSettled\(\{ refused \}\)\)\.catch\([^\n]*\);\s*return true;\s*\}/, 'and the plan change itself still answers true at once, onSettled follows the clear and is told the outcome (v4.0)');
+  // v4.0: refused is raised where the warning is drawn (another tab held the lock and a pause stays) and nowhere else, so it is true only when the owner was warned
+  assert.match(body('kjrPptSetPlan'), /let refused = false;[^\n]*\n\s*const settled = _kjrWithQueueLock\(/);
+  assert.match(body('kjrPptSetPlan'), /\}, \(\) => \{\s*const q = loadQueue\(\);[^\n]*\n\s*if \(q && q\.creditsPausedDate\) \{\s*refused = true;\s*toastWarn\('The plan is saved, but today\\'s credits pause stays/, 'the busy path: read, and only a pause that stays is a refusal');
+  assert.equal((body('kjrPptSetPlan').match(/refused = true;/g) || []).length, 1, 'set in one place');
   assert.doesNotMatch(body('kjrPptSetPlan'), /\bawait\b/, 'nothing in it awaits');
   const run = body('runRefreshQueue');
   assert.equal((run.match(/_queueRunning = true;/g) || []).length, 3, 'the three places a pass starts');

@@ -18648,15 +18648,27 @@ function openApiSettings() {
 // that can not be saved puts the control back to the plan that is in force.
 // v3.99: the pause is cleared under the queue's lock, which can be granted a step after the call, so the queue's panel is drawn again once that has settled as well as at
 // once. Otherwise it could still show the pause after an upgrade until something else drew it.
+// v4.0: one toast, never two. With a lock to ask for and another tab holding it, kjrPptSetPlan warns that the pause stays a moment after this draws the tick, so the owner saw
+// the tick flash and then the warning. The tick now waits for the outcome kjrPptSetPlan hands onSettled: the warning when the clear was refused (it says the plan is saved
+// already), else the tick. When the clear runs in this step (no lock to ask for, or this tab holds it: _kjrQueueWritable) there is nothing to wait for and the tick comes at
+// once, as before. The radios and the budget labels never wait.
 function kjrPptPlanChoose(plan) {
-  const ok = kjrPptSetPlan(plan, () => { if (typeof _renderQueueStatus === 'function') _renderQueueStatus(); });
+  const waits = !_kjrQueueWritable(); // the clear is asked of the lock and lands a step later, so the toast follows its outcome
+  const tick = () => {
+    const now = kjrPptPlan(); // the plan in force when the toast is drawn
+    toast('Price plan: ' + PPT_PLANS[now].label + ', ' + kjrFmtCredits(PPT_PLANS[now].credits) + ' credits a day for the queue');
+  };
+  const ok = kjrPptSetPlan(plan, (outcome) => {
+    if (waits && !(outcome && outcome.refused)) tick();
+    if (typeof _renderQueueStatus === 'function') _renderQueueStatus();
+  });
   const now = kjrPptPlan();
   Array.from(document.querySelectorAll('input[name="ppt-plan"]')).forEach(el => { el.checked = el.value === now; });
   // the two places the open dialog states the budget (the blurb at the top and the Search (PPT) line) follow the plan at once
   Array.from(document.querySelectorAll('.ppt-limit')).forEach(el => { el.textContent = kjrFmtCredits(PPT_PLANS[now].credits); });
   Array.from(document.querySelectorAll('.ppt-plan-name')).forEach(el => { el.textContent = PPT_PLANS[now].label; });
   if (!ok) { toast('Could not save the price plan on this device'); return; }
-  toast('Price plan: ' + PPT_PLANS[now].label + ', ' + kjrFmtCredits(PPT_PLANS[now].credits) + ' credits a day for the queue');
+  if (!waits) tick();
   if (typeof _renderQueueStatus === 'function') _renderQueueStatus();
 }
 
@@ -19631,18 +19643,25 @@ function kjrPptPlan() {
 // holds the lock its run holds the queue and would write the pause straight back, so the plan is still saved but the pause stays, and the owner is told.
 // v3.99: that note is the warning look (toastWarn), not the tick. The answer is still true or false at once, callers rely on it, so the clear itself can land a step
 // later, once the lock is granted. onSettled (optional) is called once it has landed, been refused or failed, so a screen that shows the pause can draw it again then.
+// v4.0: onSettled is told the outcome, { refused: true } when another tab held the lock and a pause stays (the warning below is the one toast the owner gets for the change),
+// else { refused: false }: cleared, nothing to clear, or the clear failed. Another tab holding the lock with no pause to keep is not a refusal worth a word, as before. A caller
+// that draws its own confirmation (kjrPptPlanChoose) holds it back for this, so the confirmation never flashes ahead of the warning. The answer is still true or false at once.
 function kjrPptSetPlan(plan, onSettled) {
   if (plan !== 'free' && plan !== 'paid') return false;
   try { localStorage.setItem(PPT_PLAN_KEY, plan); } catch (e) { return false; }
+  let refused = false; // another tab held the lock and the pause stays: the warning below was drawn
   const settled = _kjrWithQueueLock(() => {
     const q = loadQueue();
     if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
     if (_kjrHeldQueue && _kjrHeldQueue.creditsPausedDate) _kjrHeldQueue.creditsPausedDate = null;
   }, () => {
     const q = loadQueue(); // read only here, loadQueue drops nothing without the lock
-    if (q && q.creditsPausedDate) toastWarn('The plan is saved, but today\'s credits pause stays while another tab is refreshing prices. Run the queue by hand once it has finished to ask again', 7000);
+    if (q && q.creditsPausedDate) {
+      refused = true;
+      toastWarn('The plan is saved, but today\'s credits pause stays while another tab is refreshing prices. Run the queue by hand once it has finished to ask again', 7000);
+    }
   }).catch(e => console.warn('[queue] plan change could not clear the pause:', e));
-  if (typeof onSettled === 'function') settled.then(() => onSettled()).catch(e => console.warn('[queue] plan change could not redraw after the pause clear:', e));
+  if (typeof onSettled === 'function') settled.then(() => onSettled({ refused })).catch(e => console.warn('[queue] plan change could not draw after the pause clear:', e));
   return true;
 }
 function kjrDailyCredits() { return PPT_PLANS[kjrPptPlan()].credits; }
@@ -19822,6 +19841,8 @@ function clearQueue() {
 //   - loadQueue drops a queue of an older schema only where it may write (_kjrQueueWritable). The lookups' bill (_kjrBillLookup) is a one-step write and is not held
 //   - v3.99: a lookup, Rebuild Queue and Clear first peek at the lock (_kjrQueueLockBusyElsewhere). While another tab holds it a lookup asks PPT nothing, so it has no
 //     bill to lose, and Rebuild and Clear refuse before their question. The peek is only a look, so Rebuild and Clear still check under the lock after the yes
+//   - v4.0: the bulk run's question peeks too, so it is refused before the question while another tab holds the lock, and still checked under the lock after the yes. A plan
+//     change draws one toast: the warning when the pause stays, else the tick (kjrPptSetPlan tells its onSettled which)
 const KJR_QUEUE_LOCK = 'kjr-refresh-queue';
 const KJR_QUEUE_LOCK_BUSY = 'Another tab is refreshing prices. Try again when it has finished';
 let _kjrQueueLockHeld = false; // this tab holds KJR_QUEUE_LOCK
@@ -21483,6 +21504,9 @@ async function clearQueueAsk() {
 //   - The question ("Refresh N singles now?") holds the queue back while it is open (v3.93, _kjrBulkAsking): the page-load auto run waits for the answer, a pass
 //     asked for by hand is refused, and after a yes the run looks again (_kjrBulkBlocker) before it starts, reading the day and the credits as they are by then,
 //     not as the question showed them. The auto run that waited goes once the run has finished, and so does one that came due while the run was going (v3.94).
+//   - Another tab that holds the queue's lock turns the run away before the question (v4.0, a peek with _kjrQueueLockBusyElsewhere, as Rebuild Queue and Clear do), so the
+//     owner is not asked for a run that would be refused. The peek is the first thing done, before the flag the question raises, so a refusal holds nothing back. The check
+//     under the lock after the yes stays, the lock can be taken while the question is open.
 //   - A run can last hours on the Paid plan and cross 00:00 UTC (08:00 Singapore, v3.94): the day is read again for every card, so from the reset it checks and bills the new
 //     day's budget (kjrCreditsLeft, dayCreditsUsed) and a pause or a spent budget on the old day does not carry over. The old day keeps the total it had. v3.96: the day is
 //     read once the gap is over, so the budget check is made on the day the request goes out on (a reset inside the gap used to stop the run at the old day's spent budget),
@@ -21602,6 +21626,12 @@ function _kjrBulkRow(table, id) {
 
 async function bulkRefreshPrices(table) {
   // v3.99: a run turned away because something else holds the queue says so with the warning look (toastWarn), not the tick, here and after the yes
+  // v4.0: and before the question too, when a peek finds another tab holding the queue's lock (_kjrQueueLockBusyElsewhere), so the owner is not asked for nothing, the way
+  // Rebuild Queue and Clear do (startFreshQueue, clearQueueAsk). The peek comes first, so the in-memory looks below (_kjrBulkAsking, _kjrBulkBlocker) are read after it, with
+  // nothing awaited between the last of them and the flag the question raises. A refusal here has raised no flag and held nothing back, so there is nothing to hand back to
+  // the auto run (_kjrAutoRunResume). The check under the lock after the yes stays, the lock can be taken while the question is open
+  const peek = _kjrQueueLockBusyElsewhere(); // null with nothing to look at, and then nothing is awaited before the question, as before
+  if (peek && await peek) { toastWarn('Nothing was refreshed. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
   if (_kjrBulkAsking) { toastWarn('A bulk refresh is already waiting for your answer - answer it first'); return; } // one question at a time, a second call would share its answer and start a second run
   const blocked = _kjrBulkBlocker();
   if (blocked) { toastWarn(blocked); return; }

@@ -13,6 +13,11 @@
 //   - every refusal of the queue is the warning look (toastWarn), not the tick
 //   - a plan change with the lock granted redraws the queue's panel once the pause is cleared, so the panel does not still show it
 //   - with no query() (or no navigator.locks at all) nothing is peeked at and nothing waits on a peek, as before v3.99
+// v4.0 closes the two loose ends v3.99 left:
+//   - the bulk refresh peeks too: while another tab holds the lock it is refused before its question (nothing is asked, no flag is raised, the auto run is held back from
+//     nothing), with the lock free it asks as ever, and the check under the lock after the yes stays. The in-memory looks are read after the peek, never before it
+//   - a plan change chosen in the plan dialog (kjrPptPlanChoose) draws one toast: the warning when another tab holds the lock and a pause stays, else the tick, drawn once
+//     the pause is cleared. It used to draw the tick at once and the warning a moment later. With no navigator.locks, or with this tab holding the lock, the tick is still at once
 // Fetch is stubbed (tests/harness.js), nothing here reaches a real API.
 process.env.TZ = 'Asia/Singapore';
 const nodeTest = require('node:test');
@@ -176,10 +181,12 @@ for (const [what, start] of Object.entries(HOLDERS)) {
     await b.ctx.clearQueueAsk();
     assert.deepEqual(b.toasts, ['Nothing was cleared. ' + BUSY]);
     assert.equal(b.asked, 0, 'neither asked the owner a question it would only refuse');
-    // a bulk run, after the owner's yes: refused, its flag back down, and the toast says nothing was refreshed
+    // a bulk run (v4.0, the peek): refused before the question too, no flag raised, and the toast says nothing was refreshed
     b.toasts.length = 0;
     await finish(b, b.ctx.bulkRefreshPrices('slabs'));
     assert.deepEqual(b.toasts, ['Nothing was refreshed. ' + BUSY]);
+    assert.equal(b.asked, 0, 'the bulk refresh did not ask the owner a question it would only refuse either');
+    assert.equal(b.ctx._kjrBulkAsking, false);
     assert.equal(b.ctx._bulkRefreshRunning, false);
     assert.equal(b.ctx._kjrHeldQueue, null);
     // a hand lookup (v3.99): the peek finds the lock held, so PPT is not asked and nothing is billed, the TCGdex lane is free and still answers
@@ -448,8 +455,15 @@ test('queue lock: with no query() or no navigator.locks nothing is peeked at and
   b.asks[0].resolve(true);
   await asking;
   assert.deepEqual(b.toasts, ['Nothing was rebuilt. ' + BUSY]);
+  // the bulk refresh too (v4.0): its question comes in the same step, and the lock still refuses the run after the yes
+  b.toasts.length = 0;
+  const bulking = b.ctx.bulkRefreshPrices('slabs');
+  assert.equal(b.asks.length, 2, 'the bulk refresh asked in the same step as well');
+  b.asks[1].resolve(true);
+  await finish(b, bulking);
+  assert.deepEqual(b.toasts, ['Nothing was refreshed. ' + BUSY]);
   await end();
-  // no navigator.locks at all: the same, and the lookup and the clear go ahead
+  // no navigator.locks at all: the same, and the lookup, the clear and the bulk refresh go ahead
   const none = await tab({ storage: createLocalStorage(), locks: null });
   assert.equal(none.ctx._kjrQueueLockBusyElsewhere(), null);
   heldQuestions(none);
@@ -457,6 +471,12 @@ test('queue lock: with no query() or no navigator.locks nothing is peeked at and
   assert.equal(none.asks.length, 1, 'asked in the same step');
   none.asks[0].resolve(false);
   await clearing;
+  const noneBulk = none.ctx.bulkRefreshPrices('slabs');
+  assert.equal(none.asks.length, 2, 'and so does the bulk refresh');
+  assert.match(none.asks[1].msg, /^Refresh 2 slabs now\?/);
+  none.asks[1].resolve(false);
+  await noneBulk;
+  assert.equal(none.ctx._kjrBulkAsking, false);
   // a query() that fails is no look either: false, said in the console, and the lookup goes on
   const failing = fakeLocks();
   failing.query = () => Promise.reject(new Error('InvalidStateError'));
@@ -464,6 +484,246 @@ test('queue lock: with no query() or no navigator.locks nothing is peeked at and
   assert.equal(await odd.ctx._kjrQueueLockBusyElsewhere(), false);
   assert.equal(await odd.ctx.kjrLookupRefusal(), null);
   assert.ok(odd.consoleWarnings.some((w) => /queue lock could not be looked at/.test(JSON.stringify(w))), JSON.stringify(odd.consoleWarnings));
+});
+
+// ── v4.0: the bulk refresh peeks before its question ──────────────────────────────────────────────────────────────────────────────────────
+
+// an English single the free lane takes, so a bulk refresh of Singles has a row to ask about (tab B's TCGdex answers 404 and nothing here needs a price)
+const SINGLES_SEED = { singles: [{ id: 'e1', name: 'Raichu 26', language: 'EN', type: 'raw', status: 'Available', costPrice: 5, marketPrice: '', priceHistory: [] }], slabs: SEED.slabs };
+
+for (const [what, start] of Object.entries(HOLDERS)) {
+  for (const table of ['singles', 'slabs']) {
+    test('queue lock: while one tab runs ' + what + ', a bulk refresh of ' + table + ' in the other tab is refused before its question, asks nothing and holds nothing back', async () => {
+      const shared = { storage: createLocalStorage(), locks: fakeLocks() };
+      const a = await tab(shared);
+      const b = await tab(shared, { seed: SINGLES_SEED });
+      savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: null }, a);
+      const end = await start(a);
+      assert.ok(shared.locks.held.has(LOCK), 'tab A holds the queue\'s lock');
+      const snap = snapshot(shared);
+      const requests = shared.locks.log.length, peeks = shared.locks.queries.length;
+      heldQuestions(b); // a question that is put is held open, so one that is asked cannot slip by unseen, and is seen here rather than hanging the call
+      b.toasts.length = 0; b.looks.length = 0;
+      const refused = b.ctx.bulkRefreshPrices(table);
+      await tick();
+      assert.equal(b.asks.length, 0, 'the owner was not asked a question it would only refuse');
+      await refused;
+      assert.deepEqual(b.toasts, ['Nothing was refreshed. ' + BUSY]);
+      assert.deepEqual(b.looks, ['warn'], 'the warning look, not the tick');
+      assert.equal(shared.locks.queries.length, peeks + 1, 'it took one look at the lock');
+      assert.equal(shared.locks.log.length, requests, 'and asked for no lock: the peek only looks');
+      assert.equal(b.ctx._kjrBulkAsking, false, 'no question flag was raised, so nothing is held back');
+      assert.equal(b.ctx._bulkRefreshRunning, false);
+      assert.equal(b.ctx._kjrHeldQueue, null);
+      assert.equal(b.ppt().length, 0, 'the vendor was asked nothing');
+      assert.deepEqual(snapshot(shared), snap, 'the saved queue, the date key and the credits side record are as tab A left them');
+      // the page-load auto run is not held by it: it does not wait, it goes to the pass, which stands down quietly at the lock
+      b.toasts.length = 0;
+      b.ctx._kjrAutoRun();
+      assert.equal(b.ctx._kjrAutoRunWaiting, false, 'the auto run is not left waiting for a question that was never asked');
+      await tick();
+      assert.deepEqual(b.toasts, [], 'and it stands down without a word');
+      // once tab A has finished the lock is free and the same call asks its question
+      await end();
+      const again = b.ctx.bulkRefreshPrices(table);
+      await tick();
+      assert.equal(b.asks.length, 1, 'the question is asked once the lock is free');
+      b.asks[0].resolve(false);
+      await again;
+      assert.equal(b.ctx._kjrBulkAsking, false);
+    });
+  }
+}
+
+test('queue lock: with the lock free a bulk refresh asks its question as before, a no leaves everything alone and a yes runs it under the lock', async () => {
+  const { shared, a, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 } }, a);
+  const snap = snapshot(shared);
+  heldQuestions(b);
+  b.toasts.length = 0;
+  const declined = b.ctx.bulkRefreshPrices('slabs');
+  await tick();
+  assert.equal(b.asks.length, 1, 'asked');
+  assert.match(b.asks[0].msg, /^Refresh 2 slabs now\? 2 use PokemonPriceTracker credits from today's budget \(60 of 90 left on the Free plan\)/);
+  assert.equal(b.ctx._kjrBulkAsking, true, 'the question holds the queue back while it is open');
+  assert.equal(shared.locks.queries.length, 1, 'after one look at the lock');
+  assert.equal(shared.locks.log.filter((r) => r.name === LOCK).length, 0, 'the question takes no lock');
+  b.asks[0].resolve(false);
+  await declined;
+  assert.deepEqual(b.toasts, [], 'a no says nothing');
+  assert.equal(b.ctx._kjrBulkAsking, false);
+  assert.equal(b.ppt().length, 0, 'nothing was priced');
+  assert.equal(shared.locks.log.filter((r) => r.name === LOCK).length, 0, 'and no lock was taken');
+  assert.deepEqual(snapshot(shared), snap, 'the saved queue is as it was');
+  // a yes: the run goes ahead, holding the lock from its first read of the queue to its last write
+  b.toasts.length = 0;
+  const run = b.ctx.bulkRefreshPrices('slabs');
+  await tick();
+  assert.equal(b.asks.length, 2);
+  b.asks[1].resolve(true);
+  await finish(b, run);
+  assert.ok(b.toasts.some((t) => /^Done: 2 updated$/.test(t)), JSON.stringify(b.toasts));
+  assert.ok(shared.locks.log.some((r) => r.name === LOCK && r.ifAvailable), 'the run asked for the lock after the yes');
+  assert.equal(shared.locks.held.has(LOCK), false, 'and let it go');
+  assert.notDeepEqual(snapshot(shared), snap, 'the bill landed on the saved queue');
+});
+
+test('queue lock: a bulk refresh whose question is open when the other tab takes the lock is refused after the yes, the peek before the question can not stand in for that', async () => {
+  const { shared, a, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 } }, a);
+  heldQuestions(b);
+  const asking = b.ctx.bulkRefreshPrices('slabs');
+  await tick();
+  assert.equal(b.asks.length, 1, 'the lock was free at the peek, so the owner is asked');
+  b.ctx._kjrAutoRun(); // the page-load auto run comes due under the question and waits for the answer
+  assert.equal(b.ctx._kjrAutoRunWaiting, true);
+  const end = await HOLDERS['a bulk run'](a); // tab A takes the lock while the question is open
+  const snap = snapshot(shared);
+  b.toasts.length = 0; b.looks.length = 0;
+  b.asks[0].resolve(true);
+  await finish(b, asking);
+  assert.deepEqual(b.toasts, ['Nothing was refreshed. ' + BUSY]);
+  assert.deepEqual(b.looks, ['warn']);
+  assert.deepEqual(snapshot(shared), snap, 'nothing was written');
+  assert.equal(b.ctx._kjrBulkAsking, false);
+  assert.equal(b.ctx._bulkRefreshRunning, false);
+  assert.equal(b.ctx._kjrHeldQueue, null);
+  assert.equal(b.ctx._kjrAutoRunWaiting, false, 'the auto run that waited for the question was handed back by the refusal');
+  assert.equal(b.ppt().length, 0, 'the vendor was asked nothing');
+  await end();
+});
+
+test('queue lock: the bulk refresh peeks first and reads its in-memory guards after the peek, so a second call or a pass that starts while the peek is out is seen', async () => {
+  const { b } = await twoTabs();
+  heldQuestions(b);
+  // a second call made while the first one's peek is out: the first raises the question flag, the second is turned away by it, and one question is open
+  b.toasts.length = 0;
+  const first = b.ctx.bulkRefreshPrices('slabs');
+  const second = b.ctx.bulkRefreshPrices('slabs');
+  await tick();
+  assert.equal(b.asks.length, 1, 'one question, not two');
+  await second;
+  assert.deepEqual(b.toasts, ['A bulk refresh is already waiting for your answer - answer it first']);
+  b.asks[0].resolve(false);
+  await first;
+  // a pass of this tab that starts while the peek is out: the guard that sees it is read after the peek, so no question is asked over it
+  b.toasts.length = 0;
+  const third = b.ctx.bulkRefreshPrices('slabs');
+  b.ctx._queueRunning = true;
+  await tick();
+  b.ctx._queueRunning = false;
+  assert.equal(b.asks.length, 1, 'no second question was put over the pass');
+  await third;
+  assert.deepEqual(b.toasts, ['A refresh pass is already running - wait for it to finish first']);
+  assert.equal(b.ctx._kjrBulkAsking, false);
+});
+
+// ── v4.0: a plan change draws one toast ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+const PLAN_PAID = 'Price plan: Paid, 18,000 credits a day for the queue';
+const PLAN_FREE = 'Price plan: Free, 90 credits a day for the queue';
+const PAUSE_WORDS = /^The plan is saved, but today's credits pause stays while another tab is refreshing prices\. Run the queue by hand once it has finished to ask again$/;
+// the plan dialog's radios and budget labels, which the stub document does not hold: plain objects the app writes to
+function planDialog(app) {
+  const radios = ['free', 'paid'].map((value) => ({ value, checked: value === 'free' }));
+  const limit = { textContent: '90' }, name = { textContent: 'Free' };
+  app.document.querySelectorAll = (sel) => sel === 'input[name="ppt-plan"]' ? radios : sel === '.ppt-limit' ? [limit] : sel === '.ppt-plan-name' ? [name] : [];
+  return { radios, limit, name, shows: () => ({ checked: radios.filter((r) => r.checked).map((r) => r.value), limit: limit.textContent, name: name.textContent }) };
+}
+// the vendor's refusal as the running tab would have saved it, with that tab still holding the lock
+const pauseSaved = (shared) => { const q = JSON.parse(shared.storage.getItem(QUEUE_KEY)); q.creditsPausedDate = DAY; shared.storage.setItem(QUEUE_KEY, JSON.stringify(q)); };
+
+for (const [what, start] of Object.entries(HOLDERS)) {
+  test('queue lock: a plan change chosen in the dialog while another tab runs ' + what + ' and a pause stays draws one toast, the warning, with no tick ahead of it', async () => {
+    const { shared, a, b } = await twoTabs();
+    savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: null }, a);
+    const end = await start(a);
+    pauseSaved(shared);
+    const dialog = planDialog(b);
+    // every toast with the moment it was drawn: a flash of the tick is a toast too, however short
+    const drawn = [];
+    const base = b.ctx.toast;
+    b.ctx.toast = (...args) => { drawn.push({ words: String(args[0]), look: args[2] === undefined ? 'tick' : args[2], pause: JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate }); return base(...args); };
+    b.toasts.length = 0; b.looks.length = 0;
+    b.ctx.kjrPptPlanChoose('paid');
+    // at once: the plan, the radios and the budget labels, and no toast yet (the outcome is not known)
+    assert.equal(b.ctx.kjrPptPlan(), 'paid');
+    assert.deepEqual(dialog.shows(), { checked: ['paid'], limit: '18,000', name: 'Paid' });
+    assert.deepEqual(drawn, [], 'no tick ahead of the outcome');
+    await tick();
+    assert.equal(drawn.length, 1, 'one toast in all: ' + JSON.stringify(drawn));
+    assert.match(drawn[0].words, PAUSE_WORDS);
+    assert.equal(drawn[0].look, 'warn');
+    assert.equal(drawn[0].pause, DAY, 'the pause does stay');
+    assert.ok(!b.toasts.some((t) => /^Price plan: /.test(t)), 'the tick never came');
+    assert.deepEqual(dialog.shows(), { checked: ['paid'], limit: '18,000', name: 'Paid' }, 'and the dialog still shows the plan that was chosen');
+    assert.equal(JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate, DAY, 'the saved queue keeps the pause the running tab holds');
+    await end();
+  });
+}
+
+test('queue lock: a plan change chosen in the dialog with the lock free draws one toast, the tick, once the pause has been cleared', async () => {
+  const { shared, a, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: DAY }, a);
+  const dialog = planDialog(b);
+  const drawn = [];
+  const base = b.ctx.toast;
+  b.ctx.toast = (...args) => { drawn.push({ words: String(args[0]), look: args[2] === undefined ? 'tick' : args[2], pause: JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate }); return base(...args); };
+  b.ctx.kjrPptPlanChoose('paid');
+  assert.deepEqual(dialog.shows(), { checked: ['paid'], limit: '18,000', name: 'Paid' }, 'the radios and labels do not wait');
+  assert.deepEqual(drawn, [], 'the clear is asked of the lock, the toast follows it');
+  await tick();
+  assert.deepEqual(drawn, [{ words: PLAN_PAID, look: 'tick', pause: null }], 'one toast, the tick, drawn after the pause was cleared and not before');
+  assert.equal(shared.locks.held.has(LOCK), false);
+  // and the other way, Free again: one more tick, one toast
+  drawn.length = 0;
+  b.ctx.kjrPptPlanChoose('free');
+  await tick();
+  assert.deepEqual(drawn.map((d) => d.words), [PLAN_FREE]);
+  assert.deepEqual(dialog.shows(), { checked: ['free'], limit: '90', name: 'Free' });
+});
+
+test('queue lock: a plan change chosen in the dialog while another tab holds the lock but no pause stays draws one toast, the tick', async () => {
+  const { shared, a, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: null }, a);
+  const end = await HOLDERS['a pass'](a);
+  b.toasts.length = 0; b.looks.length = 0;
+  b.ctx.kjrPptPlanChoose('paid');
+  assert.deepEqual(b.toasts, [], 'not before the outcome');
+  await tick();
+  assert.deepEqual(b.toasts, [PLAN_PAID], 'a lock held with no pause to keep is no refusal, so the tick');
+  assert.deepEqual(b.looks, ['tick']);
+  await end();
+});
+
+test('queue lock: with no navigator.locks, or with this tab holding the lock, the plan change draws its tick at once and nothing else, as before', async () => {
+  const none = await tab({ storage: createLocalStorage(), locks: null });
+  none.toasts.length = 0;
+  none.ctx.kjrPptPlanChoose('paid');
+  assert.deepEqual(none.toasts, [PLAN_PAID], 'in the same step as the choice');
+  await tick();
+  assert.deepEqual(none.toasts, [PLAN_PAID], 'and drawn once only');
+  // this tab holds the lock: a pass of its own is running, the clear is made at once under it
+  const { shared, b } = await twoTabs();
+  savedQueue(shared, { creditsVersion: 1, dayCreditsUsed: { [DAY]: 30 }, creditsPausedDate: DAY }, b);
+  b.toasts.length = 0;
+  await b.ctx._kjrWithQueueLock(() => {
+    b.ctx.kjrPptPlanChoose('paid');
+    assert.deepEqual(b.toasts, [PLAN_PAID], 'in the same step as the choice');
+    assert.equal(JSON.parse(shared.storage.getItem(QUEUE_KEY)).creditsPausedDate, null, 'with the pause already cleared');
+  });
+  await tick();
+  assert.deepEqual(b.toasts, [PLAN_PAID], 'and drawn once only');
+});
+
+test('queue lock: a plan that can not be saved, or is not a plan, says so at once and waits for nothing', async () => {
+  const { b } = await twoTabs();
+  b.toasts.length = 0;
+  b.ctx.kjrPptPlanChoose('platinum');
+  assert.deepEqual(b.toasts, ['Could not save the price plan on this device'], 'at once, with the lock free to ask for');
+  await tick();
+  assert.deepEqual(b.toasts, ['Could not save the price plan on this device'], 'and nothing follows it');
+  assert.equal(b.ctx.kjrPptPlan(), 'free');
 });
 
 // ── the code that does it ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -509,13 +769,26 @@ test('queue lock: one named lock, asked for with ifAvailable, around every read-
   assert.match(body('kjrBudgetedLookup'), /_kjrLookupsOpen\+\+;[^\n]*\n\s*try \{\s*const refusal = await kjrLookupRefusal\(\);/, 'counted in flight before it asks');
   const refresh = body('refreshPrice');
   assert.ok(refresh.indexOf('_kjrLookupsOpen++;') < refresh.indexOf('await kjrLookupRefusal('), 'and so is a card refresh');
-  for (const [fn, words] of [['startFreshQueue', 'Nothing was rebuilt. '], ['clearQueueAsk', 'Nothing was cleared. ']]) {
+  // v4.0: the bulk refresh joins Rebuild and Clear
+  for (const [fn, words] of [['startFreshQueue', 'Nothing was rebuilt. '], ['clearQueueAsk', 'Nothing was cleared. '], ['bulkRefreshPrices', 'Nothing was refreshed. ']]) {
     const f = body(fn);
     const at = f.indexOf('if (peek && await peek) { toastWarn(\'' + words + '\' + KJR_QUEUE_LOCK_BUSY, 6000); return; }');
     assert.ok(at > 0 && at < f.indexOf('kjrConfirm('), fn + ' peeks before the question');
     assert.ok(f.indexOf('_kjrWithQueueLock(') > f.indexOf('kjrConfirm('), fn + ' and still checks under the lock after the yes');
   }
-  assert.match(body('kjrPptPlanChoose'), /kjrPptSetPlan\(plan, \(\) => \{ if \(typeof _renderQueueStatus === 'function'\) _renderQueueStatus\(\); \}\)/, 'the plan change redraws once the clear has settled');
+  // v4.0: the peek is the first thing the bulk refresh does, so its in-memory guards and the flag the question raises come after it, and nothing is awaited from the first guard to the flag
+  const bulkTop = bulk.slice(0, bulk.indexOf('let { free, ppt, manual } = _kjrBulkWork(table);'));
+  assert.match(bulkTop, /^function bulkRefreshPrices\(table\) \{\s*(?:\/\/[^\n]*\n\s*)*const peek = _kjrQueueLockBusyElsewhere\(\);[^\n]*\n\s*if \(peek && await peek\) \{ toastWarn\('Nothing was refreshed\. ' \+ KJR_QUEUE_LOCK_BUSY, 6000\); return; \}\s*if \(_kjrBulkAsking\) \{/, 'the peek first, then the guards');
+  assert.ok(bulk.indexOf('if (peek && await peek)') < bulk.indexOf('if (_kjrBulkAsking)') && bulk.indexOf('if (_kjrBulkAsking)') < bulk.indexOf('const blocked = _kjrBulkBlocker();') && bulk.indexOf('const blocked = _kjrBulkBlocker();') < bulk.indexOf('_kjrBulkAsking = true;'), 'peek, flag guard, blocker, then the flag goes up');
+  assert.doesNotMatch(bulk.slice(bulk.indexOf('if (_kjrBulkAsking)'), bulk.indexOf('_kjrBulkAsking = true;')).replace(/\/\/[^\n]*/g, ''), /\bawait\b/, 'and nothing is awaited between the first guard and the flag');
+  assert.equal((bulk.match(/_kjrQueueLockBusyElsewhere\(\)/g) || []).length, 1, 'one peek, the check after the yes is the lock itself');
+  // v4.0: the plan dialog draws its tick once, at once when the clear runs in the same step (no lock to ask for, or this tab holds it) and else from onSettled unless the clear was refused
+  const choose = body('kjrPptPlanChoose');
+  assert.match(choose, /const waits = !_kjrQueueWritable\(\);/, 'whether the clear lands in this step is read before the plan is set');
+  assert.match(choose, /const ok = kjrPptSetPlan\(plan, \(outcome\) => \{\s*if \(waits && !\(outcome && outcome\.refused\)\) tick\(\);\s*if \(typeof _renderQueueStatus === 'function'\) _renderQueueStatus\(\);\s*\}\);/, 'after the clear: the tick unless it was refused, and the panel drawn again either way');
+  assert.match(choose, /if \(!ok\) \{ toast\('Could not save the price plan on this device'\); return; \}\s*if \(!waits\) tick\(\);\s*if \(typeof _renderQueueStatus === 'function'\) _renderQueueStatus\(\);\s*\}\s*$/, 'and at once when nothing is waited for');
+  assert.equal((choose.match(/toast\('Price plan: /g) || []).length, 1, 'the tick is worded in one place, so it can only be drawn from the two calls above');
+  assert.equal((choose.match(/\btick\(\)/g) || []).length, 2, 'drawn from onSettled or at once, never both: they are told apart by waits');
   // loadQueue drops an old queue only where it may write
   assert.match(body('loadQueue'), /if \(_kjrQueueWritable\(\)\) localStorage\.removeItem\(QUEUE_KEY\);/);
 });

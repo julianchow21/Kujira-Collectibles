@@ -201,7 +201,8 @@ test('auto run block: runRefreshQueue reads the mark for the automatic call alon
   };
   assert.match(src, /^let _kjrBulkBlocked = '';$/m, 'declared once, in memory, for the load');
   assert.match(body('runRefreshQueue'), /if \(!manual && _kjrBulkBlocked\) return;/, 'the automatic call is turned away, quietly, a hand call is not');
-  assert.match(body('bulkRefreshPrices'), /if \(hardBlock \|\| aborted\) _kjrBulkBlocked = hardBlock \|\| 'five failures in a row';\s*\} finally \{/, 'set as the loop ends, before the finally hands the auto run back');
+  // v3.98: the run's body is the task it holds the queue's lock for (_kjrWithQueueLock), so the mark is set as that task ends, still before the finally
+  assert.match(body('bulkRefreshPrices'), /if \(hardBlock \|\| aborted\) _kjrBulkBlocked = hardBlock \|\| 'five failures in a row';\s*\}, \(\) => \{ lockBusy = true; \}\);\s*\} finally \{/, 'set as the loop ends, before the finally hands the auto run back');
   assert.equal((src.match(/_kjrBulkBlocked = /g) || []).length, 2, 'the declaration and the one place it is set, nothing clears it');
   const auto = src.slice(src.indexOf('function _kjrAutoRun() {'), src.indexOf('function _kjrAutoRunResume()'));
   assert.doesNotMatch(auto, /_kjrBulkBlocked/, '_kjrAutoRun itself is untouched, the mark is read where the automatic call is already told apart from a hand one');

@@ -19618,12 +19618,19 @@ function kjrPptPlan() {
 // Only 'free' and 'paid' are plans. Anything else is refused and changes nothing. A plan change gives today's vendor refusal a fresh
 // start, the owner may have just upgraded, so the next run asks the vendor again (a refusal costs nothing). The pause goes from the saved
 // queue and from the copy a running pass or bulk run holds (_kjrHeldQueue, v3.95), or that copy's next save would put it back.
+// v3.98: the pause is cleared under the queue's lock (_kjrWithQueueLock). In this tab, or with no lock to ask for, that is at once, as before. While another tab
+// holds the lock its run holds the queue and would write the pause straight back, so the plan is still saved but the pause stays, and the owner is told.
 function kjrPptSetPlan(plan) {
   if (plan !== 'free' && plan !== 'paid') return false;
   try { localStorage.setItem(PPT_PLAN_KEY, plan); } catch (e) { return false; }
-  const q = loadQueue();
-  if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
-  if (_kjrHeldQueue && _kjrHeldQueue.creditsPausedDate) _kjrHeldQueue.creditsPausedDate = null;
+  _kjrWithQueueLock(() => {
+    const q = loadQueue();
+    if (q && q.creditsPausedDate) { q.creditsPausedDate = null; saveQueue(q); }
+    if (_kjrHeldQueue && _kjrHeldQueue.creditsPausedDate) _kjrHeldQueue.creditsPausedDate = null;
+  }, () => {
+    const q = loadQueue(); // read only here, loadQueue drops nothing without the lock
+    if (q && q.creditsPausedDate) toast('The plan is saved, but today\'s credits pause stays while another tab is refreshing prices. Run the queue by hand once it has finished to ask again', 7000);
+  }).catch(e => console.warn('[queue] plan change could not clear the pause:', e));
   return true;
 }
 function kjrDailyCredits() { return PPT_PLANS[kjrPptPlan()].credits; }
@@ -19761,7 +19768,8 @@ function loadQueue() {
   if (!q) return null;
   if (q.schemaVersion !== QUEUE_SCHEMA_VERSION) {
     _kjrStashCredits(q); // the day's PPT credits are the vendor's count, the queue that replaces this one starts from them (_kjrCarryCredits)
-    localStorage.removeItem(QUEUE_KEY);
+    // v3.98: only the tab that holds the queue's lock drops it (_kjrQueueWritable). Any other tab reads it as no queue and leaves it, the next run drops it under the lock
+    if (_kjrQueueWritable()) localStorage.removeItem(QUEUE_KEY);
     return null;
   }
   return q;
@@ -19779,6 +19787,48 @@ function clearQueue() {
   _kjrStashCredits(loadQueue()); // Clear drops the progress, not the credits already spent today
   localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(QUEUE_DATE_KEY);
   return true;
+}
+
+// ── The queue's lock across tabs (v3.98) ──
+// The guards above (_kjrQueueEditBlocker, _kjrHeldQueue, _kjrBulkBlocked) live in one tab's memory. A second tab open on the app knew nothing of a pass or a bulk run
+// in the first, so it could start its own pass, rebuild or clear the queue, or clear the pause, and each tab wrote its own copy back over the other's. Now one named Web
+// Lock covers the saved queue. A pass (runRefreshQueue) and a bulk run (bulkRefreshPrices) hold it from their first read of the queue to their last write. Rebuild Queue,
+// Clear and the plan change's pause clear hold it for their one read and write. Nothing waits for it (ifAvailable): a tab that finds it held refuses. A run or a button
+// says so in a toast (KJR_QUEUE_LOCK_BUSY), the automatic run stands down quietly. The holder reads the queue afresh once it has the lock, never a copy from before.
+//   - Web Locks are not re-entrant, so a tab that holds the lock (_kjrQueueLockHeld) runs a nested call at once instead of asking again, and the in-memory guards
+//     still decide what may run inside one tab
+//   - the lock goes when the task ends, however it ends: a return, a refusal or a throw (the browser releases it when the callback's promise settles)
+//   - a browser with no navigator.locks (the check _withCrossTabRowLocks makes) runs every task at once, as before v3.98, and so does one whose request fails
+//   - loadQueue drops a queue of an older schema only where it may write (_kjrQueueWritable). The lookups' bill (_kjrBillLookup) is a one-step write and is not held
+const KJR_QUEUE_LOCK = 'kjr-refresh-queue';
+const KJR_QUEUE_LOCK_BUSY = 'Another tab is refreshing prices. Try again when it has finished';
+let _kjrQueueLockHeld = false; // this tab holds KJR_QUEUE_LOCK
+function _kjrQueueLocks() {
+  return (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') ? navigator.locks : null;
+}
+// May this tab write the saved queue outside a task of its own: with no lock to ask for (as before v3.98), or while it holds the lock
+function _kjrQueueWritable() { return _kjrQueueLockHeld || !_kjrQueueLocks(); }
+// Runs task under the queue's lock and resolves to what it returns. When another tab holds the lock, task never runs and the promise resolves to what onBusy
+// returns (undefined with no onBusy). With no lock to ask for, or with this tab already holding it, task runs at once, in this same step.
+function _kjrWithQueueLock(task, onBusy) {
+  const locks = _kjrQueueLocks();
+  const now = () => { try { return Promise.resolve(task()); } catch (e) { return Promise.reject(e); } };
+  if (!locks || _kjrQueueLockHeld) return now();
+  let granted = false; // the browser answered: with the lock, or with null for a lock another tab holds
+  let asked;
+  try {
+    asked = locks.request(KJR_QUEUE_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      granted = true;
+      if (!lock) return onBusy ? onBusy() : undefined;
+      _kjrQueueLockHeld = true;
+      try { return await task(); } finally { _kjrQueueLockHeld = false; }
+    });
+  } catch (e) { asked = Promise.reject(e); }
+  return Promise.resolve(asked).catch(e => {
+    if (granted) throw e; // the task (or onBusy) threw, the lock has already gone
+    console.warn('[queue] the queue lock could not be asked for, running without it:', e);
+    return now();
+  });
 }
 
 // Which lane will price this queue item? Slabs (graded) never have a TCGdex
@@ -20484,131 +20534,140 @@ async function runRefreshQueue(manual = false) {
     const hasKeys = getApiKey('ppt');
     if (!hasKeys) { if (manual) { toast('Add API keys first'); openApiSettings(); } return; }
   }
-  // Clear yesterday's "paused" sticky state on every manual run so the
-  // user can re-trigger after a config change (e.g. wiring up the Worker)
-  // without waiting until tomorrow. Without this, the dashboard chip would
-  // still read "paused: Failed to fetch - retrying tomorrow" even after a
-  // successful run.
-  if (manual) {
-    const existing = loadQueue();
-    // A manual run also asks the vendor again after a refusal for credits: a refused request costs nothing, and the plan or the account
-    // may have changed since. If it refuses again the queue pauses again.
-    if (existing && (existing.lastPausedReason || existing.creditsPausedDate)) {
-      existing.lastPausedReason = null;
-      existing.creditsPausedDate = null;
-      saveQueue(existing);
+  // Everything from the first read of the saved queue to the last write is done under the queue's lock (v3.98, _kjrWithQueueLock), so another tab can not rewrite the
+  // queue under this pass, and this pass reads the queue as it is once it has the lock. A tab that finds the lock held runs nothing: the automatic call stands down
+  // quietly, a pass asked for by hand says why. The lock goes however the pass ends
+  return _kjrWithQueueLock(async () => {
+    // The lock can come a moment after the call, so the guards above that a lookup, a bulk run or its question could have changed are read again. With no lock to ask
+    // for the task runs in the same step as the guards and this finds nothing
+    const busyNow = _kjrQueueEditBlocker();
+    if (busyNow) { if (manual) toast(busyNow); return; }
+    // Clear yesterday's "paused" sticky state on every manual run so the
+    // user can re-trigger after a config change (e.g. wiring up the Worker)
+    // without waiting until tomorrow. Without this, the dashboard chip would
+    // still read "paused: Failed to fetch - retrying tomorrow" even after a
+    // successful run.
+    if (manual) {
+      const existing = loadQueue();
+      // A manual run also asks the vendor again after a refusal for credits: a refused request costs nothing, and the plan or the account
+      // may have changed since. If it refuses again the queue pauses again.
+      if (existing && (existing.lastPausedReason || existing.creditsPausedDate)) {
+        existing.lastPausedReason = null;
+        existing.creditsPausedDate = null;
+        saveQueue(existing);
+      }
     }
-  }
 
-  let q = loadQueue();
-  // First-load auto-bootstrap: if the user has never clicked "Build Queue"
-  // but has inventory + API keys, build a queue silently on their behalf so
-  // the daily auto-refresh actually runs. Previously the auto-refresh
-  // (line ~8228) would silently no-op when loadQueue() returned null,
-  // leaving the freshness chip stuck on "refreshed never" forever even
-  // though the system was supposedly auto-updating.
-  if (!q) {
-    const hasInventory = (DB.singles?.length || 0) + (DB.slabs?.length || 0) > 0;
-    if (!hasInventory) {
-      if (manual) toast('No inventory yet - add some Singles or Slabs first');
-      return;
-    }
-    q = _kjrCarryCredits(buildRefreshQueue(), null); // after a discard (schema mismatch, Clear) the new queue starts from the credits already spent today
-    saveQueue(q);
-    if (manual) toast('Built queue: ' + q.totalItems + ' unique cards · starting first batch');
-  }
-  // Two days, on purpose (see kjrLocalDay): the free lane's is the device's local date, the PPT lane's is the vendor's UTC date
-  const today = kjrLocalDay();
-  const utcDay = kjrUtcDay();
-  // a queue saved before the free lane's day went local gets its markers lowered once, so no UTC-dated one can pass for today's
-  if (_kjrFreeLaneDayMigrate(q, today)) saveQueue(q);
-
-  // The first run of a new vendor day (UTC) gives the PPT lane its order for the day, read off the live inventory: cards not checked in 7 days
-  // first, the most valuable first, then the rest oldest first (_pptLaneRoll). A finished queue starts again here, so it never stalls the lane
-  // on a later day. The same day's later runs find the order already made and go on from the cursor as they always did.
-  const rolled = _pptLaneRoll(q, utcDay);
-
-  // A card the PPT lane should price that the queue does not hold yet (a Japanese single the queue pre-dates, a slab whose grade only reads
-  // now, a row added or given a number since) is added at the end, without rebuilding anything or touching the cursor, the credits spent
-  // or the cards already done. A complete queue with something added is no longer complete.
-  if (_pptLaneTopUp(q) || rolled) saveQueue(q);
-
-  // If the queue is complete but inventory has changed since (new items
-  // added), rebuild it automatically so the auto-refresh keeps pricing
-  // freshly added rows instead of stalling forever.
-  if (q.completed) {
-    const currentRowCount = (DB.singles?.filter(i=>(i.status||'Available')==='Available').length || 0)
-                          + (DB.slabs  ?.filter(i=>(i.status||'Available')==='Available').length || 0);
-    if (currentRowCount > q.totalRows) {
-      q = _kjrCarryCredits(buildRefreshQueue(), q); // a rebuild resets the progress, not the credits already spent today
+    let q = loadQueue();
+    // First-load auto-bootstrap: if the user has never clicked "Build Queue"
+    // but has inventory + API keys, build a queue silently on their behalf so
+    // the daily auto-refresh actually runs. Previously the auto-refresh
+    // (line ~8228) would silently no-op when loadQueue() returned null,
+    // leaving the freshness chip stuck on "refreshed never" forever even
+    // though the system was supposedly auto-updating.
+    if (!q) {
+      const hasInventory = (DB.singles?.length || 0) + (DB.slabs?.length || 0) > 0;
+      if (!hasInventory) {
+        if (manual) toast('No inventory yet - add some Singles or Slabs first');
+        return;
+      }
+      q = _kjrCarryCredits(buildRefreshQueue(), null); // after a discard (schema mismatch, Clear) the new queue starts from the credits already spent today
       saveQueue(q);
-      if (manual) toast('Inventory grew - rebuilt queue (' + q.totalItems + ' cards)');
-    } else if (manual || _tcgdexLaneHasWork(q, today)) {
-      // The PPT lane is fully drained and there's nothing new to add it to,
-      // but the free TCGdex lane still gets its own daily pass - it doesn't
-      // compete for PPT credits, so "queue complete" for PPT shouldn't mean
-      // "stop pricing the free lane too". Self-heal: check actual per-card
-      // work remaining (_tcgdexLaneHasWork), not just whether the stamp says
-      // today - an interrupted pass can leave cards unattempted even though
-      // lastTcgdexPass already matches today, and this must still re-enter on
-      // the next auto (page-load) run to finish them, not wait for tomorrow.
-      // Manual "run now" always re-enters regardless.
+      if (manual) toast('Built queue: ' + q.totalItems + ' unique cards · starting first batch');
+    }
+    // Two days, on purpose (see kjrLocalDay): the free lane's is the device's local date, the PPT lane's is the vendor's UTC date
+    const today = kjrLocalDay();
+    const utcDay = kjrUtcDay();
+    // a queue saved before the free lane's day went local gets its markers lowered once, so no UTC-dated one can pass for today's
+    if (_kjrFreeLaneDayMigrate(q, today)) saveQueue(q);
+
+    // The first run of a new vendor day (UTC) gives the PPT lane its order for the day, read off the live inventory: cards not checked in 7 days
+    // first, the most valuable first, then the rest oldest first (_pptLaneRoll). A finished queue starts again here, so it never stalls the lane
+    // on a later day. The same day's later runs find the order already made and go on from the cursor as they always did.
+    const rolled = _pptLaneRoll(q, utcDay);
+
+    // A card the PPT lane should price that the queue does not hold yet (a Japanese single the queue pre-dates, a slab whose grade only reads
+    // now, a row added or given a number since) is added at the end, without rebuilding anything or touching the cursor, the credits spent
+    // or the cards already done. A complete queue with something added is no longer complete.
+    if (_pptLaneTopUp(q) || rolled) saveQueue(q);
+
+    // If the queue is complete but inventory has changed since (new items
+    // added), rebuild it automatically so the auto-refresh keeps pricing
+    // freshly added rows instead of stalling forever.
+    if (q.completed) {
+      const currentRowCount = (DB.singles?.filter(i=>(i.status||'Available')==='Available').length || 0)
+                            + (DB.slabs  ?.filter(i=>(i.status||'Available')==='Available').length || 0);
+      if (currentRowCount > q.totalRows) {
+        q = _kjrCarryCredits(buildRefreshQueue(), q); // a rebuild resets the progress, not the credits already spent today
+        saveQueue(q);
+        if (manual) toast('Inventory grew - rebuilt queue (' + q.totalItems + ' cards)');
+      } else if (manual || _tcgdexLaneHasWork(q, today)) {
+        // The PPT lane is fully drained and there's nothing new to add it to,
+        // but the free TCGdex lane still gets its own daily pass - it doesn't
+        // compete for PPT credits, so "queue complete" for PPT shouldn't mean
+        // "stop pricing the free lane too". Self-heal: check actual per-card
+        // work remaining (_tcgdexLaneHasWork), not just whether the stamp says
+        // today - an interrupted pass can leave cards unattempted even though
+        // lastTcgdexPass already matches today, and this must still re-enter on
+        // the next auto (page-load) run to finish them, not wait for tomorrow.
+        // Manual "run now" always re-enters regardless.
+        _queueRunning = true;
+        _kjrHeldQueue = q;
+        try {
+          await _runRefreshQueueBody(q, 0, manual, utcDay, kjrCreditsUsedOn(q, utcDay), today);
+        } finally {
+          _queueRunning = false;
+          _kjrHeldQueue = null;
+          hideSyncProgress();
+        }
+        return;
+      } else {
+        if (manual) toast('Queue complete - reset to start a new cycle');
+        return;
+      }
+    }
+
+    const usedToday = kjrCreditsUsedOn(q, utcDay);
+    const creditsLeft = kjrCreditsLeft(q, utcDay); // 0 when the budget is spent or the vendor has refused for today
+
+    if (creditsLeft <= 0) {
+      // PPT's daily budget is spent, but TCGdex is free and independent of it -
+      // still give the tcgdex lane its pass instead of returning early and
+      // starving it every time PPT happens to be capped out for the day.
+      // _runRefreshQueueBody's own empty-ppt-batch branch handles the manual
+      // toast (it already distinguishes "genuinely complete" from "just capped
+      // for today" and reports the tcgdex outcome), so nothing further to do
+      // here beyond the run itself.
       _queueRunning = true;
       _kjrHeldQueue = q;
       try {
-        await _runRefreshQueueBody(q, 0, manual, utcDay, kjrCreditsUsedOn(q, utcDay), today);
+        await _runRefreshQueueBody(q, 0, manual, utcDay, usedToday, today);
       } finally {
         _queueRunning = false;
         _kjrHeldQueue = null;
         hideSyncProgress();
       }
       return;
-    } else {
-      if (manual) toast('Queue complete - reset to start a new cycle');
-      return;
     }
-  }
 
-  const usedToday = kjrCreditsUsedOn(q, utcDay);
-  const creditsLeft = kjrCreditsLeft(q, utcDay); // 0 when the budget is spent or the vendor has refused for today
-
-  if (creditsLeft <= 0) {
-    // PPT's daily budget is spent, but TCGdex is free and independent of it -
-    // still give the tcgdex lane its pass instead of returning early and
-    // starving it every time PPT happens to be capped out for the day.
-    // _runRefreshQueueBody's own empty-ppt-batch branch handles the manual
-    // toast (it already distinguishes "genuinely complete" from "just capped
-    // for today" and reports the tcgdex outcome), so nothing further to do
-    // here beyond the run itself.
     _queueRunning = true;
     _kjrHeldQueue = q;
+    // Everything from here on is wrapped in try/finally so a thrown error
+    // (network blip, a bug in classifyResult, whatever) can never leave
+    // _queueRunning stuck true forever - that would permanently block every
+    // future run (manual or auto) with "Queue already running...". The
+    // existing normal-path resets of _queueRunning/hideSyncProgress are left
+    // in place further down; calling them again from finally is a harmless
+    // no-op (hideSyncProgress no-ops if the bar is already gone, and setting
+    // a boolean to its current value does nothing).
     try {
-      await _runRefreshQueueBody(q, 0, manual, utcDay, usedToday, today);
+      await _runRefreshQueueBody(q, creditsLeft, manual, utcDay, usedToday, today);
     } finally {
       _queueRunning = false;
       _kjrHeldQueue = null;
       hideSyncProgress();
     }
-    return;
-  }
-
-  _queueRunning = true;
-  _kjrHeldQueue = q;
-  // Everything from here on is wrapped in try/finally so a thrown error
-  // (network blip, a bug in classifyResult, whatever) can never leave
-  // _queueRunning stuck true forever - that would permanently block every
-  // future run (manual or auto) with "Queue already running...". The
-  // existing normal-path resets of _queueRunning/hideSyncProgress are left
-  // in place further down; calling them again from finally is a harmless
-  // no-op (hideSyncProgress no-ops if the bar is already gone, and setting
-  // a boolean to its current value does nothing).
-  try {
-    await _runRefreshQueueBody(q, creditsLeft, manual, utcDay, usedToday, today);
-  } finally {
-    _queueRunning = false;
-    _kjrHeldQueue = null;
-    hideSyncProgress();
-  }
+  }, () => { if (manual) toast(KJR_QUEUE_LOCK_BUSY, 6000); });
 }
 
 // TCGDEX_GAP_MS - TCGdex is free and unthrottled (no documented rate limit),
@@ -21337,22 +21396,30 @@ async function startFreshQueue() {
   const blocked = _kjrQueueEditBlocker();
   if (blocked) { toast(blocked); return; }
   if (!await kjrConfirm('Build a new refresh queue from your current inventory? This resets all progress.', {ok:'Rebuild queue'})) return;
-  const blockedNow = _kjrQueueEditBlocker();
-  if (blockedNow) { toast('Nothing was rebuilt. ' + blockedNow, 6000); return; }
-  // the progress starts again, the credits already spent today do not (they are the vendor's count, not the queue's)
-  const q = _kjrCarryCredits(buildRefreshQueue(), loadQueue());
-  saveQueue(q);
+  // The second look, the read and the write are made under the queue's lock (v3.98, _kjrWithQueueLock), in one step. Another tab running a pass or a bulk run holds it,
+  // and its next save would write over the rebuild, so the rebuild is refused and says why
+  const built = await _kjrWithQueueLock(() => {
+    const blockedNow = _kjrQueueEditBlocker();
+    if (blockedNow) { toast('Nothing was rebuilt. ' + blockedNow, 6000); return null; }
+    // the progress starts again, the credits already spent today do not (they are the vendor's count, not the queue's)
+    const q = _kjrCarryCredits(buildRefreshQueue(), loadQueue());
+    saveQueue(q);
+    return q;
+  }, () => { toast('Nothing was rebuilt. ' + KJR_QUEUE_LOCK_BUSY, 6000); return null; });
+  if (!built) return;
+  const q = built;
   _renderQueueStatus();
   const tcgdexCount = q.items.filter(i=>i.lane==='tcgdex').length;
   const pptCount = q.items.filter(i=>i.lane==='ppt').length;
   toast('Queue built: ' + q.totalItems + ' unique cards (' + q.totalRows + ' rows) · Exact (TCGdex): ' + tcgdexCount + ' · Search (PPT): ' + pptCount);
 }
 
-// The Clear button (v3.94): turned away before the question when the queue is held (_kjrQueueEditBlocker), and clearQueue looks again after the yes
+// The Clear button (v3.94): turned away before the question when the queue is held (_kjrQueueEditBlocker), and clearQueue looks again after the yes.
+// v3.98: clearQueue runs under the queue's lock (_kjrWithQueueLock), and is refused while another tab holds it
 async function clearQueueAsk() {
   const blocked = _kjrQueueEditBlocker();
   if (blocked) { toast(blocked); return; }
-  if (await kjrConfirm('Clear queue?', {ok:'Clear', danger:true}) && clearQueue()) _renderQueueStatus();
+  if (await kjrConfirm('Clear queue?', {ok:'Clear', danger:true}) && await _kjrWithQueueLock(clearQueue, () => { toast('Nothing was cleared. ' + KJR_QUEUE_LOCK_BUSY, 6000); return false; })) _renderQueueStatus();
 }
 
 // ── Manual bulk refresh of one table (v3.89) ──
@@ -21550,124 +21617,130 @@ async function bulkRefreshPrices(table) {
   let hardBlock = '';       // the first 429 or 403, as the source worded it
   let stoppedAt = -1;       // the index of the first card a stop left unpriced
   let q = null;             // the queue, whose credits the PPT lane spends
+  let lockBusy = false;     // another tab held the queue's lock, so nothing was run (v3.98)
   try {
-    // The queue, whose credits the PPT lane spends, held whatever the list holds (v3.96): a row can move into the PPT lane while the run goes (a slab given its grade, a
-    // Japanese single matched by the art lookup) and is then priced as it is now, out of the same budget. A run of free rows alone used to hold none. A queue saved by an
-    // older version counted requests and is read as credits once, a fresh one counts credits from the start and carries the day's (_kjrCarryCredits)
-    q = loadQueue();
-    if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
-    else { _kjrAdoptCredits(q); }
-    _kjrHeldQueue = q; // held until the finally below (v3.95): a plan change clears the vendor's pause on this copy too, see the declaration
-    let waitMs = 0; // the gap the last request asks for before the next one is made
-    for (let i = 0; i < work.length; i++) {
-      // The gap first (v3.96): the plan's after a PPT request, the free lane's after a TCGdex one. The day, the row and the budget are read once it is over, so a reset or a
-      // change inside the gap is seen. The vendor's day can change in the middle of a run (v3.94): on the Paid plan a run lasts hours, and 00:00 UTC is 08:00 in Singapore,
-      // so the day is read again for every card. From the reset the run checks and bills the new day (the queue's pass bills the new day too, and checks its batch against
-      // the day it began on), and a pause or a spent budget on the old day does not carry over (kjrCreditsLeft reads a pause for its own day only).
-      if (waitMs) await new Promise(res => setTimeout(res, waitMs));
-      utcDay = kjrUtcDay(); // the request goes out on this day: its budget is checked on it, and its answer is billed to it, or paused on it
-      waitMs = 0; // the gap is over, a row left out below does not wait it again
-      // The row as it is now (v3.96, _kjrBulkRow), priced on the lane it has now, the way the queue reads its rows. Gone, sold or trashed since the list was made, it is left
-      // out and counted. Moved to the manual lane, it is counted there. A grader cleared since does not send a graderless row to the vendor as a slab
-      let item = _kjrBulkRow(table, work[i]);
-      if (!item) { gone++; continue; }
-      const kind = _kjrBulkKind(item, table);
-      if (kind === 'manual') { manual++; continue; }
-      const isPpt = kind !== 'free';
-      const japanese = kind === 'japanese';
-      // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
-      // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
-      const slabGrade = kind === 'slab' ? _kjrSlabGrade(item) : null;
-      const grader = kind === 'slab' ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
-      const grade = kind === 'slab' ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
-      // Stop before a search today's credits can not pay for: a slab is a search with eBay (6), a Japanese single a plain one (3). A refusal earlier
-      // today (creditsPausedDate) leaves nothing to spend. The stop quotes the plan that decided it (v3.96): the limit is read live in kjrCreditsLeft, and the one
-      // read after the yes could name the other plan in the toast ("87 of 18,000 on the Paid plan" after a switch to Free)
-      if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; limit = kjrDailyCredits(); planLabel = PPT_PLANS[kjrPptPlan()].label; break; }
-      showSyncProgress(i, work.length, 'Refreshing ' + table + '…');
-      let wasHeld = false, gate = null;
-      // Every call carries one of the three: tcgdexOnly (TCGdex alone, the PPT name search is not reached), japanese (the set-checked lane) or a
-      // grader with its grade (the eBay lane). The raw lane's fuzzy PPT fallback needs none of them, so nothing here can reach it.
-      const r = await fetchMarketPrice(kind === 'slab'
-        ? { name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null }
-        : { name: item.name, grader: null, grade: null, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !japanese, japanese });
-      waitMs = isPpt ? kjrRequestGapMs() : TCGDEX_GAP_MS;
-      if (isPpt) {
-        // bill what the answer cost into the queue's day, in credits (their own metadata, else the estimate)
-        const spent = r.creditsUsed || 0;
-        if (spent > 0) { q.dayCreditsUsed[utcDay] = (q.dayCreditsUsed[utcDay] || 0) + spent; saveQueue(q); }
-        // the vendor says the day's credits are gone: nothing more can be priced, so it stops here instead of asking for the rest, and the queue
-        // learns it too. The card is neither priced nor missed.
-        if (r.creditsExhausted) { creditsOut = true; stoppedAt = i; q.creditsPausedDate = utcDay; saveQueue(q); break; }
-      }
-      if (!r.maxSgd) {
-        // The first 429 or 403 stops the run before anything about the card is written: it is no verdict on it, so no miss is stamped
-        const trigger = [r.pptError, r.tcgdexError].find(isHardBlockError);
-        if (trigger) { hardBlock = trigger; stoppedAt = i; failedTransport++; errorTally[trigger] = (errorTally[trigger]||0) + 1; break; }
-      }
-      // The answer is in, the row may not be (v3.96): read again before anything is written on it. Gone, the answer is dropped and the row counted, its credits were spent
-      // (the row changed under its own request)
-      item = _kjrBulkRow(table, work[i]);
-      if (!item) { gone++; continue; }
-      const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
-      if (idIsNew) {
-        item.tcgdexId = r.resolvedTcgdexId;
-        if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
-      }
-      if (r.maxSgd) {
-        const newPrice = r.maxSgd.toFixed(0);
-        if (japanese && item._tcgdexMissDate) item._tcgdexMissDate = null; // priced now, no longer "could not be matched"
-        // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
-        // + no new id to cache means nothing to sync, so only stamp the local
-        // priced-today marker and skip history/markDirty. Still counts as a
-        // successful pass (the fetch did confirm the price).
-        if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
-          item._tcgdexPricedDate = kjrLocalDay();
-          _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
-        } else if ((gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence)) !== 'write') {
-          // The price guard (kjrPriceGuard): not written, it waits on the card for the owner's OK. It is not an update, so it is counted apart.
-          held++;
-          wasHeld = true;
-          if (idIsNew && gate !== 'held') markDirty(table, item.id); // the resolved id is kept and still has to sync (a new hold has marked the row already)
-        } else {
-          item.marketPrice = newPrice;
-          delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
-          _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
-          item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
-          if (!item.priceHistory) item.priceHistory = [];
-          item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
-          if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
-          if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
-          }
-          markDirty(table, item.id);
+    // The whole run holds the queue's lock (v3.98, _kjrWithQueueLock), from its first read of the queue to its last write, so another tab can not rewrite the queue under
+    // it. The flag above went up first, so nothing in this tab starts while the lock is asked for. A tab that finds the lock held runs nothing and says why, below
+    await _kjrWithQueueLock(async () => {
+      // The queue, whose credits the PPT lane spends, held whatever the list holds (v3.96): a row can move into the PPT lane while the run goes (a slab given its grade, a
+      // Japanese single matched by the art lookup) and is then priced as it is now, out of the same budget. A run of free rows alone used to hold none. A queue saved by an
+      // older version counted requests and is read as credits once, a fresh one counts credits from the start and carries the day's (_kjrCarryCredits)
+      q = loadQueue();
+      if (!q) { q = _kjrCarryCredits(buildRefreshQueue(), null); saveQueue(q); } // as the first run of the queue would, the credits live on it
+      else { _kjrAdoptCredits(q); }
+      _kjrHeldQueue = q; // held until the finally below (v3.95): a plan change clears the vendor's pause on this copy too, see the declaration
+      let waitMs = 0; // the gap the last request asks for before the next one is made
+      for (let i = 0; i < work.length; i++) {
+        // The gap first (v3.96): the plan's after a PPT request, the free lane's after a TCGdex one. The day, the row and the budget are read once it is over, so a reset or a
+        // change inside the gap is seen. The vendor's day can change in the middle of a run (v3.94): on the Paid plan a run lasts hours, and 00:00 UTC is 08:00 in Singapore,
+        // so the day is read again for every card. From the reset the run checks and bills the new day (the queue's pass bills the new day too, and checks its batch against
+        // the day it began on), and a pause or a spent budget on the old day does not carry over (kjrCreditsLeft reads a pause for its own day only).
+        if (waitMs) await new Promise(res => setTimeout(res, waitMs));
+        utcDay = kjrUtcDay(); // the request goes out on this day: its budget is checked on it, and its answer is billed to it, or paused on it
+        waitMs = 0; // the gap is over, a row left out below does not wait it again
+        // The row as it is now (v3.96, _kjrBulkRow), priced on the lane it has now, the way the queue reads its rows. Gone, sold or trashed since the list was made, it is left
+        // out and counted. Moved to the manual lane, it is counted there. A grader cleared since does not send a graderless row to the vendor as a slab
+        let item = _kjrBulkRow(table, work[i]);
+        if (!item) { gone++; continue; }
+        const kind = _kjrBulkKind(item, table);
+        if (kind === 'manual') { manual++; continue; }
+        const isPpt = kind !== 'free';
+        const japanese = kind === 'japanese';
+        // A slab goes in as the resolver reads it ("PSA 10" in either field), a Japanese single with a number goes through the strict
+        // Japanese lane (one card or none) rather than the older fuzzy PPT name search, the way the queue prices it.
+        const slabGrade = kind === 'slab' ? _kjrSlabGrade(item) : null;
+        const grader = kind === 'slab' ? (slabGrade ? slabGrade.grader : (item.grader||null)) : null;
+        const grade = kind === 'slab' ? (slabGrade ? slabGrade.grade : (item.grade||null)) : null;
+        // Stop before a search today's credits can not pay for: a slab is a search with eBay (6), a Japanese single a plain one (3). A refusal earlier
+        // today (creditsPausedDate) leaves nothing to spend. The stop quotes the plan that decided it (v3.96): the limit is read live in kjrCreditsLeft, and the one
+        // read after the yes could name the other plan in the toast ("87 of 18,000 on the Paid plan" after a switch to Free)
+        if (isPpt && kjrCreditsLeft(q, utcDay) < _pptEstimateCredits({ grader, grade })) { budgetStop = true; stoppedAt = i; limit = kjrDailyCredits(); planLabel = PPT_PLANS[kjrPptPlan()].label; break; }
+        showSyncProgress(i, work.length, 'Refreshing ' + table + '…');
+        let wasHeld = false, gate = null;
+        // Every call carries one of the three: tcgdexOnly (TCGdex alone, the PPT name search is not reached), japanese (the set-checked lane) or a
+        // grader with its grade (the eBay lane). The raw lane's fuzzy PPT fallback needs none of them, so nothing here can reach it.
+        const r = await fetchMarketPrice(kind === 'slab'
+          ? { name: item.name, grader, grade, language: item.language||null, tcgdexId: item.tcgdexId||null }
+          : { name: item.name, grader: null, grade: null, language: item.language||null, tcgdexId: item.tcgdexId||null, tcgdexOnly: !japanese, japanese });
+        waitMs = isPpt ? kjrRequestGapMs() : TCGDEX_GAP_MS;
+        if (isPpt) {
+          // bill what the answer cost into the queue's day, in credits (their own metadata, else the estimate)
+          const spent = r.creditsUsed || 0;
+          if (spent > 0) { q.dayCreditsUsed[utcDay] = (q.dayCreditsUsed[utcDay] || 0) + spent; saveQueue(q); }
+          // the vendor says the day's credits are gone: nothing more can be priced, so it stops here instead of asking for the rest, and the queue
+          // learns it too. The card is neither priced nor missed.
+          if (r.creditsExhausted) { creditsOut = true; stoppedAt = i; q.creditsPausedDate = utcDay; saveQueue(q); break; }
         }
-        if (!wasHeld) done++;
-        consecTransport = 0;
-      } else {
-        const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
-        errs.forEach(e => { errorTally[e] = (errorTally[e]||0) + 1; });
-        const transport = errs.length && errs.every(isTransport);
-        if (transport) { failedTransport++; consecTransport++; }
-        else            { failedData++;       consecTransport = 0; }
-        markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
-        // A Japanese card the vendor had no single card for lands in the Singles banner, like the queue does it. An answer that never came
-        // (pptTransient) says nothing about the card and stamps nothing.
-        if (japanese && !r.pptTransient) item._tcgdexMissDate = kjrLocalDay();
-        // Auto-pause if the API is clearly unhappy - saves time and credits.
-        if (consecTransport >= 5) { aborted = true; break; }
+        if (!r.maxSgd) {
+          // The first 429 or 403 stops the run before anything about the card is written: it is no verdict on it, so no miss is stamped
+          const trigger = [r.pptError, r.tcgdexError].find(isHardBlockError);
+          if (trigger) { hardBlock = trigger; stoppedAt = i; failedTransport++; errorTally[trigger] = (errorTally[trigger]||0) + 1; break; }
+        }
+        // The answer is in, the row may not be (v3.96): read again before anything is written on it. Gone, the answer is dropped and the row counted, its credits were spent
+        // (the row changed under its own request)
+        item = _kjrBulkRow(table, work[i]);
+        if (!item) { gone++; continue; }
+        const idIsNew = !!(r.resolvedTcgdexId && !item.tcgdexId); // captured before the assignment below overwrites it
+        if (idIsNew) {
+          item.tcgdexId = r.resolvedTcgdexId;
+          if (r.resolvedCardName) item._tcgdexResolvedName = r.resolvedCardName;
+        }
+        if (r.maxSgd) {
+          const newPrice = r.maxSgd.toFixed(0);
+          if (japanese && item._tcgdexMissDate) item._tcgdexMissDate = null; // priced now, no longer "could not be matched"
+          // Same no-op guard as applyPriceToGroup/refreshPrice: unchanged value
+          // + no new id to cache means nothing to sync, so only stamp the local
+          // priced-today marker and skip history/markDirty. Still counts as a
+          // successful pass (the fetch did confirm the price).
+          if (item.marketPrice === newPrice && !idIsNew && !kjrIsStaleEstimate(item)) { // a stale estimate is never a no-op, see applyPriceToGroup
+            item._tcgdexPricedDate = kjrLocalDay();
+            _kjrDropPriceHold(item, table); // the source agrees with the stored price again, a hold on some other price is obsolete
+          } else if ((gate = _kjrPriceGate(item, table, r.maxSgd, _kjrPriceUnit(r), r.source, r.confidence)) !== 'write') {
+            // The price guard (kjrPriceGuard): not written, it waits on the card for the owner's OK. It is not an update, so it is counted apart.
+            held++;
+            wasHeld = true;
+            if (idIsNew && gate !== 'held') markDirty(table, item.id); // the resolved id is kept and still has to sync (a new hold has marked the row already)
+          } else {
+            item.marketPrice = newPrice;
+            delete item.priceHold; // a price that passes the guard makes an older hold on this row obsolete, the markDirty below syncs the deletion
+            _kjrDropOldRejection(item); // and an old rejection (30 days) goes in the same write
+            item._tcgdexPricedDate = kjrLocalDay(); // a changed price is a check too, see applyPriceToGroup
+            if (!item.priceHistory) item.priceHistory = [];
+            item.priceHistory.push({ date: kjrUtcDay(), price: r.maxSgd, unit: _kjrPriceUnit(r), source: r.source, confidence: r.confidence });
+            if (item.priceHistory.length > PRICE_HISTORY_MAX) item.priceHistory = item.priceHistory.slice(-PRICE_HISTORY_MAX);
+            if (item.priceAlert && r.maxSgd >= parseFloat(item.priceAlert) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+              new Notification('🔔 ' + item.name, { body: 'S$' + r.maxSgd.toFixed(0) + ' hit alert S$' + item.priceAlert });
+            }
+            markDirty(table, item.id);
+          }
+          if (!wasHeld) done++;
+          consecTransport = 0;
+        } else {
+          const errs = [r.pptError, r.tcgdexError].filter(e => e && !NON_ATTEMPT.test(e));
+          errs.forEach(e => { errorTally[e] = (errorTally[e]||0) + 1; });
+          const transport = errs.length && errs.every(isTransport);
+          if (transport) { failedTransport++; consecTransport++; }
+          else            { failedData++;       consecTransport = 0; }
+          markDirty(table, item.id); // a resolved tcgdexId may still need to sync even on a miss
+          // A Japanese card the vendor had no single card for lands in the Singles banner, like the queue does it. An answer that never came
+          // (pptTransient) says nothing about the card and stamps nothing.
+          if (japanese && !r.pptTransient) item._tcgdexMissDate = kjrLocalDay();
+          // Auto-pause if the API is clearly unhappy - saves time and credits.
+          if (consecTransport >= 5) { aborted = true; break; }
+        }
+        saveData();
       }
-      saveData();
-    }
-    // The vendor has just refused, or failed five times in a row: the day's automatic pass must not ask it again this load (v3.96, _kjrBulkBlocked). Marked here, before the
-    // finally hands the waiting auto run back
-    if (hardBlock || aborted) _kjrBulkBlocked = hardBlock || 'five failures in a row';
+      // The vendor has just refused, or failed five times in a row: the day's automatic pass must not ask it again this load (v3.96, _kjrBulkBlocked). Marked here, before the
+      // finally hands the waiting auto run back
+      if (hardBlock || aborted) _kjrBulkBlocked = hardBlock || 'five failures in a row';
+    }, () => { lockBusy = true; });
   } finally {
     _bulkRefreshRunning = false;
     _kjrAutoRunResume(); // the page-load auto run that waited for the question, and then for this run, goes now, once (v3.93)
     _kjrHeldQueue = null;
     hideSyncProgress();
   }
+  if (lockBusy) { toast('Nothing was refreshed. ' + KJR_QUEUE_LOCK_BUSY, 6000); return; }
   if (table === 'singles') renderSingles();
   if (table === 'slabs') renderSlabs();
   if (held || q) _kjrRedrawOverview(); // the Overview's Needs attention count has a new row to show, and its credits figure has moved

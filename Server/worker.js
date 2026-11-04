@@ -33,7 +33,7 @@
  */
 
 const ALLOWED_ORIGIN = 'https://julianchow21.github.io';
-const WORKER_BUILD_VERSION = '3.62';
+const WORKER_BUILD_VERSION = '3.84';
 
 // Tables the DB proxy will touch. Anything else is rejected.
 const DB_TABLES = new Set([

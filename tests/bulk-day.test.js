@@ -52,9 +52,8 @@ async function setup(seed, opts) {
   });
   // TCGdex: card number N resolves to set-N, priced at N. A hook can run as the nth price request arrives.
   app.tcgHooks = {}; let tcgSeen = 0;
+  app.fetchMock.resolve((q) => ({ id: 'set-' + q.num })); // the Worker's /resolve
   app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]);
     const card = url.match(/\/cards\/set-(\d+)$/);
     if (card) {
       const n = ++tcgSeen;

@@ -206,7 +206,7 @@ test('card-art: the image feature writes no data row, marks nothing dirty and ne
   ctx.saveData = (...a) => { saves++; return realSave.apply(ctx, a); };
 
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'swsh7-215', name: 'Umbreon VMAX' }]));
+  fetchMock.resolve({ id: 'swsh7-215', name: 'Umbreon VMAX' }); // the Worker's /resolve
   fetchMock.route('/cards/swsh7-215', () => jsonResponse({ id: 'swsh7-215', image: BASE, pricing: {} }));
   ctx.renderSingles(); ctx.renderSlabs();
   ctx.kjrQueueCardImage({ key: 'swsh7-215', tcg: 'swsh7-215', lang: 'en' });
@@ -215,7 +215,7 @@ test('card-art: the image feature writes no data row, marks nothing dirty and ne
 
   const urls = fetchMock.calls.map(c => c.url);
   assert.ok(urls.some(u => u.includes('/cards/swsh7-215')), 'the card lookup ran');
-  assert.ok(urls.some(u => u.includes('/cards?name=')), 'and so did the slab resolve');
+  assert.ok(urls.some(u => u.includes('/resolve?')), 'and so did the slab resolve');
   assert.equal(ctx.kjrCardImageBase('swsh7-215'), BASE, 'the base reached the local map');
   assert.equal(JSON.stringify(ctx.DB), dbBefore, 'no row changed');
   assert.equal(localStorage.getItem('pokeinventory_v3'), storedBefore, 'the stored database is byte for byte the same');
@@ -232,14 +232,14 @@ test('card-art: a slab is resolved on a SHALLOW COPY, the row gets no tcgdexId, 
   const { ctx, fetchMock, localStorage } = app;
   const rowBefore = JSON.stringify(ctx.DB.slabs);
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'swsh7-215', name: 'Umbreon VMAX' }]));
+  fetchMock.resolve({ id: 'swsh7-215', name: 'Umbreon VMAX' }); // the Worker's /resolve
   fetchMock.route('/cards/swsh7-215', () => jsonResponse({ id: 'swsh7-215', image: BASE, pricing: {} }));
 
   assert.equal(ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' }), true);
   await drain(app);
   const urls = fetchMock.calls.map(c => c.url);
   assert.equal(urls.length, 2, 'one resolve, one card fetch: ' + urls.join(' | '));
-  assert.match(urls[0], /\/en\/cards\?name=Umbreon%20VMAX&localId=215$/);
+  assert.equal(urls[0], ctx.SB_WORKER_ORIGIN + '/resolve?name=Umbreon%20VMAX%20215%2F203&lang=en&art=1', 'the whole row name, the row language, an art lookup, no set on this row');
   assert.match(urls[1], /\/en\/cards\/swsh7-215$/);
 
   assert.equal(ctx.DB.slabs[0].tcgdexId, undefined, 'the row has no tcgdexId afterwards');
@@ -261,7 +261,7 @@ test('card-art: an ambiguous slab name records a miss and shows the placeholder,
   const app = await loadApp({ seed: makeSeed({ slabs: [slab({ id: 'p1', name: 'Pikachu 25' })] }) });
   const { ctx, fetchMock, localStorage } = app;
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'basep-25' }, { id: 'sv03.5-025' }, { id: '2021swsh-25' }]));
+  fetchMock.resolve({ id: null }); // the Worker could not narrow three printings to one: a definitive miss
   ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
   await drain(app);
   assert.equal(fetchMock.calls.length, 1, 'no card fetch for an unresolved slab');
@@ -278,7 +278,7 @@ test('card-art: offline, a slab that resolves to nothing is not recorded as a mi
   const { ctx, fetchMock, localStorage } = app;
   fetchMock.calls.length = 0;
   // the network drops while resolveTcgdexId (which swallows its own errors) is in flight
-  fetchMock.route('/cards?name=', async () => { ctx.navigator.onLine = false; throw new TypeError('offline'); });
+  fetchMock.resolve(async () => { ctx.navigator.onLine = false; throw new TypeError('offline'); });
   ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
   await drain(app);
   assert.equal(localStorage.getItem('kjr_slab_card_ids'), null, 'no 7-day miss for a blip');
@@ -290,8 +290,10 @@ test('card-art: offline, a slab that resolves to nothing is not recorded as a mi
 // fetch rejected while the browser still said it was online, was cached as a 7-day miss: resolveTcgdexId handed every failure back as the
 // same null as "no such card" and, unlike the Japanese path, never filled opts.report. These tests keep the browser online throughout, so
 // only that report keeps a failure out of kjr_slab_card_ids and kjr_card_images.
-const SEARCH = '/cards?name=';
-const UMBREON = [{ id: 'swsh7-215', name: 'Umbreon VMAX' }];
+// v4.1: the search is the Worker's /resolve, and these are its failures: the Worker answered another status, could not be reached, timed
+// out, or sent a body that is not JSON. The Worker passing on a failure of TCGdex's ({ id: null, transient: true }) is in UNANSWERED below.
+const SEARCH = '/resolve?';
+const UMBREON = { id: 'swsh7-215', name: 'Umbreon VMAX' };
 const timeoutErr = () => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
 // every way a request can fail without saying anything about the card, shaped as fetchMock responders
 const FAILURES = {
@@ -303,6 +305,12 @@ const FAILURES = {
   'rejected fetch': () => { throw new TypeError('Failed to fetch'); },
   'timeout': () => { throw timeoutErr(); },
   'unreadable body': () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); } }),
+};
+// the Worker answered, and its answer is "could not tell": TCGdex failed behind it, or its species map or set list would not load
+const UNANSWERED = {
+  'TCGdex 503 behind the Worker': () => jsonResponse({ id: null, transient: true, why: 'net', status: 503 }),
+  'TCGdex timed out behind the Worker': () => jsonResponse({ id: null, transient: true, why: 'net', timedOut: true }),
+  'set list would not load': () => jsonResponse({ id: null, transient: true, why: 'sets' }),
 };
 // what a minute passing does to the session-only state: the job's cool-down ends and the queue is not paused
 const coolDownOver = (ctx) => { for (const k of Object.keys(ctx._kjrImgCool)) delete ctx._kjrImgCool[k]; ctx._kjrImgQ.pauseUntil = 0; ctx._kjrImgQ.fails = 0; };
@@ -355,8 +363,11 @@ test('card-art (v3.82): after a failed search nothing is left behind, so the nex
   assert.deepEqual(JSON.parse(second.localStorage.getItem('kjr_slab_card_ids')), { p1: { id: 'swsh7-215', n: 'Umbreon VMAX 215/203|en' } });
 });
 
-test('card-art (v3.82): no way a search request can fail is a miss for an English slab: 5xx, 429, 403, a rejection, a timeout, an unreadable body, a body that is not a list', async () => {
-  const cases = Object.assign({}, FAILURES, { 'not a card list': () => jsonResponse({ type: 'maintenance', status: 200 }) });
+test('card-art (v3.82): no way a search request can fail is a miss for an English slab: 5xx, 429, 403, a rejection, a timeout, an unreadable body, a body that is not an answer, a Worker 404', async () => {
+  const cases = Object.assign({}, FAILURES, UNANSWERED, {
+    'not an answer': () => jsonResponse({ type: 'maintenance', status: 200 }),
+    'Worker 404 (the route not deployed yet)': { status: 404, ok: false, json: {} },
+  });
   for (const [label, answer] of Object.entries(cases)) {
     const app = await loadApp({ seed: makeSeed({ slabs: [slab({ id: 'p1' })] }) });
     app.fetchMock.calls.length = 0;
@@ -370,12 +381,11 @@ test('card-art (v3.82): no way a search request can fail is a miss for an Englis
   }
 });
 
-test('card-art (v3.82): a real answer is still a 7-day miss: a 404, an empty candidate list, an ambiguous one', async () => {
+test('card-art (v3.82): a real answer is still a 7-day miss: the Worker\'s definitive miss (a TCGdex 404, no candidate, an ambiguous list)', async () => {
   const sig = 'Umbreon VMAX 215/203|en';
   const cases = {
-    '404': { status: 404, ok: false, json: {} },
-    'empty list': () => jsonResponse([]),
-    'ambiguous list': () => jsonResponse([{ id: 'swsh7-215' }, { id: 'swsh8-215' }, { id: 'swsh9-215' }]),
+    'definitive miss': () => jsonResponse({ id: null }),
+    'a miss that says it is not transient': () => jsonResponse({ id: null, transient: false }),
   };
   for (const [label, answer] of Object.entries(cases)) {
     const app = await loadApp({ seed: makeSeed({ slabs: [slab({ id: 'p1' })] }) });
@@ -453,12 +463,16 @@ test('card-art (v3.82): resolveTcgdexId fills opts.report only when it could not
     return { id, report: plain(report) };
   };
   for (const label of Object.keys(FAILURES)) assert.deepEqual(await ask(FAILURES[label]), { id: null, report: { transient: true, why: 'net' } }, label);
-  assert.deepEqual(await ask(() => jsonResponse({ nope: 1 })), { id: null, report: { transient: true, why: 'net' } }, 'not a list');
+  assert.deepEqual(await ask(() => jsonResponse({ nope: 1 })), { id: null, report: { transient: true, why: 'net' } }, 'not an answer');
+  assert.deepEqual(await ask({ status: 404, ok: false, json: {} }), { id: null, report: { transient: true, why: 'net' } }, 'a Worker 404 is not "no card"');
+  // the Worker's own "could not tell": the report carries its why, and only transient and why (status and timedOut are the price report's)
+  assert.deepEqual(await ask(UNANSWERED['TCGdex 503 behind the Worker']), { id: null, report: { transient: true, why: 'net' } }, 'TCGdex 503');
+  assert.deepEqual(await ask(UNANSWERED['TCGdex timed out behind the Worker']), { id: null, report: { transient: true, why: 'net' } }, 'TCGdex timeout');
+  assert.deepEqual(await ask(UNANSWERED['set list would not load']), { id: null, report: { transient: true, why: 'sets' } }, 'sets');
+  assert.deepEqual(await ask(() => jsonResponse({ id: null, transient: true, why: 'map' })), { id: null, report: { transient: true, why: 'map' } }, 'map');
   // answers, not failures: the report stays empty
-  assert.deepEqual(await ask({ status: 404, ok: false, json: {} }), { id: null, report: {} }, '404');
-  assert.deepEqual(await ask(() => jsonResponse([])), { id: null, report: {} }, 'empty');
-  assert.deepEqual(await ask(() => jsonResponse([{ id: 'a-1' }, { id: 'b-1' }])), { id: null, report: {} }, 'ambiguous');
-  assert.deepEqual(await ask(() => jsonResponse(UMBREON)), { id: 'swsh7-215', report: {} }, 'a unique card');
+  assert.deepEqual(await ask(() => jsonResponse({ id: null })), { id: null, report: {} }, 'a definitive miss');
+  assert.deepEqual(await ask(() => jsonResponse(UMBREON)), { id: 'swsh7-215', report: {} }, 'a hit');
   // pricing: no opts, and a report with no art flag is ignored. Same nulls as ever, and a bad report object never throws
   for (const label of Object.keys(FAILURES)) {
     fetchMock.route(SEARCH, FAILURES[label]);
@@ -506,7 +520,7 @@ test('card-art: a slab\'s own tcgdexId always wins, over a link resolved before 
   await drain(app);
   assert.match(slot.inserted.join(''), /base4\/4\/low\.webp/, 'the late fill draws the row\'s own card');
   assert.doesNotMatch(slot.inserted.join(''), /base1\/4/);
-  assert.equal(fetchMock.calls.filter((c) => c.url.includes('/cards?name=')).length, 0, 'nothing is resolved for a slab with its own id');
+  assert.equal(fetchMock.calls.filter((c) => c.url.includes('/resolve?')).length, 0, 'nothing is resolved for a slab with its own id');
   // its own id with no image on file yet: that card is fetched, nothing is linked
   const app2 = await loadApp({
     seed: makeSeed({ slabs: [slab({ id: 'p1', name: 'Charizard 4', tcgdexId: 'base4-4' })] }),
@@ -531,7 +545,8 @@ test('card-art: a slab\'s set picks the right one of two printings that share th
   const rowsBefore = JSON.stringify(ctx.DB.slabs);
   const dirtyBefore = JSON.stringify([...ctx._dirty.slabs]);
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'base1-4', localId: '4', name: 'Charizard' }, { id: 'base4-4', localId: '4', name: 'Charizard' }]));
+  // the Worker's /resolve, as its set check answers: the row's set picks between base1-4 and base4-4, and with no set it cannot tell
+  fetchMock.resolve((q) => (q.set === 'Base Set' ? { id: 'base1-4', name: 'Charizard' } : q.set === 'Base Set 2' ? { id: 'base4-4', name: 'Charizard' } : { id: null }));
   fetchMock.route('/cards/base1-4', () => jsonResponse({ id: 'base1-4', image: B1 }));
   fetchMock.route('/cards/base4-4', () => jsonResponse({ id: 'base4-4', image: B4 }));
   ctx.kjrQueueCardImage({ key: 'slab:p1', slab: 'p1', lang: 'en' });
@@ -540,25 +555,21 @@ test('card-art: a slab\'s set picks the right one of two printings that share th
   await drain(app);
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'Base Set: base1-4');
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[1], 'slabs').base, B4, 'Base Set 2: base4-4, not its twin\'s Base Set link');
-  const urls = fetchMock.calls.map((c) => c.url);
-  assert.equal(urls.filter((u) => /\/en\/cards\?name=Charizard&localId=4$/.test(u)).length, 2, 'each slab resolved for its own set');
+  assert.deepEqual(plain(fetchMock.resolveCalls()), [
+    { name: 'Charizard 4', lang: 'en', set: 'Base Set', art: true, num: '4' },
+    { name: 'Charizard 4', lang: 'en', set: 'Base Set 2', art: true, num: '4' },
+  ], 'each slab resolved for its own set, sent as &set= with the art flag');
   assert.deepEqual(JSON.parse(localStorage.getItem('kjr_slab_card_ids')), {
     p1: { id: 'base1-4', n: 'Charizard 4|en|set:Base Set' },
     p2: { id: 'base4-4', n: 'Charizard 4|en|set:Base Set 2' },
   });
   assert.equal(JSON.stringify(ctx.DB.slabs), rowsBefore, 'the rows are untouched, no tcgdexId lands on them');
   assert.equal(JSON.stringify([...ctx._dirty.slabs]), dirtyBefore, 'nothing is marked dirty');
-  // the set names a set by its longest phrase: Base Set 2 over Base Set, Expedition Base Set over Base Set, a tie names none
-  assert.equal(ctx._tcgdexSetIdIn('Base Set 2'), 'base4');
-  assert.equal(ctx._tcgdexSetIdIn('Base Set Shadowless'), 'base1');
-  assert.equal(ctx._tcgdexSetIdIn('Expedition Base Set'), 'ecard1');
-  assert.equal(ctx._tcgdexSetIdIn('Team Rocket Returns'), 'ex7');
-  assert.equal(ctx._tcgdexSetIdIn('Jungle Fossil'), '');
-  assert.equal(ctx._tcgdexSetIdIn('Evolving Skies'), '');
-  // pricing passes no set and resolves exactly as before: the same row priced is still ambiguous
+  // pricing passes no set and resolves exactly as before: the same row priced sends no set and no art flag, and is still ambiguous
   const priced = { name: 'Charizard 4', set: 'Base Set', language: 'EN' };
   assert.equal(await ctx.resolveTcgdexId(priced), null);
   assert.equal(priced.tcgdexId, undefined);
+  assert.deepEqual(plain(fetchMock.resolveCalls().pop()), { name: 'Charizard 4', lang: 'en', set: '', art: false, num: '4' });
 });
 
 test('card-art: an ambiguous slab shows the placeholder, it never borrows a twin\'s link or a pick its own set rules out', async () => {
@@ -571,8 +582,8 @@ test('card-art: an ambiguous slab shows the placeholder, it never borrows a twin
   const app = await loadApp({ seed, localStorage: { kjr_slab_card_ids: { p1: { id: 'base1-4', n: 'Charizard 4|en' } }, kjr_card_images: { 'base1-4': B1 } } });
   const { ctx, fetchMock, localStorage } = app;
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=Charizard', () => jsonResponse([{ id: 'base1-4' }, { id: 'base4-4' }, { id: 'cel25c-4_A' }]));
-  fetchMock.route('/cards?name=Blastoise', () => jsonResponse([{ id: 'base1-2' }]));
+  // the Worker's /resolve: none of the three can be told apart or survives its own set, so each is a definitive miss
+  fetchMock.resolve({ id: null });
   for (const id of ['p2', 'p3', 'p4']) { ctx.kjrQueueCardImage({ key: 'slab:' + id, slab: id, lang: 'en' }); await drain(app); }
   for (const i of [1, 2, 3]) assert.equal(ctx.kjrArtState(ctx.DB.slabs[i], 'slabs').state, 'none', ctx.DB.slabs[i].id + ' shows the placeholder');
   const links = JSON.parse(localStorage.getItem('kjr_slab_card_ids'));
@@ -580,7 +591,7 @@ test('card-art: an ambiguous slab shows the placeholder, it never borrows a twin
   assert.deepEqual(links.p3, { miss: iso(0), n: 'Charizard 4 Base Set 2|en|set:Base Set' });
   assert.deepEqual(links.p4, { miss: iso(0), n: 'Blastoise 2|en|set:Base Set 2' });
   assert.equal(fetchMock.calls.filter((c) => /\/cards\/(base|cel)/.test(c.url)).length, 0, 'no card is fetched for any of them');
-  assert.equal(fetchMock.calls.filter((c) => c.url.includes('/cards?name=')).length, 3, 'each resolved for itself, p2 did not borrow p1\'s link');
+  assert.deepEqual(fetchMock.resolveCalls().map((q) => q.name + ' | ' + q.set), ['Charizard 4 | Celebrations', 'Charizard 4 Base Set 2 | Base Set', 'Blastoise 2 | Base Set 2'], 'each resolved for itself with its own set, p2 did not borrow p1\'s link');
   assert.equal(ctx.kjrArtState(ctx.DB.slabs[0], 'slabs').base, B1, 'the slab with no set keeps its old link');
 });
 
@@ -593,7 +604,7 @@ test('card-art: a link the old rule resolved for a slab that has a set is looked
   } });
   const { ctx, fetchMock, localStorage } = app;
   fetchMock.calls.length = 0;
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'base1-4' }, { id: 'base4-4' }]));
+  fetchMock.resolve((q) => (q.set === 'Base Set' ? { id: 'base1-4' } : { id: null })); // the Worker's /resolve, with the set to tell them apart
   const st = ctx.kjrArtState(ctx.DB.slabs[0], 'slabs');
   assert.equal(st.state, 'need', 'the old signature no longer matches, so the Base Set 2 art it pointed at is not drawn');
   assert.equal(st.key, 'slab:p1');

@@ -66,17 +66,19 @@ async function setup(rows, opts) {
 
 // ── the candidates ──────────────────────────────────────────────────────────────────────────────────────────
 
-test('candidates: the same search as the resolver, cut to the typed number, with the set read off the id and named from the set list', async () => {
+test('candidates: the picker searches TCGdex itself, cut to the typed number, with the set read off the id and named from the set list', async () => {
   const app = await setup([single('p1', 'Pikachu 25', MISS)]);
   app.route();
   const list = await app.ctx.kjrTcgdexCandidates(rowOf(app.ctx, 'p1'));
   assert.deepStrictEqual(plain(list), PIKACHU_EXPECTED, 'TCGdex order kept; 225 and 259 are not number 25; the padded 025 is; the Pocket cards A2a-025 and A1a-025 are not offered');
   assert.deepStrictEqual(app.searches().map((c) => c.url), ['https://api.tcgdex.net/v2/en/cards?name=Pikachu&localId=25']);
   assert.equal(app.setsRequests().length, 1, 'the set list is asked once, for the names');
-  // the resolver asks for the very same URL, name and number taken from the row the same way
+  // the resolver (v4.1) asks the Worker's /resolve about the same row instead, and never TCGdex's card search
   app.fetchMock.calls.length = 0;
+  app.fetchMock.resolve({ id: null });
   await app.ctx.resolveTcgdexId(single('p2', 'Pikachu 25'));
-  assert.deepStrictEqual(app.searches().map((c) => c.url), ['https://api.tcgdex.net/v2/en/cards?name=Pikachu&localId=25']);
+  assert.deepStrictEqual(app.searches().map((c) => c.url), [], 'no TCGdex card search from the resolver');
+  assert.deepStrictEqual(plain(app.fetchMock.resolveCalls()), [{ name: 'Pikachu 25', lang: 'en', set: '', art: false, num: '25' }]);
   assert.equal(rowOf(app.ctx, 'p1').tcgdexId, '', 'and kjrTcgdexCandidates writes nothing to the row');
   assert.equal(rowOf(app.ctx, 'p1')._tcgdexMissDate, '2026-10-01');
 });
@@ -183,52 +185,109 @@ test('candidates: Pocket cards are dropped before the cap and before the set lis
 
 // ── resolveTcgdexId, as before ──────────────────────────────────────────────────────────────────────────────────
 
-test('resolver: unchanged. One card is taken, several need a set name in the name, nothing else is guessed, and a failure is "could not tell"', async () => {
+test('resolver: a thin client of the Worker\'s /resolve. A hit is taken, a miss is not guessed, an unanswered one is "could not tell"', async () => {
   const app = await setup([single('d1', 'Dummy')]);
   const { ctx, fetchMock } = app;
   const row = (name, extra) => Object.assign({ id: 'r', name, language: 'EN' }, extra || {});
-  const ask = async (item, list, opts) => { fetchMock.reset(); fetchMock.route('/cards?name=', () => jsonResponse(list)); return ctx.resolveTcgdexId(item, opts); };
+  const ask = async (item, reply, opts) => { fetchMock.reset(); fetchMock.resolve(reply); return ctx.resolveTcgdexId(item, opts); };
 
   const one = row('Pikachu 25');
-  assert.equal(await ask(one, [{ id: 'base1-25', name: 'Pikachu' }]), 'base1-25');
+  assert.equal(await ask(one, { id: 'base1-25', name: 'Pikachu' }), 'base1-25');
   assert.equal(one.tcgdexId, 'base1-25');
   assert.equal(one._tcgdexResolvedName, 'Pikachu');
-  assert.equal(fetchMock.calls[0].url, 'https://api.tcgdex.net/v2/en/cards?name=Pikachu&localId=25');
-  assert.equal(fetchMock.calls[0].opts, undefined, 'no timeout asked for, none passed: the call is exactly as it was');
+  assert.equal(fetchMock.calls.length, 1, 'one request');
+  assert.equal(fetchMock.calls[0].url, ctx.SB_WORKER_ORIGIN + '/resolve?name=Pikachu%2025&lang=en');
+  assert.equal(fetchMock.calls[0].opts, undefined, 'no timeout asked for, none passed');
+  const nameless = row('Pikachu 25');
+  assert.equal(await ask(nameless, { id: 'base1-25' }), 'base1-25', 'a hit with no name');
+  assert.equal(nameless._tcgdexResolvedName, undefined, 'writes no matched name');
 
-  const jungle = row('Gyarados 21 Jungle');
-  assert.equal(await ask(jungle, [{ id: 'base2-21' }, { id: 'neo1-21' }, { id: 'base3-21' }]), 'base2-21', 'several, one in the set the name says');
   const vague = row('Gyarados 21');
-  assert.equal(await ask(vague, [{ id: 'base2-21' }, { id: 'neo1-21' }]), null, 'several and no set named: still unresolved');
+  const vagueReport = {};
+  assert.equal(await ask(vague, { id: null }, { priceReport: vagueReport }), null, 'a definitive miss');
   assert.equal(vague.tcgdexId, undefined);
-  assert.equal(await ask(row('Pikachu 25'), []), null, 'no card');
-  assert.equal(await ask(row('Pikachu 25'), [{ name: 'no id' }]), null, 'a card with no id');
-  const pocket = row('Pikachu 25');
-  assert.equal(await ask(pocket, [{ id: 'A1-025', name: 'Pikachu', image: 'https://assets.tcgdex.net/en/tcgp/A1/025' }]), 'A1-025', 'the resolver still sees a Pocket card, only the picker leaves it out');
-  assert.equal(pocket.tcgdexId, 'A1-025');
+  assert.deepStrictEqual(plain(vagueReport), {}, 'a miss is an answer, not a failure');
 
-  const none = {};
-  fetchMock.reset(); fetchMock.route('/cards?name=', { status: 404, json: {} });
-  assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25'), { priceReport: none }), null);
-  assert.deepStrictEqual(plain(none), {}, 'a 404 is an answer, not a failure');
+  // unanswered by the Worker: why, status and timedOut are TCGdex's, passed on as they came
   const five = {};
-  fetchMock.reset(); fetchMock.route('/cards?name=', { status: 503, json: {} });
-  assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25'), { priceReport: five }), null);
+  assert.equal(await ask(row('Pikachu 25'), { id: null, transient: true, why: 'net', status: 503 }, { priceReport: five }), null);
   assert.deepStrictEqual(plain(five), { transient: true, why: 'net', status: 503 });
-  const shape = {};
-  fetchMock.reset(); fetchMock.route('/cards?name=', { status: 200, json: { oops: 1 } });
-  assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25'), { priceReport: shape }), null);
-  assert.deepStrictEqual(plain(shape), { transient: true, why: 'net' });
-  const art = { transient: false };
-  fetchMock.reset(); fetchMock.reject('/cards?name=', new TypeError('offline'));
-  assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25'), { art: true, report: art }), null);
-  assert.deepStrictEqual(plain(art), { transient: true, why: 'net' });
-  const timed = {};
-  fetchMock.reset(); fetchMock.route('/cards?name=', async () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; });
-  assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25'), { priceReport: timed }), null);
-  assert.deepStrictEqual(plain(timed), { transient: true, why: 'net', timedOut: true });
+  const upTimed = {};
+  assert.equal(await ask(row('Pikachu 25'), { id: null, transient: true, why: 'net', timedOut: true }, { priceReport: upTimed }), null);
+  assert.deepStrictEqual(plain(upTimed), { transient: true, why: 'net', timedOut: true });
+  const map = {}, mapPrice = {};
+  assert.equal(await ask(row('Pikachu 25'), { id: null, transient: true, why: 'map' }, { art: true, report: map, priceReport: mapPrice }), null);
+  assert.deepStrictEqual(plain(map), { transient: true, why: 'map' }, 'the art report keeps its shape');
+  assert.deepStrictEqual(plain(mapPrice), { transient: true, why: 'map' });
+  const odd = {};
+  assert.equal(await ask(row('Pikachu 25'), { id: null, transient: true, why: 'nonsense', status: 'x' }, { priceReport: odd }), null);
+  assert.deepStrictEqual(plain(odd), { transient: true, why: 'net' }, 'an unknown why is net, a status that is not one is dropped');
+
+  // a body that is not one of the three answers is "could not tell", never a miss
+  for (const body of [{ oops: 1 }, [], { id: '' }, { id: 42 }, { id: 'has space' }, { id: '../etc' }]) {
+    const shape = {};
+    const item = row('Pikachu 25');
+    assert.equal(await ask(item, { status: 200, json: body }, { priceReport: shape }), null, JSON.stringify(body));
+    assert.deepStrictEqual(plain(shape), { transient: true, why: 'net' }, JSON.stringify(body));
+    assert.equal(item.tcgdexId, undefined, 'and nothing is written');
+  }
+
   assert.equal(await ctx.resolveTcgdexId(row('Pikachu')), null, 'no number, nothing asked');
   assert.equal(await ctx.resolveTcgdexId(row('Pikachu 25', { tcgdexId: 'base1-58' })), 'base1-58', 'a known id is returned as it is');
+});
+
+test('resolver: the Worker could not be reached, answered another status, or timed out: transient with why net, so no miss is stamped', async () => {
+  const app = await setup([single('d1', 'Dummy')]);
+  const { ctx, fetchMock } = app;
+  const row = () => ({ id: 'r', name: 'Pikachu 25', language: 'EN' });
+
+  // a rejected fetch (offline, DNS, CORS)
+  const art = { transient: false }, price = {};
+  fetchMock.reset(); fetchMock.reject('/resolve?', new TypeError('Failed to fetch'));
+  assert.equal(await ctx.resolveTcgdexId(row(), { art: true, report: art, priceReport: price }), null);
+  assert.deepStrictEqual(plain(art), { transient: true, why: 'net' });
+  assert.deepStrictEqual(plain(price), { transient: true, why: 'net' }, 'no status, no timedOut');
+
+  // a status other than 200: the route not deployed yet (404), a Worker error (500, 503), a client error (400). The Worker's own
+  // status is never passed on as report.status, which is TCGdex's: a 404 or 400 there would read as TCGdex's "no match"
+  for (const status of [404, 400, 500, 503, 204]) {
+    const rep = {};
+    fetchMock.reset(); fetchMock.resolve({ status, json: { id: 'base1-25' } });
+    const item = row();
+    assert.equal(await ctx.resolveTcgdexId(item, { priceReport: rep }), null, 'HTTP ' + status);
+    assert.deepStrictEqual(plain(rep), { transient: true, why: 'net' }, 'HTTP ' + status);
+    assert.equal(item.tcgdexId, undefined, 'HTTP ' + status + ' writes nothing, whatever the body says');
+  }
+
+  // a body that is not JSON
+  const bad = {};
+  fetchMock.reset(); fetchMock.resolve(async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => { throw new SyntaxError('Unexpected token <'); } }));
+  assert.equal(await ctx.resolveTcgdexId(row(), { priceReport: bad }), null);
+  assert.deepStrictEqual(plain(bad), { transient: true, why: 'net' });
+
+  // opts.timeoutMs bounds the request to the Worker, and a timeout is transient with timedOut
+  const timed = {};
+  fetchMock.reset(); fetchMock.resolve(async (q, url, opts) => {
+    assert.ok(opts && opts.signal, 'the timeout rides on an abort signal');
+    const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e;
+  });
+  assert.equal(await ctx.resolveTcgdexId(row(), { priceReport: timed, timeoutMs: ctx.TCGDEX_TIMEOUT_MS }), null);
+  assert.deepStrictEqual(plain(timed), { transient: true, why: 'net', timedOut: true });
+  const aborted = {}, abortedArt = {};
+  fetchMock.reset(); fetchMock.resolve(async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; });
+  assert.equal(await ctx.resolveTcgdexId(row(), { art: true, report: abortedArt, priceReport: aborted, timeoutMs: 50 }), null);
+  assert.deepStrictEqual(plain(aborted), { transient: true, why: 'net', timedOut: true });
+  assert.deepStrictEqual(plain(abortedArt), { transient: true, why: 'net' }, 'the art report has no timedOut');
+
+  // and the price lane reads every one of these as "could not tell", never a 'not found' miss
+  for (const [label, arm, error] of [
+    ['offline', () => fetchMock.reject('/resolve?', new TypeError('Failed to fetch')), 'network error'],
+    ['404', () => fetchMock.resolve({ status: 404, json: {} }), 'network error'],
+    ['timeout', () => fetchMock.resolve(async () => { const e = new Error('t'); e.name = 'TimeoutError'; throw e; }), 'timeout'],
+  ]) {
+    fetchMock.reset(); arm();
+    assert.deepStrictEqual(plain(await ctx.fetchPriceFromTcgdex(row())), { error, transient: true }, label);
+  }
 });
 
 // ── the sheet ───────────────────────────────────────────────────────────────────────────────────────────────

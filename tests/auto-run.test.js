@@ -18,10 +18,13 @@ const enRow = (id, name, extra) => Object.assign({ id, name, language: 'EN', typ
 // TCGdex: card number N resolves to set-N and its TCGplayer market is prices['set-N']. While app.hold() is on, every TCGdex answer waits for app.letGo().
 function tcgdex(app, prices) {
   app.holding = null;
+  // the Worker's /resolve: card number N is set-N when it has a price
+  app.fetchMock.resolve(async (q) => {
+    if (app.holding) await app.holding.promise;
+    return prices['set-' + q.num] ? { id: 'set-' + q.num } : { id: null };
+  });
   app.fetchMock.route((url) => url.includes('api.tcgdex.net'), async (url) => {
     if (app.holding) await app.holding.promise;
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return prices['set-' + decodeURIComponent(list[2])] ? jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]) : jsonResponse([]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);

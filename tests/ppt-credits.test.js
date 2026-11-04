@@ -189,7 +189,8 @@ test('ppt-credits: a search the credits left can not pay for is not made: 5 left
 test('ppt-credits: with less than the cheapest search left the PPT lane does not start, the free lane still runs', async () => {
   const slabs = manySlabs(1);
   const app = await setup({ slabs, singles: [single('e1', 'Pikachu 25')] });
-  app.fetchMock.route('api.tcgdex.net', (url) => /\/cards\?name=/.test(url) ? jsonResponse([{ id: 'sv-25' }]) : jsonResponse({ pricing: { tcgplayer: { holofoil: { marketPrice: 9 } } } }));
+  app.fetchMock.resolve({ id: 'sv-25' }); // the Worker's /resolve
+  app.fetchMock.route('api.tcgdex.net', () => jsonResponse({ pricing: { tcgplayer: { holofoil: { marketPrice: 9 } } } }));
   app.localStorage.setItem(QUEUE_KEY, JSON.stringify(queueWith(slabs.map(entryOf), { dayCreditsUsed: { [UTC()]: 88 } })));
   assert.equal(app.ctx.kjrCreditsLeft(app.saved(), UTC()), 0, '2 left is less than the cheapest search');
   await drain(() => app.ctx.runRefreshQueue(false), app.timers);

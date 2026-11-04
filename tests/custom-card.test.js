@@ -191,7 +191,7 @@ test('custom-card: the bulk refresh leaves a custom card alone', async () => {
     seed: { singles: [single('c1', 'Pikachu 25', { customCard: true, marketPrice: 12 }), single('p1', 'Bravo 7')] },
   });
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'set-7' }]));
+  fetchMock.resolve({ id: 'set-7' }); // the Worker's /resolve
   fetchMock.route('/cards/set-7', () => jsonResponse({ pricing: { tcgplayer: { holofoil: { marketPrice: 70 } } } }));
   ctx.kjrConfirm = async () => true;
   const p = ctx.bulkRefreshPrices('singles');
@@ -199,8 +199,8 @@ test('custom-card: the bulk refresh leaves a custom card alone', async () => {
   p.then(() => { finished = true; });
   for (let i = 0; i < 40 && !finished; i++) { await new Promise((r) => setImmediate(r)); timers.flush((e) => e.delay === 1100); }
   await p;
-  const names = fetchMock.calls.filter((c) => c.url.includes('/cards?name=')).map((c) => new URL(c.url).searchParams.get('name'));
-  assert.deepStrictEqual(names, ['Bravo'], 'only the plain card was asked about');
+  const names = fetchMock.resolveCalls().map((q) => q.name);
+  assert.deepStrictEqual(names, ['Bravo 7'], 'only the plain card was asked about');
   assert.equal(rowOf(ctx, 'c1').marketPrice, 12);
   assert.equal(rowOf(ctx, 'p1').marketPrice, '70');
 });
@@ -734,6 +734,7 @@ test('custom-card: art: a custom Japanese single with no id is not looked up, an
   const app = await loadApp({ seed: { singles: [jpRow({ customCard: true })] } });
   const { ctx, fetchMock } = app;
   fetchMock.route((u) => u.includes('api.tcgdex.net') || u.includes('species-ja'), () => jsonResponse([{ id: 'SV2a-006', localId: '006', name: 'リザードンex', image: BASE_006 }]));
+  fetchMock.resolve({ id: 'SV2a-006', name: 'リザードンex' }); // the Worker would find it, so asking at all would be the bug
   fetchMock.calls.length = 0;
   const row = ctx.DB.singles[0];
   const dirtyBefore = [...ctx._dirty.singles];
@@ -741,7 +742,7 @@ test('custom-card: art: a custom Japanese single with no id is not looked up, an
   assert.deepStrictEqual(plain(ctx.kjrArtState(row, 'singles')), { state: 'none' }, 'the whale, no lookup to wait for');
   assert.equal(ctx.kjrQueueCardImage({ key: 'single:j1', single: 'j1', lang: 'ja' }), false, 'a placeholder drawn before the flag was set is settled, never queued');
   await app.settle(40);
-  assert.deepStrictEqual(fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('species-ja')).map((c) => c.url), [], 'not one request');
+  assert.deepStrictEqual(fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('species-ja') || c.url.includes('/resolve?')).map((c) => c.url), [], 'not one request');
   assert.equal(row.tcgdexId, '', 'no id was written onto the row');
   assert.deepStrictEqual([...ctx._dirty.singles], dirtyBefore, 'and it was not marked dirty');
 

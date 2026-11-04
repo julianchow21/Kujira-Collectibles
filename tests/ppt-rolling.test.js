@@ -324,10 +324,8 @@ test('the queue still loads under schema 2 with the new field, and the constant 
 test('the free lane runs on the rolled day as before: an English single is priced, the PPT order is made, the credits are the PPT lane\'s alone', async () => {
   const app = await setup({ slabs: manySlabs(2), singles: [single('e1', 'Alpha 1', { language: 'EN', costPrice: 100, marketPrice: '' })] });
   app.fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
-  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    if (/\/cards\?name=/.test(url)) return jsonResponse([{ id: 'set-1' }]);
-    return jsonResponse({ id: 'set-1', pricing: { tcgplayer: { holofoil: { marketPrice: 30 } } } });
-  });
+  app.fetchMock.resolve({ id: 'set-1' }); // the Worker's /resolve
+  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), () => jsonResponse({ id: 'set-1', pricing: { tcgplayer: { holofoil: { marketPrice: 30 } } } }));
   await app.run();
   assert.equal(app.ctx.DB.singles[0].marketPrice, '30', 'priced by TCGdex');
   assert.deepEqual(app.asked(), ['Alpha 1', 'Bravo 2']);
@@ -335,7 +333,7 @@ test('the free lane runs on the rolled day as before: an English single is price
   assert.equal(app.saved().lastTcgdexPass, ISO(0));
   assert.equal(app.saved().items.filter((i) => i.lane === 'tcgdex').length, 0, 'a pass still drops the lane from q.items');
   app.goto(1);
-  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => (/\/cards\?name=/.test(url) ? jsonResponse([{ id: 'set-1' }]) : jsonResponse({ id: 'set-1', pricing: { tcgplayer: { holofoil: { marketPrice: 33 } } } })));
+  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), () => jsonResponse({ id: 'set-1', pricing: { tcgplayer: { holofoil: { marketPrice: 33 } } } }));
   await app.run();
   assert.equal(app.ctx.DB.singles[0].marketPrice, '33', 'the next day too');
   assert.equal(app.saved().lastTcgdexPass, ISO(1));

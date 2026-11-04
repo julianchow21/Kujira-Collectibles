@@ -58,9 +58,8 @@ async function setup(seed, opts) {
   });
   // TCGdex: card number N resolves to set-N, priced at N, except the numbers in app.unknown, which it has no card for
   app.unknown = new Set();
+  app.fetchMock.resolve((q) => (app.unknown.has(q.num) ? { id: null } : { id: 'set-' + q.num })); // the Worker's /resolve
   app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) { const n = decodeURIComponent(list[2]); return app.unknown.has(n) ? jsonResponse([]) : jsonResponse([{ id: 'set-' + n }]); }
     const card = url.match(/\/cards\/set-(\d+)$/);
     if (card && !app.unknown.has(card[1])) return jsonResponse({ id: 'set-' + card[1], pricing: { tcgplayer: { holofoil: { marketPrice: Number(card[1]) } } } });
     return jsonResponse({}, 404);

@@ -249,6 +249,17 @@ function createTimerSystem() {
 // responses; records every call as {url, opts}. Default (no route matched)
 // rejects with TypeError('offline') - matches an offline-by-default sandbox.
 // ---------------------------------------------------------------------------
+// The Worker's card matcher route (app.js KJR_RESOLVE_URL) and a request to it read back as { name, lang, set, art, num }.
+function isResolveUrl(url) {
+  try { return new URL(String(url)).pathname === '/resolve'; } catch (e) { return false; }
+}
+function parseResolve(url) {
+  const p = new URL(String(url)).searchParams;
+  const name = p.get('name') || '';
+  const tok = name.trim().split(/\s+/).slice(1).find((t) => /^#?\d+(\/\d+)?$/.test(t));
+  return { name, lang: p.get('lang') || '', set: p.get('set') || '', art: p.get('art') === '1', num: tok ? tok.replace(/^#/, '').split('/')[0] : '' };
+}
+
 function createFetchMock() {
   const calls = [];
   const routes = [];
@@ -283,6 +294,27 @@ function createFetchMock() {
     reject(matcher, err) {
       return api.route(matcher, async () => { throw (err || new TypeError('mock fetch failure')); });
     },
+    // resolve(answer): stubs the Worker's card matcher, GET <Worker>/resolve?name=&lang=[&set=][&art=1] (app.js resolveTcgdexId).
+    // answer is a function (q, url, opts) => reply, or one reply for every request. q is the request read back:
+    //   { name, lang, set, art, num }   set is '' when not sent, art is true for &art=1, num is the harness's own plain reading of the
+    //                                   card number in name (the first "25" or "25/102" token after the first word, '' when none),
+    //                                   a convenience for fakes keyed by number, not the app's _tcgdexNumber
+    // A reply is one of the contract's three answers, sent as HTTP 200 JSON:
+    //   { id, name }                                              a hit
+    //   { id: null }                                              a definitive miss
+    //   { id: null, transient: true, why, status?, timedOut? }    unanswered ('net', 'map' or 'sets')
+    // or a ready response (jsonResponse(...), or a route spec { status, json }) to answer something else, a 404 or a 503 from the
+    // Worker. A reply that throws (or a function that throws) rejects the fetch, a transport failure. Most recent stub wins, like route.
+    resolve(answer) {
+      return api.route((url) => isResolveUrl(url), async (url, opts) => {
+        const reply = typeof answer === 'function' ? await answer(parseResolve(url), url, opts) : answer;
+        if (reply && typeof reply.json === 'function' && 'status' in reply) return reply; // a ready response
+        if (reply && typeof reply === 'object' && 'status' in reply && !('id' in reply)) return toResponder(reply)();
+        return toResponder({ status: 200, json: reply === undefined ? { id: null } : reply })();
+      });
+    },
+    // every /resolve request made so far, read back as q (above), oldest first
+    resolveCalls() { return calls.filter((c) => isResolveUrl(c.url)).map((c) => parseResolve(c.url)); },
     setDefault(fn) { defaultImpl = fn; return api; },
     reset() { routes.length = 0; calls.length = 0; defaultImpl = async () => { throw new TypeError('offline'); }; },
     async handle(url, opts) {
@@ -651,6 +683,6 @@ async function loadApp(opts) {
 }
 
 module.exports = {
-  loadApp, makeSeed, createFetchMock, createLocalStorage, ROOT, isDate, plain,
+  loadApp, makeSeed, createFetchMock, createLocalStorage, ROOT, isDate, plain, parseResolve, isResolveUrl,
   jsonResponse, syncRequest, syncSuccessResponse, syncPullResponse, syncCalls, syncOperations,
 };

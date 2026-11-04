@@ -62,7 +62,7 @@ test('reprice-noop: refreshPrice - a freshly-resolved tcgdexId with an UNCHANGED
     // saved locally, never markDirty'd, never synced to other devices.
     seed: { singles: [{ id: 's1', name: 'Pikachu 25', language: 'EN', marketPrice: '45', priceHistory: [], status: 'Available' }] },
   });
-  fetchMock.route('/en/cards?name=', { ok: true, json: [{ id: 'sv3-199', name: 'Pikachu' }] }); // unique candidate, auto-accepted
+  fetchMock.resolve({ id: 'sv3-199', name: 'Pikachu' }); // the Worker's /resolve finds the one card
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
   await ctx.refreshPrice('s1', 'singles');

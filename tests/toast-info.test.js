@@ -289,9 +289,8 @@ async function runsApp() {
       ? [{ id: 'v-' + m[2], name: m[1], cardNumber: m[2] + '/100', setName: 'Set', ebay: { salesByGrade: { psa10: { smartMarketPrice: { price: 100 + Number(m[2]) } } } } }] : [];
     return jsonResponse({ data: card, metadata: { apiCallsConsumed: { total: card.length ? 6 : 3 } } });
   });
+  app.fetchMock.resolve((q) => (q.num === '26' ? { id: 'set-26' } : { id: null })); // the Worker's /resolve
   app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return decodeURIComponent(list[2]) === '26' ? jsonResponse([{ id: 'set-26' }]) : jsonResponse([]);
     if (/\/cards\/set-26$/.test(url)) return jsonResponse({ id: 'set-26', pricing: { tcgplayer: { holofoil: { marketPrice: 8 } } } });
     return jsonResponse({}, 404);
   });

@@ -24,9 +24,8 @@ const slab = (id, name, extra) => Object.assign({ id, name, grader: 'PSA', grade
 // the TCGdex answers the free lane reads: "Alpha 1" is card number 1, which resolves to set-1, priced from the table. USD 1 is S$1.
 function tcgdex(fetchMock, prices) {
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
+  fetchMock.resolve((q) => ({ id: 'set-' + q.num })); // the Worker's /resolve
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);

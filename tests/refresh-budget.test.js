@@ -39,9 +39,9 @@ const pptReply = (totals) => (url) => {
 };
 // TCGdex: card number 1 resolves to set-1, whose TCGplayer market is 12. A gate holds every answer back until it opens, for a refresh left in flight.
 function tcgdex(fetchMock, gate) {
+  fetchMock.resolve(async (q) => { if (gate) await gate; return q.num === '1' ? { id: 'set-1' } : { id: null }; }); // the Worker's /resolve
   fetchMock.route((url) => url.includes('api.tcgdex.net'), async (url) => {
     if (gate) await gate;
-    if (/\/cards\?name=([^&]+)&localId=1$/.test(url)) return jsonResponse([{ id: 'set-1' }]);
     if (/\/cards\/set-1$/.test(url)) return jsonResponse({ id: 'set-1', pricing: { tcgplayer: { holofoil: { marketPrice: 12 } } } });
     return jsonResponse({}, 404);
   });
@@ -58,7 +58,7 @@ async function setup(seed, opts) {
   app.fetchMock.route('/ppt/cards', o.ppt || pptReply(o.totals));
   app.fetchMock.calls.length = 0;
   app.ppt = () => app.fetchMock.calls.filter((c) => c.url.includes('/ppt/cards'));
-  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net'));
+  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')); // TCGdex, and the Worker's matcher in front of it
   app.saved = () => JSON.parse(app.localStorage.getItem(QUEUE_KEY));
   app.rawQueue = () => app.localStorage.getItem(QUEUE_KEY);
   app.used = () => (app.saved() && app.saved().dayCreditsUsed ? app.saved().dayCreditsUsed[UTC()] : undefined);

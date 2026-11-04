@@ -67,9 +67,8 @@ async function setup(seed, opts) {
     if (u.searchParams.get('includeEbay') === 'true') return answer([slabCard(search)].filter(Boolean), 6);
     return answer([], 3); // the plain name search a lookup falls back to after a TCGdex miss: nothing found
   });
+  app.fetchMock.resolve((q) => (TCG_PRICES[q.num] ? { id: 'set-' + q.num } : { id: null })); // the Worker's /resolve
   app.fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) { const n = decodeURIComponent(list[2]); return TCG_PRICES[n] ? jsonResponse([{ id: 'set-' + n }]) : jsonResponse([]); }
     const card = url.match(/\/cards\/set-(\d+)$/);
     if (card && TCG_PRICES[card[1]]) {
       const n = ++tcgSeen;

@@ -27,9 +27,8 @@ const fuzzyCard = { id: 'v-1', name: 'Alpha', cardNumber: '1/100', setName: 'Set
 
 // TCGdex: a card number N resolves to set-N, whose TCGplayer market is prices['set-N'] (a card with none is a 404, an unknown list is empty)
 function tcgdex(fetchMock, prices) {
+  fetchMock.resolve((q) => (prices['set-' + q.num] ? { id: 'set-' + q.num } : { id: null })); // the Worker's /resolve: number N is set-N when it has a price
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return prices['set-' + decodeURIComponent(list[2])] ? jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]) : jsonResponse([]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);
@@ -47,7 +46,7 @@ async function setup(seed, opts) {
   app.fetchMock.route('/ppt/cards', o.ppt);
   app.fetchMock.calls.length = 0;
   app.ppt = () => app.fetchMock.calls.filter((c) => c.url.includes('/ppt/cards'));
-  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net'));
+  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')); // TCGdex, and the Worker's matcher in front of it
   app.saved = () => JSON.parse(app.localStorage.getItem(QUEUE_KEY));
   app.used = () => (app.saved() && app.saved().dayCreditsUsed ? app.saved().dayCreditsUsed[UTC()] : undefined);
   // a saved queue with this much of today's credits already spent (by the queue, a bulk run or an earlier lookup)

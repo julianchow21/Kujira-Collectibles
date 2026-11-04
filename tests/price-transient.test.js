@@ -41,24 +41,27 @@ const single = (id, name, extra) => Object.assign({ id, name, language: 'EN', st
 const laneItem = (id, name, extra) => Object.assign({ lane: 'tcgdex', id, table: 'singles', name, language: 'EN', tcgdexId: null, copyTargets: [] }, extra || {});
 const cardJson = (id, usd) => jsonResponse({ id, pricing: { tcgplayer: { holofoil: { marketPrice: usd } } } });
 
-// A TCGdex whose answers a test scripts per card. The name in the URL ("Bravo") picks the script, the localId is the card number.
-// script[name] = (callNumber) => 'ok' | 'empty' | 503 | 'throw' | ...   (callNumber counts the list calls for that name, from 1)
+// The Worker's /resolve and TCGdex's card page, answers a test scripts per card. The row name's first word ("Bravo") picks the
+// script, its number is the card number. script[name] = (callNumber) => verdict, callNumber counting the /resolve calls for that name from 1:
+//   'ok'      a hit, set-<number>
+//   'empty'   the Worker's definitive miss
+//   404       TCGdex had nothing there: the Worker's definitive miss
+//   <status>  TCGdex answered another status: the Worker's unanswered reply carrying it (transient, why 'net', status)
+//   'throw'   the Worker itself could not be reached: a rejected fetch
 function tcgdex(fetchMock, script, opts) {
   const calls = {};
   const priced = {};
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
+  fetchMock.resolve((q) => {
+    const name = q.name.trim().split(/\s+/)[0];
+    calls[name] = (calls[name] || 0) + 1;
+    const verdict = (script[name] || (() => 'ok'))(calls[name]);
+    if (verdict === 'throw') throw new TypeError('Failed to fetch');
+    if (verdict === 'empty' || verdict === 404) return { id: null };
+    if (typeof verdict === 'number') return { id: null, transient: true, why: 'net', status: verdict };
+    return { id: 'set-' + q.num };
+  });
   fetchMock.route(url => url.includes('api.tcgdex.net'), async (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) {
-      const name = decodeURIComponent(list[1]);
-      const num = decodeURIComponent(list[2]);
-      calls[name] = (calls[name] || 0) + 1;
-      const verdict = (script[name] || (() => 'ok'))(calls[name]);
-      if (verdict === 'throw') throw new TypeError('Failed to fetch');
-      if (verdict === 'empty') return jsonResponse([]);
-      if (typeof verdict === 'number') return jsonResponse({}, verdict);
-      return jsonResponse([{ id: 'set-' + num }]);
-    }
     const card = url.match(/\/cards\/([^/?]+)$/);
     if (card) {
       const id = decodeURIComponent(card[1]);
@@ -78,39 +81,44 @@ const rowOf = (ctx, id) => ctx.DB.singles.find((r) => r.id === id);
 
 // ── fetchPriceFromTcgdex: the classification ──────────────────────────────────────────────────────────────────────────────────────
 
-test('price-transient: list-endpoint statuses 408/425/429/403/5xx are "could not tell", 404 and 400 are answers', async () => {
+test('price-transient: TCGdex statuses 408/425/429/403/5xx that the Worker passes on are "could not tell", 404 and 400 are answers', async () => {
   for (const status of [408, 425, 429, 403, 500, 502, 503, 504]) {
     const { ctx, fetchMock } = await loadApp();
-    fetchMock.route('/cards?name=', () => jsonResponse({}, status));
+    fetchMock.resolve({ id: null, transient: true, why: 'net', status });
     const res = plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' }));
     assert.deepStrictEqual(res, { error: 'HTTP ' + status, transient: true }, 'HTTP ' + status + ' says nothing about the card');
   }
   {
     const { ctx, fetchMock } = await loadApp();
-    fetchMock.route('/cards?name=', () => jsonResponse({}, 404));
+    fetchMock.resolve({ id: null }); // TCGdex's 404 is the Worker's definitive miss
     assert.deepStrictEqual(plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' })), { error: 'not found' }, '404 is TCGdex saying there is nothing there');
   }
   {
     const { ctx, fetchMock } = await loadApp();
-    fetchMock.route('/cards?name=', () => jsonResponse({}, 400));
+    fetchMock.resolve({ id: null, transient: true, why: 'net', status: 400 });
     assert.deepStrictEqual(plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' })), { error: 'HTTP 400' }, 'a client error about this very request is a plain error, which the lane stamps');
   }
   {
     const { ctx, fetchMock } = await loadApp();
-    fetchMock.route('/cards?name=', () => jsonResponse([]));
-    assert.deepStrictEqual(plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' })), { error: 'not found' }, 'an empty list is no match');
+    fetchMock.resolve({ id: null });
+    assert.deepStrictEqual(plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' })), { error: 'not found' }, 'no match');
   }
 });
 
-test('price-transient: a thrown fetch, a timeout and a non-list body are transient, never a miss', async () => {
+test('price-transient: a thrown fetch to the Worker, a timeout, a Worker status and a body that is no answer are transient, never a miss', async () => {
   const flaky = async (respond) => {
     const { ctx, fetchMock } = await loadApp();
-    fetchMock.route('/cards?name=', respond);
+    fetchMock.resolve(respond);
     return plain(await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' }));
   };
-  assert.deepStrictEqual(await flaky(async () => { throw new TypeError('Failed to fetch'); }), { error: 'network error', transient: true });
-  assert.deepStrictEqual(await flaky(async () => { const e = new Error('The operation timed out'); e.name = 'TimeoutError'; throw e; }), { error: 'timeout', transient: true });
-  assert.deepStrictEqual(await flaky(async () => jsonResponse({ gateway: 'html page' })), { error: 'network error', transient: true }, 'a 200 that is not a card list is a gateway page');
+  assert.deepStrictEqual(await flaky(async () => { throw new TypeError('Failed to fetch'); }), { error: 'network error', transient: true }, 'the Worker could not be reached');
+  assert.deepStrictEqual(await flaky(async () => { const e = new Error('The operation timed out'); e.name = 'TimeoutError'; throw e; }), { error: 'timeout', transient: true }, 'the Worker did not answer in time');
+  assert.deepStrictEqual(await flaky({ id: null, transient: true, why: 'net', timedOut: true }), { error: 'timeout', transient: true }, 'TCGdex timed out behind the Worker');
+  assert.deepStrictEqual(await flaky({ id: null, transient: true, why: 'net' }), { error: 'network error', transient: true }, 'TCGdex could not be asked');
+  assert.deepStrictEqual(await flaky({ status: 200, json: { gateway: 'html page' } }), { error: 'network error', transient: true }, 'a 200 that is not an answer is a gateway page');
+  assert.deepStrictEqual(await flaky({ status: 404, json: { error: 'no route' } }), { error: 'network error', transient: true }, 'a Worker without the route yet is not "no match"');
+  assert.deepStrictEqual(await flaky({ status: 400, json: {} }), { error: 'network error', transient: true }, 'a Worker 400 is not TCGdex\'s 400');
+  assert.deepStrictEqual(await flaky({ status: 502, json: {} }), { error: 'network error', transient: true });
 });
 
 test('price-transient: the card endpoint is classified the same way (a cached id skips the list call)', async () => {
@@ -137,19 +145,19 @@ test('price-transient: a priced card carries no error and no transient flag', as
   assert.deepStrictEqual(res, { priceUsd: 45, unit: 'USD', source: 'TCGdex (TCGplayer)', confidence: 'high', creditsUsed: 0 });
 });
 
-test('price-transient: the TCGdex requests carry a timeout signal where AbortSignal.timeout exists', async () => {
+test('price-transient: the /resolve and TCGdex requests carry a timeout signal where AbortSignal.timeout exists', async () => {
   const { ctx, fetchMock } = await loadApp();
-  fetchMock.route('/cards?name=', () => jsonResponse([{ id: 'sv3-199' }]));
+  fetchMock.resolve({ id: 'sv3-199' });
   fetchMock.route('/cards/sv3-199', () => cardJson('sv3-199', 45));
   await ctx.fetchPriceFromTcgdex({ name: 'Pikachu 25', language: 'EN' });
-  const tcg = fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net'));
-  assert.equal(tcg.length, 2);
+  const tcg = fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?'));
+  assert.equal(tcg.length, 2, 'the Worker\'s match, then the card page');
   for (const c of tcg) assert.ok(c.opts && c.opts.signal, 'a stalled request becomes a thrown one: ' + c.url);
 });
 
 test('price-transient: fetchMarketPrice reads tcgdexTransient off the TCGdex source, a PPT sentinel can not turn it into a miss', async () => {
   const { ctx, fetchMock } = await loadApp();
-  fetchMock.route('/cards?name=', () => jsonResponse({}, 503));
+  fetchMock.resolve({ id: null, transient: true, why: 'net', status: 503 });
   const down = plain(await ctx.fetchMarketPrice({ name: 'Pikachu 25', language: 'EN', tcgdexOnly: true }));
   assert.equal(down.maxSgd, null);
   assert.equal(down.tcgdexTransient, true);
@@ -158,9 +166,9 @@ test('price-transient: fetchMarketPrice reads tcgdexTransient off the TCGdex sou
   assert.ok(!fetchMock.calls.some((c) => c.url.includes('/ppt/cards')), 'tcgdexOnly: zero PPT calls');
 
   fetchMock.reset();
-  fetchMock.route('/cards?name=', () => jsonResponse([]));
+  fetchMock.resolve({ id: null });
   const gone = plain(await ctx.fetchMarketPrice({ name: 'Pikachu 25', language: 'EN', tcgdexOnly: true }));
-  assert.equal(gone.tcgdexTransient, false, 'an empty list is a definitive no-match');
+  assert.equal(gone.tcgdexTransient, false, 'the Worker\'s miss is a definitive no-match');
   assert.equal(gone.tcgdexError, 'not found');
 });
 
@@ -238,11 +246,11 @@ test('price-transient: five unanswered requests in a row stop the pass, with a t
   });
   const said = captureToasts(ctx);
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
-  fetchMock.reject(url => url.includes('api.tcgdex.net'), new TypeError('Failed to fetch'));
+  fetchMock.reject(url => url.includes('api.tcgdex.net') || url.includes('/resolve?'), new TypeError('Failed to fetch')); // the Worker is down
   const q = { items: names.map((n, i) => laneItem('s' + (i + 1), n)) };
   const before = fetchMock.calls.length;
   const result = plain(await runWithTimerDrain(() => ctx._runTcgdexLane(q, false, TODAY()), timers));
-  const tcgdexCalls = fetchMock.calls.slice(before).filter((c) => c.url.includes('api.tcgdex.net')).length;
+  const tcgdexCalls = fetchMock.calls.slice(before).filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')).length;
 
   assert.equal(result.paused, true);
   assert.equal(tcgdexCalls, 5, 'five failed requests, then the pass stops: the other three cards are not asked and there is no retry round');
@@ -439,7 +447,7 @@ test('price-transient: refreshPrice does not stamp a miss for a network blip, an
   assert.doesNotMatch(said.join('|'), /No price found/);
   said.length = 0;
   await ctx.refreshPrice('s2', 'singles');
-  assert.equal(rowOf(ctx, 's2')._tcgdexMissDate, TODAY(), 'an empty list is a miss, as before');
+  assert.equal(rowOf(ctx, 's2')._tcgdexMissDate, TODAY(), 'the Worker\'s miss is a miss, as before');
   assert.match(said.join('|'), /No price found/);
 });
 

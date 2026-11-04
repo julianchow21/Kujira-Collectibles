@@ -33,13 +33,9 @@ async function drain(fn, timers) {
 // A TCGdex whose prices a test can change. "Alpha 1" is card number 1, which resolves to set-1.
 function tcgdex(fetchMock, state) {
   fetchMock.route('base=USD', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
+  // the Worker's /resolve: number N is set-N, a number in state.down is TCGdex answering 503 (the Worker passes that on as unanswered)
+  fetchMock.resolve((q) => (state.down && state.down.includes(q.num) ? { id: null, transient: true, why: 'net', status: 503 } : { id: 'set-' + q.num }));
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) {
-      const n = decodeURIComponent(list[2]);
-      if (state.down && state.down.includes(n)) return jsonResponse({}, 503);
-      return jsonResponse([{ id: 'set-' + n }]);
-    }
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: state.prices[card[1]] } } } });
     return jsonResponse({}, 404);
@@ -132,20 +128,20 @@ test('local-day: at 00:01 the free lane has a new day, at 23:59 it does not', as
 
 test('local-day: a miss stamped last evening is asked again in the morning, a miss stamped this morning is not asked twice', async () => {
   const app = await setup(EVENING, [single('s1', 'Alpha 1'), single('s9', 'Nine 9')]);
-  app.fetchMock.route((url) => url.includes('api.tcgdex.net') && /localId=9/.test(url), () => jsonResponse([]));
+  app.fetchMock.resolve((q) => (q.num === '9' ? { id: null } : { id: 'set-' + q.num })); // the Worker has no card for Nine 9
   app.state.prices = { 'set-1': 10 };
   await app.run();
   assert.equal(rowOf(app.ctx, 's9')._tcgdexMissDate, '2026-10-21', 'a miss, dated with the local day');
   app.clock.set(MORNING);
   app.fetchMock.calls.length = 0;
   await app.run();
-  const nine = app.fetchMock.calls.filter((c) => /localId=9/.test(c.url)).length;
+  const nine = app.fetchMock.resolveCalls().filter((q) => q.num === '9').length;
   assert.equal(nine, 1, 'asked again on the 22nd');
   assert.equal(rowOf(app.ctx, 's9')._tcgdexMissDate, '2026-10-22');
   app.fetchMock.calls.length = 0;
   app.clock.set(EIGHT);
   await app.run();
-  assert.equal(app.fetchMock.calls.filter((c) => /localId=9/.test(c.url)).length, 0, 'and not a second time that day');
+  assert.equal(app.fetchMock.resolveCalls().filter((q) => q.num === '9').length, 0, 'and not a second time that day');
 });
 
 test('local-day: cards a pass could not get an answer for before midnight are asked with everything else on the new day, once', async () => {

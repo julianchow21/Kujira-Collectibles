@@ -41,15 +41,14 @@ const single = (id, name, extra) => Object.assign({ id, name, language: 'EN', st
 // A TCGdex whose card prices a test can change between runs. "Alpha 1" is card number 1, which resolves to set-1.
 function tcgdex(fetchMock, state) {
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
+  fetchMock.resolve((q) => (state.unknown && state.unknown.includes(q.num) ? { id: null } : { id: 'set-' + q.num })); // the Worker's /resolve
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return state.unknown && state.unknown.includes(decodeURIComponent(list[2])) ? jsonResponse([]) : jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return state.prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: state.prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);
   });
-  const calls = () => fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net')).map((c) => c.url);
-  return { calls, lists: () => calls().filter((u) => /\/cards\?name=/.test(u)), cards: () => calls().filter((u) => /\/cards\/set-/.test(u)) };
+  const calls = () => fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')).map((c) => c.url);
+  return { calls, lists: () => calls().filter((u) => /\/resolve\?/.test(u)), cards: () => calls().filter((u) => /\/cards\/set-/.test(u)) };
 }
 
 const savedQueue = (localStorage) => JSON.parse(localStorage.getItem(QUEUE_KEY));
@@ -258,7 +257,7 @@ test('free-lane-daily: a miss from an earlier day is asked again today, a miss t
   assert.equal(result.done, 1);
   assert.equal(result.failedData, 1);
   assert.equal(result.skipped, 1);
-  assert.deepStrictEqual(app.tcg.lists().map((u) => decodeURIComponent(u.match(/name=([^&]+)/)[1])).sort(), ['Alpha', 'Charlie']);
+  assert.deepStrictEqual(app.fetchMock.resolveCalls().map((q) => q.name).sort(), ['Alpha 1', 'Charlie 3'], 'the Worker is asked with the row names');
 });
 
 test('free-lane-daily: the run summary counts cards found already priced, "3/3" and not "0/3"', async () => {

@@ -3551,8 +3551,8 @@ async function exportXlsx() {
 // it, or its picture is on the way), no art (the dimmed whale with a name for assistive tech) and loaded (the picture fades in).
 // The picture asks TCGdex for CORS (crossorigin=anonymous, it sends access-control-allow-origin: *), so sw.js can cache it under
 // its real size in `kujira-card-art`, and the learned bases are written to localStorage once per burst, not once per card.
-// v3.80: a Japanese single with no tcgdexId gets an art-only lookup too (the Japanese species name from Assets/species-ja.json,
-// the exact localId, set narrowing, a unique hit only: resolveTcgdexId opts.art). On a hit the id is written onto the row ONCE
+// v3.80: a Japanese single with no tcgdexId gets an art-only lookup too (resolveTcgdexId opts.art, which since v4.1 asks the
+// Worker's /resolve: the Japanese species name, the exact localId, set narrowing, a unique hit only). On a hit the id is written onto the row ONCE
 // with markDirty, as the English price lane does, and the image is drawn. Its misses live in the same `kjr_slab_card_ids` map
 // under "s:<id>". Nothing here makes a price call. Since v3.89 the id this writes is what lets the Japanese price lane (PPT) take the card, a
 // Japanese single with no id stays manual until this finds one or it is typed in.
@@ -4176,7 +4176,7 @@ function kjrImgCoolDown(key) {
 }
 // A lookup that could not be answered (offline, a failed request, the species map or the set list would not load, an edit dialog
 // open on the row) is not a "no match": it waits a minute and is asked again, never recorded as a 7-day miss. Only a failed card
-// request counts toward pausing the whole queue, the app's own species map and a missing set list do not.
+// request counts toward pausing the whole queue, the Worker's species map and a missing set list (/resolve's why 'map' and 'sets') do not.
 function kjrImgUnanswered(job, report) {
   if (report && (report.why === 'map' || report.why === 'sets' || report.why === 'busy')) _kjrImgCool[job.key] = Date.now() + KJR_IMG_COOL_MS;
   else kjrImgCoolDown(job.key);
@@ -4259,7 +4259,7 @@ async function kjrImgRun(job, keys) {
         id = kjrSlabLinkBySig(sig);
         if (!id) {
           // Its set goes along as a second never-guess signal: it picks between printings the name cannot tell
-          // apart and rules out a printing from another set (resolveTcgdexId opts.set, app.js _tcgdexSetHintPick).
+          // apart and rules out a printing from another set (resolveTcgdexId opts.set, the Worker's /resolve).
           var slabReport = {};
           id = await resolveTcgdexId(Object.assign({}, slab), { set: slab.set, art: true, report: slabReport });
           if (!id) {

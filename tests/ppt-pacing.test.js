@@ -42,9 +42,8 @@ const pptReply = (url) => {
 };
 // TCGdex: a card number N resolves to set-N, whose TCGplayer market is prices['set-N'] (a card with no price is a miss)
 function tcgdex(fetchMock, prices) {
+  fetchMock.resolve((q) => (prices['set-' + q.num] ? { id: 'set-' + q.num } : { id: null })); // the Worker's /resolve: number N is set-N when it has a price
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return prices['set-' + decodeURIComponent(list[2])] ? jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]) : jsonResponse([]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);

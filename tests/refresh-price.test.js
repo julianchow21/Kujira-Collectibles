@@ -29,7 +29,7 @@ async function setup(seed) {
   app.fetchMock.calls.length = 0; // loadApp's boot fetches (the FX rate) are not part of the click
   app.toasts = toasts;
   app.ppt = () => app.fetchMock.calls.filter((c) => c.url.includes('/ppt/cards'));
-  app.tcgdex = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net'));
+  app.tcgdex = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')); // TCGdex, and the Worker's matcher in front of it
   app.row = (table, id) => app.grab('DB').DB[table].find((r) => r.id === id);
   app.dirty = (table, id) => app.grab('_dirty')._dirty[table].has(id);
   return app;
@@ -71,7 +71,7 @@ test('refresh-price: a slab PPT miss is reported and writes nothing, still no ke
 // ── singles: the free lane's rules, a miss is clean and never reaches PPT ───────────────────────────
 test('refresh-price: an English single whose TCGdex lookup misses makes zero PPT calls and stays unpriced', async () => {
   const app = await setup({ singles: [singleRow()] });
-  app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] }); // resolve finds no candidate
+  app.fetchMock.resolve({ id: null }); // the Worker's /resolve finds no card
   // if the old fuzzy fallback still ran, this is what it would find and write
   app.fetchMock.route('/ppt/cards', { ok: true, json: { data: [{ name: 'Pikachu', number: '25', prices: { market: 40 } }] } });
   fx(app, 1);
@@ -127,7 +127,7 @@ test('refresh-price: a blank language counts as English, like the queue', async 
 test('refresh-price: a Korean (or other unlisted language) single makes zero API calls and says it is a manual price', async () => {
   for (const language of ['KR', 'TH']) {
     const app = await setup({ singles: [singleRow({ language, marketPrice: 30 })] });
-    app.fetchMock.route('api.tcgdex.net', { ok: true, json: [{ id: 'sv3-199' }] });
+    app.fetchMock.resolve({ id: 'sv3-199' }); // the Worker would find one, so asking at all would be the bug
     pptHit(app, 99); fx(app, 1);
     await app.ctx.refreshPrice('s1', 'singles');
     assert.equal(app.fetchMock.calls.length, 0, language + ': no TCGdex, no PPT, not even an FX lookup');
@@ -197,7 +197,7 @@ test('refresh-price: same value on a slab refreshed through the Worker is a no-o
 test('refresh-price: a changed value still appends history and marks dirty, a fresh tcgdexId still syncs', async () => {
   const app = await setup({ singles: [singleRow({ marketPrice: '45', tcgdexId: 'sv3-199' }), singleRow({ id: 's2', name: 'Raichu 14', marketPrice: '45' })] });
   app.fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 99 } } } } });
-  app.fetchMock.route('/en/cards?name=', { ok: true, json: [{ id: 'sv3-14', name: 'Raichu' }] });
+  app.fetchMock.resolve({ id: 'sv3-14', name: 'Raichu' }); // the Worker's /resolve
   app.fetchMock.route('/cards/sv3-14', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
   fx(app, 1);
   await app.ctx.refreshPrice('s1', 'singles');
@@ -253,7 +253,7 @@ test('refresh-price: a row of the Singles table is a single even if its type fie
 
 test('refresh-price: a Slabs row with no grader is routed as the queue routes it, free lane only, never a fuzzy PPT search', async () => {
   const app = await setup({ slabs: [slabRow({ grader: '', grade: '' })] });
-  app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] });
+  app.fetchMock.resolve({ id: null }); // the Worker's /resolve finds no card
   pptHit(app, 500); fx(app, 1);
   assert.equal(app.ctx._queueLaneFor(app.row('slabs', 'sl1')), 'tcgdex', 'precondition: the queue sends it to the free lane');
   await app.ctx.refreshPrice('sl1', 'slabs');
@@ -265,7 +265,7 @@ test('refresh-price: a Slabs row with no grader is routed as the queue routes it
 // A miss is a data outcome. Only a freshly resolved tcgdexId is a change worth syncing, so a pure miss must not queue a phantom upsert.
 test('refresh-price: a pure miss changes nothing worth syncing, so it does not markDirty', async () => {
   const app = await setup({ singles: [singleRow()] });
-  app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] });
+  app.fetchMock.resolve({ id: null }); // the Worker's /resolve finds no card
   await app.ctx.refreshPrice('s1', 'singles');
   assert.equal(app.row('singles', 's1').priceHistory.length, 0);
   assert.equal(app.dirty('singles', 's1'), false, 'no phantom sync');
@@ -281,7 +281,7 @@ test('refresh-price: a slab PPT miss does not markDirty either', async () => {
 
 test('refresh-price: a miss that did resolve a tcgdexId still syncs that id', async () => {
   const app = await setup({ singles: [singleRow()] });
-  app.fetchMock.route('/en/cards?name=', { ok: true, json: [{ id: 'sv3-199', name: 'Pikachu' }] });
+  app.fetchMock.resolve({ id: 'sv3-199', name: 'Pikachu' }); // the Worker's /resolve
   app.fetchMock.route('/cards/sv3-199', { ok: true, json: { id: 'sv3-199', name: 'Pikachu' } }); // no pricing block, so a miss
   await app.ctx.refreshPrice('s1', 'singles');
   const row = app.row('singles', 's1');
@@ -292,7 +292,7 @@ test('refresh-price: a miss that did resolve a tcgdexId still syncs that id', as
 
 test('refresh-price: a free-lane miss is stamped _tcgdexMissDate the way the lane stamps it, locally and never synced', async () => {
   const app = await setup({ singles: [singleRow()] });
-  app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] });
+  app.fetchMock.resolve({ id: null }); // the Worker's /resolve finds no card
   await app.ctx.refreshPrice('s1', 'singles');
   const row = app.row('singles', 's1');
   assert.equal(row._tcgdexMissDate, today(), 'stamped with today');
@@ -321,7 +321,7 @@ test('refresh-price: a successful refresh clears a stale miss marker, as the lan
 
 test('refresh-price: after a miss the free lane does not try that card again today, a manual run still does', async () => {
   const app = await setup({ singles: [singleRow()] });
-  app.fetchMock.route('api.tcgdex.net', { ok: true, json: [] });
+  app.fetchMock.resolve({ id: null }); // the Worker's /resolve finds no card
   await app.ctx.refreshPrice('s1', 'singles');
   const q = app.ctx.buildRefreshQueue();
   assert.equal(q.items.filter((i) => i.lane === 'tcgdex').length, 1, 'precondition: the card is in the free lane');

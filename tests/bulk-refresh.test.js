@@ -44,11 +44,11 @@ const pptReply = (url) => {
   if (u.searchParams.get('includeEbay') === 'true') return answer([slabCard(search)].filter(Boolean), 6);
   return answer([], 3);
 };
-// the TCGdex answers the free lane reads: card number N resolves to set-N, whose TCGplayer market is prices['set-N'] (a card with none is a 404)
+// the answers the free lane reads: the Worker's /resolve gives card number N as set-N, whose TCGplayer market on TCGdex is prices['set-N']
+// (a card with none is a 404)
 function tcgdex(fetchMock, prices) {
+  fetchMock.resolve((q) => ({ id: 'set-' + q.num }));
   fetchMock.route((url) => url.includes('api.tcgdex.net'), (url) => {
-    const list = url.match(/\/cards\?name=([^&]+)&localId=([^&]+)/);
-    if (list) return jsonResponse([{ id: 'set-' + decodeURIComponent(list[2]) }]);
     const card = url.match(/\/cards\/(set-\d+)$/);
     if (card) return prices[card[1]] ? jsonResponse({ id: card[1], pricing: { tcgplayer: { holofoil: { marketPrice: prices[card[1]] } } } }) : jsonResponse({}, 404);
     return jsonResponse({}, 404);
@@ -67,7 +67,7 @@ async function setup(seed, opts) {
   app.fetchMock.route('/ppt/cards', pptReply);
   app.fetchMock.calls.length = 0;
   app.ppt = () => app.fetchMock.calls.filter((c) => c.url.includes('/ppt/cards'));
-  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net'));
+  app.tcg = () => app.fetchMock.calls.filter((c) => c.url.includes('api.tcgdex.net') || c.url.includes('/resolve?')); // TCGdex, and the Worker's matcher in front of it
   app.row = (id, table) => app.ctx.DB[table || 'singles'].find((r) => r.id === id);
   app.saved = () => JSON.parse(app.localStorage.getItem(QUEUE_KEY));
   // a saved queue with this much of today's credits already spent (by the queue, or an earlier bulk run)
@@ -179,8 +179,8 @@ test('bulk refresh: no path reaches the name-only PPT search: English cards go t
   assert.deepEqual(plain(urls.map((u) => u.searchParams.get('search')).sort()), ['Alpha 1', 'Monaa SV8a']);
   assert.deepEqual(spy.map((a) => [a[0], a[1], a[2]]), [['Alpha 1', 'PSA', '10']], 'the old function ran once, for the slab, never as a raw card');
   // TCGdex was asked about the two English cards with a number only
-  const names = app.tcg().filter((c) => c.url.includes('/cards?name=')).map((c) => new URL(c.url).searchParams.get('name')).sort();
-  assert.deepEqual(plain(names), ['Alpha', 'Bravo'], 'not for the Chinese, Indonesian or Korean cards, the custom card, or either with no number');
+  const names = app.fetchMock.resolveCalls().map((q) => q.name).sort();
+  assert.deepEqual(plain(names), ['Alpha 1', 'Bravo 2'], 'not for the Chinese, Indonesian or Korean cards, the custom card, or either with no number');
   assert.equal(app.row('en1').marketPrice, '7');
   assert.equal(app.row('en2').marketPrice, '', 'a TCGdex miss is a miss: no PPT search stands in for it');
   assert.equal(app.row('m1').marketPrice, '3');
@@ -379,9 +379,9 @@ test('bulk refresh: the first 429 or 403 stops the run, nothing is billed for it
     }
     assert.ok(app.toasts.some((t) => new RegExp('^Done: 2 updated, 1 failed \\(1× HTTP ' + status + '\\) .*· ⏸ stopped at the first refusal \\(HTTP ' + status + '\\), nothing was marked as unmatched \\(3 not priced\\)$').test(t)), JSON.stringify(app.toasts));
   }
-  // a 429 from TCGdex stops the run too, before any PPT request
+  // a 429 from TCGdex stops the run too, before any PPT request (the Worker's /resolve passes TCGdex's 429 on as unanswered)
   const app = await setup({ singles: [enRow('e1', 'Alpha 1'), enRow('e2', 'Bravo 2'), jpRow(0)] });
-  app.fetchMock.route((url) => url.includes('api.tcgdex.net'), () => jsonResponse({}, 429));
+  app.fetchMock.resolve({ id: null, transient: true, why: 'net', status: 429 });
   await drain(() => app.ctx.bulkRefreshPrices('singles'), app.timers);
   assert.equal(app.tcg().length, 1, 'one TCGdex request, refused');
   assert.equal(app.ppt().length, 0);

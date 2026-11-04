@@ -133,7 +133,7 @@ test('refresh-queue: _runTcgdexLane - a single-item lane that resolves applies t
   const { ctx, fetchMock, grab } = await loadApp({
     seed: { singles: [{ id: 's1', name: 'Pikachu 25', language: 'EN', status: 'Available', marketPrice: '', priceHistory: [] }] },
   });
-  fetchMock.route('/cards?name=', { ok: true, json: [{ id: 'sv3-199' }] });
+  fetchMock.resolve({ id: 'sv3-199' }); // the Worker's /resolve
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
 
@@ -153,7 +153,7 @@ test('refresh-queue: _runTcgdexLane - a miss stamps _tcgdexMissDate on both the 
   const { ctx, fetchMock, grab } = await loadApp({
     seed: { singles: [{ id: 's1', name: 'Pikachu 25', language: 'EN', status: 'Available' }] },
   });
-  fetchMock.route('/cards?name=', { ok: true, json: [] }); // zero candidates -> unresolved miss
+  fetchMock.resolve({ id: null }); // the Worker's definitive miss -> unresolved
 
   const today = new Date().toISOString().slice(0, 10);
   const q = { items: [{ lane: 'tcgdex', id: 's1', table: 'singles', name: 'Pikachu 25', language: 'EN', tcgdexId: null, copyTargets: [] }] };
@@ -173,9 +173,8 @@ test('refresh-queue: _runTcgdexLane - a TWO item lane exercises the inter-item g
       ],
     },
   });
-  fetchMock.route('/cards?name=Pikachu', { ok: true, json: [{ id: 'sv3-199' }] });
+  fetchMock.resolve((q) => (q.name.startsWith('Pikachu') ? { id: 'sv3-199' } : { id: null })); // Eevee is the Worker's miss
   fetchMock.route('/cards/sv3-199', { ok: true, json: { pricing: { tcgplayer: { holofoil: { marketPrice: 45 } } } } });
-  fetchMock.route('/cards?name=Eevee', { ok: true, json: [] }); // miss
   fetchMock.route('frankfurter.dev', { ok: true, json: [{ quote: 'SGD', rate: 1 }] });
 
   const today = new Date().toISOString().slice(0, 10);

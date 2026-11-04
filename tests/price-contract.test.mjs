@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import test from 'node:test';
+import nodeTest from 'node:test';
 
 const require = createRequire(import.meta.url);
 const { loadApp, plain } = require('./harness.js');
@@ -20,13 +20,16 @@ globalThis.caches = {
   }
 };
 
-const source = fs.readFileSync(
-  new URL('../Server/worker.js', import.meta.url),
-  'utf8'
+// Server/ is the private Worker repo, checked out inside this one. A public clone has no Worker, so the contract skips
+const WORKER_URL = new URL('../Server/worker.js', import.meta.url);
+const HAS_SERVER = fs.existsSync(WORKER_URL);
+const test = HAS_SERVER ? nodeTest : Object.assign(
+  (name) => nodeTest(name, { skip: 'needs the private Server checkout' }, () => {}),
+  { afterEach: nodeTest.afterEach }
 );
-const worker = (await import(
-  'data:text/javascript;base64,' + Buffer.from(source).toString('base64')
-)).default;
+const worker = HAS_SERVER ? (await import(
+  'data:text/javascript;base64,' + Buffer.from(fs.readFileSync(WORKER_URL, 'utf8')).toString('base64')
+)).default : null;
 
 const PRICE_ENV = { PPT_KEY: 'synthetic-price-key' };
 const APP_ORIGIN = 'https://julianchow21.github.io';

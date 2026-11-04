@@ -956,7 +956,9 @@ test('a price held on one device reaches the next: priceHold and priceHoldReject
   const sent = JSON.parse(JSON.stringify(app.row('s1')));
   assert.ok(sent.priceHold && sent.priceHold.price === 644.63, 'it survives the JSON the upsert sends');
   assert.ok(!Object.keys(sent).some((k) => k.startsWith('_') && /hold/i.test(k)), 'and no underscore key carries it');
-  // Server/CAS.sql drops only underscore keys (and the row's own version columns) from the stored data column, so no schema change carries these
+  // Server/CAS.sql drops only underscore keys (and the row's own version columns) from the stored data column, so no schema change carries these.
+  // Server/ is the private Worker repo, absent from a public clone
+  if (!fs.existsSync(ROOT + '/Server/CAS.sql')) return;
   const cas = fs.readFileSync(ROOT + '/Server/CAS.sql', 'utf8');
   const cleaner = cas.slice(cas.indexOf('function public.collectibles_clean_data'), cas.indexOf('function public.collectibles_clean_trash_data'));
   assert.match(cleaner, /where left\(key, 1\) <> '_'\s+and key not in \('row_version', 'updated_at'\)/);
